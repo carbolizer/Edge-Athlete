@@ -1,25 +1,22 @@
 """
 admin.py — Django Admin Panel Registration
 -------------------------------------------
-Django provides a built in admin panel at /admin/ that lets you
-view, add, edit, and delete database records through a browser UI.
+Django's built-in admin at /admin/ lets you view, add, edit, and delete
+database records through a browser UI — no SQL needed. This file registers the
+seven Edge Athlete models so each shows up there, which is how you'll eyeball
+data (nodes checking in, sets, reps) while building.
 
-What it does:
-  Registers the MotionEvent model so it appears in the admin panel.
-  This lets you manually inspect motion events in the database
-  without writing any SQL or using a database tool.
-
-Works with:
-  - event_handler/models.py — MotionEvent model being registered
-  - Django admin panel — accessible at http://localhost/admin/
-  - PostgreSQL — admin panel reads and writes directly to the database
-
-Note: To access the admin panel you need a superuser account.
-Create one with: python manage.py createsuperuser
+Access needs a superuser: python manage.py createsuperuser
 """
 from django.contrib import admin
-from .models import MotionEvent, Device
 
-# Registering these models makes them visible and manageable in the admin panel
-admin.site.register(Device)
-admin.site.register(MotionEvent)
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
+
+# Registering each model makes it visible and editable in the admin panel.
+admin.site.register(Node)
+admin.site.register(RackScreen)
+admin.site.register(Athlete)
+admin.site.register(Program)
+admin.site.register(Session)
+admin.site.register(Set)
+admin.site.register(Rep)
