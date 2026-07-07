@@ -249,7 +249,7 @@ POST  /api/racks/register/             rack screen announces itself       (open)
       body: { device_id }
       effect: upsert a RackScreen row keyed on device_id, last_seen=now;
               rack_number stays null the first time (awaiting assignment)
-GET   /api/racks/mine/?device_id={id}  poll while awaiting assignment      (open)
+GET   /api/racks/racknumber/?device_id={id}  poll while awaiting assignment      (open)
       returns: { rack_number: null | int }
 GET   /api/racks/unassigned/           list screens with rack_number=null  (coach only)
 PATCH /api/racks/{device_id}/          assign rack_number                  (coach only)
@@ -640,7 +640,7 @@ IsCoach permission: allows the request only if request.user is authenticated
 Open (AllowAny):
   GET   /api/nodes/
   POST  /api/racks/register/          upsert a RackScreen by device_id, rack_number stays null if new
-  GET   /api/racks/mine/?device_id=   return {rack_number} for polling while unassigned
+  GET   /api/racks/racknumber/?device_id=   return {rack_number} for polling while unassigned
   GET   /api/athletes/
   GET   /api/programs/?athlete={id}
   POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, started_at=now)
@@ -687,9 +687,9 @@ curl -sX POST localhost/api/sets/1/complete/ -d '{"reps":[...5 reps...],...}'  #
 curl -sX PATCH localhost/api/nodes/rack_1/ -d '{"rack_number":2}'              # 401 without token
 # rack screen registration + assignment
 curl -sX POST localhost/api/racks/register/ -d '{"device_id":"abc123"}'       # 200, rack_number null (open)
-curl -sX GET  'localhost/api/racks/mine/?device_id=abc123'                    # {rack_number: null}
+curl -sX GET  'localhost/api/racks/racknumber/?device_id=abc123'                    # {rack_number: null}
 curl -sX PATCH localhost/api/racks/abc123/ -H "Authorization: Bearer $T" -d '{"rack_number":3}'
-curl -sX GET  'localhost/api/racks/mine/?device_id=abc123'                    # {rack_number: 3}
+curl -sX GET  'localhost/api/racks/racknumber/?device_id=abc123'                    # {rack_number: 3}
 ```
 
 ### ✅ Phase 4 Exit Checklist
@@ -783,7 +783,7 @@ On first pick of "Rack Tablet": generate a random local device_id (e.g.
 `crypto.randomUUID()`) and save it to localStorage alongside device_role —
 this persists across reloads/reboots so the screen never re-registers.
 POST /api/racks/register/ { device_id } once.
-Then poll GET /api/racks/mine/?device_id={id} every ~3s — this is the ONLY
+Then poll GET /api/racks/racknumber/?device_id={id} every ~3s — this is the ONLY
 polling anywhere in the system; everything else stays MQTT push.
 While rack_number is null: render a plain "Waiting for coach to assign a
 rack" screen that prominently displays this device's own id (or a short,
