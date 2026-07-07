@@ -18,6 +18,7 @@ urlpatterns = [
     path('racks/register/', views.rack_register, name='rack_register'),
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),
     path('racks/unassigned/', views.racks_unassigned, name='racks_unassigned'),
+    path('programs/', views.programs_list, name='programs_list'),
     path('sets/', views.set_create, name='set_create'),
     path('sets/<int:set_id>/complete/', views.set_complete, name='set_complete'),
     path('racks/<str:device_id>/', views.rack_assign, name='rack_assign'),

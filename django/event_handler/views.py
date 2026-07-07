@@ -6,6 +6,8 @@ Each function below sits at a web address and does one job when a screen calls i
     "which rack am I?" (open to any tablet).
   - racks_unassigned / rack_assign: coach-only — see which tablets are waiting,
     and give one its rack number.
+  - programs_list: a tablet looks up an athlete's training plan (the targets +
+    the speed zone it needs to color reps green/yellow/red). Open read.
   - set_create: a tablet says "an athlete is starting a set" -> we make an empty
     set record to fill in later.
   - set_complete: a tablet says "the set is finished, here are all the reps" ->
@@ -20,9 +22,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import RackScreen, Set, Rep
+from .models import RackScreen, Set, Rep, Program
 from .permissions import IsCoach
-from .serializers import SetSerializer, SetCompleteSerializer, RackScreenSerializer
+from .serializers import (SetSerializer, SetCompleteSerializer,
+                          RackScreenSerializer, ProgramSerializer)
 
 
 @api_view(["POST"])
@@ -71,6 +74,19 @@ def rack_assign(request, device_id):
     screen.rack_number = rack_number
     screen.save()
     return Response(RackScreenSerializer(screen).data)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def programs_list(request):
+    """Open read: an athlete's training plans — the targets a set is judged
+    against, including the speed zone the tablet uses to color reps. Pass
+    ?athlete={id} to get just one athlete's plans."""
+    programs = Program.objects.all()
+    athlete_id = request.query_params.get("athlete")
+    if athlete_id is not None:
+        programs = programs.filter(athlete_id=athlete_id)
+    return Response(ProgramSerializer(programs, many=True).data)
 
 
 @api_view(["POST"])
