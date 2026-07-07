@@ -420,16 +420,20 @@ Every source file opens with a short WHY comment (see coding standards).
 - From a browser console, an `mqtt.js` client connected to `ws://<pi-ip>:9001` receives a message published with `mosquitto_pub -t edgeathlete/node/test/pulse -m '{}'`.
 - Only ONE MQTT listener service exists in `docker-compose.yml`.
 
-### ✅ Phase 1 Exit Checklist
-- [ ] `docker compose up --build` starts clean, no `privacydots` references remain
-- [ ] `mosquitto.conf` has both the 1883 and 9001 (websockets) listeners; 9001 exposed in compose
-- [ ] Browser `mqtt.js` client on `ws://<pi-ip>:9001` receives a test publish
-- [ ] Exactly one MQTT listener service in `docker-compose.yml`; `mosquitto-subscriber` service gone
-- [ ] `RUNBOOK.md` exists and covers all services + start/stop
-- [ ] `.env` gitignored, `.env.example` committed
-- [ ] Every new/changed file has a WHY comment
+### ✅ Phase 1 Exit Checklist — COMPLETE (2026-07-06)
+- [x] `docker compose up --build` starts clean, no `privacydots` references remain
+- [x] `mosquitto.conf` has both the 1883 and 9001 (websockets) listeners; 9001 exposed in compose
+- [x] Browser `mqtt.js` client on `ws://<pi-ip>:9001` receives a test publish
+- [x] Exactly one MQTT listener service in `docker-compose.yml`; `mosquitto-subscriber` service gone
+- [x] `RUNBOOK.md` exists and covers all services + start/stop
+- [x] `.env` gitignored, `.env.example` committed
+- [x] Every new/changed file has a WHY comment
 
-**STOP. Review the above before moving to Phase 2.**
+**Phase 1 complete.** Bootstrap ported from Privacy-Dots-V2; broker upgraded with a
+9001 websockets listener, duplicate `mosquitto-subscriber` service removed, and the
+listener's redundant `migrate` dropped to fix a boot-time migration race. Django
+models / REST / React and the MQTT subscriber remain the ported motion+pulse shape —
+reshaped to spec in Phases 2–4 (subscriber → pulse-only in Phase 3). Proceed to Phase 2.
 
 ---
 
