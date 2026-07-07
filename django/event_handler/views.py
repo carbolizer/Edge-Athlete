@@ -1,18 +1,23 @@
 """
 views.py — the base station's HTTP endpoints (the handlers screens talk to).
 
-Each function below sits at a web address and does one job when a screen calls it:
-  - rack_register / rack_racknumber: a tablet says "here I am" and later asks
-    "which rack am I?" (open to any tablet).
-  - racks_unassigned / rack_assign: coach-only — see which tablets are waiting,
-    and give one its rack number.
-  - programs_list: a tablet looks up an athlete's training plan (the targets +
-    the speed zone it needs to color reps green/yellow/red). Open read.
-  - set_create: a tablet says "an athlete is starting a set" -> we make an empty
-    set record to fill in later.
-  - set_complete: a tablet says "the set is finished, here are all the reps" ->
-    we save the whole thing to the database in one all-or-nothing step. This is
-    the ONLY place rep records are ever created.
+Grouped by who uses them:
+
+  TABLET (open — no login):
+    - rack_register / rack_racknumber: a tablet says "here I am" and asks
+      "which rack am I?"
+    - programs_view (GET): look up an athlete's plan (targets + the speed zone
+      used to color reps).
+    - set_create: start a set (make an empty record).
+    - set_complete: finish a set — save all its reps + totals in one
+      all-or-nothing step. The ONLY place rep records are created.
+
+  READS (open):
+    - nodes_list / athletes_view (GET): list the sensors / the lifters.
+
+  COACH-ONLY (needs a coach login):
+    - manage athletes, programs, sessions, and nodes; assign racks; and pull
+      the analytics summaries.
 
 Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 """
@@ -22,11 +27,20 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import RackScreen, Set, Rep, Program
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
 from .permissions import IsCoach
-from .serializers import (SetSerializer, SetCompleteSerializer,
-                          RackScreenSerializer, ProgramSerializer)
+from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
+                          ProgramSerializer, AthleteSerializer, SessionSerializer,
+                          NodeSerializer)
 
+
+def _require_coach(request):
+    """Small helper for endpoints that are open to read but coach-only to write:
+    returns True if the caller is a logged-in coach."""
+    return bool(request.user and request.user.is_authenticated)
+
+
+# ─────────────────────────── tablet: racks ───────────────────────────
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -55,8 +69,7 @@ def rack_racknumber(request):
 @api_view(["GET"])
 @permission_classes([IsCoach])
 def racks_unassigned(request):
-    """Coach-only: list every tablet still waiting for a rack (rack_number empty),
-    so a coach can see who needs assigning."""
+    """Coach-only: list every tablet still waiting for a rack (rack_number empty)."""
     waiting = RackScreen.objects.filter(rack_number__isnull=True)
     return Response(RackScreenSerializer(waiting, many=True).data)
 
@@ -76,18 +89,102 @@ def rack_assign(request, device_id):
     return Response(RackScreenSerializer(screen).data)
 
 
+# ─────────────────────────── nodes ───────────────────────────
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
-def programs_list(request):
-    """Open read: an athlete's training plans — the targets a set is judged
-    against, including the speed zone the tablet uses to color reps. Pass
-    ?athlete={id} to get just one athlete's plans."""
-    programs = Program.objects.all()
-    athlete_id = request.query_params.get("athlete")
-    if athlete_id is not None:
-        programs = programs.filter(athlete_id=athlete_id)
-    return Response(ProgramSerializer(programs, many=True).data)
+def nodes_list(request):
+    """Open: list every sensor node and its latest status."""
+    return Response(NodeSerializer(Node.objects.all(), many=True).data)
 
+
+@api_view(["PATCH"])
+@permission_classes([IsCoach])
+def node_detail(request, node_id):
+    """Coach-only: reassign a node to a different rack (or update its fields)."""
+    node = Node.objects.filter(node_id=node_id).first()
+    if node is None:
+        return Response({"error": "node not found"}, status=404)
+    form = NodeSerializer(node, data=request.data, partial=True)
+    form.is_valid(raise_exception=True)
+    return Response(NodeSerializer(form.save()).data)
+
+
+# ─────────────────────────── athletes ───────────────────────────
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def athletes_view(request):
+    """GET: list all lifters (open). POST: add a lifter (coach only)."""
+    if request.method == "GET":
+        return Response(AthleteSerializer(Athlete.objects.all(), many=True).data)
+    if not _require_coach(request):
+        return Response({"detail": "coach login required"}, status=401)
+    form = AthleteSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(AthleteSerializer(form.save()).data, status=201)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsCoach])
+def athlete_detail(request, athlete_id):
+    """Coach-only: update a lifter's details."""
+    athlete = Athlete.objects.filter(id=athlete_id).first()
+    if athlete is None:
+        return Response({"error": "athlete not found"}, status=404)
+    form = AthleteSerializer(athlete, data=request.data, partial=True)
+    form.is_valid(raise_exception=True)
+    return Response(AthleteSerializer(form.save()).data)
+
+
+# ─────────────────────────── programs (training plans) ───────────────────────────
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def programs_view(request):
+    """GET: an athlete's training plans, ?athlete={id} to filter (open). POST:
+    create a plan (coach only)."""
+    if request.method == "GET":
+        plans = Program.objects.all()
+        athlete_id = request.query_params.get("athlete")
+        if athlete_id is not None:
+            plans = plans.filter(athlete_id=athlete_id)
+        return Response(ProgramSerializer(plans, many=True).data)
+    if not _require_coach(request):
+        return Response({"detail": "coach login required"}, status=401)
+    form = ProgramSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(ProgramSerializer(form.save()).data, status=201)
+
+
+# ─────────────────────────── sessions ───────────────────────────
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+def sessions_view(request):
+    """Coach-only: start a training session."""
+    form = SessionSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(SessionSerializer(form.save()).data, status=201)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsCoach])
+def session_detail(request, session_id):
+    """Coach-only: update a session. A PATCH with no ended_at means "end it now"."""
+    session = Session.objects.filter(id=session_id).first()
+    if session is None:
+        return Response({"error": "session not found"}, status=404)
+    form = SessionSerializer(session, data=request.data, partial=True)
+    form.is_valid(raise_exception=True)
+    session = form.save()
+    if "ended_at" not in request.data:
+        session.ended_at = timezone.now()
+        session.save()
+    return Response(SessionSerializer(session).data)
+
+
+# ─────────────────────────── sets ───────────────────────────
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -170,3 +267,45 @@ def _personal_records(finished_set):
         is_weight_pr = best is not None and finished_set.weight_lbs > best.weight_lbs
 
     return is_velocity_pr, is_weight_pr
+
+
+# ─────────────────────────── analytics (coach) ───────────────────────────
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def analytics_session(request, session_id):
+    """Coach-only: a quick summary of one session — how many sets and reps total,
+    and each athlete's average velocity."""
+    sets = Set.objects.filter(session_id=session_id, is_false_set=False).select_related("athlete")
+    per_athlete = {}
+    total_reps = 0
+    for s in sets:
+        total_reps += s.reps_completed
+        row = per_athlete.setdefault(s.athlete_id, {
+            "athlete": {"id": s.athlete_id, "name": s.athlete.name}, "sets": 0, "_vs": []})
+        row["sets"] += 1
+        if s.avg_velocity is not None:
+            row["_vs"].append(s.avg_velocity)
+    athletes_out = [{
+        "athlete": r["athlete"], "sets": r["sets"],
+        "avg_velocity": round(sum(r["_vs"]) / len(r["_vs"]), 3) if r["_vs"] else None,
+    } for r in per_athlete.values()]
+    return Response({
+        "session_id": int(session_id),
+        "total_sets": sets.count(),
+        "total_reps": total_reps,
+        "athletes": athletes_out,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def analytics_athlete(request, athlete_id):
+    """Coach-only: an athlete's velocity trend across their sets (oldest first)."""
+    sets = Set.objects.filter(athlete_id=athlete_id, is_false_set=False).order_by("started_at")
+    trend = [{
+        "set_id": s.id, "exercise": s.exercise, "weight_lbs": s.weight_lbs,
+        "avg_velocity": s.avg_velocity, "peak_velocity": s.peak_velocity,
+        "ended_at": s.ended_at.isoformat() if s.ended_at else None,
+    } for s in sets]
+    return Response({"athlete_id": int(athlete_id), "sets": trend})

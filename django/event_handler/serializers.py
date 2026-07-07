@@ -5,11 +5,11 @@ Before we trust data a screen sends us (like a finished set), we run it through 
 shape-checker here that confirms every field is present and the right type — so we
 never save garbage to the database. The same tools also format data going back out
 as clean JSON. Think: a bouncer checking every field at the door, plus a
-receptionist handing back a tidy summary.
+receptionist handing back a tidy summary. One of these per kind of record.
 """
 from rest_framework import serializers
 
-from .models import Set, Rep, RackScreen, Program
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -33,9 +33,9 @@ class SetCompleteSerializer(serializers.Serializer):
 
 
 class SetSerializer(serializers.ModelSerializer):
-    """The Set record itself. Used two ways: to CHECK the fields when a tablet
-    starts a set, and to FORMAT the saved set we send back. The system-filled
-    fields (times, totals) are read-only — clients don't get to set them."""
+    """The Set record. Used to CHECK the fields when a tablet starts a set, and to
+    FORMAT the saved set we send back. System-filled fields (times, totals) are
+    read-only — clients don't get to set them."""
     class Meta:
         model = Set
         fields = ["id", "session", "athlete", "node", "exercise", "set_number",
@@ -46,9 +46,8 @@ class SetSerializer(serializers.ModelSerializer):
 
 
 class RackScreenSerializer(serializers.ModelSerializer):
-    """A tablet's record — used to list the ones waiting for a rack, and to show
-    the result after a coach assigns one. Only rack_number is set by a coach; the
-    id and last-seen time are managed for us."""
+    """A tablet's record — list the ones waiting for a rack, and show the result
+    after a coach assigns one. Only rack_number is coach-set."""
     class Meta:
         model = RackScreen
         fields = ["device_id", "rack_number", "last_seen"]
@@ -62,3 +61,28 @@ class ProgramSerializer(serializers.ModelSerializer):
         model = Program
         fields = ["id", "athlete", "exercise", "target_sets", "target_reps",
                   "target_weight_lbs", "velocity_zone_min", "velocity_zone_max"]
+
+
+class AthleteSerializer(serializers.ModelSerializer):
+    """A lifter's record."""
+    class Meta:
+        model = Athlete
+        fields = ["id", "name", "nfc_tag_id", "created_at", "notes"]
+        read_only_fields = ["id", "created_at"]
+
+
+class SessionSerializer(serializers.ModelSerializer):
+    """One training session. started_at is set for us; a coach sets ended_at to
+    finish it."""
+    class Meta:
+        model = Session
+        fields = ["id", "label", "started_at", "ended_at", "athletes", "notes"]
+        read_only_fields = ["id", "started_at"]
+
+
+class NodeSerializer(serializers.ModelSerializer):
+    """A sensor node and its latest status (battery, signal, which rack it's on)."""
+    class Meta:
+        model = Node
+        fields = ["node_id", "rack_number", "mount_type", "firmware_version",
+                  "battery_level", "signal_strength", "last_seen", "is_active"]
