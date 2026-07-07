@@ -1,31 +1,32 @@
 """
-views.py — HTTP endpoints for the event_handler app.
+views.py — the base station's HTTP endpoints (the handlers screens talk to).
 
-Phase 4 is in progress. These three endpoints unblock the rack tablet's full
-flow before the real batch-write logic lands:
-  - racks/register and racks/racknumber are REAL, backed by the RackScreen model
-    (simple enough to just do properly now).
-  - sets/<id>/complete is a STUB: it accepts the MESSAGE_CONTRACT.md body and
-    returns a spec-shaped Set, but does NOT create Rep rows yet. The real
-    transactional bulk write + PR computation is the Phase 4 centerpiece.
+Each function below sits at a web address and does one job when a screen calls it:
+  - rack_register / rack_racknumber: a tablet says "here I am" and later asks
+    "which rack am I?" (real, backed by the RackScreen table).
+  - set_create: a tablet says "an athlete is starting a set" -> we make an empty
+    set record to fill in later.
+  - set_complete: a tablet says "the set is finished, here are all the reps" ->
+    we save the whole thing to the database in one all-or-nothing step. This is
+    the ONLY place rep records are ever created.
 
-All three are open (AllowAny) per SPEC.md. The project's default DRF permission
-is IsAuthenticated, so each one explicitly opts out. See MESSAGE_CONTRACT.md for
-the exact request/response shapes.
+Shapes for every request/response live in MESSAGE_CONTRACT.md.
 """
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import RackScreen
+from .models import RackScreen, Set, Rep
+from .serializers import SetSerializer, SetCompleteSerializer
 
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def rack_register(request):
-    """A rack tablet announces itself. Upsert a RackScreen by device_id;
-    rack_number stays null until a coach assigns it. Body: { device_id }."""
+    """A rack tablet announces itself. Make (or find) its RackScreen row by
+    device_id; rack_number stays empty until a coach assigns it. Body: { device_id }."""
     device_id = request.data.get("device_id")
     if not device_id:
         return Response({"error": "device_id is required"}, status=400)
@@ -36,8 +37,8 @@ def rack_register(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def rack_racknumber(request):
-    """Poll target while a tablet waits for assignment. Returns this screen's
-    rack_number (null until a coach assigns it). Query: ?device_id=..."""
+    """A waiting tablet asks "which rack am I?" Returns its rack_number (empty
+    until a coach assigns it). Query: ?device_id=..."""
     device_id = request.query_params.get("device_id")
     if not device_id:
         return Response({"error": "device_id is required"}, status=400)
@@ -47,20 +48,82 @@ def rack_racknumber(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+def set_create(request):
+    """Start a set: create the empty set record when an athlete begins, so the
+    finish endpoint has something to fill in. Body: session, athlete, exercise,
+    set_number, and optionally node + weight_lbs."""
+    form = SetSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    new_set = form.save()
+    return Response(SetSerializer(new_set).data, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
 def set_complete(request, set_id):
-    """STUB — Phase 4 turns this into the real transactional batch write (the ONLY
-    path that creates Rep rows, plus is_velocity_pr / is_weight_pr). For now it
-    accepts the contract body and echoes a spec-shaped Set so the tablet's
-    finish-a-set flow works end to end. It does NOT persist reps yet."""
-    data = request.data
-    reps = data.get("reps", [])
-    return Response({
-        "id": set_id,
-        "reps_completed": data.get("reps_completed", len(reps)),
-        "avg_velocity": data.get("avg_velocity"),
-        "peak_velocity": data.get("peak_velocity"),
-        "is_false_set": data.get("is_false_set", False),
-        "ended_at": timezone.now().isoformat(),
-        "reps_received": len(reps),
-        "stub": True,  # remove when the Phase 4 batch write replaces this
-    })
+    """Save a finished set. Take all its reps + totals and write them to the
+    database in ONE all-or-nothing step (if anything fails, nothing saves). This
+    is the only code path that creates Rep rows. A false set saves zero reps.
+    We also flag whether it was the athlete's best-ever velocity or weight."""
+    target_set = Set.objects.filter(id=set_id).first()
+    if target_set is None:
+        return Response({"error": "set not found"}, status=404)
+
+    form = SetCompleteSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    data = form.validated_data
+
+    # all-or-nothing: either the whole set saves, or none of it does
+    with transaction.atomic():
+        if data["is_false_set"]:
+            # false start — record it as false, save no reps
+            target_set.is_false_set = True
+            target_set.reps_completed = 0
+            target_set.avg_velocity = None
+            target_set.peak_velocity = None
+            target_set.ended_at = timezone.now()
+            target_set.save()
+            is_velocity_pr = is_weight_pr = False
+        else:
+            # save every rep in one batch, all tied to this set
+            Rep.objects.bulk_create([
+                Rep(set=target_set, **rep) for rep in data["reps"]
+            ])
+            target_set.reps_completed = data["reps_completed"]
+            target_set.avg_velocity = data.get("avg_velocity")
+            target_set.peak_velocity = data.get("peak_velocity")
+            target_set.is_false_set = False
+            target_set.ended_at = timezone.now()
+            target_set.save()
+            is_velocity_pr, is_weight_pr = _personal_records(target_set)
+
+    # Phase 5: publish rack/dashboard/coach state here (Derrilon hooks the broadcast in)
+
+    body = SetSerializer(target_set).data
+    body["is_velocity_pr"] = is_velocity_pr
+    body["is_weight_pr"] = is_weight_pr
+    return Response(body)
+
+
+def _personal_records(finished_set):
+    """Was this set the athlete's best-ever for this exercise? Compare it to their
+    earlier real (non-false) sets of the same exercise. "Best" means fastest peak
+    velocity, or heaviest weight. A first-ever set has nothing to beat, so it is
+    not flagged as a new record."""
+    prior_sets = Set.objects.filter(
+        athlete=finished_set.athlete,
+        exercise=finished_set.exercise,
+        is_false_set=False,
+    ).exclude(id=finished_set.id)
+
+    is_velocity_pr = False
+    if finished_set.peak_velocity is not None:
+        best = prior_sets.exclude(peak_velocity=None).order_by("-peak_velocity").first()
+        is_velocity_pr = best is not None and finished_set.peak_velocity > best.peak_velocity
+
+    is_weight_pr = False
+    if finished_set.weight_lbs is not None:
+        best = prior_sets.exclude(weight_lbs=None).order_by("-weight_lbs").first()
+        is_weight_pr = best is not None and finished_set.weight_lbs > best.weight_lbs
+
+    return is_velocity_pr, is_weight_pr
