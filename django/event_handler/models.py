@@ -110,6 +110,7 @@ class Set(models.Model):
     node = models.ForeignKey(Node, on_delete=models.SET_NULL, null=True, blank=True, related_name='sets')
     exercise = models.CharField(max_length=255)
     set_number = models.IntegerField()
+    weight_lbs = models.FloatField(null=True, blank=True)  # actual load lifted; enables weight PRs + load-velocity analytics
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     reps_completed = models.IntegerField(default=0)

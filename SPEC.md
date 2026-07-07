@@ -224,7 +224,7 @@ Program    — athlete (FK→Athlete), exercise, target_sets (Int), target_reps 
              target_weight_lbs (Float), velocity_zone_min (Float), velocity_zone_max (Float)
 Session    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
 Set        — session (FK→Session), athlete (FK→Athlete), node (FK→Node, nullable),
-             exercise, set_number (Int), started_at, ended_at (nullable),
+             exercise, set_number (Int), weight_lbs (Float, nullable), started_at, ended_at (nullable),
              reps_completed (Int, default 0), avg_velocity (Float, nullable),
              peak_velocity (Float, nullable), is_false_set (Bool, default False)
 Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float),
@@ -643,7 +643,7 @@ Open (AllowAny):
   GET   /api/racks/racknumber/?device_id=   return {rack_number} for polling while unassigned
   GET   /api/athletes/
   GET   /api/programs/?athlete={id}
-  POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, started_at=now)
+  POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, weight_lbs, started_at=now)
   POST  /api/sets/{id}/complete/      *** batch write, see below ***
 Coach-only (IsCoach):
   PATCH /api/nodes/{node_id}/         reassign rack_number
