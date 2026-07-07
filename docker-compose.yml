@@ -1,0 +1,99 @@
+# docker-compose.yml — the base station's wiring diagram.
+# This file is the recipe for the whole Pi in one box: it starts every service
+# (database, MQTT broker, Django, the one MQTT listener, the React build, and the
+# Nginx front door) and plugs them into the same private network so they can find
+# each other by name. Think of it as the switchboard that turns a bare Pi into
+# the Edge Athlete base station with a single `docker compose up`.
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: edgeathlete-postgres
+    env_file: .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto
+    container_name: edgeathlete-mosquitto
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    # 1883 = plain MQTT for hardware nodes + Django. 9001 = the SAME broker
+    # spoken over WebSockets so browsers can subscribe directly — no Nginx proxy.
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    restart: unless-stopped
+
+  ntfy:
+    image: binwiederhier/ntfy
+    container_name: edgeathlete-ntfy
+    volumes:
+      - ntfy_data:/var/lib/ntfy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    command: serve
+
+  django:
+    build: ./django
+    container_name: edgeathlete-django
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  mqtt-listener:
+    build: ./django
+    container_name: edgeathlete-mqtt-listener
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    # Django (its Dockerfile CMD) is the SOLE migrator — running migrate here too
+    # raced it at boot and crashed on a duplicate django_migrations table. The
+    # listener only reads/writes rows once real messages arrive, long after boot.
+    command: python manage.py run_mqtt_subscriber
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  react:
+    build: ./react
+    container_name: edgeathlete-react
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      - django
+
+  nginx:
+    image: nginx:alpine
+    container_name: edgeathlete-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+    restart: unless-stopped
+    depends_on:
+      - react
+      - django
+
+  # NOTE: the reference project also ran a second `mosquitto-subscriber` service
+  # (python manage.py start_mqtt_listener) alongside `mqtt-listener` above — both
+  # subscribed to the same topics, double-processing every message. That duplicate
+  # service is intentionally removed here; `mqtt-listener` is the ONE listener.
+
+volumes:
+  postgres_data:
+  ntfy_data:

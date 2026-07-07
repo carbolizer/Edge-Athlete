@@ -1,0 +1,186 @@
+/* Timeline.css */
+
+/* ── Root container ──────────────────────────────────────── */
+.tl-root {
+  padding: 0.5rem 0 1.5rem;
+}
+
+/* ── List & vertical line ────────────────────────────────── */
+.tl-list {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tl-line {
+  position: absolute;
+  left: 8px;           /* center of the 18px dot column */
+  top: 10px;           /* start just below the first dot center */
+  bottom: 10px;
+  width: 1.5px;
+  background: #e0e0e0; /* adjust to match your App.css palette */
+  border-radius: 2px;
+  z-index: 0;
+  /* No JS needed — it auto-stretches as items are added above */
+}
+
+/* ── Individual item ─────────────────────────────────────── */
+.tl-item {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+  padding-bottom: 24px;
+}
+
+.tl-item:last-child {
+  padding-bottom: 0;
+}
+
+/* ── Slide-in animation for newly prepended items ────────── */
+@keyframes tl-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tl-line-grow {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.tl-item--entering {
+  animation: tl-slide-in 0.45s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ── Dot column ──────────────────────────────────────────── */
+.tl-dot-col {
+  flex-shrink: 0;
+  width: 18px;
+  display: flex;
+  justify-content: center;
+  padding-top: 3px;
+}
+
+.tl-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #ccc;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.3s, background 0.3s;
+}
+
+/* Highlighted state for brand-new nodes */
+.tl-dot--new {
+  border-color: #5a4fcf;
+  background: #eeecfd;
+  /* Pulse once */
+  animation: tl-dot-pulse 0.6s ease-out;
+}
+
+@keyframes tl-dot-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(90, 79, 207, 0.4); }
+  70%  { box-shadow: 0 0 0 7px rgba(90, 79, 207, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(90, 79, 207, 0); }
+}
+
+.tl-dot-inner {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ccc;
+  transition: background 0.3s;
+}
+
+.tl-dot--new .tl-dot-inner {
+  background: #5a4fcf;
+}
+
+/* ── Event body ──────────────────────────────────────────── */
+.tl-body {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+.tl-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.tl-sensor-tag {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: #f0f0f0;
+  color: #555;
+  padding: 2px 7px;
+  border-radius: 20px;
+}
+
+.tl-time {
+  font-size: 12px;
+  color: #999;
+}
+
+.tl-message {
+  margin: 0;
+  font-size: 14px;
+  color: #222;
+  line-height: 1.5;
+}
+
+/* "new" badge that fades away with the animation */
+.tl-new-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: #5a4fcf;
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 20px;
+  margin-top: 5px;
+  /* Badge inherits the parent's entering animation opacity */
+}
+
+/* ── Empty state ─────────────────────────────────────────── */
+.tl-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 3rem 1rem;
+  color: #aaa;
+  text-align: center;
+}
+
+.tl-empty-icon {
+  font-size: 2rem;
+  opacity: 0.4;
+}
+
+.tl-empty p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.tl-empty strong {
+  color: #555;
+}
