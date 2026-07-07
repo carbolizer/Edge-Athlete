@@ -26,6 +26,10 @@ FROM nginx:alpine
 # copy finished website files from first part into nginx's default website folder
 COPY --from=build /frontend_container/dist /usr/share/nginx/html
 
+# use our nginx config so client-side routes (e.g. /connection-test) fall back to
+# index.html instead of 404ing — see react/nginx.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
 # tell docker this uses port 80 for web traffic
 EXPOSE 80
 
