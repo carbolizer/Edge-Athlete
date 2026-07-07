@@ -3,14 +3,16 @@ views.py — the base station's HTTP endpoints (the handlers screens talk to).
 
 Each function below sits at a web address and does one job when a screen calls it:
   - rack_register / rack_racknumber: a tablet says "here I am" and later asks
-    "which rack am I?" (real, backed by the RackScreen table).
+    "which rack am I?" (open to any tablet).
+  - racks_unassigned / rack_assign: coach-only — see which tablets are waiting,
+    and give one its rack number.
   - set_create: a tablet says "an athlete is starting a set" -> we make an empty
     set record to fill in later.
   - set_complete: a tablet says "the set is finished, here are all the reps" ->
     we save the whole thing to the database in one all-or-nothing step. This is
     the ONLY place rep records are ever created.
 
-Shapes for every request/response live in MESSAGE_CONTRACT.md.
+Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 """
 from django.db import transaction
 from django.utils import timezone
@@ -19,7 +21,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from .models import RackScreen, Set, Rep
-from .serializers import SetSerializer, SetCompleteSerializer
+from .permissions import IsCoach
+from .serializers import SetSerializer, SetCompleteSerializer, RackScreenSerializer
 
 
 @api_view(["POST"])
@@ -44,6 +47,30 @@ def rack_racknumber(request):
         return Response({"error": "device_id is required"}, status=400)
     screen = RackScreen.objects.filter(device_id=device_id).first()
     return Response({"rack_number": screen.rack_number if screen else None})
+
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def racks_unassigned(request):
+    """Coach-only: list every tablet still waiting for a rack (rack_number empty),
+    so a coach can see who needs assigning."""
+    waiting = RackScreen.objects.filter(rack_number__isnull=True)
+    return Response(RackScreenSerializer(waiting, many=True).data)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsCoach])
+def rack_assign(request, device_id):
+    """Coach-only: give a waiting tablet its rack number. Body: { rack_number }."""
+    screen = RackScreen.objects.filter(device_id=device_id).first()
+    if screen is None:
+        return Response({"error": "rack screen not found"}, status=404)
+    rack_number = request.data.get("rack_number")
+    if rack_number is None:
+        return Response({"error": "rack_number is required"}, status=400)
+    screen.rack_number = rack_number
+    screen.save()
+    return Response(RackScreenSerializer(screen).data)
 
 
 @api_view(["POST"])

@@ -9,7 +9,7 @@ receptionist handing back a tidy summary.
 """
 from rest_framework import serializers
 
-from .models import Set, Rep
+from .models import Set, Rep, RackScreen
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -43,3 +43,13 @@ class SetSerializer(serializers.ModelSerializer):
                   "avg_velocity", "peak_velocity", "is_false_set"]
         read_only_fields = ["id", "started_at", "ended_at", "reps_completed",
                             "avg_velocity", "peak_velocity", "is_false_set"]
+
+
+class RackScreenSerializer(serializers.ModelSerializer):
+    """A tablet's record — used to list the ones waiting for a rack, and to show
+    the result after a coach assigns one. Only rack_number is set by a coach; the
+    id and last-seen time are managed for us."""
+    class Meta:
+        model = RackScreen
+        fields = ["device_id", "rack_number", "last_seen"]
+        read_only_fields = ["device_id", "last_seen"]
