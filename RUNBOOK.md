@@ -193,6 +193,10 @@ npm run demo:wall:list
 Each case documents the expected on-screen result (`expect` field). Use `--loop`
 to keep replaying the full playlist for kiosk testing.
 
+When a real set is completed via `POST /api/sets/{id}/complete/`, Django now
+publishes the same `leaderboard_update` message automatically — the wall display
+at `/dashboard` should update without running the demo script.
+
 ## Common failure modes
 
 TODO — fill in during Sprint 3 (AP not broadcasting, broker unreachable, clock

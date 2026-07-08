@@ -32,6 +32,7 @@ from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
                           NodeSerializer)
+from .notification_flow.mqtt_broadcaster import publish_dashboard_leaderboard_update
 
 
 def _require_coach(request):
@@ -237,7 +238,8 @@ def set_complete(request, set_id):
             target_set.save()
             is_velocity_pr, is_weight_pr = _personal_records(target_set)
 
-    # Phase 5: publish rack/dashboard/coach state here (Derrilon hooks the broadcast in)
+    target_set = Set.objects.select_related("athlete", "node").get(pk=target_set.pk)
+    publish_dashboard_leaderboard_update(target_set, is_velocity_pr, is_weight_pr)
 
     body = SetSerializer(target_set).data
     body["is_velocity_pr"] = is_velocity_pr
