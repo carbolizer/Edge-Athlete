@@ -1,0 +1,37 @@
+# edgeathlete-kiosk.service — boot the Pi straight into the wall display.
+# This is the base station's kiosk-launch unit. It runs AFTER the Docker stack is
+# already starting, waits until the dashboard actually answers, then opens
+# Chromium fullscreen against /dashboard — turning a bare Pi boot into a live gym
+# scoreboard with no keyboard, mouse, or manual step.
+#
+# NOTE: if this Pi reuses the reference project's `privacy-dots.service` to launch
+# the Docker stack on boot, prefer chaining to it directly:
+#     After=privacy-dots.service
+#     Wants=privacy-dots.service
+# Otherwise the docker.service dependency below is enough — the wait loop in
+# wait-and-launch-kiosk.sh covers the rest of the stack's startup time.
+#
+# Install (on the Pi, as the desktop user — here assumed "pi"):
+#   sudo cp deploy/wait-and-launch-kiosk.sh /usr/local/bin/
+#   sudo chmod +x /usr/local/bin/wait-and-launch-kiosk.sh
+#   sudo cp deploy/edgeathlete-kiosk.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now edgeathlete-kiosk.service
+
+[Unit]
+Description=Edge Athlete wall display kiosk (Chromium fullscreen on /dashboard)
+After=graphical.target docker.service
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=DASHBOARD_URL=http://localhost/dashboard
+Environment=MAX_WAIT_SECONDS=180
+ExecStart=/usr/local/bin/wait-and-launch-kiosk.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

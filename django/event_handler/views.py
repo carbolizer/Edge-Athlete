@@ -36,7 +36,8 @@ from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
                           NodeSerializer)
-from .notification_flow.broadcast.publisher import publish_rack_state, publish_dashboard_state
+from .notification_flow.broadcast.publisher import publish_rack_state
+from .notification_flow.mqtt_broadcaster import publish_dashboard_leaderboard_update
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -261,6 +262,7 @@ def set_complete(request, set_id):
     rack_number = target_set.node.rack_number if target_set.node else None
     athlete_summary = {"id": target_set.athlete.id, "name": target_set.athlete.name}
 
+    # Rack tablet broadcast stays on main's persistent publisher.
     if rack_number is not None:
         publish_rack_state(rack_number, {
             "type": "set_complete",
@@ -272,17 +274,9 @@ def set_complete(request, set_id):
             "is_false_set": target_set.is_false_set,
         })
 
-    publish_dashboard_state({
-        "type": "leaderboard_update",
-        "athlete": athlete_summary,
-        "rack_number": rack_number,
-        "avg_velocity": target_set.avg_velocity,
-        "peak_velocity": target_set.peak_velocity,
-        "reps_completed": target_set.reps_completed,
-        "is_false_set": target_set.is_false_set,
-        "is_velocity_pr": is_velocity_pr,
-        "is_weight_pr": is_weight_pr,
-    })
+    # Dashboard broadcast goes through Carl's mqtt_broadcaster helper.
+    target_set = Set.objects.select_related("athlete", "node").get(pk=target_set.pk)
+    publish_dashboard_leaderboard_update(target_set, is_velocity_pr, is_weight_pr)
 
     body = SetSerializer(target_set).data
     body["is_velocity_pr"] = is_velocity_pr
