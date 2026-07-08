@@ -8,6 +8,12 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
 
+  // mqtt.js references the Node global `global` in its browser build; map it to
+  // globalThis so the MQTT-over-WebSockets client works in the browser.
+  define: {
+    global: 'globalThis',
+  },
+
   server: {
     // Allow the Vite dev server to listen on all container interfaces.
     // Without this, nginx and other Docker containers cannot reach Vite.
