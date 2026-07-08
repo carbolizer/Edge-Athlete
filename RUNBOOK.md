@@ -162,6 +162,37 @@ Rack 3 lights up green, "Jordan Lee" appears on the leaderboard, the summary
 totals tick up, and the Insights panel calls out the new velocity PR — all within
 a couple of seconds.
 
+### Scripted demo (recommended)
+
+For a repeatable walkthrough, use the built-in test cases in
+`react/src/dashboard/demoCases.js` and the publisher in
+`react/scripts/demo-wall-display.js`. It sends real MQTT messages on the same
+topic the wall display uses in production.
+
+```bash
+# 1. Start the stack
+docker compose up --build
+
+# 2. Open the wall display in a browser
+#    http://localhost/dashboard
+
+# 3. In another terminal, replay the full ~45s demo
+cd react
+npm run demo:wall
+
+# Shorter smoke test (~6s)
+npm run demo:wall -- --playlist quick
+
+# One specific case
+npm run demo:wall -- --case velocity-pr
+
+# See every case + what you should see on screen
+npm run demo:wall:list
+```
+
+Each case documents the expected on-screen result (`expect` field). Use `--loop`
+to keep replaying the full playlist for kiosk testing.
+
 ## Common failure modes
 
 TODO — fill in during Sprint 3 (AP not broadcasting, broker unreachable, clock

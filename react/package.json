@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "demo:wall": "node scripts/demo-wall-display.js",
+    "demo:wall:list": "node scripts/demo-wall-display.js --list"
   },
   "dependencies": {
     "mqtt": "^5.15.2",
