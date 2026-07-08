@@ -1,3 +1,7 @@
+
+
+
+
 """
 views.py — the base station's HTTP endpoints (the handlers screens talk to).
 
@@ -32,7 +36,7 @@ from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
                           NodeSerializer)
-
+from .notification_flow.broadcast.publisher import publish_rack_state, publish_dashboard_state
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -107,7 +111,15 @@ def node_detail(request, node_id):
         return Response({"error": "node not found"}, status=404)
     form = NodeSerializer(node, data=request.data, partial=True)
     form.is_valid(raise_exception=True)
-    return Response(NodeSerializer(form.save()).data)
+    saved_node = form.save()
+
+    if saved_node.rack_number is not None: 
+        publish_rack_state(saved_node.rack_number, {
+            "type": "node_reassigned", 
+            "node_id": saved_node.node_id,
+        })
+    
+    return Response(NodeSerializer(saved_node).data)
 
 
 # ─────────────────────────── athletes ───────────────────────────
@@ -195,6 +207,15 @@ def set_create(request):
     form = SetSerializer(data=request.data)
     form.is_valid(raise_exception=True)
     new_set = form.save()
+    
+    rack_number = new_set.node.rack_number if new_set.node else None 
+    if rack_number is not None: 
+        publish_rack_state(rack_number, {
+            "type": "athlete_checkin",
+            "athlete": {"id" : new_set.athlete.id, "name": new_set.athlete.name},
+            "rack_number": rack_number, 
+        })
+    
     return Response(SetSerializer(new_set).data, status=201)
 
 
@@ -237,7 +258,31 @@ def set_complete(request, set_id):
             target_set.save()
             is_velocity_pr, is_weight_pr = _personal_records(target_set)
 
-    # Phase 5: publish rack/dashboard/coach state here (Derrilon hooks the broadcast in)
+    rack_number = target_set.node.rack_number if target_set.node else None
+    athlete_summary = {"id": target_set.athlete.id, "name": target_set.athlete.name}
+
+    if rack_number is not None:
+        publish_rack_state(rack_number, {
+            "type": "set_complete",
+            "set_id": target_set.id,
+            "athlete": athlete_summary,
+            "reps_completed": target_set.reps_completed,
+            "avg_velocity": target_set.avg_velocity,
+            "peak_velocity": target_set.peak_velocity,
+            "is_false_set": target_set.is_false_set,
+        })
+
+    publish_dashboard_state({
+        "type": "leaderboard_update",
+        "athlete": athlete_summary,
+        "rack_number": rack_number,
+        "avg_velocity": target_set.avg_velocity,
+        "peak_velocity": target_set.peak_velocity,
+        "reps_completed": target_set.reps_completed,
+        "is_false_set": target_set.is_false_set,
+        "is_velocity_pr": is_velocity_pr,
+        "is_weight_pr": is_weight_pr,
+    })
 
     body = SetSerializer(target_set).data
     body["is_velocity_pr"] = is_velocity_pr

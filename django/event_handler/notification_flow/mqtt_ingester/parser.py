@@ -29,109 +29,77 @@ import json
 from typing import Any
 
 
-def parse_motion_payload(raw_payload: bytes, topic: str = "") -> dict[str, Any]:
-    """Decode, validate, and normalize MQTT payloads from Edge Athlete nodes."""
-    
-    # Decode and parse JSON
+def parse_pulse_payload(raw_payload: bytes) -> dict[str, Any]: 
+    """
+      Decode and normalize a pulse (heartbeat) payload from a node.
+
+    Contract shape (MESSAGE_CONTRACT.md, edgeathlete/node/{node_id}/pulse):
+    {
+      "node_id": "rack_1",
+      "event_type": "pulse",
+      "battery_level": 87,
+      "signal_strength": -55,
+      "firmware_version": "1.0.0",
+      "timestamp": "2026-07-07T07:23:55Z"
+    }
+    """
+
     try:
         data = json.loads(raw_payload.decode("utf-8"))
-    except Exception as error:
+    except Exception as error: 
         raise ValueError(f"Invalid payload format: {error}")
-
-    # Ensure payload is a JSON object
-    if not isinstance(data, dict):
+    
+    if not isinstance(data, dict): 
         raise ValueError("Payload must be a JSON object")
-
-    # Some node messages can omit event_type because the topic already says
-    # what kind of event it is.
-    if "event_type" not in data:
-        if topic.endswith("/motion"):
-            data["event_type"] = "motion"
-        elif topic.endswith("/heartbeat"):
-            data["event_type"] = "heartbeat"
-        elif topic.endswith("/register"):
-            data["event_type"] = "register"
-
-    required_fields = ["node_id", "event_type", "timestamp"]
-    for field in required_fields:
-        if field not in data:
+    
+    required_fields = ["node_id", "timestamp"]
+    for field in required_fields: 
+        if field not in data: 
             raise ValueError(f"Missing required field: {field}")
-
-    # Normalize core fields
-    node_id = str(data["node_id"]).strip()
-    event_type = str(data["event_type"]).strip()
-    timestamp = str(data["timestamp"]).strip()
-
-    # Optional fields
-    event_id = data.get("event_id")
-    device_name = data.get("device_name") or data.get("name") or node_id
-    motion = data.get("motion", event_type == "motion")
-
-    location = data.get("location")
-    if location is not None:
-        location = str(location).strip()
-
-    # Nested optional fields
-    connection = data.get("connection", {})
-    if not isinstance(connection, dict):
-        connection = {}
-    connection_interrupted = connection.get("interrupted", False)
-    signal_strength = connection.get("signal_strength")
-
-    device_status = data.get("device_status", {})
-    if not isinstance(device_status, dict):
-        device_status = {}
-    battery = device_status.get("battery")
-    firmware_version = device_status.get("firmware_version")
-
-    # Return normalized payload
-    return {
-        "event_id": str(event_id).strip() if event_id else None,
-        "node_id": node_id,
-        "device_name": str(device_name).strip(),
-        "location": location,
-        "event_type": event_type,
-        "motion": bool(motion),
-        "timestamp": timestamp,
-        "timezone": str(data.get("timezone", "")).strip() or None,
-        "connection_interrupted": connection_interrupted,
-        "signal_strength": signal_strength,
-        "battery": battery,
-        "firmware_version": firmware_version,
-        "raw": data  # keep full payload for future use
+        
+    return{
+        "node_id": str(data["node_id"]).strip(),
+        "event_type": str(data.get("event_type", "pulse")).strip(),
+        "timestamp": str(data["timestamp"]).strip(),
+        "battery_level": data.get("battery_level"),
+        "signal_strength": data.get("signal_strength"),
+        "firmware_version": data.get("firmware_version"),
     }
 
+# entirely new function right here for parsing reps
+def parse_rep_payload(raw_payload: bytes) -> dict[str, Any]:
+    """
+    Decode and normalize a rep payload from a node.
 
-def parse_pulse_payload(raw_payload: bytes) -> dict[str, Any]:
-    """Decode, validate, and normalize MQTT pulse payload."""
-
+    Contract shape (MESSAGE_CONTRACT.md, edgeathlete/node/{node_id}/rep):
+    {
+      "node_id": "rack_1",
+      "rep_number": 1,
+      "mean_velocity": 0.72,
+      "peak_velocity": 0.91,
+      "duration_ms": 640,
+      "timestamp": "2026-07-07T07:23:55Z"
+    }
+    
+    """
     try:
         data = json.loads(raw_payload.decode("utf-8"))
     except Exception as error:
         raise ValueError(f"Invalid payload format: {error}")
-
+    
     if not isinstance(data, dict):
         raise ValueError("Payload must be a JSON object")
-
-    required_fields = ["node_id", "event_type", "timestamp"]
+    
+    required_fields = ["node_id", "rep_number", "mean_velocity", "peak_velocity", "duration_ms", "timestamp"]
     for field in required_fields:
-        if field not in data:
+        if field not in data: 
             raise ValueError(f"Missing required field: {field}")
 
-    node_id = str(data["node_id"]).strip()
-    event_type = str(data["event_type"]).strip()
-    timestamp = str(data["timestamp"]).strip()
-
-    connection = data.get("connection", {})
-    device_status = data.get("device_status", {})
-
     return {
-        "node_id": node_id,
-        "event_type": event_type,
-        "timestamp": timestamp,
-        "connection_interrupted": connection.get("interrupted", False),
-        "signal_strength": connection.get("signal_strength"),
-        "battery": device_status.get("battery"),
-        "firmware_version": device_status.get("firmware_version"),
-        "raw": data,
+        "node_id": str(data["node_id"]).strip(),
+        "rep_number": int(data["rep_number"]),
+        "mean_velocity": float(data["mean_velocity"]),
+        "peak_velocity": float(data["peak_velocity"]),
+        "duration_ms": int(data["duration_ms"]), 
+        "timestamp": str(data["timestamp"]).strip(),
     }

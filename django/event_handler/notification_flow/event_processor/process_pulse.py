@@ -1,48 +1,44 @@
-# TODO: @Brayd-n implement process_pulse_event in event_handler/notification_flow/event_processor_process_pulse
-from typing import Any, Optional
-from event_handler.models import Device
+# process_pulse.py - updates a Node's live health from its heartbeat. 
+#
+# every pulse tells us a node is alive and what shape it's in 
+# this is the only thing a pulse should ever do
+from typing import Any, Optional 
 
-# FOR REFERENCE PARSER RETURNS:
-        # "node_id": node_id,
-        # "event_type": event_type,
-        # "timestamp": timestamp,
-        # "connection_interrupted": connection.get("interrupted", False),
-        # "signal_strength": connection.get("signal_strength"),
-        # "battery": device_status.get("battery"),
-        # "firmware_version": device_status.get("firmware_version"),
-        # "raw": data,
-def process_pulse_event(payload: dict[str, Any]) -> Optional[Device]:
+from django.utils import timezone 
+
+from event_handler.models import Node 
+
+def process_pulse_event(payload: dict[str, Any]) -> Optional[Node]:
     """
-    Update latest device health/telemetry from a heartbeat/pulse payload.
-    Does not create MotionEvent records or send motion notifications.
+    Update-or-create a Node's live health fields from a pulse payload. 
+    Does not create a Rep or Set records 
     """
-    try:
-        if payload["event_type"] not in ["heartbeat", "pulse"]:
+
+    try: 
+        if payload["event_type"] not in ["pulse", "heartbeat"]:
             print(f"[PULSE] Ignored non-pulse event: {payload['event_type']}")
-            return None
-
+            return None 
+        
         node_id = payload["node_id"]
 
-        device, created = Device.objects.update_or_create(
-            node_id=node_id,
+        node, created = Node.objects.update_or_create(
+            node_id=node_id, 
             defaults={
-                "name": payload["raw"].get("device_name", node_id),
-                "location": payload["raw"].get("location", "Unknown"),
-                "battery": payload.get("battery"),
-                "firmware_version": payload.get("firmware_version"),
+                "battery_level": payload.get("battery_level"),
                 "signal_strength": payload.get("signal_strength"),
-                "connection_interrupted": payload.get("connection_interrupted", False),
+                "firmware_version": payload.get("firmware_version"),
+                "last_seen": timezone.now(),
                 "is_active": True,
             },
         )
 
-        if created:
-            print(f"[PULSE] Registered new device: {device}")
-        else:
-            print(f"[PULSE] Updated device health: {device}")
+        if created: 
+            print(f"[PULSE] Registered new node: {node}")
+        else: 
+            print(f"[PULSE] Updated node health: {node}")
 
-        return device
-
-    except Exception as error:
+        return node 
+    
+    except Exception as error: 
         print(f"[PULSE] Failed to process pulse event: {error}")
         return None
