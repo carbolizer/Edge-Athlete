@@ -9,7 +9,8 @@
  * Everything here talks to the same Nginx that serves this page, which forwards
  * /api/* to Django — so the buttons hit the real API with no extra setup.
  */
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import mqtt from 'mqtt'
 
 // ── endpoints you can run live (open — no login needed) ──
 const OPEN_GETS = [
@@ -80,6 +81,75 @@ function ConnectionTest() {
   const [token, setToken] = useState(null)
   const creds = { username: 'coach', password: 'coachpass' }
   const [loginMsg, setLoginMsg] = useState('')
+
+  // ── live MQTT-over-WebSockets demo, one step at a time ──
+  // (the browser talks straight to the broker on 9001 — no server in between)
+  const [wsStatus, setWsStatus] = useState('idle')        // idle | connecting | connected | error
+  const [wsSubscribed, setWsSubscribed] = useState(false)
+  const [wsLog, setWsLog] = useState([])
+  const mqttRef = useRef(null)
+
+  // logs to the on-page panel AND to the browser console. The console line
+  // carries the REAL underlying data (mqtt packets, client options), so you can
+  // prove in DevTools it's a live client, not a scripted-looking UI.
+  function wsAdd(line, data) {
+    setWsLog(l => [...l, `${new Date().toLocaleTimeString()}  ${line}`])
+    if (data !== undefined) console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line, data)
+    else console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line)
+  }
+
+  // STEP 1 — open the WebSocket connection to the broker
+  function mqttConnect() {
+    if (mqttRef.current) { mqttRef.current.end(true); mqttRef.current = null }
+    setWsLog([]); setWsSubscribed(false); setWsStatus('connecting')
+    const url = `ws://${window.location.hostname}:9001`
+    wsAdd(`STEP 1 — connecting to the broker at ${url} …`, { url })
+    const client = mqtt.connect(url)
+    mqttRef.current = client
+    window.mqttClient = client   // exposed so you can inspect the live client in the console
+    client.on('connect', (connack) => {
+      setWsStatus('connected')
+      wsAdd('✓ connected — the browser is talking straight to Mosquitto over WebSockets',
+        { connack, options: client.options })
+    })
+    client.on('message', (t, msg, packet) => {
+      wsAdd(`← message on ${t}: ${msg.toString()}`, { topic: t, payload: msg.toString(), packet })
+    })
+    client.on('error', (e) => { setWsStatus('error'); wsAdd('error: ' + (e && e.message), e) })
+    client.on('close', () => wsAdd('connection closed'))
+  }
+
+  // STEP 2 — start listening on every edgeathlete topic
+  function mqttSubscribe() {
+    const client = mqttRef.current
+    if (!client) return
+    wsAdd('STEP 2 — subscribing to edgeathlete/# … now listening for any traffic')
+    client.subscribe('edgeathlete/#', (err, granted) => {
+      if (err) { wsAdd('subscribe failed: ' + err.message, err); return }
+      setWsSubscribed(true)
+      wsAdd('✓ subscribed — anything published on edgeathlete/* now shows up below', { granted })
+    })
+  }
+
+  // STEP 3 — publish a message and watch it come back (round trip)
+  function mqttPublish() {
+    const client = mqttRef.current
+    if (!client) return
+    const topic = 'edgeathlete/demo/handshake'
+    const body = { hello: 'browser', at: new Date().toISOString() }
+    wsAdd(`STEP 3 — publishing to ${topic} …`, body)
+    client.publish(topic, JSON.stringify(body))
+    wsAdd(`→ sent to ${topic}`)
+  }
+
+  function mqttStop() {
+    if (mqttRef.current) { mqttRef.current.end(true); mqttRef.current = null }
+    setWsStatus('idle'); setWsSubscribed(false)
+    wsAdd('disconnected')
+  }
+
+  // clean up the broker connection if the page goes away
+  useEffect(() => () => { if (mqttRef.current) mqttRef.current.end(true) }, [])
 
   async function run(key, path, opts = {}) {
     setBusy(b => ({ ...b, [key]: true }))
@@ -162,6 +232,27 @@ function ConnectionTest() {
           <p style={{ color: C.ink3, fontSize: 12.5, marginTop: 12 }}>
             Seven tables: Node, RackScreen, Athlete, Program, Session, Set, Rep.
           </p>
+        </Card>
+
+        <Card title="Live MQTT over WebSockets (port 9001)"
+          sub="The real-time layer, step by step — the browser talks straight to the Mosquitto broker, no server in between.">
+          <p style={{ color: C.ink2, fontSize: 13.5, margin: '0 0 12px' }}>
+            Walk it one step at a time: <b>connect</b> to <code style={{ fontFamily: C.mono, color: C.ink }}>{'ws://<host>:9001'}</code>,
+            then <b>subscribe</b> to start listening on <code style={{ fontFamily: C.mono, color: C.ink }}>edgeathlete/#</code>,
+            then <b>publish</b> a message and watch it arrive below. Publish again to show ongoing communication; any other live
+            traffic (like a running node simulator) appears here too.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button style={btn(wsStatus === 'connecting' || wsStatus === 'connected')} disabled={wsStatus === 'connecting' || wsStatus === 'connected'} onClick={mqttConnect}>1 · Connect ▸</button>
+            <button style={btn(wsStatus !== 'connected' || wsSubscribed)} disabled={wsStatus !== 'connected' || wsSubscribed} onClick={mqttSubscribe}>2 · Subscribe (listen) ▸</button>
+            <button style={btn(!wsSubscribed)} disabled={!wsSubscribed} onClick={mqttPublish}>3 · Publish ▸</button>
+            <button style={btn(wsStatus === 'idle')} disabled={wsStatus === 'idle'} onClick={mqttStop}>Disconnect</button>
+            <Pill color={wsSubscribed ? C.good : wsStatus === 'connected' ? C.accent : wsStatus === 'error' ? C.warn : C.ink3}>
+              {wsSubscribed ? 'listening' : wsStatus}</Pill>
+          </div>
+          {wsLog.length > 0 && <pre style={{ background: C.bg, border: '1px solid ' + C.line, borderRadius: 8,
+            padding: 12, marginTop: 12, overflowX: 'auto', fontFamily: C.mono, fontSize: 12, color: C.ink,
+            maxHeight: 280 }}>{wsLog.join('\n')}</pre>}
         </Card>
 
         <Card title="Try it live — open endpoints" sub="No login needed. Click Run to hit the real API.">
