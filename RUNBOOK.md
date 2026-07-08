@@ -87,6 +87,81 @@ c.on('message', (t, m) => console.log(t, m.toString()));
 // the console should log the message.
 ```
 
+## Wall display (team kiosk)
+
+The gym-wall scoreboard is a read-only page at **`http://<pi-ip>/dashboard`**. It is
+a separate app from the tablet UI — its own name ("Edge Athlete — Wall Display"),
+its own icon, and its own web-app manifest (`react/public/wall-display.webmanifest`)
+so it installs/launches full-screen on its own.
+
+**How it works (in one breath):** the page opens one MQTT-over-WebSockets
+connection straight to the broker on port `9001` and subscribes once to
+`edgeathlete/dashboard/state`. It never polls the server. Every incoming
+broadcast is folded into a single state object by one hook
+(`react/src/dashboard/useDashboardFeed.js`) — the ONE place any data is touched.
+That hook hands ready-to-render slices to four fixed areas, which are pure
+display and never fetch anything themselves:
+
+| Area | Shows | Updates on |
+|---|---|---|
+| Rack Status | one tile per rack, green/yellow/red by bar speed | every `leaderboard_update` |
+| Leaderboard | athletes ranked by best average velocity | every `leaderboard_update` |
+| Summary | room totals — sets, reps, athletes, racks | every `leaderboard_update` |
+| Insights | rotating, prominent room facts + PR call-outs | every `leaderboard_update` |
+
+Files live in `react/src/dashboard/`. The container serves the route via the
+SPA-fallback `react/nginx.conf` (copied in by `react/Dockerfile`).
+
+### Boot straight into the wall display (kiosk)
+
+The manifest's `fullscreen` setting does NOT launch a browser on its own — a
+systemd unit does. Two files in `deploy/`:
+
+- `deploy/wait-and-launch-kiosk.sh` — polls `/dashboard` until nginx answers,
+  then opens Chromium in kiosk mode (`--kiosk --app=http://localhost/dashboard
+  --noerrdialogs --disable-infobars`).
+- `deploy/edgeathlete-kiosk.service` — runs that script on boot after the Docker
+  stack. If this Pi already runs the reference `privacy-dots.service` to start
+  the stack, chain to it with `After=privacy-dots.service` instead of relying on
+  `docker.service` (see the note in the unit file).
+
+Install on the Pi:
+
+```bash
+sudo cp deploy/wait-and-launch-kiosk.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/wait-and-launch-kiosk.sh
+sudo cp deploy/edgeathlete-kiosk.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now edgeathlete-kiosk.service
+```
+
+A cold reboot should now land directly on the fullscreen dashboard with no
+keyboard or mouse.
+
+### Verify the wall display updates live
+
+Open `http://<pi-ip>/dashboard` (the connection pill top-right should read
+"Live"), then publish a fake dashboard broadcast and watch the screen change on
+its own — no refresh:
+
+```bash
+mosquitto_pub -h localhost -t edgeathlete/dashboard/state -m '{
+  "type": "leaderboard_update",
+  "athlete": {"id": 4, "name": "Jordan Lee"},
+  "rack_number": 3,
+  "avg_velocity": 0.82,
+  "peak_velocity": 0.95,
+  "reps_completed": 5,
+  "is_false_set": false,
+  "is_velocity_pr": true,
+  "is_weight_pr": false
+}'
+```
+
+Rack 3 lights up green, "Jordan Lee" appears on the leaderboard, the summary
+totals tick up, and the Insights panel calls out the new velocity PR — all within
+a couple of seconds.
+
 ## Common failure modes
 
 TODO — fill in during Sprint 3 (AP not broadcasting, broker unreachable, clock
