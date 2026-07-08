@@ -89,8 +89,13 @@ function ConnectionTest() {
   const [wsLog, setWsLog] = useState([])
   const mqttRef = useRef(null)
 
-  function wsAdd(line) {
+  // logs to the on-page panel AND to the browser console. The console line
+  // carries the REAL underlying data (mqtt packets, client options), so you can
+  // prove in DevTools it's a live client, not a scripted-looking UI.
+  function wsAdd(line, data) {
     setWsLog(l => [...l, `${new Date().toLocaleTimeString()}  ${line}`])
+    if (data !== undefined) console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line, data)
+    else console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line)
   }
 
   // STEP 1 — open the WebSocket connection to the broker
@@ -98,15 +103,19 @@ function ConnectionTest() {
     if (mqttRef.current) { mqttRef.current.end(true); mqttRef.current = null }
     setWsLog([]); setWsSubscribed(false); setWsStatus('connecting')
     const url = `ws://${window.location.hostname}:9001`
-    wsAdd(`STEP 1 — connecting to the broker at ${url} …`)
+    wsAdd(`STEP 1 — connecting to the broker at ${url} …`, { url })
     const client = mqtt.connect(url)
     mqttRef.current = client
-    client.on('connect', () => {
+    window.mqttClient = client   // exposed so you can inspect the live client in the console
+    client.on('connect', (connack) => {
       setWsStatus('connected')
-      wsAdd('✓ connected — the browser is talking straight to Mosquitto over WebSockets')
+      wsAdd('✓ connected — the browser is talking straight to Mosquitto over WebSockets',
+        { connack, options: client.options })
     })
-    client.on('message', (t, msg) => wsAdd(`← message on ${t}: ${msg.toString()}`))
-    client.on('error', (e) => { setWsStatus('error'); wsAdd('error: ' + (e && e.message)) })
+    client.on('message', (t, msg, packet) => {
+      wsAdd(`← message on ${t}: ${msg.toString()}`, { topic: t, payload: msg.toString(), packet })
+    })
+    client.on('error', (e) => { setWsStatus('error'); wsAdd('error: ' + (e && e.message), e) })
     client.on('close', () => wsAdd('connection closed'))
   }
 
@@ -115,10 +124,10 @@ function ConnectionTest() {
     const client = mqttRef.current
     if (!client) return
     wsAdd('STEP 2 — subscribing to edgeathlete/# … now listening for any traffic')
-    client.subscribe('edgeathlete/#', (err) => {
-      if (err) { wsAdd('subscribe failed: ' + err.message); return }
+    client.subscribe('edgeathlete/#', (err, granted) => {
+      if (err) { wsAdd('subscribe failed: ' + err.message, err); return }
       setWsSubscribed(true)
-      wsAdd('✓ subscribed — anything published on edgeathlete/* now shows up below')
+      wsAdd('✓ subscribed — anything published on edgeathlete/* now shows up below', { granted })
     })
   }
 
@@ -127,15 +136,16 @@ function ConnectionTest() {
     const client = mqttRef.current
     if (!client) return
     const topic = 'edgeathlete/demo/handshake'
-    const payload = JSON.stringify({ hello: 'browser', at: new Date().toISOString() })
-    wsAdd(`STEP 3 — publishing to ${topic} …`)
-    client.publish(topic, payload)
-    wsAdd(`→ sent: ${payload}`)
+    const body = { hello: 'browser', at: new Date().toISOString() }
+    wsAdd(`STEP 3 — publishing to ${topic} …`, body)
+    client.publish(topic, JSON.stringify(body))
+    wsAdd(`→ sent to ${topic}`)
   }
 
   function mqttStop() {
     if (mqttRef.current) { mqttRef.current.end(true); mqttRef.current = null }
     setWsStatus('idle'); setWsSubscribed(false)
+    wsAdd('disconnected')
   }
 
   // clean up the broker connection if the page goes away
