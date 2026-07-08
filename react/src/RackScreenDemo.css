@@ -1,0 +1,400 @@
+.rack-demo-shell {
+  align-items: center;
+  background: #080b10;
+  color: #f8fafc;
+  display: flex;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 72px 24px 24px;
+}
+
+.rack-demo-phone {
+  background: #0e1118;
+  border: 1px solid #2a2f3a;
+  border-radius: 16px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+  height: min(720px, calc(100vh - 48px));
+  max-width: 540px;
+  overflow: hidden auto;
+  position: relative;
+  width: min(100%, 540px);
+}
+
+.rack-demo-topbar {
+  align-items: center;
+  border-bottom: 1px solid #252a33;
+  color: #7f8796;
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+  padding: 14px 22px;
+  text-transform: uppercase;
+}
+
+.rack-demo-pill {
+  border-radius: 999px;
+  color: #a6adbb;
+  font-size: 11px;
+  padding: 4px 10px;
+  text-transform: lowercase;
+}
+
+.rack-demo-pill.idle,
+.rack-demo-pill.resting { background: #1f232b; }
+.rack-demo-pill.starting { background: #3a2908; color: #f4b642; }
+.rack-demo-pill.lifting,
+.rack-demo-pill.complete { background: #083d34; color: #58e0bd; }
+
+.rack-demo-body {
+  box-sizing: border-box;
+  min-height: calc(100% - 49px);
+  padding: 28px;
+}
+
+.idle-screen {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+}
+
+.rack-demo-session {
+  color: #b8bdd0;
+  font-size: 12px;
+  font-weight: 800;
+  margin: -8px 0 34px;
+}
+
+.athlete-avatar {
+  align-items: center;
+  background: #10362e;
+  border: 2px solid #126553;
+  border-radius: 50%;
+  color: #5fe0bd;
+  display: flex;
+  font-size: 28px;
+  font-weight: 900;
+  height: 76px;
+  justify-content: center;
+  width: 76px;
+}
+
+.rack-demo-body h1 {
+  font-size: 24px;
+  margin: 18px 0 4px;
+}
+
+.muted {
+  color: #8a91a0;
+  margin: 0;
+}
+
+.prescription-card,
+.result-grid div,
+.rep-card,
+.suggestion-card {
+  background: #191e28;
+  border: 1px solid #303746;
+  border-radius: 10px;
+}
+
+.prescription-card {
+  margin: 28px 0 22px;
+  padding: 18px;
+  width: 100%;
+}
+
+.prescription-card div {
+  border-bottom: 1px solid #28303c;
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+
+.prescription-card div:last-child { border-bottom: 0; }
+.prescription-card span { color: #8c95a7; font-size: 12px; }
+.prescription-card strong { font-size: 13px; }
+
+.wristband-target {
+  align-items: center;
+  background: transparent;
+  border: 2px dashed #15856e;
+  border-radius: 50%;
+  color: #5ee5c3;
+  display: flex;
+  font-size: 28px;
+  height: 92px;
+  justify-content: center;
+  margin-top: 2px;
+  width: 92px;
+}
+
+.or-rule {
+  align-items: center;
+  color: #596171;
+  display: flex;
+  gap: 14px;
+  margin: 34px 0 18px;
+  width: 100%;
+}
+
+.or-rule:before,
+.or-rule:after {
+  background: #252b35;
+  content: "";
+  flex: 1;
+  height: 1px;
+}
+
+.primary-action,
+.secondary-action,
+.danger-action {
+  border: 0;
+  border-radius: 10px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 800;
+  min-height: 54px;
+}
+
+.primary-action {
+  background: #23a37d;
+  width: 100%;
+}
+
+.secondary-action {
+  background: #23272f;
+  bottom: 42px;
+  left: 28px;
+  position: absolute;
+  right: 28px;
+}
+
+.danger-action {
+  background: #2a1217;
+  border: 1px solid #652631;
+  color: #f5a0a8;
+  padding: 0 18px;
+}
+
+.centered-screen,
+.rest-screen {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+}
+
+.overline {
+  color: #7e8492;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.countdown-ring {
+  align-items: center;
+  background: conic-gradient(#23b78f var(--progress), #1f242d 0);
+  border: 0;
+  border-radius: 50%;
+  color: #fff;
+  display: flex;
+  font-size: 78px;
+  font-weight: 900;
+  height: 184px;
+  justify-content: center;
+  margin: 28px 0 32px;
+  padding: 8px;
+  width: 184px;
+}
+
+.countdown-ring span {
+  align-items: center;
+  background: #0e1118;
+  border-radius: 50%;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  width: 100%;
+}
+
+.exercise-chip {
+  background: #1c2029;
+  border: 1px solid #323947;
+  border-radius: 999px;
+  color: #b7bfcd;
+  margin-top: 32px;
+  padding: 10px 18px;
+}
+
+.lifting-screen { padding-top: 24px; }
+
+.lifting-stats-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 4px; }
+.live-velocity { color: #5fe0bd; display: block; font-size: 36px; }
+.live-velocity small { color: #8b92a0; font-size: 16px; }
+.elapsed { text-align: right; }
+
+.velocity-progress {
+  background: #20242d;
+  border-radius: 999px;
+  height: 10px;
+  margin: 26px 0 20px;
+  overflow: hidden;
+}
+
+.velocity-progress span {
+  background: #23b78f;
+  display: block;
+  height: 100%;
+  width: 23%;
+}
+
+.rep-focus {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  margin-top: 26px;
+}
+
+.rep-focus strong { font-size: 54px; }
+.rep-focus span { color: #7e8492; font-size: 12px; margin: 18px 0 6px; text-transform: uppercase; }
+.rep-focus b { font-size: 70px; line-height: 1; }
+.rep-focus em { background: #0b4438; border-radius: 50%; color: #65e0c0; font-style: normal; margin-top: 12px; padding: 7px 11px; }
+
+.complete-screen { text-align: center; }
+
+.complete-screen h1 { margin: 6px 0 4px; }
+
+.result-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+  margin: 22px 0 16px;
+}
+
+.result-grid div {
+  padding: 18px;
+}
+
+.result-grid strong { color: #5fe0bd; display: block; font-size: 25px; }
+.result-grid span { color: #8c95a7; font-size: 12px; }
+
+.rep-card {
+  padding: 16px;
+  text-align: left;
+}
+
+.rep-card h2 {
+  color: #7f8796;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  margin: 0 0 14px;
+  text-transform: uppercase;
+}
+
+.rep-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 34px 1fr 36px;
+  margin: 9px 0;
+}
+
+.rep-row span,
+.rep-row strong { color: #aab2c0; font-size: 12px; }
+.rep-row div { background: #252b35; border-radius: 999px; height: 5px; overflow: hidden; }
+.rep-row i { background: #24b78f; border-radius: inherit; display: block; height: 100%; }
+.rep-row i.warn { background: #dd8d16; }
+
+.complete-actions {
+  bottom: 18px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 102px 1fr;
+  left: 10px;
+  position: absolute;
+  right: 22px;
+}
+
+.rest-screen { justify-content: flex-start; padding-top: 128px; }
+.rest-time { font-size: 70px; margin: 18px 0 8px; }
+
+.suggestion-card {
+  margin: 28px 0 28px;
+  padding: 16px 18px;
+  text-align: left;
+  width: 100%;
+}
+
+.suggestion-card span {
+  color: #5de0bd;
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.suggestion-card strong { display: block; font-size: 20px; }
+.suggestion-card p { color: #8d95a5; margin: 4px 0 0; }
+
+.set-progress-labels {
+  color: #8b93a1;
+  display: flex;
+  font-size: 12px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.set-progress-bars {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(5, 1fr);
+  margin-bottom: 24px;
+  width: 100%;
+}
+
+.set-progress-bars span {
+  background: #23b78f;
+  border-radius: 99px;
+  height: 6px;
+}
+
+.set-progress-bars .warn { background: #c78316; }
+.set-progress-bars .todo { background: #252b35; }
+
+.rack-demo-dots {
+  bottom: 14px;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  left: 0;
+  position: absolute;
+  right: 0;
+}
+
+.rack-demo-dots span {
+  background: #363b45;
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
+.rack-demo-dots .active { background: #8e96a5; }
+
+@media (max-width: 580px) {
+  .rack-demo-shell { padding: 0; }
+  .rack-demo-phone { border-radius: 0; height: 100vh; max-width: none; width: 100%; }
+  .rack-demo-body { padding: 24px 18px; }
+}

@@ -8,6 +8,8 @@
 
 import Dashboard from './Dashboard.jsx'
 import ConnectionTest from './ConnectionTest.jsx'
+import RackScreenDemo from './RackScreenDemo.jsx'
+import { AdminSetupPage, AthleteDetailPage, RackDetailPage } from './CoachPages.jsx'
 
 function App() {
   const path = window.location.pathname
@@ -16,7 +18,27 @@ function App() {
     return <ConnectionTest />
   }
 
-  return <Dashboard />
+  if (path === '/rack-demo') {
+    return <RackScreenDemo />
+  }
+
+  if (path === '/coach') {
+    return <Dashboard mode="coach" />
+  }
+
+  if (path === '/rack-detail') {
+    return <RackDetailPage />
+  }
+
+  if (path === '/athlete') {
+    return <AthleteDetailPage />
+  }
+
+  if (path === '/admin-setup') {
+    return <AdminSetupPage />
+  }
+
+  return <Dashboard mode="wall" />
 }
 
 export default App
