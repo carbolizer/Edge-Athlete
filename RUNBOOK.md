@@ -96,8 +96,9 @@ drag-and-drop). Files: `react/src/coach/`.
 
 **Flow:**
 
-1. Open `/coach` and sign in (`POST /api/auth/login/` → Bearer token). Demo account
-   used elsewhere in the repo: `coach` / `coachpass` (must exist in Django).
+1. Open `/coach` and sign in (`POST /api/auth/login/` → Bearer token). Demo account:
+   `coach` / `coachpass`. Django seeds it on boot via `ensure_demo_coach`
+   (or run `docker exec edgeathlete-django python manage.py ensure_demo_coach`).
 2. **Assign rack screen:** pick an Unassigned Screen (`GET /api/racks/unassigned/`)
    and a rack slot → `PATCH /api/racks/{device_id}/` with `{ "rack_number": N }`.
 3. **Assign node:** pick a node (`GET /api/nodes/`) and a rack slot →
