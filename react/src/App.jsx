@@ -12,7 +12,8 @@ import WallDisplay from './dashboard/WallDisplay.jsx'
 import CoachTablet from './coach/CoachTablet.jsx'
 
 function App() {
-  const path = window.location.pathname
+  // Normalize trailing slashes so /coach/ and /coach both match.
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
 
   // /dashboard is the read-only team wall display (its own big-screen kiosk app,
   // separate from the tablet Dashboard below).
