@@ -87,6 +87,56 @@ c.on('message', (t, m) => console.log(t, m.toString()));
 // the console should log the message.
 ```
 
+## Coach tablet (Room Layout)
+
+The coach assignment page lives at **`http://<pi-ip>/coach`**. It is a separate
+PWA shell (`react/public/manifest.coach.json`, `react/public/coach-icon.svg`)
+with a JWT login gate and a **dropdown-and-assign** Room Layout (not
+drag-and-drop). Files: `react/src/coach/`.
+
+**Flow:**
+
+1. Open `/coach` and sign in (`POST /api/auth/login/` → Bearer token). Demo account
+   used elsewhere in the repo: `coach` / `coachpass` (must exist in Django).
+2. **Assign rack screen:** pick an Unassigned Screen (`GET /api/racks/unassigned/`)
+   and a rack slot → `PATCH /api/racks/{device_id}/` with `{ "rack_number": N }`.
+3. **Assign node:** pick a node (`GET /api/nodes/`) and a rack slot →
+   `PATCH /api/nodes/{node_id}/` with `{ "rack_number": N }`.
+
+A waiting rack tablet polling `GET /api/racks/racknumber/?device_id=` should see
+the new number within about **3 seconds** of a successful coach assign.
+
+### Verify assign round-trip (API)
+
+```bash
+# register a waiting tablet (open)
+curl -sX POST localhost/api/racks/register/ -H 'Content-Type: application/json' \
+  -d '{"device_id":"coach_verify_dev"}'
+
+# coach login
+T=$(curl -sX POST localhost/api/auth/login/ -H 'Content-Type: application/json' \
+  -d '{"username":"coach","password":"coachpass"}' | jq -r .access)
+
+# assign screen → slot 3
+curl -sX PATCH "localhost/api/racks/coach_verify_dev/" \
+  -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+  -d '{"rack_number":3}'
+
+# poll should return 3 immediately (tablet polls ~every few seconds)
+curl -s 'localhost/api/racks/racknumber/?device_id=coach_verify_dev'
+
+# assign a node the same way
+curl -sX PATCH "localhost/api/nodes/<node_id>/" \
+  -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+  -d '{"rack_number":3}'
+```
+
+Django regression coverage: `CoachAssignApiTests` in
+`django/event_handler/tests.py`.
+
+Out of scope on this page: group/block/session drill-down and the fuller Phase 10
+coach admin (live MQTT room state, graphs, alerts).
+
 ## Wall display (team kiosk)
 
 The gym-wall scoreboard is a read-only page at **`http://<pi-ip>/dashboard`**. It is

@@ -1,0 +1,244 @@
+/* Coach tablet — JWT gate + Room Layout (dropdown assign).
+   Visual language matches ConnectionTest / Wall Display (dark base, blue accent). */
+
+.coach-root {
+  --coach-bg: #0f131b;
+  --coach-card: #161c27;
+  --coach-card2: #1c2431;
+  --coach-line: #26303f;
+  --coach-ink: #eef1f6;
+  --coach-ink2: #a9b3c6;
+  --coach-ink3: #6f7a91;
+  --coach-accent: #6f8cff;
+  --coach-good: #43c98a;
+  --coach-warn: #e0a63c;
+  --coach-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --coach-sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(111, 140, 255, 0.14), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 90% 100%, rgba(67, 201, 138, 0.08), transparent 50%),
+    var(--coach-bg);
+  color: var(--coach-ink);
+  font-family: var(--coach-sans);
+}
+
+.coach-shell {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 22px 64px;
+}
+
+.coach-eyebrow {
+  font-family: var(--coach-mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--coach-accent);
+  margin: 0 0 8px;
+}
+
+.coach-brand {
+  font-size: clamp(28px, 4vw, 36px);
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+
+.coach-lede {
+  color: var(--coach-ink2);
+  font-size: 15px;
+  max-width: 56ch;
+  margin: 0 0 28px;
+  line-height: 1.5;
+}
+
+.coach-card {
+  background: var(--coach-card);
+  border: 1px solid var(--coach-line);
+  border-radius: 12px;
+  padding: 22px 24px;
+  margin-top: 18px;
+}
+
+.coach-card h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--coach-ink);
+}
+
+.coach-card-sub {
+  color: var(--coach-ink3);
+  font-size: 13px;
+  margin: 4px 0 16px;
+  line-height: 1.45;
+}
+
+.coach-form {
+  display: grid;
+  gap: 12px;
+  max-width: 360px;
+}
+
+.coach-label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--coach-ink2);
+}
+
+.coach-input,
+.coach-select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--coach-ink);
+  background: var(--coach-bg);
+  border: 1px solid var(--coach-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.coach-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.coach-input:focus,
+.coach-select:focus {
+  outline: 2px solid rgba(111, 140, 255, 0.45);
+  outline-offset: 1px;
+  border-color: var(--coach-accent);
+}
+
+.coach-btn {
+  font-family: var(--coach-mono);
+  font-size: 12px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--coach-accent);
+  background: rgba(111, 140, 255, 0.18);
+  color: var(--coach-accent);
+  cursor: pointer;
+}
+
+.coach-btn:hover:not(:disabled) {
+  background: rgba(111, 140, 255, 0.3);
+}
+
+.coach-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.coach-btn-primary {
+  background: var(--coach-accent);
+  color: #0b0f17;
+  border-color: var(--coach-accent);
+  font-weight: 600;
+}
+
+.coach-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+  background: var(--coach-accent);
+}
+
+.coach-btn-ghost {
+  background: transparent;
+  border-color: var(--coach-line);
+  color: var(--coach-ink2);
+}
+
+.coach-msg {
+  font-size: 13px;
+  margin: 10px 0 0;
+  color: var(--coach-ink2);
+}
+
+.coach-msg-ok { color: var(--coach-good); }
+.coach-msg-err { color: var(--coach-warn); }
+
+.coach-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.coach-assign-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 640px) {
+  .coach-assign-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.coach-divider {
+  border: 0;
+  border-top: 1px solid var(--coach-line);
+  margin: 20px 0;
+}
+
+.coach-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.coach-slot {
+  background: var(--coach-card2);
+  border: 1px solid var(--coach-line);
+  border-radius: 10px;
+  padding: 12px 12px 14px;
+  min-height: 96px;
+}
+
+.coach-slot-num {
+  font-family: var(--coach-mono);
+  font-size: 12px;
+  color: var(--coach-accent);
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+.coach-slot-line {
+  font-size: 12.5px;
+  color: var(--coach-ink2);
+  line-height: 1.4;
+}
+
+.coach-slot-line strong {
+  color: var(--coach-ink);
+  font-weight: 600;
+  font-family: var(--coach-mono);
+  font-size: 12px;
+}
+
+.coach-slot-empty {
+  color: var(--coach-ink3);
+  font-size: 12.5px;
+}
+
+.coach-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.coach-hint {
+  font-size: 12.5px;
+  color: var(--coach-ink3);
+  margin: 0 0 14px;
+  line-height: 1.45;
+}

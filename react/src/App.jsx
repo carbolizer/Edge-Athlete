@@ -9,6 +9,7 @@
 import Dashboard from './Dashboard.jsx'
 import ConnectionTest from './ConnectionTest.jsx'
 import WallDisplay from './dashboard/WallDisplay.jsx'
+import CoachTablet from './coach/CoachTablet.jsx'
 
 function App() {
   const path = window.location.pathname
@@ -17,6 +18,11 @@ function App() {
   // separate from the tablet Dashboard below).
   if (path === '/dashboard') {
     return <WallDisplay />
+  }
+
+  // /coach — coach Room Layout (JWT gate + dropdown assign of screens/nodes).
+  if (path === '/coach') {
+    return <CoachTablet />
   }
 
   if (path === '/connection-test') {

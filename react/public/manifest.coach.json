@@ -1,0 +1,19 @@
+{
+  "name": "Edge Athlete — Coach",
+  "short_name": "EA Coach",
+  "description": "Coach tablet: assign rack screens and nodes to rack slots for Edge Athlete.",
+  "start_url": "/coach",
+  "scope": "/coach",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f131b",
+  "theme_color": "#0f131b",
+  "icons": [
+    {
+      "src": "/coach-icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ]
+}

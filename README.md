@@ -48,6 +48,8 @@ Then open:
 | URL | What it is |
 |---|---|
 | `http://localhost/connection-test` | **API & architecture demo page** — click endpoints, see live data |
+| `http://localhost/coach` | **Coach tablet** — JWT login + Room Layout (assign screens/nodes to rack slots) |
+| `http://localhost/dashboard` | Team wall display (read-only kiosk scoreboard) |
 | `http://localhost/admin/` | Django admin — browse the seven tables (needs a superuser) |
 | `http://localhost/api/...` | the REST API (below) |
 
