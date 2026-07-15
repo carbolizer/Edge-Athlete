@@ -23,9 +23,14 @@ urlpatterns = [
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),
 
+    # wall and coach dashboards
+    path('wall-state/', views.wall_state, name='wall_state'),
+    path('room-state/', views.room_state, name='room_state'),
+
     # athletes
     path('athletes/', views.athletes_view, name='athletes'),
     path('athletes/<int:athlete_id>/', views.athlete_detail, name='athlete_detail'),
+    path('athletes/<int:athlete_id>/notes/', views.athlete_notes, name='athlete_notes'),
 
     # training plans
     path('programs/', views.programs_view, name='programs'),

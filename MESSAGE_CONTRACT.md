@@ -36,7 +36,7 @@ simulator and Braydon's tablet both publish/consume against it.
   "timestamp": "2026-07-07T07:23:55Z"
 }
 ```
-- **Published by:** the node firmware (Phase 9) and Derrilon's `simulate_node`.
+- **Published by:** the node firmware (Phase 9) and `simulate_node --mode rack`.
 - **Consumed by:** the rack tablet, subscribed to *its own linked node's* rep topic.
 - **Not here:** `velocity_color`. The tablet computes that (see Derived values).
 
@@ -75,25 +75,34 @@ the type.
 { "type": "athlete_checkin", "athlete": {"id":4,"name":"Jordan Lee"}, "rack_number": 3 }
 ```
 
-### `edgeathlete/dashboard/state` — for the team wall display
+### `edgeathlete/dashboard/state` — privacy-safe room invalidation
 ```jsonc
-{ "type": "leaderboard_update",
-  "athlete": {"id":4,"name":"Jordan Lee"},
-  "rack_number": 3,
-  "avg_velocity": 0.70,
-  "peak_velocity": 0.91,
-  "reps_completed": 5,
-  "is_false_set": false,
-  "is_velocity_pr": true,     // set a new best peak velocity for this exercise
-  "is_weight_pr": false }     // set a new heaviest load for this exercise
+{
+  "schema_version": 1,
+  "type": "room_state_changed",
+  "reason": "set_completed", // or "node_health_changed"
+  "revision": 184,
+  "event_id": "7bfba173-809a-44ee-a8ca-b2f603962f88",
+  "occurred_at": "2026-07-13T19:42:31.482Z"
+}
 ```
+- **QoS 1, retained.** This event says persisted state changed; it does not carry
+  the changed state. Wall and coach clients refetch their privacy-appropriate REST
+  snapshot and ignore revisions at or below the revision they already hold.
+- This public browser topic never includes athlete, set, session, rack, node,
+  screen, weight, target, rep, note, credential, or token fields.
+- Wall clients ignore `node_health_changed`; authenticated coach clients reconcile
+  hardware state. Node events are created only for material health changes, not
+  every five-second pulse.
 
-### `edgeathlete/coach/state` — for the coach tablet
+### `edgeathlete/coach/state` — reserved for future private alerts
 ```jsonc
 { "type": "fatigue_alert", "athlete": {"id":4,"name":"Jordan Lee"}, "rack_number": 3 }
 ```
 - Fatigue detection is Phase 11 — treat this topic's exact fields as **provisional**
   until then. The envelope (`type` + `athlete`) is stable; extra fields may be added.
+- Production monitoring does not subscribe to this topic while the broker permits
+  anonymous clients. Coach details are fetched through JWT-protected REST.
 
 ---
 
@@ -117,7 +126,10 @@ Not MQTT, but the same data contract, so it lives here too.
 ```
 - **Weight is not in this body.** The load (`weight_lbs`) is set when the set is
   *created* (`POST /api/sets/`), not when it completes.
-- This is the **only** way `Rep` rows are ever created.
+- Rack requests and `simulate_node --mode monitoring` both call the same atomic
+  set-completion service. Monitoring mode does not publish rep MQTT messages, so
+  a rack client cannot save the same generated stream a second time. The shared
+  completion service is the only code path that creates `Rep` rows.
 
 ---
 

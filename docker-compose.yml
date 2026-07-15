@@ -69,6 +69,35 @@ services:
       mosquitto:
         condition: service_started
 
+  monitoring-publisher:
+    build: ./django
+    container_name: edgeathlete-monitoring-publisher
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    command: python manage.py publish_monitoring_events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  simulator:
+    profiles: ["simulation"]
+    build: ./django
+    container_name: edgeathlete-simulator
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SIMULATOR_ENABLED=True
+    command: python manage.py simulate_node --mode monitoring --racks 4 --continuous --max-cycles 100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
   react:
     build: ./react
     container_name: edgeathlete-react

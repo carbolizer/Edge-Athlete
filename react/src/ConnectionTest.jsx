@@ -79,7 +79,8 @@ function ConnectionTest() {
   const [resp, setResp] = useState({})
   const [busy, setBusy] = useState({})
   const [token, setToken] = useState(null)
-  const creds = { username: 'coach', password: 'coachpass' }
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [loginMsg, setLoginMsg] = useState('')
 
   // ── live MQTT-over-WebSockets demo, one step at a time ──
@@ -94,8 +95,7 @@ function ConnectionTest() {
   // prove in DevTools it's a live client, not a scripted-looking UI.
   function wsAdd(line, data) {
     setWsLog(l => [...l, `${new Date().toLocaleTimeString()}  ${line}`])
-    if (data !== undefined) console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line, data)
-    else console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line)
+    console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line)
   }
 
   // STEP 1 — open the WebSocket connection to the broker
@@ -106,7 +106,6 @@ function ConnectionTest() {
     wsAdd(`STEP 1 — connecting to the broker at ${url} …`, { url })
     const client = mqtt.connect(url)
     mqttRef.current = client
-    window.mqttClient = client   // exposed so you can inspect the live client in the console
     client.on('connect', (connack) => {
       setWsStatus('connected')
       wsAdd('✓ connected — the browser is talking straight to Mosquitto over WebSockets',
@@ -123,11 +122,11 @@ function ConnectionTest() {
   function mqttSubscribe() {
     const client = mqttRef.current
     if (!client) return
-    wsAdd('STEP 2 — subscribing to edgeathlete/# … now listening for any traffic')
-    client.subscribe('edgeathlete/#', (err, granted) => {
+    wsAdd('STEP 2 — subscribing to the public dashboard state topic')
+    client.subscribe('edgeathlete/dashboard/state', (err, granted) => {
       if (err) { wsAdd('subscribe failed: ' + err.message, err); return }
       setWsSubscribed(true)
-      wsAdd('✓ subscribed — anything published on edgeathlete/* now shows up below', { granted })
+      wsAdd('✓ subscribed to public room-state invalidations', { granted })
     })
   }
 
@@ -171,7 +170,7 @@ function ConnectionTest() {
     try {
       const res = await fetch('/api/auth/login/', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(creds),
+        body: JSON.stringify({ username, password }),
       })
       const data = await res.json()
       if (data.access) { setToken(data.access); setLoginMsg('logged in as coach ✓') }
@@ -264,9 +263,13 @@ function ConnectionTest() {
 
         <Card title="Try it live — coach endpoints" sub="These need a coach login. Log in, then Run.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', paddingBottom: 4 }}>
-            <button style={btn(false)} onClick={login}>Log in as coach</button>
+            <input aria-label="Coach username" autoComplete="username" placeholder="Username" value={username}
+              onChange={event => setUsername(event.target.value)} />
+            <input aria-label="Coach password" autoComplete="current-password" placeholder="Password" type="password"
+              value={password} onChange={event => setPassword(event.target.value)} />
+            <button style={btn(!username || !password)} disabled={!username || !password} onClick={login}>Log in as coach</button>
             <span style={{ color: token ? C.good : C.ink3, fontSize: 13, fontFamily: C.mono }}>
-              {loginMsg || 'not logged in (uses the demo coach account)'}</span>
+              {loginMsg || 'not logged in'}</span>
           </div>
           {COACH_GETS.map(item => (
             <EndpointRow key={item.key} item={item} disabled={!token || busy[item.key]}

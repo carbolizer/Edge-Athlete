@@ -19,10 +19,12 @@ network, so services reach each other by name (e.g. `postgres`, `mosquitto`).
 
 | Service | Port(s) | Purpose |
 |---|---|---|
-| `postgres` | 5432 (internal) | PostgreSQL database — the single source of durable data. Only set-level data is ever written here. |
+| `postgres` | 5432 (internal) | PostgreSQL database — the source of durable sessions, sets, reps, and room state. |
 | `mosquitto` | 1883 (MQTT), 9001 (MQTT-over-WebSockets) | The message broker. Nodes + Django use 1883; browsers connect directly to 9001. |
 | `django` | 8000 (internal) | The web/REST server (sync `runserver`). Handles all `/api/` and `/admin/` requests. |
 | `mqtt-listener` | — | The ONE MQTT subscriber process. Listens to node pulse topics and updates node health. |
+| `monitoring-publisher` | — | Publishes durable room-state invalidations after database commits. |
+| `simulator` | — | Optional, profile-gated development traffic; never starts in the normal profile. |
 | `react` | 80 (internal) | Builds the front-end to static files and serves them via its own Nginx. |
 | `nginx` | 80 (published) | The front door. Routes `/api/`, `/admin/`, `/static/*` to Django and everything else to React. |
 
@@ -48,8 +50,8 @@ docker compose logs -f django
 docker compose logs -f mqtt-listener
 ```
 
-First boot builds the Django and React images and runs database migrations
-automatically (via the Dockerfile / listener command). The app is reachable at
+First boot builds the Django and React images; the Django service runs database
+migrations before starting the server. The app is reachable at
 `http://<pi-ip>/` (or `http://localhost/` on the dev host).
 
 ## Config files and where they live
@@ -86,6 +88,46 @@ c.on('message', (t, m) => console.log(t, m.toString()));
 //   mosquitto_pub -t edgeathlete/node/test/pulse -m '{}'
 // the console should log the message.
 ```
+
+## Simulated live readings
+
+Use the opt-in simulator when sensor hardware is unavailable. `monitoring` mode
+persists generated reps through the same atomic completion service as rack REST
+requests, which drives wall, coach, history, and analytics screens. `rack` mode
+publishes rep MQTT payloads without persistence, allowing a rack client to own
+set boundaries and submit each set exactly once. Both modes publish node pulses.
+
+```bash
+# Start the normal stack plus four simulated racks (capped at 100 set cycles)
+docker compose --profile simulation up --build -d
+
+# Watch generated readings and completed sets
+docker compose logs -f simulator
+
+# Stop only the simulator; saved simulation history remains available
+docker compose --profile simulation stop simulator
+
+# Delete all records owned by reserved simulation identities
+docker compose run --rm -e SIMULATOR_ENABLED=True django \
+  python manage.py clear_simulation_data --confirm
+
+# Run one fast, repeatable set on one rack, then exit
+docker compose run --rm -e SIMULATOR_ENABLED=True django \
+  python manage.py simulate_node --mode monitoring --racks 1 --rack 1 --sets 1 \
+  --interval 0.25 --rest 0 --seed 42
+
+# Exercise a rack client's MQTT and set-completion path without pre-saving reps
+docker compose run --rm -e SIMULATOR_ENABLED=True django \
+  python manage.py simulate_node --mode rack --racks 1 --rack 1 --sets 10
+```
+
+The default session is named `[SIMULATION] Live training`. Generated records carry
+durable simulation ownership fields; prefixes remain human-readable labels only.
+The cleanup command deletes only records marked as simulated and refuses to race
+a running simulator. The command refuses to run while
+a non-simulation session is active. Continuous mode requires a nonzero cadence,
+has a maximum of 1,000 cycles, and uses 100 cycles by default. Do not put names or
+other personal information in a simulation session label.
 
 ## Common failure modes
 

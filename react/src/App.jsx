@@ -26,6 +26,10 @@ function App() {
     return <Dashboard mode="coach" />
   }
 
+  if (path === '/dashboard') {
+    return <Dashboard mode="wall" />
+  }
+
   if (path === '/rack-detail') {
     return <RackDetailPage />
   }
@@ -42,4 +46,3 @@ function App() {
 }
 
 export default App
-

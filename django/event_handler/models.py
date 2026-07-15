@@ -20,6 +20,8 @@ Two things worth understanding before you read:
 
 See https://docs.djangoproject.com/en/5.1/topics/db/models/
 """
+import uuid
+
 from django.db import models
 
 
@@ -43,6 +45,7 @@ class Node(models.Model):
     signal_strength = models.IntegerField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    is_simulated = models.BooleanField(default=False)
 
     def __str__(self):
         rack = self.rack_number if self.rack_number is not None else "unassigned"
@@ -68,6 +71,7 @@ class Athlete(models.Model):
     nfc_tag_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
+    is_simulated = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
@@ -83,6 +87,7 @@ class Program(models.Model):
     target_weight_lbs = models.FloatField()
     velocity_zone_min = models.FloatField()
     velocity_zone_max = models.FloatField()
+    is_simulated = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.exercise} for {self.athlete.name}"
@@ -96,6 +101,7 @@ class Session(models.Model):
     ended_at = models.DateTimeField(null=True, blank=True)
     athletes = models.ManyToManyField(Athlete, related_name='sessions')
     notes = models.TextField(blank=True)
+    is_simulated = models.BooleanField(default=False)
 
     def __str__(self):
         return self.label
@@ -108,6 +114,7 @@ class Set(models.Model):
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='sets')
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='sets')
     node = models.ForeignKey(Node, on_delete=models.SET_NULL, null=True, blank=True, related_name='sets')
+    rack_number = models.IntegerField(null=True, blank=True)
     exercise = models.CharField(max_length=255)
     set_number = models.IntegerField()
     weight_lbs = models.FloatField(null=True, blank=True)  # actual load lifted; enables weight PRs + load-velocity analytics
@@ -117,9 +124,15 @@ class Set(models.Model):
     avg_velocity = models.FloatField(null=True, blank=True)
     peak_velocity = models.FloatField(null=True, blank=True)
     is_false_set = models.BooleanField(default=False)
+    is_simulated = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['set_number']
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.rack_number is None and self.node_id:
+            self.rack_number = self.node.rack_number
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Set {self.set_number} — {self.exercise} ({self.athlete.name})"
@@ -141,3 +154,20 @@ class Rep(models.Model):
 
     def __str__(self):
         return f"Rep {self.rep_number} of set {self.set_id}"
+
+
+class MonitoringEvent(models.Model):
+    """Durable room-change notification published to MQTT after commit."""
+    event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    reason = models.CharField(max_length=32)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    publish_attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=255, blank=True)
+    is_simulated = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"Monitoring revision {self.id}: {self.reason}"

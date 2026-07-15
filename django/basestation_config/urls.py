@@ -31,8 +31,32 @@ URL flow example:
   event_handler/urls.py sees /motion/ → calls motion_detected view
 """
 from django.contrib import admin
+from django.conf import settings
 from django.urls import path, include
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework.throttling import AnonRateThrottle
+
+
+class LoginRateThrottle(AnonRateThrottle):
+    rate = "100/min" if settings.DEBUG else "10/min"
+
+
+class CoachTokenObtainPairView(TokenObtainPairView):
+    throttle_classes = [LoginRateThrottle]
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        response["Pragma"] = "no-cache"
+        return response
+
+
+class NoStoreTokenRefreshView(TokenRefreshView):
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        response["Pragma"] = "no-cache"
+        return response
 
 
 urlpatterns = [
@@ -44,8 +68,8 @@ urlpatterns = [
     path('api/', include('event_handler.urls')),
 
     # React login - POST {username, password} returns {access, refresh} tokens
-    path('api/auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/auth/login/', CoachTokenObtainPairView.as_view(), name='token_obtain_pair'),
 
     # Silent token refresh - POST {refresh} returns a new {access} token
-    path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/auth/refresh/', NoStoreTokenRefreshView.as_view(), name='token_refresh'),
 ]

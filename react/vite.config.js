@@ -1,3 +1,5 @@
+// Builds the browser UI and keeps local API requests on a loopback-only proxy.
+// Production uses Nginx for the same /api routing instead of this development server.
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -15,14 +17,25 @@ export default defineConfig({
   },
 
   server: {
-    // Allow the Vite dev server to listen on all container interfaces.
-    // Without this, nginx and other Docker containers cannot reach Vite.
-    host: '0.0.0.0',
+    // Local development is loopback-only. Pass --host explicitly when testing
+    // from another device on a trusted network.
+    host: '127.0.0.1',
 
     // Explicitly run Vite on port 5173.
     // nginx will proxy frontend traffic to this port.
     port: 5173,
 
-    allowedHosts: ['react', 'localhost']
+    allowedHosts: ['react', 'localhost'],
+
+    // Keep browser requests same-origin during local development. Production
+    // uses Nginx for the same /api route.
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+        timeout: 10_000,
+        proxyTimeout: 10_000,
+      },
+    },
   }
 })

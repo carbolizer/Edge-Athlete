@@ -80,8 +80,8 @@ Edge Athlete is real-time barbell velocity tracking for weight rooms that can't 
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.
 3. A **rack screen** (tablet PWA) subscribes over MQTT-over-WebSockets to its linked node's rep topic. As each rep arrives it buffers the rep in IndexedDB and live-updates its UI.
 4. When the set ends (0.75s stillness on the node closes the last rep; the athlete/coach confirms end on the screen), the rack screen batch-POSTs the whole set — summary + every rep — to the base station in one request.
-5. The base station writes that one set (and its reps) to Postgres in a single transaction, then publishes broadcast events to Mosquitto: leaderboard changes, rack-state changes, and coach alerts.
-6. The **team dashboard** (the Pi's own kiosk browser) and the **coach tablet** subscribe to their broadcast topics and update live — a room-wide scoreboard and a single coach admin view.
+5. The base station writes that set, its reps, and a monitoring-outbox revision to Postgres in one transaction. A dedicated publisher delivers a privacy-safe retained invalidation event to Mosquitto with QoS 1.
+6. The **team dashboard** and **coach tablet** subscribe to `edgeathlete/dashboard/state`, then refetch their privacy-appropriate REST snapshot when its revision increases. PostgreSQL remains authoritative.
 
 ---
 
@@ -580,17 +580,20 @@ it was already removed in Phase 1). Keep run_mqtt_subscriber.py as the only one.
 
 ## 5. simulate_node management command
 Create management/commands/simulate_node.py:
-  Args: --node-id (required), --rack (int, optional), --interval (float, default 3.0),
-        --reps-per-set (int, default 5)
-  Behavior: connect to the broker (paho-mqtt, host from MQTT_HOST env). Loop:
+  Args: --mode (monitoring|rack), --racks, --rack, --interval, --rest,
+        --reps-per-set, --sets, --continuous, --max-cycles, --seed
+  Behavior: refuse to run unless `SIMULATOR_ENABLED=True`, connect to the broker
+  (paho-mqtt, host from MQTT_HOST env), reserve `sim-rack-*` identities, and loop:
     - publish a pulse to `edgeathlete/node/{node_id}/pulse` every ~5s:
       {node_id, event_type:"pulse", battery_level: <80-100 jitter>,
        signal_strength: <-40..-70>, firmware_version:"sim-1", timestamp: <iso now>}
-    - simulate sets: publish `reps-per-set` rep messages to
+    - in `rack` mode, simulate sets and publish `reps-per-set` rep messages to
       `edgeathlete/node/{node_id}/rep`, one every `interval` seconds:
       {node_id, rep_number, mean_velocity: <0.4-1.1 jitter>,
        peak_velocity: <mean+0.1..0.3>, duration_ms: <600-1100>, timestamp: <iso now>}
-      then pause ~8s (rest) and start the next set with incrementing rep_numbers reset to 1.
+      then pause ~8s (rest) and start the next set with rep numbers reset to 1.
+    - in `monitoring` mode, generate the same validated readings without publishing
+      rep MQTT, then persist them through the shared atomic set-completion service.
   Print each publish to stdout. This is what unblocks all Sprint 2 frontend work.
 
 Every file opens with a WHY comment.
@@ -598,15 +601,20 @@ Every file opens with a WHY comment.
 
 ### Verify
 - `mosquitto_pub` a real pulse to `edgeathlete/node/rack_1/pulse` → the `rack_1` `Node` row updates (`last_seen`, `battery_level`).
-- `python manage.py simulate_node --node-id rack_1 --rack 1` publishes both topics; a `mosquitto_sub -t 'edgeathlete/#' -v` terminal shows rep + pulse messages on a realistic cadence.
-- After running the simulator for a minute, `Rep.objects.count() == 0` and `Set.objects.count() == 0` — the Django subscriber never wrote rep data.
+- `simulate_node --mode rack --racks 1 --sets 1` publishes pulse and rep topics;
+  afterward `Rep.objects.count() == 0` and `Set.objects.count() == 0` because the
+  Django subscriber never writes rep data.
+- `simulate_node --mode monitoring --racks 1 --sets 1` publishes pulses and
+  persists one completed set through the shared completion service for wall and
+  coach design; it does not publish rep MQTT messages.
 
 ### ✅ Phase 3 Exit Checklist
 - [ ] A real pulse message updates the correct `Node` row
 - [ ] `parse_rep_payload` exists and returns the exact contract above; `parse_motion_payload` deleted
 - [ ] Subscriber subscribes to `edgeathlete/node/+/pulse` ONLY
 - [ ] `start_mqtt_listener.py` deleted; `run_mqtt_subscriber` is the only listener command
-- [ ] `simulate_node` publishes realistic rep + pulse streams visible in `mosquitto_sub`
+- [ ] `simulate_node` publishes realistic rep + pulse streams, persists bounded
+  simulation history for wall/coach design, and can clean up reserved records
 - [ ] Rep messages are never written to Postgres by the Django subscriber
 
 **STOP. Review the above before moving to Phase 4.**
@@ -833,7 +841,7 @@ for the "durability boundary" analogy).
 - On first load with no `device_role` set, the picker renders; picking "Rack Tablet" registers the device and shows its id on a "waiting for assignment" screen.
 - Manually PATCHing that device's rack_number (simulating the Phase 10 coach action) causes the polling screen to pick it up within ~3s and move into the live rep panel.
 - Chrome shows an install prompt once a role is picked; installed app launches fullscreen.
-- Running `simulate_node --node-id rack_1` drives the on-screen rep counter and velocity color live.
+- Running `simulate_node --mode rack --racks 1 --rack 1` drives the rack screen's rep counter and velocity color live.
 - Every simulated rep lands in IndexedDB (`getBufferedReps()` grows); killing WiFi mid-stream and reconnecting does not lose already-buffered reps and the mqtt client reconnects.
 
 ### ✅ Phase 6 Exit Checklist
@@ -954,14 +962,16 @@ Subscribe over mqtt.js (Phase 6 client) to edgeathlete/dashboard/state.
 ## Sections (per the product's dashboard scope)
 1. Rack status grid — one tile per rack, color-coded green/yellow/red using the
    SAME velocity color system used everywhere else. Updates on rack/dashboard state.
-2. Live leaderboard — athletes ranked by a session metric (e.g. best avg velocity),
-   updates on "leaderboard_update" messages.
+2. Live leaderboard — athletes ranked by best saved set average velocity. A
+   `room_state_changed` event triggers a REST snapshot reconciliation.
 3. Fun facts / insights — VISUALLY PROMINENT (bigger than in earlier drafts).
    Rotating room insights (e.g. "fastest rep of the session", "most reps").
 4. Summary block — room-wide session stats (total sets, total reps, athletes active).
-5. Coach alerts — its OWN section, visually separated from everything above.
+5. Measured room records — fastest saved set, highest saved peak, and most reps.
+   Unsupported fatigue/readiness/form/load guidance must not appear.
 
-Subscribe once on mount; update the relevant section per incoming message "type".
+Subscribe once on mount; validate increasing revisions and refetch REST. Preserve
+the last valid snapshot during reconnects and mark it stale after 15 seconds.
 Kiosk styling: large type, high contrast, readable across a room. No interactivity.
 Every file opens with a WHY comment.
 

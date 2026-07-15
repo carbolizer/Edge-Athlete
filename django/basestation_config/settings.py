@@ -120,8 +120,9 @@ DATABASES = {
 # Mosquitto broker connection settings — read from .env
 # MQTT_HOST is 'mosquitto' because that is the compose service name on the Docker network
 # Used by event_handler to subscribe to motion events from ESP32 nodes
-MQTT_HOST = os.environ.get('MQTT_HOST', 'mosquitto')
-MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
+MQTT_HOST = os.environ.get('MQTT_HOST') or 'mosquitto'
+MQTT_PORT = int(os.environ.get('MQTT_PORT') or 1883)
+SIMULATOR_ENABLED = os.environ.get('SIMULATOR_ENABLED', 'False') == 'True'
 
 # Ntfy Configuration
 # Ntfy is the push notification service Django posts to when motion is detected

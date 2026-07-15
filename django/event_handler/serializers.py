@@ -14,22 +14,40 @@ from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
 
 class RepInputSerializer(serializers.Serializer):
     """One incoming rep from the tablet — one item inside a finished set."""
-    rep_number = serializers.IntegerField()
-    mean_velocity = serializers.FloatField()
-    peak_velocity = serializers.FloatField()
-    duration_ms = serializers.IntegerField()
+    rep_number = serializers.IntegerField(min_value=1, max_value=100)
+    mean_velocity = serializers.FloatField(min_value=0)
+    peak_velocity = serializers.FloatField(min_value=0)
+    duration_ms = serializers.IntegerField(min_value=0)
     timestamp = serializers.DateTimeField()
-    velocity_color = serializers.CharField(max_length=16)
+    velocity_color = serializers.ChoiceField(choices=["green", "yellow", "red"])
 
 
 class SetCompleteSerializer(serializers.Serializer):
     """A whole finished set: its totals, plus the list of reps inside it. A false
     set (didn't count) can arrive with an empty reps list."""
-    reps_completed = serializers.IntegerField()
-    avg_velocity = serializers.FloatField(required=False, allow_null=True)
-    peak_velocity = serializers.FloatField(required=False, allow_null=True)
+    reps_completed = serializers.IntegerField(min_value=0, max_value=100)
+    avg_velocity = serializers.FloatField(required=False, allow_null=True, min_value=0)
+    peak_velocity = serializers.FloatField(required=False, allow_null=True, min_value=0)
     is_false_set = serializers.BooleanField(default=False)
-    reps = RepInputSerializer(many=True, allow_empty=True)
+    reps = RepInputSerializer(many=True, allow_empty=True, max_length=100)
+
+    def validate(self, attrs):
+        if attrs["is_false_set"] and attrs["reps"]:
+            raise serializers.ValidationError("A false set cannot contain reps.")
+        if attrs["is_false_set"] and attrs["reps_completed"] != 0:
+            raise serializers.ValidationError("A false set must have zero completed reps.")
+        if not attrs["is_false_set"] and attrs["reps_completed"] != len(attrs["reps"]):
+            raise serializers.ValidationError("reps_completed must match the number of reps.")
+        if attrs["is_false_set"]:
+            attrs["avg_velocity"] = None
+            attrs["peak_velocity"] = None
+        elif attrs["reps"]:
+            attrs["avg_velocity"] = sum(rep["mean_velocity"] for rep in attrs["reps"]) / len(attrs["reps"])
+            attrs["peak_velocity"] = max(rep["peak_velocity"] for rep in attrs["reps"])
+        else:
+            attrs["avg_velocity"] = None
+            attrs["peak_velocity"] = None
+        return attrs
 
 
 class SetSerializer(serializers.ModelSerializer):
@@ -38,11 +56,25 @@ class SetSerializer(serializers.ModelSerializer):
     read-only — clients don't get to set them."""
     class Meta:
         model = Set
-        fields = ["id", "session", "athlete", "node", "exercise", "set_number",
+        fields = ["id", "session", "athlete", "node", "rack_number", "exercise", "set_number",
                   "weight_lbs", "started_at", "ended_at", "reps_completed",
                   "avg_velocity", "peak_velocity", "is_false_set"]
-        read_only_fields = ["id", "started_at", "ended_at", "reps_completed",
+        read_only_fields = ["id", "rack_number", "started_at", "ended_at", "reps_completed",
                             "avg_velocity", "peak_velocity", "is_false_set"]
+
+    def validate(self, attrs):
+        session = attrs.get("session", getattr(self.instance, "session", None))
+        athlete = attrs.get("athlete", getattr(self.instance, "athlete", None))
+        node = attrs.get("node", getattr(self.instance, "node", None))
+        if session and athlete and session.is_simulated != athlete.is_simulated:
+            raise serializers.ValidationError("Session and athlete simulation ownership must match.")
+        if session and node and session.is_simulated != node.is_simulated:
+            raise serializers.ValidationError("Session and node simulation ownership must match.")
+        return attrs
+
+    def create(self, validated_data):
+        validated_data["is_simulated"] = validated_data["session"].is_simulated
+        return super().create(validated_data)
 
 
 class RackScreenSerializer(serializers.ModelSerializer):
@@ -63,12 +95,26 @@ class ProgramSerializer(serializers.ModelSerializer):
                   "target_weight_lbs", "velocity_zone_min", "velocity_zone_max"]
 
 
+class PublicProgramSerializer(serializers.ModelSerializer):
+    """Rack-safe prescription fields without database identifiers."""
+    class Meta:
+        model = Program
+        fields = ["exercise", "target_sets", "target_reps", "target_weight_lbs", "velocity_zone_min", "velocity_zone_max"]
+
+
 class AthleteSerializer(serializers.ModelSerializer):
     """A lifter's record."""
     class Meta:
         model = Athlete
         fields = ["id", "name", "nfc_tag_id", "created_at", "notes"]
         read_only_fields = ["id", "created_at"]
+
+
+class PublicAthleteSerializer(serializers.ModelSerializer):
+    """Tablet-safe athlete identity without NFC identifiers or coach notes."""
+    class Meta:
+        model = Athlete
+        fields = ["id", "name"]
 
 
 class SessionSerializer(serializers.ModelSerializer):

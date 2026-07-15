@@ -1,110 +1,19 @@
-"""
-parser.py — MQTT Payload Parser
---------------------------------
-Parses and validates incoming MQTT motion payloads into a normalized format
-used by the event processing layer.
-
-Expected payload structure:
-{
-  "event_id": str,
-  "node_id": str,
-  "device_name": str,
-  "location": str,
-  "event_type": "motion",
-  "motion": bool,
-  "timestamp": str (ISO 8601),
-  "timezone": str,
-  "connection": {
-    "interrupted": bool,
-    "signal_strength": int
-  },
-  "device_status": {
-    "battery": int,
-    "firmware_version": str
-  }
-}
-"""
+"""Validate the MQTT payload contracts shared by hardware and simulation."""
 
 import json
+import re
 from typing import Any
 
-
-def parse_motion_payload(raw_payload: bytes, topic: str = "") -> dict[str, Any]:
-    """Decode, validate, and normalize MQTT payloads from Edge Athlete nodes."""
-    
-    # Decode and parse JSON
-    try:
-        data = json.loads(raw_payload.decode("utf-8"))
-    except Exception as error:
-        raise ValueError(f"Invalid payload format: {error}")
-
-    # Ensure payload is a JSON object
-    if not isinstance(data, dict):
-        raise ValueError("Payload must be a JSON object")
-
-    # Some node messages can omit event_type because the topic already says
-    # what kind of event it is.
-    if "event_type" not in data:
-        if topic.endswith("/motion"):
-            data["event_type"] = "motion"
-        elif topic.endswith("/heartbeat"):
-            data["event_type"] = "heartbeat"
-        elif topic.endswith("/register"):
-            data["event_type"] = "register"
-
-    required_fields = ["node_id", "event_type", "timestamp"]
-    for field in required_fields:
-        if field not in data:
-            raise ValueError(f"Missing required field: {field}")
-
-    # Normalize core fields
-    node_id = str(data["node_id"]).strip()
-    event_type = str(data["event_type"]).strip()
-    timestamp = str(data["timestamp"]).strip()
-
-    # Optional fields
-    event_id = data.get("event_id")
-    device_name = data.get("device_name") or data.get("name") or node_id
-    motion = data.get("motion", event_type == "motion")
-
-    location = data.get("location")
-    if location is not None:
-        location = str(location).strip()
-
-    # Nested optional fields
-    connection = data.get("connection", {})
-    if not isinstance(connection, dict):
-        connection = {}
-    connection_interrupted = connection.get("interrupted", False)
-    signal_strength = connection.get("signal_strength")
-
-    device_status = data.get("device_status", {})
-    if not isinstance(device_status, dict):
-        device_status = {}
-    battery = device_status.get("battery")
-    firmware_version = device_status.get("firmware_version")
-
-    # Return normalized payload
-    return {
-        "event_id": str(event_id).strip() if event_id else None,
-        "node_id": node_id,
-        "device_name": str(device_name).strip(),
-        "location": location,
-        "event_type": event_type,
-        "motion": bool(motion),
-        "timestamp": timestamp,
-        "timezone": str(data.get("timezone", "")).strip() or None,
-        "connection_interrupted": connection_interrupted,
-        "signal_strength": signal_strength,
-        "battery": battery,
-        "firmware_version": firmware_version,
-        "raw": data  # keep full payload for future use
-    }
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 
 def parse_pulse_payload(raw_payload: bytes) -> dict[str, Any]:
     """Decode, validate, and normalize MQTT pulse payload."""
 
+    if len(raw_payload) > 2048:
+        raise ValueError("Pulse payload exceeds 2048 bytes")
+
     try:
         data = json.loads(raw_payload.decode("utf-8"))
     except Exception as error:
@@ -121,17 +30,69 @@ def parse_pulse_payload(raw_payload: bytes) -> dict[str, Any]:
     node_id = str(data["node_id"]).strip()
     event_type = str(data["event_type"]).strip()
     timestamp = str(data["timestamp"]).strip()
+    if not node_id:
+        raise ValueError("node_id cannot be empty")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise ValueError("node_id contains unsupported characters")
+    if event_type != "pulse":
+        raise ValueError("event_type must be pulse")
 
-    connection = data.get("connection", {})
-    device_status = data.get("device_status", {})
+    battery_level = data.get("battery_level")
+    signal_strength = data.get("signal_strength")
+    firmware_version = data.get("firmware_version")
+    if not isinstance(battery_level, int) or not 0 <= battery_level <= 100:
+        raise ValueError("battery_level must be an integer from 0 to 100")
+    if not isinstance(signal_strength, int) or not -120 <= signal_strength <= 0:
+        raise ValueError("signal_strength must be an integer from -120 to 0")
+    if not isinstance(firmware_version, str) or not 1 <= len(firmware_version) <= 50 or not firmware_version.isprintable():
+        raise ValueError("firmware_version must be 1 to 50 printable characters")
 
     return {
         "node_id": node_id,
         "event_type": event_type,
         "timestamp": timestamp,
-        "connection_interrupted": connection.get("interrupted", False),
-        "signal_strength": connection.get("signal_strength"),
-        "battery": device_status.get("battery"),
-        "firmware_version": device_status.get("firmware_version"),
-        "raw": data,
+        "signal_strength": signal_strength,
+        "battery_level": battery_level,
+        "firmware_version": firmware_version,
+    }
+
+
+def parse_rep_payload(raw_payload: bytes) -> dict[str, Any]:
+    """Decode and validate one completed-rep payload."""
+    if len(raw_payload) > 2048:
+        raise ValueError("Rep payload exceeds 2048 bytes")
+    try:
+        data = json.loads(raw_payload.decode("utf-8"))
+    except Exception as error:
+        raise ValueError(f"Invalid payload format: {error}")
+    if not isinstance(data, dict):
+        raise ValueError("Payload must be a JSON object")
+
+    required = ["node_id", "rep_number", "mean_velocity", "peak_velocity", "duration_ms", "timestamp"]
+    for field in required:
+        if field not in data:
+            raise ValueError(f"Missing required field: {field}")
+    node_id = str(data["node_id"]).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise ValueError("node_id contains unsupported characters")
+    if not isinstance(data["rep_number"], int) or not 1 <= data["rep_number"] <= 100:
+        raise ValueError("rep_number must be an integer from 1 to 100")
+    for field in ["mean_velocity", "peak_velocity"]:
+        if not isinstance(data[field], (int, float)) or isinstance(data[field], bool) or not 0 <= data[field] <= 10:
+            raise ValueError(f"{field} must be a number from 0 to 10")
+    if data["peak_velocity"] < data["mean_velocity"]:
+        raise ValueError("peak_velocity cannot be lower than mean_velocity")
+    if not isinstance(data["duration_ms"], int) or not 0 <= data["duration_ms"] <= 60000:
+        raise ValueError("duration_ms must be an integer from 0 to 60000")
+    timestamp = str(data["timestamp"]).strip()
+    parsed_timestamp = parse_datetime(timestamp)
+    if parsed_timestamp is None or not timezone.is_aware(parsed_timestamp):
+        raise ValueError("timestamp must be timezone-aware ISO 8601")
+    return {
+        "node_id": node_id,
+        "rep_number": data["rep_number"],
+        "mean_velocity": float(data["mean_velocity"]),
+        "peak_velocity": float(data["peak_velocity"]),
+        "duration_ms": data["duration_ms"],
+        "timestamp": timestamp,
     }

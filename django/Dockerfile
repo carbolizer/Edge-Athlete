@@ -11,7 +11,7 @@ WORKDIR /backend_container
 
 COPY requirements.txt .
 
-RUN pip install -r requirements.txt
+RUN pip install --upgrade pip==26.1.2 setuptools==83.0.0 && pip install -r requirements.txt
 
 EXPOSE 8000
 
