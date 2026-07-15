@@ -9,6 +9,12 @@ misreads anything else.
 This is the raw reference — Carl folds it into the shared-setup story; Derrilon's
 simulator and Braydon's tablet both publish/consume against it.
 
+**v2 note:** updated against the v2 spec's Phase 5–8 insertion and renumbering.
+Two things changed here: the phase numbers below now match v2's numbering, and
+`velocity_color`'s zone lookup now sources from the session's planned exercise
+data instead of the old `Program` model (see §4). Every payload shape in this
+document is otherwise unchanged from v1.
+
 ---
 
 ## Global rules (apply to every message)
@@ -36,7 +42,7 @@ simulator and Braydon's tablet both publish/consume against it.
   "timestamp": "2026-07-07T07:23:55Z"
 }
 ```
-- **Published by:** the node firmware (Phase 9) and Derrilon's `simulate_node`.
+- **Published by:** the node firmware (Phase 13) and Derrilon's `simulate_node`.
 - **Consumed by:** the rack tablet, subscribed to *its own linked node's* rep topic.
 - **Not here:** `velocity_color`. The tablet computes that (see Derived values).
 
@@ -92,7 +98,7 @@ the type.
 ```jsonc
 { "type": "fatigue_alert", "athlete": {"id":4,"name":"Jordan Lee"}, "rack_number": 3 }
 ```
-- Fatigue detection is Phase 11 — treat this topic's exact fields as **provisional**
+- Fatigue detection is Phase 15 — treat this topic's exact fields as **provisional**
   until then. The envelope (`type` + `athlete`) is stable; extra fields may be added.
 
 ---
@@ -118,6 +124,11 @@ Not MQTT, but the same data contract, so it lives here too.
 - **Weight is not in this body.** The load (`weight_lbs`) is set when the set is
   *created* (`POST /api/sets/`), not when it completes.
 - This is the **only** way `Rep` rows are ever created.
+- **`is_makeup` isn't in this body either.** Like `weight_lbs`, it's set at set
+  *creation* (`POST /api/sets/`, Phase 7/11) based on whether the selected
+  athlete already has data for the session — it just rides along on the `Set`
+  row from that point on. Nothing about the batch-complete shape above changes
+  for a makeup set.
 
 ---
 
@@ -128,7 +139,7 @@ this wrong is the most likely way two parts disagree.
 
 | Field | Who computes it | How |
 |---|---|---|
-| `velocity_color` | **the rack tablet**, per rep | Compare the rep's velocity to the athlete's program zone (`velocity_zone_min/max`, fetched via `GET /api/programs/?athlete={id}`). `green` = on target, `yellow` = dropping, `red` = fatigued. Included when the tablet sends the set-complete body. |
+| `velocity_color` | **the rack tablet**, per rep | Compare the rep's velocity to the *exercise's* velocity zone (`velocity_zone_min/max`), sourced from `session_exercises[]` in the `GET /api/sessions/active/` response the tablet already fetched once at rack-assignment time (Phase 10/11) — **not** `GET /api/programs/`, which the v2 rack-screen flow no longer calls. `green` = on target, `yellow` = dropping, `red` = fatigued. Included when the tablet sends the set-complete body. |
 | `rep_number` (saved) | **the rack tablet** | Numbered `1..N` within the set. The tablet owns set boundaries, so it assigns the authoritative number; the node's `rep_number` is only advisory ordering. |
 | `is_velocity_pr` | **Django**, at set-complete | `true` if this set's `peak_velocity` beats the athlete's previous best for that exercise. |
 | `is_weight_pr` | **Django**, at set-complete | `true` if this set's `weight_lbs` beats the athlete's previous heaviest for that exercise. |
