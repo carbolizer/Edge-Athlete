@@ -6,13 +6,17 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.contrib.auth.models import User
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.test import TestCase
+from django.db import IntegrityError
+from django.test import TestCase, TransactionTestCase
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import Athlete, MonitoringEvent, Node, Program, RackScreen, Rep, Session, Set
+from .models import Athlete, MonitoringEvent, Node, Program, RackScreen, RackWorkoutState, Rep, Session, Set
+from .serializers import ProgramSerializer
 from .realtime.broadcast.publisher import DASHBOARD_TOPIC, publish_pending_event
 from .realtime.event_processor.process_pulse import process_pulse_event
 from .realtime.mqtt_ingester.parser import parse_pulse_payload, parse_rep_payload
@@ -165,10 +169,11 @@ class SimulatorTests(TestCase):
         real_athlete = Athlete.objects.create(name="Real", nfc_tag_id="simulation-athlete-real")
         simulated_athlete = Athlete.objects.create(name="[SIM] Athlete", is_simulated=True)
         Session.objects.create(label="[SIMULATION] Real label", is_simulated=False)
-        Session.objects.create(label="Anything", is_simulated=True)
+        simulated_session = Session.objects.create(label="Anything", is_simulated=True)
         Node.objects.create(node_id="sim-rack-real", is_simulated=False)
         Node.objects.create(node_id="anything", is_simulated=True)
         MonitoringEvent.objects.create(reason="set_completed", is_simulated=True)
+        RackWorkoutState.objects.create(rack_number=7, active_session=simulated_session)
 
         call_command("clear_simulation_data", confirm=True)
 
@@ -177,6 +182,7 @@ class SimulatorTests(TestCase):
         self.assertTrue(Session.objects.filter(label="[SIMULATION] Real label").exists())
         self.assertTrue(Node.objects.filter(node_id="sim-rack-real").exists())
         self.assertFalse(MonitoringEvent.objects.filter(is_simulated=True).exists())
+        self.assertFalse(RackWorkoutState.objects.filter(rack_number=7).exists())
         self.assertTrue(MonitoringEvent.objects.filter(reason="simulation_cleared").exists())
 
     def test_cleanup_requires_enablement(self):
@@ -386,6 +392,330 @@ class RoomStateTests(TestCase):
 
         self.assertTrue(response.data["racks"][0]["assignment_conflict"])
         self.assertEqual(response.data["meta"]["unassigned_session_sets"], 1)
+
+
+class ProgramVelocityZoneTests(TestCase):
+    def setUp(self):
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.base_payload = {
+            "athlete": self.athlete.id,
+            "exercise": "Back squat",
+            "target_sets": 5,
+            "target_reps": 3,
+            "target_weight_lbs": 225,
+        }
+
+    def test_accepts_and_serializes_non_velocity_program(self):
+        form = ProgramSerializer(data={
+            **self.base_payload,
+            "velocity_zone_min": None,
+            "velocity_zone_max": None,
+        })
+
+        self.assertTrue(form.is_valid(), form.errors)
+        program = form.save()
+        self.assertIsNone(ProgramSerializer(program).data["velocity_zone_min"])
+        self.assertIsNone(ProgramSerializer(program).data["velocity_zone_max"])
+
+    def test_rejects_partial_negative_and_inverted_velocity_zones(self):
+        invalid_zones = [
+            (None, 0.8), (-0.1, 0.8), (0.9, 0.8),
+            (float("nan"), 0.8), (0.7, float("inf")), (0.7, 10.1),
+        ]
+
+        for minimum, maximum in invalid_zones:
+            with self.subTest(minimum=minimum, maximum=maximum):
+                form = ProgramSerializer(data={
+                    **self.base_payload,
+                    "velocity_zone_min": minimum,
+                    "velocity_zone_max": maximum,
+                })
+                self.assertFalse(form.is_valid())
+
+    def test_model_validation_rejects_partial_zone(self):
+        program = Program(
+            athlete=self.athlete,
+            exercise="Back squat",
+            target_sets=5,
+            target_reps=3,
+            target_weight_lbs=225,
+            velocity_zone_min=0.7,
+            velocity_zone_max=None,
+        )
+
+        with self.assertRaises(ValidationError):
+            program.full_clean()
+
+
+class ProgramVelocityZoneConstraintTests(TransactionTestCase):
+    def test_database_rejects_partial_zone(self):
+        athlete = Athlete.objects.create(name="Jordan Lee")
+
+        with self.assertRaises(IntegrityError):
+            Program.objects.create(
+                athlete=athlete,
+                exercise="Back squat",
+                target_sets=5,
+                target_reps=3,
+                target_weight_lbs=225,
+                velocity_zone_min=0.7,
+                velocity_zone_max=None,
+            )
+
+
+class RackRegistrationTests(TestCase):
+    device_id = "48f01941-a0a5-4566-8e10-f187483318fd"
+
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_registration_requires_canonical_uuid_and_does_not_cache_identity(self):
+        invalid = APIClient().post("/api/racks/register/", {"device_id": "not-a-uuid"}, format="json")
+        created = APIClient().post("/api/racks/register/", {"device_id": self.device_id}, format="json")
+
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.data["code"], "invalid_device_id")
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created["Cache-Control"], "private, no-store")
+        self.assertEqual(RackScreen.objects.count(), 1)
+
+    def test_post_poll_keeps_device_id_out_of_url_and_refreshes_last_seen(self):
+        screen = RackScreen.objects.create(device_id=self.device_id, rack_number=3)
+        old_seen = screen.last_seen
+
+        registered = APIClient().post("/api/racks/register/", {"device_id": self.device_id}, format="json")
+        polled = APIClient().post("/api/racks/racknumber/", {"device_id": self.device_id}, format="json")
+
+        screen.refresh_from_db()
+        self.assertEqual(registered.status_code, 200)
+        self.assertGreater(screen.last_seen, old_seen)
+        self.assertEqual(polled.data, {"rack_number": 3})
+        self.assertEqual(polled["Cache-Control"], "private, no-store")
+
+    def test_polling_rejects_query_string_identity(self):
+        response = APIClient().get(f"/api/racks/racknumber/?device_id={self.device_id}")
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_registration_and_read_throttles_are_separate_per_client(self):
+        client = APIClient()
+        for index in range(30):
+            device_id = f"00000000-0000-4000-8000-{index:012d}"
+            self.assertEqual(
+                client.post("/api/racks/register/", {"device_id": device_id}, format="json", REMOTE_ADDR="10.0.0.1").status_code,
+                200,
+            )
+        blocked = client.post(
+            "/api/racks/register/",
+            {"device_id": "00000000-0000-4000-8000-999999999999"},
+            format="json",
+            REMOTE_ADDR="10.0.0.1",
+        )
+        read = client.post(
+            "/api/racks/racknumber/",
+            {"device_id": "00000000-0000-4000-8000-000000000000"},
+            format="json",
+            REMOTE_ADDR="10.0.0.1",
+        )
+        other_client = client.post(
+            "/api/racks/register/",
+            {"device_id": "10000000-0000-4000-8000-000000000000"},
+            format="json",
+            REMOTE_ADDR="10.0.0.2",
+        )
+
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(read.status_code, 200)
+        self.assertEqual(other_client.status_code, 200)
+
+
+class RackWorkoutStateApiTests(TestCase):
+    def setUp(self):
+        self.coach = User.objects.create_user(
+            username="rack-coach", password="test-only", is_staff=True,
+        )
+        self.non_coach = User.objects.create_user(
+            username="rack-athlete", password="test-only",
+        )
+        self.athlete = Athlete.objects.create(
+            name="Jordan Lee", nfc_tag_id="private-nfc", notes="private note",
+        )
+        self.other_athlete = Athlete.objects.create(name="Casey Morgan")
+        self.session = Session.objects.create(label="Strength Day")
+        self.session.athletes.add(self.athlete)
+        self.program = Program.objects.create(
+            athlete=self.athlete,
+            exercise="Back squat",
+            target_sets=5,
+            target_reps=3,
+            target_weight_lbs=225,
+            velocity_zone_min=0.7,
+            velocity_zone_max=0.9,
+        )
+        self.non_velocity_program = Program.objects.create(
+            athlete=self.athlete,
+            exercise="Split squat",
+            target_sets=3,
+            target_reps=8,
+            target_weight_lbs=45,
+            velocity_zone_min=None,
+            velocity_zone_max=None,
+        )
+        RackScreen.objects.create(device_id="private-screen", rack_number=1)
+
+    def patch_selection(self, client=None, athlete_id=None, program_id=None):
+        client = client or APIClient()
+        client.force_authenticate(self.coach)
+        return client.patch("/api/racks/1/state/", {
+            "athlete_id": athlete_id or self.athlete.id,
+            "program_id": program_id or self.program.id,
+        }, format="json")
+
+    def test_patch_requires_coach_and_returns_stable_auth_statuses(self):
+        payload = {"athlete_id": self.athlete.id, "program_id": self.program.id}
+        anonymous = APIClient().patch("/api/racks/1/state/", payload, format="json")
+        non_coach_client = APIClient()
+        non_coach_client.force_authenticate(self.non_coach)
+        forbidden = non_coach_client.patch("/api/racks/1/state/", payload, format="json")
+
+        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertFalse(RackWorkoutState.objects.exists())
+
+    def test_get_is_open_private_and_returns_program_and_ready_node_shapes(self):
+        Node.objects.create(node_id="node-ready", rack_number=1, is_active=True)
+        selected = self.patch_selection()
+
+        response = APIClient().get("/api/racks/1/state/")
+
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["rack_number"], 1)
+        self.assertEqual(response.data["revision"], MonitoringEvent.objects.latest("id").id)
+        self.assertEqual(response.data["active_session"], {"id": self.session.id, "label": "Strength Day"})
+        self.assertEqual(response.data["selected_athlete"], {"id": self.athlete.id, "name": "Jordan Lee"})
+        self.assertEqual(response.data["active_program"]["id"], self.program.id)
+        self.assertEqual(len(response.data["programs"]), 2)
+        self.assertIsNone(response.data["programs"][1]["velocity_zone_min"])
+        self.assertEqual(response.data["node"], {"state": "ready", "node_id": "node-ready"})
+        self.assertNotContains(response, "private-nfc")
+        self.assertNotContains(response, "private note")
+        self.assertNotContains(response, "private-screen")
+
+    def test_get_reports_bounded_node_states_and_unknown_racks(self):
+        RackScreen.objects.create(device_id="screen-2", rack_number=2)
+        Node.objects.create(node_id="node-inactive", rack_number=2, is_active=False)
+        RackScreen.objects.create(device_id="screen-3", rack_number=3)
+        Node.objects.create(node_id="node-a", rack_number=3)
+        Node.objects.create(node_id="node-b", rack_number=3)
+        RackScreen.objects.create(device_id="screen-4", rack_number=4)
+
+        self.assertEqual(APIClient().get("/api/racks/2/state/").data["node"], {
+            "state": "inactive", "node_id": None,
+        })
+        self.assertEqual(APIClient().get("/api/racks/3/state/").data["node"], {
+            "state": "conflict", "node_id": None,
+        })
+        self.assertEqual(APIClient().get("/api/racks/4/state/").data["node"], {
+            "state": "unassigned", "node_id": None,
+        })
+        self.assertEqual(APIClient().get("/api/racks/0/state/").status_code, 404)
+        self.assertEqual(APIClient().get("/api/racks/999/state/").status_code, 404)
+
+    def test_patch_validates_selection_and_creates_simulation_owned_event(self):
+        self.session.is_simulated = True
+        self.session.save(update_fields=["is_simulated"])
+        outside_program = Program.objects.create(
+            athlete=self.other_athlete,
+            exercise="Bench press",
+            target_sets=3,
+            target_reps=5,
+            target_weight_lbs=185,
+            velocity_zone_min=0.5,
+            velocity_zone_max=0.7,
+        )
+
+        mismatch = self.patch_selection(program_id=outside_program.id)
+        missing_athlete = self.patch_selection(athlete_id=99999)
+        malformed = APIClient()
+        malformed.force_authenticate(self.coach)
+        malformed_response = malformed.patch(
+            "/api/racks/1/state/", {"athlete_id": "bad"}, format="json",
+        )
+        success = self.patch_selection()
+
+        self.assertEqual(mismatch.status_code, 409)
+        self.assertEqual(mismatch.data["code"], "program_athlete_mismatch")
+        self.assertEqual(missing_athlete.status_code, 404)
+        self.assertEqual(missing_athlete.data["code"], "athlete_not_found")
+        self.assertEqual(malformed_response.status_code, 400)
+        self.assertEqual(malformed_response.data["code"], "malformed_request")
+        self.assertEqual(success.status_code, 200)
+        event = MonitoringEvent.objects.get(reason="rack_selection_changed")
+        self.assertTrue(event.is_simulated)
+
+    def test_patch_rejects_unfinished_set_without_changing_selection(self):
+        Set.objects.create(
+            session=self.session,
+            athlete=self.athlete,
+            rack_number=1,
+            exercise="Back squat",
+            set_number=1,
+        )
+
+        response = self.patch_selection()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "unfinished_set")
+        self.assertFalse(RackWorkoutState.objects.exists())
+        self.assertFalse(MonitoringEvent.objects.exists())
+
+    def test_newest_session_makes_old_selection_stale(self):
+        self.patch_selection()
+        newer = Session.objects.create(label="New session")
+        newer.athletes.add(self.athlete)
+
+        response = APIClient().get("/api/racks/1/state/")
+
+        self.assertEqual(response.data["active_session"]["id"], newer.id)
+        self.assertIsNone(response.data["selected_athlete"])
+        self.assertEqual(response.data["programs"], [])
+        self.assertIsNone(response.data["active_program"])
+
+    def test_removed_session_member_is_not_exposed_as_selected(self):
+        self.patch_selection()
+        self.session.athletes.remove(self.athlete)
+        coach_client = APIClient()
+        coach_client.force_authenticate(self.coach)
+
+        rack = APIClient().get("/api/racks/1/state/")
+        room = coach_client.get("/api/room-state/")
+
+        self.assertIsNone(rack.data["selected_athlete"])
+        self.assertIsNone(rack.data["active_program"])
+        self.assertEqual(rack.data["programs"], [])
+        self.assertIsNone(room.data["racks"][0]["selection"])
+
+    def test_room_includes_selection_and_state_only_rack_but_wall_omits_it(self):
+        self.patch_selection()
+        RackWorkoutState.objects.create(rack_number=5)
+        coach_client = APIClient()
+        coach_client.force_authenticate(self.coach)
+
+        room = coach_client.get("/api/room-state/")
+        wall = APIClient().get("/api/wall-state/")
+
+        self.assertEqual([rack["rack_number"] for rack in room.data["racks"]], [1, 5])
+        selected_rack = room.data["racks"][0]
+        self.assertEqual(selected_rack["selection"]["athlete"]["id"], self.athlete.id)
+        self.assertEqual(selected_rack["selection"]["active_program"]["id"], self.program.id)
+        self.assertEqual(room.data["participants"], [{"id": self.athlete.id, "name": self.athlete.name}])
+        self.assertIsNone(room.data["racks"][1]["selection"])
+        self.assertNotContains(wall, '"selection"')
+        self.assertNotContains(wall, "private-screen")
 
 
 class SetCompleteValidationTests(TestCase):

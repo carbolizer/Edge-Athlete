@@ -8,6 +8,7 @@ as clean JSON. Think: a bouncer checking every field at the door, plus a
 receptionist handing back a tidy summary. One of these per kind of record.
 """
 from rest_framework import serializers
+import math
 
 from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
 
@@ -93,6 +94,21 @@ class ProgramSerializer(serializers.ModelSerializer):
         model = Program
         fields = ["id", "athlete", "exercise", "target_sets", "target_reps",
                   "target_weight_lbs", "velocity_zone_min", "velocity_zone_max"]
+
+    def validate(self, attrs):
+        minimum = attrs.get("velocity_zone_min", getattr(self.instance, "velocity_zone_min", None))
+        maximum = attrs.get("velocity_zone_max", getattr(self.instance, "velocity_zone_max", None))
+        if (minimum is None) != (maximum is None):
+            raise serializers.ValidationError("Velocity zone bounds must both be null or both be set.")
+        if minimum is not None and minimum < 0:
+            raise serializers.ValidationError({"velocity_zone_min": "Must be nonnegative."})
+        if minimum is not None and (not math.isfinite(minimum) or not math.isfinite(maximum)):
+            raise serializers.ValidationError("Velocity zone bounds must be finite numbers.")
+        if minimum is not None and maximum < minimum:
+            raise serializers.ValidationError({"velocity_zone_max": "Must be at least velocity_zone_min."})
+        if maximum is not None and maximum > 10:
+            raise serializers.ValidationError({"velocity_zone_max": "Must be at most 10 m/s."})
+        return attrs
 
 
 class PublicProgramSerializer(serializers.ModelSerializer):

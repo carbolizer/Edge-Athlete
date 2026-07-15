@@ -5,7 +5,7 @@
 3. copy the generated migration file back into ./django/event_handler/migrations/
 4. git add + commit the migration file
 
-models.py — the seven Edge Athlete database tables.
+models.py — the nine Edge Athlete database tables.
 ------------------------------------------------------
 Each class below is one table; each attribute is one column. This file is the
 whole data model for the base station: the hardware (Node), the tablet screens
@@ -21,8 +21,12 @@ Two things worth understanding before you read:
 See https://docs.djangoproject.com/en/5.1/topics/db/models/
 """
 import uuid
+import math
 
+from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import F, Q
 
 
 class Node(models.Model):
@@ -85,9 +89,42 @@ class Program(models.Model):
     target_sets = models.IntegerField()
     target_reps = models.IntegerField()
     target_weight_lbs = models.FloatField()
-    velocity_zone_min = models.FloatField()
-    velocity_zone_max = models.FloatField()
+    velocity_zone_min = models.FloatField(null=True, blank=True)
+    velocity_zone_max = models.FloatField(null=True, blank=True)
     is_simulated = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(velocity_zone_min__isnull=True, velocity_zone_max__isnull=True)
+                    | Q(
+                        velocity_zone_min__isnull=False,
+                        velocity_zone_max__isnull=False,
+                        velocity_zone_min__gte=0,
+                        velocity_zone_min__lte=10,
+                        velocity_zone_max__gte=F("velocity_zone_min"),
+                        velocity_zone_max__lte=10,
+                    )
+                ),
+                name="program_velocity_zone_valid",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        minimum = self.velocity_zone_min
+        maximum = self.velocity_zone_max
+        if (minimum is None) != (maximum is None):
+            raise ValidationError("Velocity zone bounds must both be null or both be set.")
+        if minimum is not None and minimum < 0:
+            raise ValidationError({"velocity_zone_min": "Velocity zone minimum must be nonnegative."})
+        if minimum is not None and (not math.isfinite(minimum) or not math.isfinite(maximum)):
+            raise ValidationError("Velocity zone bounds must be finite numbers.")
+        if minimum is not None and maximum < minimum:
+            raise ValidationError({"velocity_zone_max": "Velocity zone maximum must be at least the minimum."})
+        if maximum is not None and maximum > 10:
+            raise ValidationError({"velocity_zone_max": "Velocity zone maximum must be at most 10 m/s."})
 
     def __str__(self):
         return f"{self.exercise} for {self.athlete.name}"
@@ -105,6 +142,40 @@ class Session(models.Model):
 
     def __str__(self):
         return self.label
+
+
+class RackWorkoutState(models.Model):
+    """The coach-selected program for a physical rack in a specific session."""
+    rack_number = models.PositiveIntegerField(
+        primary_key=True,
+        validators=[MinValueValidator(1)],
+    )
+    active_session = models.ForeignKey(
+        Session,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rack_workout_states",
+    )
+    active_program = models.ForeignKey(
+        Program,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rack_workout_states",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(rack_number__gt=0),
+                name="rack_workout_state_positive_rack",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Rack {self.rack_number} workout state"
 
 
 class Set(models.Model):

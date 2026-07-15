@@ -8,6 +8,7 @@
 
 import Dashboard from './Dashboard.jsx'
 import ConnectionTest from './ConnectionTest.jsx'
+import RackScreen from './RackScreen.jsx'
 
 function App() {
   const path = window.location.pathname
@@ -18,6 +19,10 @@ function App() {
 
   if (path === '/coach') {
     return <Dashboard mode="coach" />
+  }
+
+  if (path === '/rack') {
+    return <RackScreen />
   }
 
   if (path === '/dashboard') {

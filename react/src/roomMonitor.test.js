@@ -9,7 +9,7 @@ describe("room monitor events", () => {
     type: "room_state_changed",
     reason: "set_completed",
     revision: 7,
-    event_id: "event-7",
+    event_id: "7bfba173-809a-44ee-a8ca-b2f603962f88",
     occurred_at: "2026-07-13T20:00:00Z",
   };
 
@@ -21,6 +21,8 @@ describe("room monitor events", () => {
     expect(parseMonitoringEvent("not json")).toBeNull();
     expect(parseMonitoringEvent(JSON.stringify({ ...event, type: "fatigue_alert" }))).toBeNull();
     expect(parseMonitoringEvent(JSON.stringify({ ...event, revision: "7" }))).toBeNull();
+    expect(parseMonitoringEvent(JSON.stringify({ ...event, event_id: "not-a-uuid" }))).toBeNull();
+    expect(parseMonitoringEvent(`{"padding":"${"x".repeat(2048)}"}`)).toBeNull();
   });
 
   it("reconciles only increasing revisions", () => {

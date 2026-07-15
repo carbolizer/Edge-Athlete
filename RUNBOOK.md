@@ -100,10 +100,10 @@ c.on('message', (t, m) => console.log(t, m.toString()));
 ## Simulated live readings
 
 Use the opt-in simulator when sensor hardware is unavailable. `monitoring` mode
-persists generated reps through the same atomic completion service as rack REST
-requests, which drives wall, coach, history, and analytics screens. `rack` mode
-publishes rep MQTT payloads without persistence, allowing a rack client to own
-set boundaries and submit each set exactly once. Both modes publish node pulses.
+persists generated reps through the atomic completion service, which drives wall,
+coach, history, and analytics screens. `rack` mode publishes rep MQTT payloads
+without persistence for the current rack's explicitly unsaved display. Both modes
+publish node pulses.
 
 ```bash
 # Start the normal stack plus four simulated racks (capped at 100 set cycles)
@@ -124,10 +124,15 @@ docker compose run --rm -e SIMULATOR_ENABLED=True django \
   python manage.py simulate_node --mode monitoring --racks 1 --rack 1 --sets 1 \
   --interval 0.25 --rest 0 --seed 42
 
-# Exercise a rack client's MQTT and set-completion path without pre-saving reps
+# Exercise the rack's unsaved MQTT display without pre-saving reps
 docker compose run --rm -e SIMULATOR_ENABLED=True django \
   python manage.py simulate_node --mode rack --racks 1 --rack 1 --sets 10
 ```
+
+Open `http://localhost:8081/rack` before rack-mode simulation. The screen must
+first register and receive a rack assignment plus coach-selected athlete and
+movement. Rack-mode reps are labeled unsaved and do not create `Set` or `Rep`
+rows in PostgreSQL.
 
 The default session is named `[SIMULATION] Live training`. Generated records carry
 durable simulation ownership fields; prefixes remain human-readable labels only.
@@ -183,8 +188,8 @@ flowchart LR
     MQTT -->|pulse topic only| Listener[Django pulse listener]
     Listener -->|node health| PG[(PostgreSQL)]
 
-    Node -.->|rep MQTT 1883| Rack[Deferred rack tablet]
-    Rack -.->|atomic completed-set REST batch| Nginx[Nginx]
+    Node -.->|rep MQTT 1883| Rack[Rack tablet - unsaved display]
+    Rack -.->|workout state REST| Nginx[Nginx]
     Nginx --> Django[Django REST]
     Django -->|Set + Rep rows + MonitoringEvent| PG
 

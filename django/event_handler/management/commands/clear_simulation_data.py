@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 from django.db.models import Q
 
-from event_handler.models import Athlete, MonitoringEvent, Node, Program, Session, Set
+from event_handler.models import Athlete, MonitoringEvent, Node, Program, RackWorkoutState, Session, Set
 
 
 class Command(BaseCommand):
@@ -32,6 +32,9 @@ class Command(BaseCommand):
                 sets = Set.objects.filter(is_simulated=True)
                 programs = Program.objects.filter(is_simulated=True)
                 events = MonitoringEvent.objects.filter(is_simulated=True)
+                rack_states = RackWorkoutState.objects.filter(
+                    Q(active_session__in=sessions) | Q(active_program__in=programs)
+                )
                 if Set.objects.filter(is_simulated=False).filter(
                     Q(session__in=sessions) | Q(athlete__in=athletes) | Q(node__in=nodes)
                 ).exists() or Program.objects.filter(
@@ -47,7 +50,9 @@ class Command(BaseCommand):
                     "sets": sets.count(),
                     "programs": programs.count(),
                     "events": events.count(),
+                    "rack_states": rack_states.count(),
                 }
+                rack_states.delete()
                 sets.delete()
                 programs.delete()
                 sessions.delete()
@@ -63,5 +68,5 @@ class Command(BaseCommand):
             f"Removed {counts['sessions']} simulation session(s), "
             f"{counts['athletes']} athlete(s), {counts['nodes']} node(s), "
             f"{counts['sets']} set(s), {counts['programs']} program(s), "
-            f"and {counts['events']} event(s)."
+            f"{counts['rack_states']} rack state(s), and {counts['events']} event(s)."
         ))

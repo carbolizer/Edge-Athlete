@@ -182,7 +182,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
-    
+    'NUM_PROXIES': 1,
 }
 
 #JWT token lifetimes 

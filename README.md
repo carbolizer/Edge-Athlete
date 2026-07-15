@@ -31,8 +31,8 @@ Mosquitto broker, Nginx, React) that runs on the Pi.
   (`edgeathlete/node/+/pulse`). Reps are saved in **one batch** when a set
   finishes (`POST /api/sets/{id}/complete/`) — never streamed one at a time.
 
-**Eight database tables:** `Node`, `RackScreen`, `Athlete`, `Program`, `Session`,
-`Set`, `Rep`, and `MonitoringEvent`. (`RackScreen` = the tablet at a rack;
+**Nine database tables:** `Node`, `RackScreen`, `RackWorkoutState`, `Athlete`,
+`Program`, `Session`, `Set`, `Rep`, and `MonitoringEvent`. (`RackScreen` = the tablet at a rack;
 `Node` = the sensor. They share a `rack_number` but are assigned independently.)
 
 ---
@@ -70,8 +70,9 @@ Then open:
 |---|---|
 | `http://localhost:8081/dashboard` | Live Edge Athlete wall display |
 | `http://localhost:8081/coach` | Authenticated coach workspace |
+| `http://localhost:8081/rack` | Rack tablet workout and unsaved live-rep feedback |
 | `http://localhost:8081/connection-test` | **API & architecture demo page** — click endpoints, see live data |
-| `http://localhost:8081/admin/` | Django admin — browse the eight tables (needs a superuser) |
+| `http://localhost:8081/admin/` | Django admin — browse the nine tables (needs a superuser) |
 | `http://localhost:8081/api/...` | The REST API (below) |
 
 Create a superuser for the admin: `docker exec -it edgeathlete-django python manage.py createsuperuser`
@@ -112,7 +113,9 @@ Request/response shapes for the real-time messages are in [MESSAGE_CONTRACT.md](
 | Method | Path | Access | What it does |
 |---|---|---|---|
 | POST | `/api/racks/register/` | open | A tablet introduces itself (`{device_id}`) so a coach can assign it a rack. |
-| GET | `/api/racks/racknumber/?device_id=` | open | A waiting tablet asks which rack it's been given → `{rack_number}`. |
+| POST | `/api/racks/racknumber/` | open | A waiting tablet submits `{device_id}` and receives `{rack_number}` without putting its stable ID in logs. |
+| GET | `/api/racks/{rack_number}/state/` | open | Read the selected athlete, full prescription, active movement, and bounded node readiness for one rack. |
+| PATCH | `/api/racks/{rack_number}/state/` | coach | Select an active-session athlete and one of that athlete's prescribed movements. |
 | POST | `/api/sets/` | open | Start a set — create the empty record when a lifter begins. |
 | POST | `/api/sets/{id}/complete/` | open | Finish a set — save all reps + totals in one transaction. **The only way reps get saved.** Returns the set plus `is_velocity_pr` / `is_weight_pr`. |
 

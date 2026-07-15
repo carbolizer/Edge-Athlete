@@ -78,8 +78,8 @@ Edge Athlete is real-time barbell velocity tracking for weight rooms that can't 
 ### End-to-end user flow
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.
-3. A deferred **rack screen** would subscribe over MQTT-over-WebSockets to its linked node's rep topic and buffer each rep locally while updating its UI.
-4. When that deferred rack workflow is implemented, it would batch-POST the completed set — summary + every rep — to the base station in one request.
+3. The **rack screen** subscribes over MQTT-over-WebSockets to its assigned node's rep topic and shows bounded, unsaved feedback for the coach-selected athlete and movement.
+4. Rack-owned set completion and durable browser buffering remain deferred; the existing batch endpoint accepts the completed set and every rep in one request.
 5. The base station writes that set, its reps, and a monitoring-outbox revision to Postgres in one transaction. A dedicated publisher delivers a privacy-safe retained invalidation event to Mosquitto with QoS 1.
 6. The **team dashboard** and **coach tablet** subscribe to `edgeathlete/dashboard/state`, then refetch their privacy-appropriate REST snapshot when its revision increases. PostgreSQL remains authoritative.
 
@@ -90,7 +90,7 @@ Edge Athlete is real-time barbell velocity tracking for weight rooms that can't 
 These are intentional, locked decisions. They are recorded here so nobody changes core architecture without understanding the tradeoffs.
 
 ### MQTT carries sensor traffic and browser invalidation events
-Hardware and Django use plain MQTT on port **1883**. The current wall dashboard and coach workspace use MQTT over WebSockets on port **9001** only for `edgeathlete/dashboard/state` invalidations, then refetch authoritative REST snapshots. The rack-tablet browser flow remains deferred.
+Hardware and Django use plain MQTT on port **1883**. Wall, coach, and rack browsers use MQTT over WebSockets on port **9001**. Wall and coach consume `edgeathlete/dashboard/state` invalidations; the rack also consumes only its assigned node's rep topic for unsaved feedback.
 
 Rationale: this repository runs synchronous Django with REST, so adding Channels would create a second server stack. Mosquitto already supplies live push. The ESP32 also remains a publisher rather than a web server, avoiding node-IP discovery. **No Channels, no ASGI, no web/WebSocket server on the ESP32.**
 
@@ -98,7 +98,7 @@ Rationale: this repository runs synchronous Django with REST, so adding Channels
 PostgreSQL stores the completed `Set` and all of its `Rep` rows. Reps are not written individually as they occur; the completion service bulk-creates the full rep list together with the set update and monitoring event in one atomic transaction.
 
 ### Deferred rack-screen durability design
-The proposed rack screen would buffer reps locally and POST a completed set in one batch. The rack-tablet frontend and its local durability mechanism are not included in this handoff.
+The implemented rack screen keeps a bounded in-memory live display. Durable local buffering and rack-owned batch completion are not included in this slice.
 
 ### MQTT topic scheme is namespaced under `edgeathlete/`
 See **Real-Time Layer Reference** for the full table. Key rule: **Django's MQTT subscriber listens ONLY to `edgeathlete/node/+/pulse`** — rep topics never reach Django/Postgres at runtime. Node reassignment = the rack screen resubscribes to a different node topic string. No IP lookup, no socket teardown.
@@ -233,10 +233,12 @@ POST  /api/racks/register/             rack screen announces itself       (open)
       body: { device_id }
       effect: upsert a RackScreen row keyed on device_id, last_seen=now;
               rack_number stays null the first time (awaiting assignment)
-GET   /api/racks/racknumber/?device_id={id}  poll while awaiting assignment      (open)
+POST  /api/racks/racknumber/          body: {device_id}; poll while awaiting assignment (open)
       returns: { rack_number: null | int }
 GET   /api/racks/unassigned/           list screens with rack_number=null  (coach only)
 PATCH /api/racks/{device_id}/          assign rack_number                  (coach only)
+GET   /api/racks/{rack_number}/state/  selected workout + node readiness   (open)
+PATCH /api/racks/{rack_number}/state/  select athlete + prescribed movement (coach only)
 
 GET   /api/athletes/                   list                               (open read)
 POST  /api/athletes/                   create                             (coach only)
@@ -609,7 +611,8 @@ IsCoach permission: allows the request only if request.user is authenticated
 Open (AllowAny):
   GET   /api/nodes/
   POST  /api/racks/register/          upsert a RackScreen by device_id, rack_number stays null if new
-  GET   /api/racks/racknumber/?device_id=   return {rack_number} for polling while unassigned
+  POST  /api/racks/racknumber/        accept {device_id}; return {rack_number} while unassigned
+  GET   /api/racks/{rack_number}/state/ return the bounded rack workout state
   GET   /api/athletes/
   GET   /api/programs/?athlete={id}
   POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, weight_lbs, started_at=now)
@@ -618,6 +621,7 @@ Coach-only (IsCoach):
   PATCH /api/nodes/{node_id}/         reassign rack_number
   GET   /api/racks/unassigned/        list RackScreen rows where rack_number is null
   PATCH /api/racks/{device_id}/       assign rack_number
+  PATCH /api/racks/{rack_number}/state/ select an active-session athlete and program
   POST  /api/athletes/  PATCH /api/athletes/{id}/
   POST  /api/programs/
   POST  /api/sessions/  PATCH /api/sessions/{id}/   (end = set ended_at=now)
@@ -653,10 +657,10 @@ curl -sX POST localhost:8081/api/sets/1/complete/ -d '{"reps":[...5 reps...],...
 # Rep.objects.count() == 5 after ONE complete call; check it was one bulk_create
 curl -sX PATCH localhost:8081/api/nodes/rack_1/ -d '{"rack_number":2}'              # 401 without token
 # rack screen registration + assignment
-curl -sX POST localhost:8081/api/racks/register/ -d '{"device_id":"abc123"}'       # 200, rack_number null (open)
-curl -sX GET  'localhost:8081/api/racks/racknumber/?device_id=abc123'                    # {rack_number: null}
-curl -sX PATCH localhost:8081/api/racks/abc123/ -H "Authorization: Bearer $T" -d '{"rack_number":3}'
-curl -sX GET  'localhost:8081/api/racks/racknumber/?device_id=abc123'                    # {rack_number: 3}
+DEVICE_ID=48f01941-a0a5-4566-8e10-f187483318fd
+curl -sX POST localhost:8081/api/racks/register/ -H 'Content-Type: application/json' -d "{\"device_id\":\"$DEVICE_ID\"}"
+curl -sX POST localhost:8081/api/racks/racknumber/ -H 'Content-Type: application/json' -d "{\"device_id\":\"$DEVICE_ID\"}"
+curl -sX PATCH "localhost:8081/api/racks/$DEVICE_ID/" -H "Authorization: Bearer $T" -d '{"rack_number":3}'
 ```
 
 ### ✅ Phase 4 Exit Checklist
@@ -698,9 +702,13 @@ Deliver committed room-state revisions without coupling broker availability to t
 
 ---
 
-## Phase 6 — Rack Tablet UI/PWA (Deferred)
+## Phase 6 — Rack Tablet Workflow
 
-The rack-tablet UI and installable PWA are not included in this handoff. The current frontend provides only the wall dashboard, authenticated coach workspace, and connection test. Rack-tablet requirements, persistence, installation behavior, and validation must be specified and implemented in a future phase.
+The first rack display/control slice is implemented at `/rack`: stable screen
+registration, coach-selected athlete and prescribed movement, complete program
+visibility, and unsaved live rep velocity feedback. Atomic rack-owned set
+creation/completion, offline buffering, NFC, and installable PWA behavior remain
+deferred and require separate acceptance criteria.
 
 ---
 
@@ -708,7 +716,7 @@ The rack-tablet UI and installable PWA are not included in this handoff. The cur
 
 ## Phase 7 — Rack Screen End-to-End (Deferred)
 
-The end-to-end rack workflow depends on the deferred rack-tablet frontend and is not part of this handoff. Define fresh acceptance criteria against the current API before implementation.
+The rack display/control frontend is implemented. Rack-owned set start, atomic completion, and offline recovery remain deferred and require fresh acceptance criteria.
 
 ---
 
@@ -791,13 +799,13 @@ Working directory: esp32/edge_athlete_node/. This is Arduino/C++ for ESP32 + MPU
 
 ### Verify
 - A physical barbell rep produces exactly one `rep` MQTT message with a plausible velocity value (`mosquitto_sub -t 'edgeathlete/node/+/rep' -v`).
-- Rack-screen display verification is deferred until the Phase 6/7 rack UI exists.
+- Rack-screen MQTT display can be exercised with simulation; physical sensor display remains unverified.
 - Pulse messages update the node's `Node` row via the Django subscriber.
 
 ### ✅ Phase 9 Exit Checklist
 - [ ] A physical rep produces one `rep` message with a plausible velocity
 - [ ] Payload shape exactly matches `parse_rep_payload`
-- [ ] Rack-screen display verified after the deferred rack UI is implemented
+- [ ] Rack-screen display verified with physical sensor hardware
 - [ ] Pulse updates the `Node` row
 - [ ] Noise-reduction hook clearly marked, not implemented
 
@@ -823,7 +831,7 @@ All handoff checks must pass.
 These phases are intentionally lighter. A lot will shift across Phases 1–9; each of these gets expanded to full paste-ready depth at the start of its sprint.
 
 ## Phase 10 — Coach Tablet (one page)
-The `/coach` route uses `Dashboard.jsx` in coach mode with a JWT login gate, REST snapshots, and MQTT revision reconciliation. It provides read-only room monitoring, athlete history, programs, and versioned coach notes; rack assignment and other administrative mutation workflows remain deferred.
+The `/coach` route uses `Dashboard.jsx` in coach mode with a JWT login gate, REST snapshots, and MQTT revision reconciliation. It provides room monitoring, athlete history, programs, versioned notes, and coach selection of the active athlete and prescribed movement for each rack.
 
 **Room layout assignment (deferred):** the current coach workspace does not assign rack screens or nodes. The existing rack and node endpoints can support a future assignment workflow after the rack-tablet requirements are defined.
 

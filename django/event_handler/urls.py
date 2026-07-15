@@ -19,6 +19,7 @@ urlpatterns = [
     path('racks/register/', views.rack_register, name='rack_register'),
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),
     path('racks/unassigned/', views.racks_unassigned, name='racks_unassigned'),
+    path('racks/<int:rack_number>/state/', views.rack_workout_state, name='rack_workout_state'),
 
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),

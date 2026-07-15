@@ -99,10 +99,10 @@ Not MQTT, but the same data contract, so it lives here too.
 ```
 - **Weight is not in this body.** The load (`weight_lbs`) is set when the set is
   *created* (`POST /api/sets/`), not when it completes.
-- Rack requests and `simulate_node --mode monitoring` both call the same atomic
-  set-completion service. Monitoring mode does not publish rep MQTT messages, so
-  a rack client cannot save the same generated stream a second time. The shared
-  completion service is the only code path that creates `Rep` rows.
+- The completion endpoint and `simulate_node --mode monitoring` call the same
+  atomic set-completion service. The current `/rack` slice does not call that
+  endpoint; it labels MQTT reps unsaved. The shared completion service remains
+  the only code path that creates `Rep` rows.
 
 ---
 
@@ -113,7 +113,7 @@ this wrong is the most likely way two parts disagree.
 
 | Field | Who computes it | How |
 |---|---|---|
-| `velocity_color` | **the rack tablet**, per rep | Compare the rep's velocity to the athlete's program zone (`velocity_zone_min/max`, fetched via `GET /api/programs/?athlete={id}`). `green` = on target, `yellow` = dropping, `red` = fatigued. Included when the tablet sends the set-complete body. |
+| `velocity_color` | **set-completion client**, per rep | Compare mean velocity with the prescribed range. `green` = on target, `yellow` = above target, `red` = below target. The current rack display computes the same text/color for unsaved feedback but does not submit completion bodies. |
 | `rep_number` (saved) | **the rack tablet** | Numbered `1..N` within the set. The tablet owns set boundaries, so it assigns the authoritative number; the node's `rep_number` is only advisory ordering. |
 | `is_velocity_pr` | **Django**, at set-complete | `true` if this set's `peak_velocity` beats the athlete's previous best for that exercise. |
 | `is_weight_pr` | **Django**, at set-complete | `true` if this set's `weight_lbs` beats the athlete's previous heaviest for that exercise. |
@@ -124,6 +124,6 @@ this wrong is the most likely way two parts disagree.
 
 | Topic | Published by | Subscribed by |
 |---|---|---|
-| `edgeathlete/node/{node_id}/rep` | node / simulator | deferred rack-tablet client |
+| `edgeathlete/node/{node_id}/rep` | node / simulator | assigned rack tablet for unsaved live feedback |
 | `edgeathlete/node/{node_id}/pulse` | node / simulator | Django subscriber (`node/+/pulse` only) |
 | `edgeathlete/dashboard/state` | Django monitoring publisher | wall and coach monitoring clients |

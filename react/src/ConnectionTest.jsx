@@ -20,8 +20,6 @@ const OPEN_GETS = [
     what: 'List every lifter in the system.' },
   { key: 'programs', path: '/api/programs/?athlete=2',
     what: "Get one athlete's training plan — the targets plus the speed zone the tablet uses to color reps green / yellow / red." },
-  { key: 'racknumber', path: '/api/racks/racknumber/?device_id=coach_test_dev',
-    what: 'Ask which rack a tablet is assigned to — the poll a waiting tablet runs every few seconds.' },
 ]
 
 // ── coach-only reads (need a login token) ──
@@ -40,7 +38,7 @@ const REFERENCE = [
   ]},
   { group: 'Tablet — racks & sets', items: [
     { m: 'POST', p: '/api/racks/register/', a: 'open', w: 'A tablet introduces itself so a coach can assign it a rack.' },
-    { m: 'GET', p: '/api/racks/racknumber/', a: 'open', w: 'A waiting tablet asks which rack it has been given.' },
+    { m: 'POST', p: '/api/racks/racknumber/', a: 'open', w: 'A waiting tablet sends its device ID privately and asks which rack it has been given.' },
     { m: 'POST', p: '/api/sets/', a: 'open', w: 'Start a set — create the empty record when a lifter begins.' },
     { m: 'POST', p: '/api/sets/{id}/complete/', a: 'open', w: 'Finish a set — save every rep + totals in one shot. The only way reps get saved.' },
   ]},

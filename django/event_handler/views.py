@@ -21,18 +21,21 @@ Grouped by who uses them:
 
 Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 """
+from collections.abc import Mapping
 from datetime import timedelta
 import hashlib
+import uuid
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Avg, Count, Max, Min, Q, Sum
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import ParseError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, MonitoringEvent
+from .models import Node, RackScreen, RackWorkoutState, Athlete, Program, Session, Set, Rep, MonitoringEvent
 from .permissions import IsCoach
 from .services.set_completion import complete_set, SetAlreadyComplete, SetNotFound
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
@@ -46,30 +49,60 @@ def _require_coach(request):
     return bool(request.user and request.user.is_authenticated and request.user.is_active and request.user.is_staff)
 
 
+class RackRegistrationThrottle(AnonRateThrottle):
+    scope = "rack_registration"
+    rate = "30/min"
+
+
+class RackReadThrottle(AnonRateThrottle):
+    scope = "rack_read"
+    rate = "120/min"
+
+
 # ─────────────────────────── tablet: racks ───────────────────────────
+
+
+def _canonical_device_id(value):
+    if not isinstance(value, str) or len(value) > 36:
+        return None
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError):
+        return None
+    canonical = str(parsed)
+    return canonical if value.lower() == canonical else None
+
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([RackRegistrationThrottle])
 def rack_register(request):
     """A rack tablet announces itself. Make (or find) its RackScreen row by
     device_id; rack_number stays empty until a coach assigns it. Body: { device_id }."""
-    device_id = request.data.get("device_id")
-    if not device_id:
-        return Response({"error": "device_id is required"}, status=400)
-    screen, _ = RackScreen.objects.get_or_create(device_id=device_id)
-    return Response({"device_id": screen.device_id, "rack_number": screen.rack_number})
+    device_id = _canonical_device_id(request.data.get("device_id"))
+    if device_id is None:
+        return Response({"code": "invalid_device_id", "detail": "device_id must be a canonical UUID."}, status=400)
+    screen, created = RackScreen.objects.get_or_create(device_id=device_id)
+    if not created:
+        screen.save(update_fields=["last_seen"])
+    response = Response({"device_id": screen.device_id, "rack_number": screen.rack_number})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
-@api_view(["GET"])
+@api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([RackReadThrottle])
 def rack_racknumber(request):
     """A waiting tablet asks "which rack am I?" Returns its rack_number (empty
     until a coach assigns it). Query: ?device_id=..."""
-    device_id = request.query_params.get("device_id")
-    if not device_id:
-        return Response({"error": "device_id is required"}, status=400)
+    device_id = _canonical_device_id(request.data.get("device_id"))
+    if device_id is None:
+        return Response({"code": "invalid_device_id", "detail": "device_id must be a canonical UUID."}, status=400)
     screen = RackScreen.objects.filter(device_id=device_id).first()
-    return Response({"rack_number": screen.rack_number if screen else None})
+    response = Response({"rack_number": screen.rack_number if screen else None})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @api_view(["GET"])
@@ -93,6 +126,160 @@ def rack_assign(request, device_id):
     screen.rack_number = rack_number
     screen.save()
     return Response(RackScreenSerializer(screen).data)
+
+
+def _rack_error(code, detail, status):
+    return Response({"code": code, "detail": detail}, status=status)
+
+
+def _lock_rack_number(rack_number):
+    """Serialize rack selection and set-start transactions for one rack."""
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [rack_number])
+
+
+def _program_body(program):
+    if program is None:
+        return None
+    return {
+        "id": program.id,
+        "exercise": program.exercise,
+        "target_sets": program.target_sets,
+        "target_reps": program.target_reps,
+        "target_weight_lbs": program.target_weight_lbs,
+        "velocity_zone_min": program.velocity_zone_min,
+        "velocity_zone_max": program.velocity_zone_max,
+    }
+
+
+def _rack_node_body(rack_number):
+    nodes = list(Node.objects.filter(rack_number=rack_number).order_by("node_id")[:2])
+    if not nodes:
+        return {"state": "unassigned", "node_id": None}
+    if len(nodes) > 1:
+        return {"state": "conflict", "node_id": None}
+    if not nodes[0].is_active:
+        return {"state": "inactive", "node_id": None}
+    return {"state": "ready", "node_id": nodes[0].node_id}
+
+
+def _rack_state_body(rack_number):
+    revision = MonitoringEvent.objects.order_by("-id").values_list("id", flat=True).first() or 0
+    active_session = Session.objects.filter(ended_at=None).order_by("-started_at", "-id").first()
+    state = (
+        RackWorkoutState.objects.select_related("active_program__athlete")
+        .filter(rack_number=rack_number)
+        .first()
+    )
+    selected_program = None
+    if (
+        state
+        and state.active_program
+        and active_session
+        and state.active_session_id == active_session.id
+        and active_session.athletes.filter(id=state.active_program.athlete_id).exists()
+    ):
+        selected_program = state.active_program
+    athlete = selected_program.athlete if selected_program else None
+    programs = Program.objects.none()
+    if athlete:
+        programs = Program.objects.filter(athlete=athlete).order_by("id")
+    return {
+        "revision": revision,
+        "rack_number": rack_number,
+        "active_session": {
+            "id": active_session.id,
+            "label": active_session.label,
+        } if active_session else None,
+        "selected_athlete": {"id": athlete.id, "name": athlete.name} if athlete else None,
+        "programs": [_program_body(program) for program in programs],
+        "active_program": _program_body(selected_program),
+        "node": _rack_node_body(rack_number),
+    }
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([AllowAny])
+@throttle_classes([RackReadThrottle])
+def rack_workout_state(request, rack_number):
+    """Read rack-safe workout state or atomically change its coach selection."""
+    known_rack = rack_number > 0 and (
+        RackScreen.objects.filter(rack_number=rack_number).exists()
+        or Node.objects.filter(rack_number=rack_number).exists()
+        or RackWorkoutState.objects.filter(rack_number=rack_number).exists()
+    )
+    if not known_rack:
+        return _rack_error("rack_not_found", "Rack not found.", 404)
+    if request.method == "GET":
+        response = Response(_rack_state_body(rack_number))
+        response["Cache-Control"] = "private, no-store"
+        return response
+
+    if not request.user or not request.user.is_authenticated:
+        return _rack_error("not_authenticated", "Coach login required.", 401)
+    if not request.user.is_active or not request.user.is_staff:
+        return _rack_error("permission_denied", "Coach access required.", 403)
+    try:
+        payload = request.data
+    except ParseError:
+        return _rack_error("malformed_request", "Request body must be valid JSON.", 400)
+    if not isinstance(payload, Mapping):
+        return _rack_error("malformed_request", "Request body must be an object.", 400)
+    athlete_id = payload.get("athlete_id")
+    program_id = payload.get("program_id")
+    if (
+        isinstance(athlete_id, bool) or not isinstance(athlete_id, int) or athlete_id <= 0
+        or isinstance(program_id, bool) or not isinstance(program_id, int) or program_id <= 0
+    ):
+        return _rack_error(
+            "malformed_request",
+            "athlete_id and program_id must be positive integers.",
+            400,
+        )
+
+    with transaction.atomic():
+        _lock_rack_number(rack_number)
+        active_session = (
+            Session.objects.select_for_update()
+            .filter(ended_at=None)
+            .order_by("-started_at", "-id")
+            .first()
+        )
+        if active_session is None:
+            return _rack_error("no_active_session", "No active session.", 409)
+        athlete = Athlete.objects.filter(id=athlete_id).first()
+        if athlete is None:
+            return _rack_error("athlete_not_found", "Athlete not found.", 404)
+        if not active_session.athletes.filter(id=athlete.id).exists():
+            return _rack_error(
+                "athlete_not_in_active_session",
+                "Athlete is not in the active session.",
+                409,
+            )
+        program = Program.objects.select_related("athlete").filter(id=program_id).first()
+        if program is None:
+            return _rack_error("program_not_found", "Program not found.", 404)
+        if program.athlete_id != athlete.id:
+            return _rack_error(
+                "program_athlete_mismatch",
+                "Program does not belong to the selected athlete.",
+                409,
+            )
+        if Set.objects.filter(rack_number=rack_number, ended_at=None).exists():
+            return _rack_error("unfinished_set", "Rack has an unfinished set.", 409)
+
+        RackWorkoutState.objects.get_or_create(rack_number=rack_number)
+        state = RackWorkoutState.objects.select_for_update().get(rack_number=rack_number)
+        state.active_session = active_session
+        state.active_program = program
+        state.save(update_fields=["active_session", "active_program", "updated_at"])
+        MonitoringEvent.objects.create(
+            reason="rack_selection_changed",
+            is_simulated=active_session.is_simulated,
+        )
+    response = Response(_rack_state_body(rack_number))
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 # ─────────────────────────── nodes ───────────────────────────
@@ -127,10 +314,11 @@ def _room_state_snapshot(include_details):
 
     node_racks = Node.objects.exclude(rack_number=None).values_list("rack_number", flat=True).distinct()[:MAX_DASHBOARD_RACKS]
     screen_racks = RackScreen.objects.exclude(rack_number=None).values_list("rack_number", flat=True).distinct()[:MAX_DASHBOARD_RACKS]
+    state_racks = RackWorkoutState.objects.values_list("rack_number", flat=True).distinct()[:MAX_DASHBOARD_RACKS]
     session_racks = Set.objects.none().values_list("rack_number", flat=True)
     if active_session:
         session_racks = Set.objects.filter(session=active_session).exclude(rack_number=None).values_list("rack_number", flat=True).distinct()[:MAX_DASHBOARD_RACKS]
-    all_rack_numbers = sorted(set(node_racks) | set(screen_racks) | set(session_racks))
+    all_rack_numbers = sorted(set(node_racks) | set(screen_racks) | set(state_racks) | set(session_racks))
     rack_numbers = all_rack_numbers[:MAX_DASHBOARD_RACKS]
     nodes = list(Node.objects.filter(rack_number__in=rack_numbers).order_by("rack_number", "node_id"))
     screen_counts = dict(
@@ -138,6 +326,18 @@ def _room_state_snapshot(include_details):
         .values_list("rack_number")
         .annotate(count=Count("id"))
     )
+    selections_by_rack = {}
+    if include_details and active_session:
+        selected_states = (
+            RackWorkoutState.objects.filter(
+                rack_number__in=rack_numbers,
+                active_session=active_session,
+                active_program__isnull=False,
+                active_program__athlete__sessions=active_session,
+            )
+            .select_related("active_program__athlete")
+        )
+        selections_by_rack = {state.rack_number: state for state in selected_states}
 
     latest_sets_by_rack = {}
     active_sets_by_rack = {}
@@ -211,7 +411,7 @@ def _room_state_snapshot(include_details):
                     "target_zone": {
                         "min": program.velocity_zone_min,
                         "max": program.velocity_zone_max,
-                    } if program else None,
+                    } if program and program.velocity_zone_min is not None and program.velocity_zone_max is not None else None,
                     "reps": [{
                         "rep_number": rep.rep_number,
                         "timestamp": rep.timestamp,
@@ -231,6 +431,8 @@ def _room_state_snapshot(include_details):
             "latest_set": latest_set_body,
         }
         if include_details:
+            selected_state = selections_by_rack.get(rack_number)
+            selected_program = selected_state.active_program if selected_state else None
             rack_body.update({
                 "screen_count": screen_counts.get(rack_number, 0),
                 "nodes": [{
@@ -244,6 +446,13 @@ def _room_state_snapshot(include_details):
                 } for node in rack_nodes[:4]],
                 "nodes_truncated": len(rack_nodes) > 4,
                 "assignment_conflict": len(rack_nodes) > 1 or screen_counts.get(rack_number, 0) > 1,
+                "selection": {
+                    "athlete": {
+                        "id": selected_program.athlete_id,
+                        "name": selected_program.athlete.name,
+                    },
+                    "active_program": _program_body(selected_program),
+                } if selected_program else None,
             })
         racks.append(rack_body)
 
@@ -289,6 +498,9 @@ def _room_state_snapshot(include_details):
         },
     }
     if include_details:
+        snapshot["participants"] = list(
+            active_session.athletes.order_by("name", "id").values("id", "name")[:500]
+        ) if active_session else []
         snapshot["meta"] = {
             "active_session_count": active_sessions.count(),
             "unassigned_session_sets": unassigned_session_sets,
@@ -364,7 +576,7 @@ def _measured_set_insights(workout_set, reps, program):
             average_change_percent = average_change / previous.avg_velocity * 100
 
     below = inside = above = None
-    if program:
+    if program and program.velocity_zone_min is not None and program.velocity_zone_max is not None:
         below = sum(value < program.velocity_zone_min for value in velocities)
         inside = sum(program.velocity_zone_min <= value <= program.velocity_zone_max for value in velocities)
         above = sum(value > program.velocity_zone_max for value in velocities)
@@ -414,7 +626,15 @@ def node_detail(request, node_id):
         return Response({"error": "node not found"}, status=404)
     form = NodeSerializer(node, data=request.data, partial=True)
     form.is_valid(raise_exception=True)
-    return Response(NodeSerializer(form.save()).data)
+    requested_rack = form.validated_data.get("rack_number", node.rack_number)
+    with transaction.atomic():
+        node = Node.objects.select_for_update().get(id=node.id)
+        for rack_number in sorted({rack for rack in (node.rack_number, requested_rack) if rack is not None}):
+            _lock_rack_number(rack_number)
+        form = NodeSerializer(node, data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        node = form.save()
+    return Response(NodeSerializer(node).data)
 
 
 # ─────────────────────────── athletes ───────────────────────────
@@ -540,7 +760,14 @@ def set_create(request):
     set_number, and optionally node + weight_lbs."""
     form = SetSerializer(data=request.data)
     form.is_valid(raise_exception=True)
-    new_set = form.save()
+    node = form.validated_data.get("node")
+    with transaction.atomic():
+        if node:
+            node = Node.objects.select_for_update().get(id=node.id)
+            form.validated_data["node"] = node
+            if node.rack_number is not None:
+                _lock_rack_number(node.rack_number)
+        new_set = form.save()
     return Response(SetSerializer(new_set).data, status=201)
 
 
