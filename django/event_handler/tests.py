@@ -13,10 +13,10 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import Athlete, MonitoringEvent, Node, Program, RackScreen, Rep, Session, Set
-from .notification_flow.broadcast.publisher import DASHBOARD_TOPIC, publish_pending_event
-from .notification_flow.event_processor.process_pulse import process_pulse_event
-from .notification_flow.mqtt_ingester.parser import parse_pulse_payload, parse_rep_payload
-from .notification_flow.mqtt_ingester.subscriber import on_message
+from .realtime.broadcast.publisher import DASHBOARD_TOPIC, publish_pending_event
+from .realtime.event_processor.process_pulse import process_pulse_event
+from .realtime.mqtt_ingester.parser import parse_pulse_payload, parse_rep_payload
+from .realtime.mqtt_ingester.subscriber import on_message
 
 
 class SimulatorTests(TestCase):

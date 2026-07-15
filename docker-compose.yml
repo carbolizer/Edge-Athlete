@@ -27,24 +27,16 @@ services:
     # 1883 = plain MQTT for hardware nodes + Django. 9001 = the SAME broker
     # spoken over WebSockets so browsers can subscribe directly — no Nginx proxy.
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}:1883:1883"
+      - "${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}:9001:9001"
     restart: unless-stopped
-
-  ntfy:
-    image: binwiederhier/ntfy
-    container_name: edgeathlete-ntfy
-    volumes:
-      - ntfy_data:/var/lib/ntfy
-    ports:
-      - "8080:80"
-    restart: unless-stopped
-    command: serve
 
   django:
     build: ./django
     container_name: edgeathlete-django
     env_file: .env
+    environment:
+      EDGEATHLETE_BIND_ADDRESS: "${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}"
     restart: unless-stopped
     depends_on:
       postgres:
@@ -57,6 +49,7 @@ services:
     container_name: edgeathlete-mqtt-listener
     env_file: .env
     environment:
+      - EDGEATHLETE_BIND_ADDRESS=${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     # Django (its Dockerfile CMD) is the SOLE migrator — running migrate here too
@@ -74,6 +67,7 @@ services:
     container_name: edgeathlete-monitoring-publisher
     env_file: .env
     environment:
+      - EDGEATHLETE_BIND_ADDRESS=${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     command: python manage.py publish_monitoring_events
@@ -89,6 +83,7 @@ services:
     container_name: edgeathlete-simulator
     env_file: .env
     environment:
+      - EDGEATHLETE_BIND_ADDRESS=${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}
       - PYTHONUNBUFFERED=1
       - SIMULATOR_ENABLED=True
     command: python manage.py simulate_node --mode monitoring --racks 4 --continuous --max-cycles 100
@@ -101,7 +96,6 @@ services:
   react:
     build: ./react
     container_name: edgeathlete-react
-    env_file: .env
     restart: unless-stopped
     depends_on:
       - django
@@ -110,7 +104,7 @@ services:
     image: nginx:alpine
     container_name: edgeathlete-nginx
     ports:
-      - "80:80"
+      - "${EDGEATHLETE_BIND_ADDRESS:-127.0.0.1}:${EDGEATHLETE_HTTP_PORT:-8081}:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
     restart: unless-stopped
@@ -118,11 +112,7 @@ services:
       - react
       - django
 
-  # NOTE: the reference project also ran a second `mosquitto-subscriber` service
-  # (python manage.py start_mqtt_listener) alongside `mqtt-listener` above — both
-  # subscribed to the same topics, double-processing every message. That duplicate
-  # service is intentionally removed here; `mqtt-listener` is the ONE listener.
+  # `mqtt-listener` is the only inbound subscriber, preventing duplicate processing.
 
 volumes:
   postgres_data:
-  ntfy_data:

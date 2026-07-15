@@ -3,8 +3,8 @@
 import paho.mqtt.client as mqtt
 from django.conf import settings
 
-from event_handler.notification_flow.event_processor.process_pulse import process_pulse_event
-from event_handler.notification_flow.mqtt_ingester.parser import parse_pulse_payload
+from event_handler.realtime.event_processor.process_pulse import process_pulse_event
+from event_handler.realtime.mqtt_ingester.parser import parse_pulse_payload
 
 MQTT_PULSE_TOPIC = "edgeathlete/node/+/pulse"
 MQTT_QOS = 1

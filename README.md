@@ -25,33 +25,75 @@ Mosquitto broker, Nginx, React) that runs on the Pi.
 
 - **Web path:** browser → Nginx → Django (the API) → PostgreSQL.
 - **Sensors:** each node publishes reps + heartbeats to Mosquitto over MQTT (1883).
-- **Screens:** tablets and the wall display talk to the broker **directly** over
+- **Screens:** coach and wall browsers talk to the broker **directly** over
   MQTT-over-WebSockets (9001) — no server in the middle, no Django Channels.
 - **The key rule:** Django's subscriber only listens for **heartbeats**
   (`edgeathlete/node/+/pulse`). Reps are saved in **one batch** when a set
   finishes (`POST /api/sets/{id}/complete/`) — never streamed one at a time.
 
-**Seven database tables:** `Node`, `RackScreen`, `Athlete`, `Program`, `Session`,
-`Set`, `Rep`. (`RackScreen` = the tablet at a rack; `Node` = the sensor. They
-share a `rack_number` but are assigned independently.)
+**Eight database tables:** `Node`, `RackScreen`, `Athlete`, `Program`, `Session`,
+`Set`, `Rep`, and `MonitoringEvent`. (`RackScreen` = the tablet at a rack;
+`Node` = the sensor. They share a `rack_number` but are assigned independently.)
 
 ---
 
 ## Quick start
 
+Create local configuration before starting Docker:
+
 ```bash
-docker compose up --build          # start the whole stack
+cp .env.example .env
 ```
+
+The template runs as copied but binds the website to loopback only. `setup.sh`
+generates restricted deployment secrets and changes the bind address to the Pi
+access-point IP. For another shared deployment, replace `SECRET_KEY` and
+`POSTGRES_PASSWORD`, set `DEBUG=False`, and set `EDGEATHLETE_BIND_ADDRESS`
+deliberately. Keep
+`EDGEATHLETE_HTTP_PORT=8081` unless that port is already occupied.
+
+```bash
+docker compose up --build -d --remove-orphans
+```
+
+The website defaults to host port `8081`, so another project on port 80 cannot
+be mistaken for this app.
+
+When replacing a stack created under a different Compose project name, stop
+that project explicitly first. `--remove-orphans` cannot remove containers or
+volumes owned by another Compose project; retain or delete its data according
+to that project's retention requirements.
 
 Then open:
 
 | URL | What it is |
 |---|---|
-| `http://localhost/connection-test` | **API & architecture demo page** — click endpoints, see live data |
-| `http://localhost/admin/` | Django admin — browse the seven tables (needs a superuser) |
-| `http://localhost/api/...` | the REST API (below) |
+| `http://localhost:8081/dashboard` | Live Edge Athlete wall display |
+| `http://localhost:8081/coach` | Authenticated coach workspace |
+| `http://localhost:8081/connection-test` | **API & architecture demo page** — click endpoints, see live data |
+| `http://localhost:8081/admin/` | Django admin — browse the eight tables (needs a superuser) |
+| `http://localhost:8081/api/...` | The REST API (below) |
 
 Create a superuser for the admin: `docker exec -it edgeathlete-django python manage.py createsuperuser`
+
+Start generated sensor data without hardware:
+
+```bash
+docker compose --profile simulation up -d simulator
+```
+
+If ports 1883 or 9001 are already occupied, stop the older MQTT project before
+starting Edge Athlete. Do not use `http://localhost/` for this stack; its explicit
+entry point is `http://localhost:8081/` unless `EDGEATHLETE_HTTP_PORT` is changed.
+
+To identify older containers before startup:
+
+```bash
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+```
+
+Stop the older Compose stack from its own repository with
+`docker compose down --remove-orphans`. This does not delete its database volume.
 
 ---
 
@@ -102,5 +144,4 @@ Request/response shapes for the real-time messages are in [MESSAGE_CONTRACT.md](
 ## Docs
 - [SPEC.md](SPEC.md) — the single source of truth (phases, models, topics).
 - [MESSAGE_CONTRACT.md](MESSAGE_CONTRACT.md) — exact shapes of every MQTT / API message.
-- [DESIGN_NOTES.md](DESIGN_NOTES.md) — deliberate choices we may revisit.
 - [RUNBOOK.md](RUNBOOK.md) — services, start/stop, and operational notes.

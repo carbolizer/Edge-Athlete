@@ -7,7 +7,7 @@
 # restart-loop forever. The keep-alive loop below is that "stay awake" part.
 from django.core.management.base import BaseCommand
 
-from event_handler.notification_flow.mqtt_ingester.subscriber import start_mqtt_subscriber
+from event_handler.realtime.mqtt_ingester.subscriber import start_mqtt_subscriber
 
 
 class Command(BaseCommand):

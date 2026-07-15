@@ -7,7 +7,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 
-from event_handler.notification_flow.broadcast.publisher import publish_pending_event
+from event_handler.realtime.broadcast.publisher import publish_pending_event
 
 
 class Command(BaseCommand):

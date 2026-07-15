@@ -5,7 +5,7 @@
  * and lets you actually CLICK the read endpoints and see real JSON come back
  * from Django. Replaces the old Sprint-1 connection-test placeholder.
  *
- * Reachable at:  http://<base-station>/connection-test
+ * Reachable at:  http://<base-station>:8081/connection-test
  * Everything here talks to the same Nginx that serves this page, which forwards
  * /api/* to Django — so the buttons hit the real API with no extra setup.
  */
@@ -297,7 +297,7 @@ function ConnectionTest() {
         </Card>
 
         <p style={{ color: C.ink3, fontSize: 12, marginTop: 28, textAlign: 'center' }}>
-          Full docs: README.md · SPEC.md · MESSAGE_CONTRACT.md · DESIGN_NOTES.md
+          Full docs: README.md · SPEC.md · MESSAGE_CONTRACT.md · RUNBOOK.md
         </p>
       </div>
     </div>

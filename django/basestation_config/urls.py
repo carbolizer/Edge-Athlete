@@ -24,11 +24,11 @@ Works with:
   - Django's built in admin panel — handles all /admin/ requests
 
 URL flow example:
-  Browser hits /api/motion/
+  Browser hits /api/wall-state/
       ↓
   This file sees /api/ → hands off to event_handler/urls.py
       ↓
-  event_handler/urls.py sees /motion/ → calls motion_detected view
+  event_handler/urls.py calls the Edge Athlete wall-state view
 """
 from django.contrib import admin
 from django.conf import settings

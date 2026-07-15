@@ -15,7 +15,6 @@ Works with:
   - basestation_config/urls.py — ROOT_URLCONF points Django to the router
   - postgres container — DATABASES connects Django to PostgreSQL
   - mosquitto container — MQTT settings tell Django where the broker is
-  - ntfy container — NTFY settings tell Django where to send notifications
 
 For more information on this file, see
 https://docs.djangoproject.com/en/5.1/topics/settings/
@@ -26,6 +25,8 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 from pathlib import Path
 from datetime import timedelta
 import os
+
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # BASE_DIR points to the /django folder — the root of the Django project
@@ -39,6 +40,19 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # .env sets DEBUG=True for development, DEBUG=False for production
 # The '== True' converts the string from .env into an actual boolean
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+POSTGRES_PASSWORD = os.environ.get('POSTGRES_PASSWORD') or ''
+BIND_ADDRESS = os.environ.get('EDGEATHLETE_BIND_ADDRESS', '127.0.0.1')
+LOOPBACK_BIND = BIND_ADDRESS in {'127.0.0.1', '::1'}
+PLACEHOLDER_CREDENTIALS = (
+    SECRET_KEY in {None, '', 'change-me-local-only'}
+    or POSTGRES_PASSWORD in {'', 'change-me-local-only'}
+)
+if DEBUG and not LOOPBACK_BIND:
+    raise ImproperlyConfigured('DEBUG=True requires a loopback bind address.')
+if PLACEHOLDER_CREDENTIALS and (not DEBUG or not LOOPBACK_BIND):
+    raise ImproperlyConfigured('Local placeholder credentials require DEBUG=True and a loopback bind address.')
+if (not DEBUG or not LOOPBACK_BIND) and (len(SECRET_KEY or '') < 32 or len(POSTGRES_PASSWORD) < 16):
+    raise ImproperlyConfigured('Shared-deployment credentials do not meet minimum length requirements.')
 
 # Hosts that Django will respond to — read from .env as a comma separated list
 # Example: ALLOWED_HOSTS=localhost,127.0.0.1
@@ -57,7 +71,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # Third party — adds tools for building JSON APIs for React to consume
     'rest_framework',
-    # Our app — handles motion events from ESP32 and serves data to React
+    # Our app handles athlete, workout, sensor-health, and monitoring data.
     'rest_framework_simplejwt', # JWT token auth
     'corsheaders',  # Allows React to call Django across ports 
     'event_handler',
@@ -119,17 +133,10 @@ DATABASES = {
 # MQTT Configuration
 # Mosquitto broker connection settings — read from .env
 # MQTT_HOST is 'mosquitto' because that is the compose service name on the Docker network
-# Used by event_handler to subscribe to motion events from ESP32 nodes
+# Used by event_handler to subscribe to ESP32 node-health pulses.
 MQTT_HOST = os.environ.get('MQTT_HOST') or 'mosquitto'
 MQTT_PORT = int(os.environ.get('MQTT_PORT') or 1883)
 SIMULATOR_ENABLED = os.environ.get('SIMULATOR_ENABLED', 'False') == 'True'
-
-# Ntfy Configuration
-# Ntfy is the push notification service Django posts to when motion is detected
-# NTFY_URL and NTFY_TOPIC are read from .env
-# Django sends HTTP POST requests to NTFY_URL/NTFY_TOPIC when an event comes in
-NTFY_URL = os.getenv("NTFY_URL", "http://ntfy:80")
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "edgeathlete-alerts")
 
 # Password validation rules for user accounts
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators

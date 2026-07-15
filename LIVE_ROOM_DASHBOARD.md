@@ -11,7 +11,8 @@ As a coach, I want the wall and coach dashboards to load the active room state f
 
 ## Problem
 
-The dashboard currently renders rack, athlete, session, and leaderboard data from `react/src/data/demoDashboardData.js`. Its only backend request counts nodes and does not affect the room display.
+Before this feature, the dashboard rendered hardcoded rack, athlete, session, and
+leaderboard data. The completed implementation now uses bounded Django snapshots.
 
 ## Goals
 
@@ -24,12 +25,11 @@ The dashboard currently renders rack, athlete, session, and leaderboard data fro
 - MQTT-driven updates after the initial snapshot.
 - Live reps that have not been submitted by the rack screen.
 - Coach mutations, inferred fatigue guidance, rest timers, or program compliance.
-- Connecting the separate rack, athlete, and admin preview pages.
 
 ## Assumptions
 
 - The newest session without an `ended_at` value is the active room session.
-- A set belongs to its node's current rack because `Set` does not store a rack snapshot.
+- Completed sets retain their rack snapshot even if a node is reassigned later.
 - The base station runs on a private gym network, matching the existing open read endpoints.
 
 ## Acceptance criteria
@@ -86,4 +86,4 @@ The dashboard currently renders rack, athlete, session, and leaderboard data fro
 
 ## Architecture decision
 
-Use a REST snapshot for initial state only. This gives a browser enough persisted state after a reload without violating the existing rule that ongoing live updates use MQTT. Polling and new MQTT event handling are deferred. The known limitation is that changing a node's rack assignment also changes where historical sets appear because `Set` has no immutable rack number.
+Use REST snapshots as the source of truth and MQTT revisions as invalidation signals. Browsers reconcile persisted state after reloads, reconnects, and set completion without polling. Completed sets store an immutable rack snapshot, so later node reassignment does not move history.

@@ -1,9 +1,8 @@
 # Feature Spec: Production Wall and Coach Monitoring
 
 - Ticket: N/A
-- Owner: Braydon
 - Date: 2026-07-13
-- Status: In Progress
+- Status: Implemented; physical deployment verification pending
 
 ## User stories
 
@@ -13,7 +12,7 @@ As a coach, I want an authenticated tablet view with live rack details and measu
 
 ## Problem
 
-The current views load one persisted snapshot but do not update when sets finish. The wall is a dashboard shell rather than a kiosk-grade scoreboard, and the coach view lacks measured trends, broker state, token recovery, and stale-data behavior.
+Before this feature, the views loaded one persisted snapshot but did not update when sets finished. The wall was a dashboard shell rather than a kiosk-grade scoreboard, and the coach view lacked measured trends, broker state, token recovery, and stale-data behavior.
 
 ## Goals
 
@@ -28,7 +27,7 @@ The current views load one persisted snapshot but do not update when sets finish
 - Session, athlete, program, or hardware mutations.
 - Unsaved per-rep streaming on wall or coach views.
 - Fatigue, readiness, form, compliance, rest, or load recommendations.
-- Administrative preview pages and multi-page coach navigation.
+- Administrative mutation workflows outside the monitoring workspace.
 - Trained or scaffolded machine-learning output.
 
 ## Assumptions
@@ -43,12 +42,12 @@ The current views load one persisted snapshot but do not update when sets finish
 
 - [ ] AC1: Given either view is open, when a set commits, then rack state, room totals, insights, and leaderboard reconcile from REST within two seconds without reload.
 - [ ] AC2: Given MQTT is unavailable when a set commits, when the broker returns, then the durable outbox publishes the pending revision and connected clients reconcile.
-- [ ] AC3: Given a client reconnects or receives duplicate/out-of-order events, then it ignores old revisions and converges to the latest REST revision.
+- [x] AC3: Given a client reconnects or receives duplicate/out-of-order events, then it ignores old revisions and converges to the latest REST revision.
 - [ ] AC4: The wall route `/dashboard` is read-only, requires no login, is legible at 1920x1080 and 1366x768, and exposes only scoreboard-safe fields.
 - [ ] AC5: The coach route requires JWT login and shows latest saved reps, target comparison, previous comparable set, velocity loss/range, and node staleness using measured data only.
 - [ ] AC6: Loading, no session, no racks, no sets, reconnecting, stale snapshot, API failure, expired login, and truncated-data states have explicit UI behavior.
-- [ ] AC7: A pulse on `edgeathlete/node/{node_id}/pulse` updates the matching `Node` health fields; malformed pulses do not terminate the listener.
-- [ ] AC8: A saved set retains its original rack after its node is reassigned.
+- [x] AC7: A pulse on `edgeathlete/node/{node_id}/pulse` updates the matching `Node` health fields; malformed pulses do not terminate the listener.
+- [x] AC8: A saved set retains its original rack after its node is reassigned.
 - [ ] AC9: Backend, frontend, privacy, MQTT publisher, reconnect, and responsive tests pass with recorded evidence.
 
 ## Interface contract
@@ -81,6 +80,26 @@ The current views load one persisted snapshot but do not update when sets finish
 - Frontend: REST bootstrap, event revision reconciliation, duplicate event, reconnect/stale state, auth loss, empty/error states.
 - Responsive: screenshots at 1920x1080, 1366x768, 1024x768, and 768x1024.
 - Integration: complete a set, observe retained MQTT revision, and verify both views refetch within two seconds; repeat with broker outage.
+
+## Validation evidence
+
+- `python manage.py test`: 30 tests passed.
+- `python manage.py check`: passed.
+- `python manage.py makemigrations --check --dry-run`: no changes detected.
+- `npm test -- --run`: 6 tests passed.
+- `npm run build`: passed with a bundle-size warning.
+- Django and React Compose images built successfully.
+- `bash -n setup.sh startup.sh`, Compose configuration validation, and `git diff --check`: passed.
+- The credential guard rejected debug mode on a remote bind and rejected placeholder credentials; it accepted strong shared credentials with debug mode disabled.
+- Pi provisioning, systemd startup, and access-point behavior were code-reviewed but were not exercised on physical hardware. No screenshot evidence is claimed.
+
+## Remaining verification
+
+- Complete a set and confirm both open views reconcile all saved state within two seconds.
+- Complete a set during a broker outage, restore the broker, and confirm the pending event retries and both views converge.
+- Expire or remove coach authentication and confirm the detailed coach UI clears and returns to login.
+- Capture or manually record checks at 1920x1080, 1366x768, 1024x768, and 768x1024.
+- Exercise Pi access-point provisioning and systemd startup on the physical deployment hardware.
 
 ## Demo script
 

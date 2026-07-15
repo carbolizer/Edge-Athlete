@@ -5,7 +5,6 @@
 django==5.2.9               # The Django web framework
 djangorestframework==3.15.2 # Adds tools for building JSON APIs for React
 psycopg2-binary==2.9.9      # PostgreSQL database driver — required for Docker
-requests==2.33.0            # HTTP client used to send notifications to Ntfy
 paho-mqtt==1.6.1            # Python Mosquitto broker library
 djangorestframework-simplejwt==5.5.1 # JWT token auth for the React frontend
 django-cors-headers==4.4.0 # Allows React (port 5173) to call Django (port 8000)

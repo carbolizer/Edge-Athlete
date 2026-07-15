@@ -15,7 +15,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from event_handler.models import Athlete, Node, Program, Session, Set
-from event_handler.notification_flow.mqtt_ingester.parser import parse_rep_payload
+from event_handler.realtime.mqtt_ingester.parser import parse_rep_payload
 from event_handler.serializers import SetCompleteSerializer
 from event_handler.services.set_completion import complete_set, SetAlreadyComplete
 

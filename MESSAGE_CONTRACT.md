@@ -6,8 +6,8 @@ screens, and the body of the batch set-complete request. If you're building a
 screen, a simulator, or an endpoint, build to the shapes here so nothing
 misreads anything else.
 
-This is the raw reference — Carl folds it into the shared-setup story; Derrilon's
-simulator and Braydon's tablet both publish/consume against it.
+Firmware, simulation, rack screens, monitoring views, and backend endpoints all
+publish or consume against this contract.
 
 ---
 
@@ -57,23 +57,7 @@ simulator and Braydon's tablet both publish/consume against it.
 
 ---
 
-## 2. Django → broker (broadcasts to the screens)
-
-Every broadcast has a `"type"` string; consumers switch on it. Fields depend on
-the type.
-
-### `edgeathlete/rack/{rack_number}/state` — for the tablet at that rack
-```jsonc
-// a set was completed
-{ "type": "set_complete", "set_id": 12, "athlete": {"id":4,"name":"Jordan Lee"},
-  "reps_completed": 5, "avg_velocity": 0.70, "peak_velocity": 0.91, "is_false_set": false }
-
-// a different sensor was linked to this rack
-{ "type": "node_reassigned", "node_id": "rack_1" }
-
-// an athlete checked in at this rack
-{ "type": "athlete_checkin", "athlete": {"id":4,"name":"Jordan Lee"}, "rack_number": 3 }
-```
+## 2. Django → broker (monitoring invalidation)
 
 ### `edgeathlete/dashboard/state` — privacy-safe room invalidation
 ```jsonc
@@ -94,17 +78,6 @@ the type.
 - Wall clients ignore `node_health_changed`; authenticated coach clients reconcile
   hardware state. Node events are created only for material health changes, not
   every five-second pulse.
-
-### `edgeathlete/coach/state` — reserved for future private alerts
-```jsonc
-{ "type": "fatigue_alert", "athlete": {"id":4,"name":"Jordan Lee"}, "rack_number": 3 }
-```
-- Fatigue detection is Phase 11 — treat this topic's exact fields as **provisional**
-  until then. The envelope (`type` + `athlete`) is stable; extra fields may be added.
-- Production monitoring does not subscribe to this topic while the broker permits
-  anonymous clients. Coach details are fetched through JWT-protected REST.
-
----
 
 ## 3. REST — the batch set-complete body
 
@@ -151,8 +124,6 @@ this wrong is the most likely way two parts disagree.
 
 | Topic | Published by | Subscribed by |
 |---|---|---|
-| `edgeathlete/node/{node_id}/rep` | node / simulator | the rack tablet linked to that node |
+| `edgeathlete/node/{node_id}/rep` | node / simulator | deferred rack-tablet client |
 | `edgeathlete/node/{node_id}/pulse` | node / simulator | Django subscriber (`node/+/pulse` only) |
-| `edgeathlete/rack/{rack_number}/state` | Django | the rack tablet at that rack |
-| `edgeathlete/dashboard/state` | Django | the team wall display |
-| `edgeathlete/coach/state` | Django | the coach tablet |
+| `edgeathlete/dashboard/state` | Django monitoring publisher | wall and coach monitoring clients |
