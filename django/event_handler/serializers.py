@@ -9,7 +9,7 @@ receptionist handing back a tidy summary. One of these per kind of record.
 """
 from rest_framework import serializers
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, Exercise
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -78,6 +78,14 @@ class SessionSerializer(serializers.ModelSerializer):
         model = Session
         fields = ["id", "label", "started_at", "ended_at", "athletes", "notes"]
         read_only_fields = ["id", "started_at"]
+
+
+class ExerciseSerializer(serializers.ModelSerializer):
+    """One movement in the catalog — the official identity plans/sets/maxes link to."""
+    class Meta:
+        model = Exercise
+        fields = ["id", "name", "tags", "is_stub", "created_at"]
+        read_only_fields = ["id", "created_at"]
 
 
 class NodeSerializer(serializers.ModelSerializer):

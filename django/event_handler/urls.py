@@ -27,6 +27,9 @@ urlpatterns = [
     path('athletes/', views.athletes_view, name='athletes'),
     path('athletes/<int:athlete_id>/', views.athlete_detail, name='athlete_detail'),
 
+    # exercise catalog
+    path('exercises/', views.exercises_list, name='exercises_list'),
+
     # training plans
     path('programs/', views.programs_view, name='programs'),
 

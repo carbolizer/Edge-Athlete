@@ -246,11 +246,11 @@ RackScreen — device_id (CharField, unique, client-generated at first setup),
              rack_number (Int, nullable — null means "awaiting coach
              assignment"), last_seen (DateTime, auto)
 Athlete    — name, nfc_tag_id (unique, nullable), created_at (auto), notes (Text, blank)
-Program    — athlete (FK→Athlete), exercise, target_sets (Int), target_reps (Int),
+Program    — athlete (FK→Athlete), exercise (FK→Exercise), target_sets (Int), target_reps (Int),
              target_weight_lbs (Float), velocity_zone_min (Float), velocity_zone_max (Float)
 Session    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
 Set        — session (FK→Session), athlete (FK→Athlete), node (FK→Node, nullable),
-             exercise, set_number (Int), weight_lbs (Float, nullable), started_at, ended_at (nullable),
+             exercise (FK→Exercise), set_number (Int), weight_lbs (Float, nullable), started_at, ended_at (nullable),
              reps_completed (Int, default 0), avg_velocity (Float, nullable),
              peak_velocity (Float, nullable), is_false_set (Bool, default False)
 Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float),
@@ -259,6 +259,7 @@ Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float
 
 **`Rep` rows are created ONLY via the batch set-complete endpoint, never one at a time.**
 **`RackScreen` is the physical screen's own identity — separate from `Node.rack_number`, which tracks which sensor is linked to a rack. A rack screen and its sensor node are assigned independently.**
+**Exercise-identity note (built early, sprint of 2026-07-17, branch `exercise-catalog`):** `Program.exercise`, `Set.exercise`, and `AthleteReferenceMax.exercise` are all `FK→Exercise` (the catalog below), not free text. This deliberately goes one step past canon, which introduced the catalog but left `Program`/`Set` on text — half-normalizing breaks the rack endpoint's id-vs-name lookup, so all three were converted together via a reversible backfill migration (`0005_link_models_to_exercise_catalog`). See `MINISPEC-exercise-catalog.md`.
 
 ### Extended in Phase 5+ (Group/Session Hierarchy & Athlete Max Layer)
 
@@ -294,8 +295,9 @@ AthleteReferenceMax — athlete (FK→Athlete), exercise (FK→Exercise),
                 produced it so a coach publish/re-publish can supersede it
                 without mutating history. (Referred to as `AthleteMax` /
                 `max_weight_lbs` in the Phase 7/10/11/14 prompts below — SAME
-                table, renamed for clarity. The minimal Phase 5 slice keys
-                `exercise` by NAME until the Exercise catalog exists.)
+                table, renamed for clarity. `exercise` is an `FK→Exercise` — the
+                catalog was built early this sprint; see the exercise-identity
+                note above.)
 
 Athlete  EXTENDED — group (FK→TrainingGroup, nullable, SET_NULL). Current
            group only; reassigning it never rewrites historical Session/Set
