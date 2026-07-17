@@ -40,7 +40,8 @@ These are real gaps, not stretch goals — they were deliberately deferred to ge
 - **Group reassignment mid-flight (affects Phase 5/14):** if an athlete's `group` changes while a `Session` tied to their old group is still in progress (not yet green/marked done), no rule is defined for whether they still appear on that session's roster. Current design snapshots roster at CSV-upload time, so this is likely fine by construction but untested against a live reassignment mid-session.
 - **Exercise catalog editing after confirmation (affects Phase 6):** once an `Exercise` is confirmed (`is_stub=False`), there's no defined path to later edit its tags or fix a name typo — only the stub-confirmation flow touches the catalog today.
 - **Insights model itself (affects Phase 5/8):** `generate_insights` is a stub returning `[]`. Choosing/training the actual local model and defining what "notable" means for `flagged_for_review` is explicitly out of scope here, same as the fatigue-model stub.
-- **Retroactive max entry vs. already-completed Sets (affects Phase 5/7/11):** if an athlete's first-ever AthleteMax gets entered mid-session (via the Phase 11 inline prompt) AFTER they've already completed earlier sets in that same session using no calculated target (or a stale one), those earlier Sets are not recalculated or flagged — the new max only affects target-weight display going forward from the moment it's entered. No retroactive recomputation is in scope for this spec.
+- **Retroactive max entry vs. already-completed Sets (affects Phase 5/7/11):** if an athlete's first-ever AthleteReferenceMax gets entered mid-session (via the Phase 11 inline prompt) AFTER they've already completed earlier sets in that same session using no calculated target (or a stale one), those earlier Sets are not recalculated or flagged — the new reference only affects target-weight display going forward from the moment it's entered. No retroactive recomputation is in scope for this spec. (See the finalization-gate item below, which is the intended long-term home for recomputation.)
+- **Coach publish/finalization gate + outlier-robust reference recalc (affects Phase 7/8; UI in Phase 14):** today `AthleteReferenceMax` rows are written only by direct entry (`source=manual`). The intended finalization flow is deferred: a coach reviews a session's data in a filterable/searchable summary, hits "Publish" (an application-level Python service run in a transaction — NOT a Postgres trigger — reusing the `mark-done` hook), and only then are velocity-`estimated` reference maxes computed and written (each linked via `source_session`). Two questions ride on it: (1) the estimation must be robust to a single anomalous set skewing the fit — e.g. drop reps outside the velocity zone or use an outlier-resistant method — since one bad rep could otherwise poison the reference; (2) a coach striking an anomalous set AFTER publish should re-run that service and APPEND corrected rows (append-only supersede, never a mutation). No stored "published" state, no set-strikethrough flag, and no recalc service exist yet — this is the designed-for future, captured so Phase 7/8 build toward it rather than around it.
 
 ---
 
@@ -278,9 +279,23 @@ SessionExercise — session (FK→Session), exercise (FK→Exercise), target_set
 SessionInsight  — session (FK→Session), athlete (FK→Athlete, nullable = team-
                 level), content (Text), source (choices: local_model/coach_note),
                 flagged_for_review (Bool), created_at
-AthleteMax      — athlete (FK→Athlete), exercise (FK→Exercise), max_weight_lbs
-                (Float), recorded_at (auto) — APPEND-ONLY history table, never
-                overwritten; "current max" = latest recorded_at row
+AthleteReferenceMax — athlete (FK→Athlete), exercise (FK→Exercise),
+                reference_weight_lbs (Float), rep_basis (Int, default 1),
+                source (choices: manual/estimated), source_session (FK→Session,
+                nullable, SET_NULL), recorded_at (auto) — APPEND-ONLY history,
+                never overwritten; "current reference" = latest recorded_at row.
+                This is an athlete's CURRENT WORKING reference (what they can do
+                NOW), so it can go DOWN as well as up — it is NOT a lifetime best.
+                Lifetime bests stay derivable from Set history and the
+                is_velocity_pr / is_weight_pr flags; do not conflate the two.
+                `source` distinguishes a coach-entered value from a future
+                velocity-ESTIMATED one (so you can graph estimate vs. actual);
+                `source_session` links an estimate back to the session that
+                produced it so a coach publish/re-publish can supersede it
+                without mutating history. (Referred to as `AthleteMax` /
+                `max_weight_lbs` in the Phase 7/10/11/14 prompts below — SAME
+                table, renamed for clarity. The minimal Phase 5 slice keys
+                `exercise` by NAME until the Exercise catalog exists.)
 
 Athlete  EXTENDED — group (FK→TrainingGroup, nullable, SET_NULL). Current
            group only; reassigning it never rewrites historical Session/Set

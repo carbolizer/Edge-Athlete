@@ -32,6 +32,7 @@ urlpatterns = [
 
     # sessions
     path('sessions/', views.sessions_view, name='sessions'),
+    path('sessions/active/', views.sessions_active, name='sessions_active'),
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
 
     # sets

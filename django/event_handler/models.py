@@ -125,6 +125,63 @@ class Set(models.Model):
         return f"Set {self.set_number} — {self.exercise} ({self.athlete.name})"
 
 
+class AthleteReferenceMax(models.Model):
+    """An athlete's CURRENT WORKING reference for one movement — the anchor number
+    programs multiply against to build target weights. This is deliberately NOT a
+    lifetime personal best: it tracks what the athlete can do about NOW, so it can
+    go DOWN as well as up (a rough patch should pull prescribed weights back).
+    Lifetime bests are a separate concept, already derivable from Set history and
+    surfaced via the is_weight_pr / is_velocity_pr flags — do not conflate the two.
+
+    ADD-ONLY history table: every recorded reference writes a NEW row, and an
+    athlete's "current reference" for a movement is simply their newest row for it
+    (a newer, lower number legitimately supersedes an older, higher one). We never
+    edit or delete an old row. Progression over time is graphable for free, and a
+    live session reads a stable snapshot (everyone's newest row) while a value
+    entered mid-session just becomes that athlete's newest row and applies forward.
+
+    A reference can be a coach-entered number OR one the system estimates from
+    velocity data later — both live here, told apart by `source`, so you can graph
+    how close the estimate lands to the manual value. `rep_basis` keeps the honest
+    original fact (a 3-rep effort is not a 1-rep effort); targets convert to a
+    common 1-rep basis when they're computed.
+
+    `source_session` links an estimated row back to the session that produced it,
+    so a later coach "publish"/re-publish (a future phase) can trace and supersede
+    its own estimates without mutating history. Null for manual entries and for
+    estimates not tied to a single session; SET_NULL so the reference survives if
+    that session is ever deleted.
+
+    `exercise` is a plain movement name for now, matching how Program and Set
+    already name exercises — it upgrades to a real catalog link later, for all
+    three together.
+    """
+    SOURCE_MANUAL = 'manual'
+    SOURCE_ESTIMATED = 'estimated'
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, 'Manual'),
+        (SOURCE_ESTIMATED, 'Estimated'),
+    ]
+
+    athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='reference_maxes')
+    exercise = models.CharField(max_length=255)
+    reference_weight_lbs = models.FloatField()
+    rep_basis = models.IntegerField(default=1)  # the N in an N-rep effort (1 = true 1RM)
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    source_session = models.ForeignKey(Session, on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name='produced_reference_maxes')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # newest-first, and indexed on the lookup we always do: "this athlete's
+        # current reference for this movement" == first row of this ordering.
+        ordering = ['-recorded_at']
+        indexes = [models.Index(fields=['athlete', 'exercise', '-recorded_at'])]
+
+    def __str__(self):
+        return f"{self.exercise} ref {self.reference_weight_lbs}lb ({self.athlete.name}, {self.source})"
+
+
 class Rep(models.Model):
     """One completed rep inside a set. Written only in bulk by the set-complete
     endpoint. velocity_color is the green/yellow/red zone read for the rep."""

@@ -31,7 +31,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
@@ -194,6 +194,104 @@ def session_detail(request, session_id):
         session.ended_at = timezone.now()
         session.save()
     return Response(SessionSerializer(session).data)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def sessions_active(request):
+    """The rack tablet's ONE startup fetch (open, no login). Returns the current
+    session plus everything the rack screen needs to run a whole set-logging
+    session without asking again: who's on the roster, each athlete's current
+    maxes, and the planned exercises with their targets + velocity zones.
+
+    MINIMAL-PATH SHAPE (documented seam — see the design note in models.py's
+    AthleteMax and the sprint brief). This mirror is built on the existing seven
+    models, so it differs from the full Phase 10/11 contract in three ways, all
+    intentional:
+      1. `exercise_id` is the exercise NAME string, because there is no Exercise
+         catalog yet — Program and Set already name exercises by string, so we
+         stay consistent with them (all three upgrade to a catalog id together
+         later).
+      2. `session_exercises[]` omits `target_weight_percent` (that lives on the
+         not-yet-built SessionExercise model). It still carries the velocity
+         zone, which is where the tablet reads it from to color reps.
+      3. Each roster entry carries a RESOLVED absolute `targets` map
+         {exercise_id: target_weight_lbs}, sourced straight from the athlete's
+         Program. This is the minimal stand-in for the full contract's
+         "percent x max" math: later, that same number gets computed server-side
+         from `session_exercises[].target_weight_percent` x
+         `roster[].maxes[exercise_id]`, and the frontend that reads
+         `targets[exercise_id]` never changes.
+
+    `maxes` is real (from AthleteReferenceMax — each athlete's newest row per
+    exercise); an athlete/exercise with no reference simply has no key, which is
+    what triggers the Phase 11 inline "set your max" entry. (Wire key stays
+    `maxes` to match the Phase 10/11 contract; it carries reference maxes.)
+
+    "Active" = the most recent Session whose ended_at is null. Tie-break: newest
+    started_at, then highest id (covers same-instant creates deterministically).
+    """
+    session = Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    if session is None:
+        # No live session: return the same envelope with nulls/empties so the
+        # tablet can render a plain "no active session" screen without having to
+        # special-case an HTTP error status.
+        return Response({"session_id": None, "label": None, "roster": [], "session_exercises": []})
+
+    athletes = list(session.athletes.order_by("name", "id"))
+    athlete_ids = [a.id for a in athletes]
+
+    # has_data: this athlete already has a completed set in THIS session. Drives
+    # Phase 11's is_makeup (a set logged for someone who missed the original run).
+    athletes_with_data = set(
+        Set.objects.filter(session=session, ended_at__isnull=False)
+        .values_list("athlete_id", flat=True)
+    )
+
+    # Current reference max per (athlete, exercise), in ONE query.
+    # AthleteReferenceMax is ordered newest-first, so the first row we see for a
+    # pair is the current one.
+    maxes_by_athlete = {}
+    for m in AthleteReferenceMax.objects.filter(athlete_id__in=athlete_ids).order_by(
+        "athlete_id", "exercise", "-recorded_at"
+    ):
+        pairs = maxes_by_athlete.setdefault(m.athlete_id, {})
+        if m.exercise not in pairs:  # first seen == newest, thanks to the ordering
+            pairs[m.exercise] = m.reference_weight_lbs
+
+    # Per-athlete resolved target weights, plus the session-level exercise list
+    # for the dropdown + velocity zones. Both come from the roster's Programs.
+    # session_exercises takes the first Program seen for each exercise name as
+    # the representative zone/target-reps — minimal-path assumption that a
+    # movement's zone is shared across the room (true for our seed data).
+    targets_by_athlete = {}
+    session_exercises = {}
+    for p in Program.objects.filter(athlete_id__in=athlete_ids):
+        targets_by_athlete.setdefault(p.athlete_id, {})[p.exercise] = p.target_weight_lbs
+        if p.exercise not in session_exercises:
+            session_exercises[p.exercise] = {
+                "exercise_id": p.exercise,
+                "name": p.exercise,
+                "target_sets": p.target_sets,
+                "target_reps": p.target_reps,
+                "velocity_zone_min": p.velocity_zone_min,
+                "velocity_zone_max": p.velocity_zone_max,
+            }
+
+    roster = [{
+        "athlete_id": a.id,
+        "name": a.name,
+        "has_data": a.id in athletes_with_data,
+        "maxes": maxes_by_athlete.get(a.id, {}),
+        "targets": targets_by_athlete.get(a.id, {}),
+    } for a in athletes]
+
+    return Response({
+        "session_id": session.id,
+        "label": session.label,
+        "roster": roster,
+        "session_exercises": list(session_exercises.values()),
+    })
 
 
 # ─────────────────────────── sets ───────────────────────────
