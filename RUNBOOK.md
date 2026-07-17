@@ -52,6 +52,26 @@ First boot builds the Django and React images and runs database migrations
 automatically (via the Dockerfile / listener command). The app is reachable at
 `http://<pi-ip>/` (or `http://localhost/` on the dev host).
 
+## Database migrations & rollback
+
+Migrations apply automatically on Django boot. To roll one back, migrate the app
+to the migration you want to land on — Django reverses everything after it:
+
+```bash
+# Roll back to a specific migration (undoes every later one for this app).
+# Example: undo the AthleteReferenceMax table (0003) and land on 0002.
+docker exec edgeathlete-django python manage.py migrate event_handler 0002_set_weight_lbs
+
+# See what's applied / what a rollback would undo
+docker exec edgeathlete-django python manage.py showmigrations event_handler
+```
+
+There are no separate "down" files — each migration reverses itself. Schema
+migrations (add/drop a table or column) roll back cleanly. The one thing to
+watch: a **data** migration (one that moves or backfills rows, `RunPython`) only
+reverses if someone wrote its reverse step — otherwise it's one-way. All
+migrations to date are schema-only, so all are reversible.
+
 ## Config files and where they live
 
 | File | What it controls |
