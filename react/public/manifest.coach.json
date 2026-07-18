@@ -1,0 +1,14 @@
+{
+  "name": "Edge Athlete — Coach",
+  "short_name": "EA Coach",
+  "description": "Coach admin tablet for Edge Athlete.",
+  "display": "standalone",
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "portrait",
+  "background_color": "#080b12",
+  "theme_color": "#0f1117",
+  "icons": [
+    { "src": "/icon-coach.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

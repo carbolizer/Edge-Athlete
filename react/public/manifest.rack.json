@@ -1,0 +1,14 @@
+{
+  "name": "Edge Athlete — Rack",
+  "short_name": "EA Rack",
+  "description": "Rack tablet for live barbell velocity tracking.",
+  "display": "fullscreen",
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "landscape",
+  "background_color": "#080b12",
+  "theme_color": "#0f1117",
+  "icons": [
+    { "src": "/icon-rack.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
