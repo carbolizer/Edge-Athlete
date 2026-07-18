@@ -5,6 +5,9 @@
 // app still runs, it just won't have the offline shell.
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+// Inter, bundled into the app (not fetched from a CDN) so it renders on the Pi's
+// offline network. This is the font the whole UI uses via theme.js.
+import '@fontsource-variable/inter'
 import './index.css'
 import App from './App.jsx'
 

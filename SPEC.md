@@ -1337,6 +1337,20 @@ for the "durability boundary" analogy).
 
 **STOP. Review the above before moving to Phase 11.**
 
+### Built — implementation notes (2026-07-18, branch `rack-screen-and-active-session`)
+What actually shipped for the Phase 10 shell, and the decisions that extend/adjust the prompt above:
+
+- **URL routing (added).** A tiny dependency-free router (`react/src/router.js`, History API — NOT React Router) makes the address bar the source of truth:
+  `/` (picker/dispatcher) · `/rack/setup` · `/rack/:n` · `/coach` · `/dashboard` · `/connection-test`.
+  Nginx already serves `index.html` for any path (its SPA fallback), so hard-loads/refresh of `/rack/1` work with no nginx change. localStorage still remembers identity (role, device id, rack number) so a cold boot at `/` redirects to the right screen — but the URL decides the view. This supersedes the prompt's "localStorage determines routing, not the URL," and aligns with the folder-structure sketch (`/rack/:n`, `/coach`, `/dashboard`).
+- **`/rack/setup` (was "registration/wait").** Rack-scoped registration + assignment-wait, and reachable any time to (re)home a tablet. **Non-destructive:** it only leaves when the server's rack number *changes* from what it was on arrival (a coach override), so an assigned rack that lands here just shows its id. **Role guard:** if the device is already an established coach/wall device, it does NOT silently convert — it asks first ("Set it up as a Rack instead?"), which prevents hijack and doubles as the deliberate switch. The **"Change device role" escape** lives here (and on the coach/wall stubs), NOT on the live rack screen, so athletes can't knock a rack out of mode mid-set. Changing a device's role leaves its old `RackScreen` row orphaned — see the "Stale RackScreen rows" known open item.
+- **Remote command channel (new MQTT topic).** Every tablet subscribes to `edgeathlete/rack/command` from boot; `{type:"enter_setup", target}` sends matching tablets to `/rack/setup` (target = `all` | device_id | rack_number). Sender is a coach button → Django publish in Phase 14; the receiver is built + testable now via `mosquitto_pub`. A future `identify` command is reserved. Full shape in MESSAGE_CONTRACT.md.
+- **Orientation: portrait.** The rack manifest is `"orientation": "portrait"` (matches the `edge_athlete_rack_ui.html` mockup, which is a 540×720 portrait device). The wall stays landscape; the coach tablet portrait.
+- **Aesthetic: the `.monitor` design system.** The rack screen matches the team's coach/wall look (near-black `#070b0e`, lime `#a9f04d`, mint/amber/coral status, Inter bundled locally so it renders on the offline Pi network). Palette centralized in `react/src/theme.js`.
+- **Rep buffer uses Dexie.** The IndexedDB durability buffer is written with Dexie (`react/src/db/repBuffer.js`) for readability. Service worker caches the app shell (network-first, skips `/api/`).
+- **Install / PWA.** A per-role manifest (rack/dashboard/coach), swapped by `App.jsx`; manifest colors are the `.monitor` near-black. On the real Pi, fullscreen comes from Chromium `--kiosk` at boot (Phase 12), since the browser install prompt needs a secure context and the Pi serves plain HTTP. **TODO if phone "Add to Home Screen" is wanted:** iOS Apple meta tags (`apple-mobile-web-app-*`) + an `apple-touch-icon`, and PNG 192/512 + maskable icons (current icons are SVG placeholders).
+- **Coach/wall dashboards need NO new data model.** Everything the Phase 12/14 wall + coach surfaces display (room snapshot, per-rack latest set/reps, leaderboard, athlete history, notes) derives from the existing seven tables — confirmed by Braydon's `room-state`/`wall-state` work, whose own spec says "Migrations: none."
+
 ---
 
 # SPRINT 4 — First Vertical Slice + Handoff (Devin's last sprint)

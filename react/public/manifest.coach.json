@@ -6,8 +6,8 @@
   "start_url": "/",
   "scope": "/",
   "orientation": "portrait",
-  "background_color": "#080b12",
-  "theme_color": "#0f1117",
+  "background_color": "#070b0e",
+  "theme_color": "#070b0e",
   "icons": [
     { "src": "/icon-coach.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
   ]

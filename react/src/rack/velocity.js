@@ -15,9 +15,12 @@ export function velocityColor(meanVelocity, zoneMin) {
   return 'red'                                          // fatigued
 }
 
-// The reference-UI palette, keyed by color name, so every screen reads the same.
+// The `.monitor` status palette (mint / amber / coral), keyed by color name, so
+// every screen reads the same. Sourced from theme.js.
+import { T } from '../theme.js'
+
 export const VELOCITY_HEX = {
-  green: '#5DCAA5',
-  yellow: '#EF9F27',
-  red: '#F09595',
+  green: T.mint,
+  yellow: T.amber,
+  red: T.coral,
 }

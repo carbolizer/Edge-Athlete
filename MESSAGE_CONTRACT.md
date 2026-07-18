@@ -101,6 +101,21 @@ the type.
 - Fatigue detection is Phase 15 — treat this topic's exact fields as **provisional**
   until then. The envelope (`type` + `athlete`) is stable; extra fields may be added.
 
+### `edgeathlete/rack/command` — remote commands to tablets (any/all)
+```jsonc
+// send matching tablets to the /rack/setup screen
+{ "type": "enter_setup", "target": "all" }
+```
+- **`target`** selects who acts: `"all"`, a specific `device_id`, or a `rack_number`.
+  Every tablet receives the message and acts ONLY if it matches itself.
+- **Published by:** a coach action → Django (Phase 14). Testable today with
+  `mosquitto_pub -t edgeathlete/rack/command -m '{"type":"enter_setup","target":"all"}'`.
+- **Subscribed by:** EVERY rack tablet from boot — assigned or not. Unassigned racks
+  have no `rack/{rack_number}/state` topic yet, so this shared channel is the only
+  way to reach them.
+- **`type` is an extensible envelope.** A future `identify` command (flash a tablet's
+  screen so a coach can spot which physical rack it is) is reserved but not built.
+
 ---
 
 ## 3. REST — the batch set-complete body
@@ -153,5 +168,6 @@ this wrong is the most likely way two parts disagree.
 | `edgeathlete/node/{node_id}/rep` | node / simulator | the rack tablet linked to that node |
 | `edgeathlete/node/{node_id}/pulse` | node / simulator | Django subscriber (`node/+/pulse` only) |
 | `edgeathlete/rack/{rack_number}/state` | Django | the rack tablet at that rack |
+| `edgeathlete/rack/command` | Django / a coach (Phase 14; `mosquitto_pub` today) | EVERY rack tablet, from boot |
 | `edgeathlete/dashboard/state` | Django | the team wall display |
 | `edgeathlete/coach/state` | Django | the coach tablet |

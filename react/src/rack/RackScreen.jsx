@@ -6,17 +6,20 @@
 // (durability), then updates a live in-memory rep count + latest velocity + color
 // chip. No set lifecycle, no batch POST yet — that's Phase 11. This proves the
 // whole live path works end to end against the simulator.
+//
+// Styling matches the team's `.monitor` design system (see theme.js).
 
 import { useEffect, useRef, useState } from 'react'
 import { getNodes } from '../api/client.js'
 import { subscribeNodeReps, subscribeRackState, resubscribeNode } from '../mqtt/client.js'
 import { addRep, getBufferedReps } from '../db/repBuffer.js'
 import { velocityColor, VELOCITY_HEX } from './velocity.js'
+import { T } from '../theme.js'
 
-const C = {
-  bg: '#0f1117', card: '#1a1d26', line: 'rgba(255,255,255,0.08)',
-  ink: '#fff', mute: 'rgba(255,255,255,0.4)', mute2: 'rgba(255,255,255,0.3)',
-  green: '#1D9E75',
+// A tiny uppercase, wide-tracked micro-label — the `.monitor` label treatment.
+const LABEL = {
+  fontSize: 10, fontWeight: 900, letterSpacing: '.14em',
+  textTransform: 'uppercase', color: T.muted,
 }
 
 export default function RackScreen({ rackNumber, session }) {
@@ -76,43 +79,55 @@ export default function RackScreen({ rackNumber, session }) {
   const chipHex = VELOCITY_HEX[lastColor]
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, color: C.ink,
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    <div style={{ minHeight: '100vh', background: T.bg, color: T.ink, fontFamily: T.sans,
       display: 'flex', flexDirection: 'column' }}>
 
-      {/* top bar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '16px 22px', borderBottom: `0.5px solid ${C.line}` }}>
-        <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: '.04em' }}>Rack {rackNumber}</div>
-        <div style={{ fontSize: 13, color: C.mute }}>{session?.label || 'No active session'}</div>
-        <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 99,
-          background: 'rgba(255,255,255,0.07)', color: C.mute }}>live</span>
+      {/* top bar (portrait): rack + live on the top row, session centered below */}
+      <div style={{ padding: '16px 24px', borderBottom: `1px solid ${T.line}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 850, letterSpacing: '-.02em' }}>Rack {rackNumber}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+            background: T.panel, border: `1px solid ${T.line}`, borderRadius: 999,
+            padding: '7px 12px', fontSize: 10, fontWeight: 850, letterSpacing: '.08em',
+            textTransform: 'uppercase', color: T.muted }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: T.mint,
+              boxShadow: `0 0 12px ${T.mint}` }} />
+            live
+          </div>
+        </div>
+        <div style={{ textAlign: 'center', marginTop: 14 }}>
+          <div style={{ ...LABEL, fontSize: 9, color: T.lime, marginBottom: 4 }}>Session</div>
+          <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.035em' }}>
+            {session?.label || 'No active session'}
+          </div>
+        </div>
       </div>
 
       {/* live panel */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
-        justifyContent: 'center', padding: 28, gap: 4 }}>
-        <div style={{ fontSize: 12, color: C.mute2, textTransform: 'uppercase',
-          letterSpacing: '.06em', marginBottom: 6 }}>Reps this session</div>
-        <div style={{ fontSize: 96, fontWeight: 700, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+        justifyContent: 'center', padding: 28 }}>
+        <div style={{ ...LABEL, marginBottom: 10 }}>Reps this session</div>
+        <div style={{ fontSize: 128, fontWeight: 800, lineHeight: 0.9, letterSpacing: '-.06em',
+          fontVariantNumeric: 'tabular-nums' }}>
           {repCount}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
-          <div style={{ fontSize: 40, fontWeight: 700, color: chipHex, fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 30 }}>
+          <div style={{ fontSize: 46, fontWeight: 800, color: chipHex, letterSpacing: '-.05em',
+            fontVariantNumeric: 'tabular-nums' }}>
             {lastVelocity == null ? '—' : lastVelocity.toFixed(2)}
-            <span style={{ fontSize: 14, color: C.mute, marginLeft: 4 }}>m/s</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: T.muted, marginLeft: 5 }}>m/s</span>
           </div>
-          <span style={{ fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em',
-            padding: '5px 12px', borderRadius: 99, background: chipHex + '22', color: chipHex }}>
+          <span style={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '.1em',
+            padding: '6px 12px', borderRadius: 999, background: chipHex + '22', color: chipHex }}>
             {lastColor}
           </span>
         </div>
       </div>
 
       {/* footer: proof-of-plumbing readouts */}
-      <div style={{ padding: '14px 22px', borderTop: `0.5px solid ${C.line}`,
-        display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.mute2 }}>
+      <div style={{ padding: '14px 28px', borderTop: `1px solid ${T.line}`,
+        display: 'flex', justifyContent: 'space-between', ...LABEL, fontSize: 10 }}>
         <span>node: {nodeId || 'no sensor linked'}</span>
         <span>buffered: {buffered}</span>
         <span>roster: {session?.roster?.length ?? 0}</span>

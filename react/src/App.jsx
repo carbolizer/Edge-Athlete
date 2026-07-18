@@ -1,66 +1,29 @@
-// App.jsx — the root every Edge Athlete screen boots into, now URL-routed.
+// App.jsx — the root every Edge Athlete screen boots into, URL-routed.
 //
 // The address bar is the source of truth for what's on screen:
 //   /                → role picker (only if this device has no role yet)
-//   /setup           → rack registration + "waiting for a rack" screen (shows the id)
+//   /rack/setup      → rack registration + "waiting for a rack" screen (see rack/RackSetup)
 //   /rack/:n         → the live rack screen for rack n
 //   /coach           → coach admin (stub until a later phase)
 //   /dashboard       → base-station display (stub until a later phase)
 //   /connection-test → the API/architecture demo kept from the scaffold
 //
 // localStorage still remembers this device's identity (its role, its generated
-// device id, its assigned rack number) so a cold reboot at "/" can redirect
-// straight back to where it belongs — but the URL, not localStorage, now decides
-// the view. Nginx serves index.html for any of these paths (see router.js), so
-// refreshing or hard-loading /rack/1 works and lands back here.
+// device id, its assigned rack number) so a cold reboot at "/" can redirect back
+// to where it belongs — but the URL, not localStorage, decides the view. Nginx
+// serves index.html for any of these paths (see router.js), so refreshing or
+// hard-loading /rack/1 works and lands back here.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import ConnectionTest from './ConnectionTest.jsx'
 import RackScreen from './rack/RackScreen.jsx'
-import { registerRack, getRackNumber, getActiveSession } from './api/client.js'
+import RackSetup from './rack/RackSetup.jsx'
+import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
-
-const MANIFESTS = {
-  rack: '/manifest.rack.json',
-  dashboard: '/manifest.dashboard.json',
-  coach: '/manifest.coach.json',
-}
-
-// Point the page's <link rel="manifest"> at this role's manifest so an install
-// gets the right icon/name. Creates the tag if the page doesn't have one.
-function swapManifest(role) {
-  let link = document.querySelector('link[rel="manifest"]')
-  if (!link) {
-    link = document.createElement('link')
-    link.rel = 'manifest'
-    document.head.appendChild(link)
-  }
-  link.href = MANIFESTS[role] || MANIFESTS.rack
-}
-
-// This device's stable id — generated once and kept forever, so the screen never
-// re-registers across reloads/reboots.
-function getDeviceId() {
-  let id = localStorage.getItem('device_id')
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('device_id', id) }
-  return id
-}
-
-const C = {
-  bg: '#080b12', card: '#1a1d26', line: 'rgba(255,255,255,0.1)',
-  ink: '#fff', mute: 'rgba(255,255,255,0.45)', green: '#1D9E75',
-}
-
-function Centered({ children }) {
-  return (
-    <div style={{ minHeight: '100vh', background: C.bg, color: C.ink, display: 'flex',
-      flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24,
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', textAlign: 'center' }}>
-      {children}
-    </div>
-  )
-}
+import { swapManifest, getDeviceId } from './device.js'
+import { Centered } from './ui.jsx'
+import { T } from './theme.js'
 
 // Renders nothing; just bounces the URL to `to` once. Used for boot-time and
 // fallback redirects (kept in an effect so we never navigate during render).
@@ -82,21 +45,21 @@ function Picker() {
     swapManifest(role)
     if (role === 'rack') {
       const n = localStorage.getItem('rack_number')
-      navigate(n != null ? `/rack/${n}` : '/setup')
+      navigate(n != null ? `/rack/${n}` : '/rack/setup')
     } else {
       navigate(`/${role}`)
     }
   }
   return (
     <Centered>
-      <div style={{ fontSize: 12, letterSpacing: '.14em', textTransform: 'uppercase',
-        color: C.green, marginBottom: 10 }}>Edge Athlete</div>
-      <div style={{ fontSize: 24, fontWeight: 700, marginBottom: 28 }}>Set up this device</div>
+      <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: '.18em', textTransform: 'uppercase',
+        color: T.lime, marginBottom: 10 }}>Edge Athlete</div>
+      <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-.03em', marginBottom: 28 }}>Set up this device</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: 300 }}>
         {choices.map((c) => (
           <button key={c.role} onClick={() => pick(c.role)}
             style={{ padding: 18, fontSize: 16, fontWeight: 600, borderRadius: 12,
-              border: `1px solid ${C.line}`, background: C.card, color: C.ink,
+              border: `1px solid ${T.line}`, background: T.panel, color: T.ink,
               cursor: 'pointer', fontFamily: 'inherit' }}>
             {c.label}
           </button>
@@ -114,63 +77,9 @@ function Home() {
   if (!role) return <Picker />
   if (role === 'rack') {
     const n = localStorage.getItem('rack_number')
-    return <Redirect to={n != null ? `/rack/${n}` : '/setup'} />
+    return <Redirect to={n != null ? `/rack/${n}` : '/rack/setup'} />
   }
   return <Redirect to={`/${role}`} />
-}
-
-// ─────────────────────────── /setup — registration + assignment wait ───────────────────────────
-
-// Reaching /setup means this device is a rack, and it's a place you can land at
-// ANY time (fresh tablet, or an already-running one you want to re-home). It is
-// NON-DESTRUCTIVE: it just shows this device's id and waits. It only leaves when
-// a coach CHANGES the assignment — i.e. the server's rack number becomes
-// different from whatever it was when we arrived here (an "override"). An already
-// assigned tablet that lands here therefore stays put, showing its id, until a
-// coach actually reassigns it.
-function Setup() {
-  const deviceId = useRef(getDeviceId()).current
-  // The rack this device was on when we ARRIVED at /setup (string, or null if
-  // unassigned). We only navigate away when the server reports something
-  // different from this baseline.
-  const baseline = useRef(localStorage.getItem('rack_number')).current
-
-  useEffect(() => {
-    localStorage.setItem('device_role', 'rack')
-    swapManifest('rack')
-
-    let timer = null
-    let stopped = false
-    registerRack(deviceId).catch(() => { /* harmless; the poll still runs */ })
-
-    const poll = async () => {
-      if (stopped) return
-      try {
-        const { rack_number } = await getRackNumber(deviceId)
-        const current = rack_number == null ? null : String(rack_number)
-        if (current != null && current !== baseline) {
-          // a coach assigned/reassigned us to a (new) rack → go there
-          localStorage.setItem('rack_number', current)
-          navigate(`/rack/${current}`, { replace: true })
-          return // stop polling
-        }
-      } catch (e) { /* keep trying */ }
-      timer = setTimeout(poll, 3000)
-    }
-    poll()
-    return () => { stopped = true; if (timer) clearTimeout(timer) }
-  }, [deviceId, baseline])
-
-  const shortId = deviceId.slice(0, 8)
-  return (
-    <Centered>
-      <div style={{ fontSize: 13, color: C.mute, textTransform: 'uppercase',
-        letterSpacing: '.06em', marginBottom: 20 }}>Waiting for coach to assign a rack</div>
-      <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: '.04em',
-        fontFamily: 'ui-monospace, Menlo, monospace' }}>{shortId}</div>
-      <div style={{ fontSize: 13, color: C.mute, marginTop: 18 }}>this device's id</div>
-    </Centered>
-  )
 }
 
 // ─────────────────────────── /rack/:n — the live rack screen ───────────────────────────
@@ -194,7 +103,7 @@ function RackLive({ rackNumber }) {
   }, [])
 
   if (session == null && !sessionError) {
-    return <Centered><div style={{ fontSize: 16, color: C.mute }}>Loading session…</div></Centered>
+    return <Centered><div style={{ fontSize: 16, color: T.muted }}>Loading session…</div></Centered>
   }
   return <RackScreen rackNumber={rackNumber} session={session} />
 }
@@ -204,13 +113,13 @@ function RackLive({ rackNumber }) {
 function StubRole({ role }) {
   return (
     <Centered>
-      <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
+      <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.02em', marginBottom: 8 }}>
         {role === 'dashboard' ? 'Base Station Display' : 'Coach Admin'}
       </div>
-      <div style={{ fontSize: 14, color: C.mute }}>Coming in a later phase.</div>
+      <div style={{ fontSize: 14, color: T.muted }}>Coming in a later phase.</div>
       <button onClick={() => { localStorage.removeItem('device_role'); navigate('/') }}
-        style={{ marginTop: 24, padding: '10px 16px', borderRadius: 8, border: `1px solid ${C.line}`,
-          background: C.card, color: C.ink, cursor: 'pointer', fontFamily: 'inherit' }}>
+        style={{ marginTop: 24, padding: '10px 16px', borderRadius: 8, border: `1px solid ${T.line}`,
+          background: T.panel, color: T.ink, cursor: 'pointer', fontFamily: 'inherit' }}>
         Change device role
       </button>
     </Centered>
@@ -219,11 +128,11 @@ function StubRole({ role }) {
 
 // ─────────────────────────── remote command listener ───────────────────────────
 
-// Mounted for the whole life of a rack device (across every route), so a coach
-// can steer THIS tablet remotely over MQTT. Right now it handles one command:
-// `enter_setup`, which sends the tablet to /setup. The command can target every
-// tablet ("all"), a single device by its id, or a single rack by its number —
-// this listener just checks "is this one for me?" before acting.
+// Mounted for the whole life of a rack device (across every route), so a coach can
+// steer THIS tablet remotely over MQTT. Right now it handles one command,
+// `enter_setup`, which sends the tablet to /rack/setup. The command can target
+// every tablet ("all"), a single device by its id, or a single rack by its number
+// — this listener just checks "is this one for me?" before acting.
 function RackCommandListener() {
   useEffect(() => {
     const deviceId = localStorage.getItem('device_id')
@@ -235,7 +144,7 @@ function RackCommandListener() {
         target === 'all' ||
         (deviceId != null && String(target) === deviceId) ||
         (rack != null && String(target) === String(rack))
-      if (forMe) navigate('/setup')
+      if (forMe) navigate('/rack/setup')
     })
   }, [])
   return null
@@ -245,7 +154,7 @@ function RackCommandListener() {
 
 function route(pathname) {
   if (pathname === '/connection-test') return <ConnectionTest />
-  if (pathname === '/setup') return <Setup />
+  if (pathname === '/rack/setup') return <RackSetup />
   if (pathname === '/coach') return <StubRole role="coach" />
   if (pathname === '/dashboard') return <StubRole role="dashboard" />
 
