@@ -31,11 +31,11 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
-                          NodeSerializer)
+                          NodeSerializer, ExerciseSerializer)
 from .notification_flow.broadcast.publisher import publish_rack_state, publish_dashboard_state
 
 def _require_coach(request):
@@ -169,6 +169,16 @@ def programs_view(request):
     return Response(ProgramSerializer(form.save()).data, status=201)
 
 
+# ─────────────────────────── exercises (catalog) ───────────────────────────
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def exercises_list(request):
+    """Open: list the movement catalog — the official set of exercises the rack
+    and coach pickers choose from, so nobody hand-types a name into drift."""
+    return Response(ExerciseSerializer(Exercise.objects.all().order_by("name"), many=True).data)
+
+
 # ─────────────────────────── sessions ───────────────────────────
 
 @api_view(["POST"])
@@ -208,10 +218,9 @@ def sessions_active(request):
     AthleteMax and the sprint brief). This mirror is built on the existing seven
     models, so it differs from the full Phase 10/11 contract in three ways, all
     intentional:
-      1. `exercise_id` is the exercise NAME string, because there is no Exercise
-         catalog yet — Program and Set already name exercises by string, so we
-         stay consistent with them (all three upgrade to a catalog id together
-         later).
+      1. `exercise_id` is the Exercise catalog id (Program, Set, and reference
+         maxes all link to that one catalog now), with the display `name`
+         riding alongside it in session_exercises.
       2. `session_exercises[]` omits `target_weight_percent` (that lives on the
          not-yet-built SessionExercise model). It still carries the velocity
          zone, which is where the tablet reads it from to color reps.
@@ -253,25 +262,26 @@ def sessions_active(request):
     # pair is the current one.
     maxes_by_athlete = {}
     for m in AthleteReferenceMax.objects.filter(athlete_id__in=athlete_ids).order_by(
-        "athlete_id", "exercise", "-recorded_at"
+        "athlete_id", "exercise_id", "-recorded_at"
     ):
         pairs = maxes_by_athlete.setdefault(m.athlete_id, {})
-        if m.exercise not in pairs:  # first seen == newest, thanks to the ordering
-            pairs[m.exercise] = m.reference_weight_lbs
+        if m.exercise_id not in pairs:  # first seen == newest, thanks to the ordering
+            pairs[m.exercise_id] = m.reference_weight_lbs
 
     # Per-athlete resolved target weights, plus the session-level exercise list
-    # for the dropdown + velocity zones. Both come from the roster's Programs.
-    # session_exercises takes the first Program seen for each exercise name as
-    # the representative zone/target-reps — minimal-path assumption that a
-    # movement's zone is shared across the room (true for our seed data).
+    # for the dropdown + velocity zones. Both come from the roster's Programs,
+    # keyed by the exercise's catalog id. session_exercises takes the first
+    # Program seen for each exercise as the representative zone/target-reps —
+    # minimal-path assumption that a movement's zone is shared across the room
+    # (true for our seed data).
     targets_by_athlete = {}
     session_exercises = {}
-    for p in Program.objects.filter(athlete_id__in=athlete_ids):
-        targets_by_athlete.setdefault(p.athlete_id, {})[p.exercise] = p.target_weight_lbs
-        if p.exercise not in session_exercises:
-            session_exercises[p.exercise] = {
-                "exercise_id": p.exercise,
-                "name": p.exercise,
+    for p in Program.objects.filter(athlete_id__in=athlete_ids).select_related("exercise"):
+        targets_by_athlete.setdefault(p.athlete_id, {})[p.exercise_id] = p.target_weight_lbs
+        if p.exercise_id not in session_exercises:
+            session_exercises[p.exercise_id] = {
+                "exercise_id": p.exercise_id,
+                "name": p.exercise.name,
                 "target_sets": p.target_sets,
                 "target_reps": p.target_reps,
                 "velocity_zone_min": p.velocity_zone_min,
@@ -445,9 +455,9 @@ def analytics_session(request, session_id):
 @permission_classes([IsCoach])
 def analytics_athlete(request, athlete_id):
     """Coach-only: an athlete's velocity trend across their sets (oldest first)."""
-    sets = Set.objects.filter(athlete_id=athlete_id, is_false_set=False).order_by("started_at")
+    sets = Set.objects.filter(athlete_id=athlete_id, is_false_set=False).select_related("exercise").order_by("started_at")
     trend = [{
-        "set_id": s.id, "exercise": s.exercise, "weight_lbs": s.weight_lbs,
+        "set_id": s.id, "exercise": s.exercise.name, "weight_lbs": s.weight_lbs,
         "avg_velocity": s.avg_velocity, "peak_velocity": s.peak_velocity,
         "ended_at": s.ended_at.isoformat() if s.ended_at else None,
     } for s in sets]

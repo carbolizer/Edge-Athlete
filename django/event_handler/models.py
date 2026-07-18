@@ -73,11 +73,35 @@ class Athlete(models.Model):
         return self.name
 
 
+class Tag(models.Model):
+    """A label for grouping movements (e.g. 'lower', 'push'). Just a name for now;
+    a coach hangs these on Exercises so they can be filtered later."""
+    name = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
+class Exercise(models.Model):
+    """The catalog entry for one movement — the single official identity that every
+    training plan, set, and reference max points at, instead of each one
+    hand-typing the name. This is what stops "Back Squat" and "back squat" from
+    drifting into two different movements. `is_stub` marks a row auto-created from
+    an unrecognized import that a coach hasn't confirmed yet (used later, Phase 6)."""
+    name = models.CharField(max_length=255, unique=True)
+    tags = models.ManyToManyField(Tag, related_name='exercises', blank=True)
+    is_stub = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+
 class Program(models.Model):
     """A prescribed training block for one athlete — the targets a set is judged
     against (rep/weight goals and the velocity zone that reads as 'on target')."""
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='programs')
-    exercise = models.CharField(max_length=255)
+    exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='programs')
     target_sets = models.IntegerField()
     target_reps = models.IntegerField()
     target_weight_lbs = models.FloatField()
@@ -108,7 +132,7 @@ class Set(models.Model):
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='sets')
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='sets')
     node = models.ForeignKey(Node, on_delete=models.SET_NULL, null=True, blank=True, related_name='sets')
-    exercise = models.CharField(max_length=255)
+    exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='sets')
     set_number = models.IntegerField()
     weight_lbs = models.FloatField(null=True, blank=True)  # actual load lifted; enables weight PRs + load-velocity analytics
     started_at = models.DateTimeField(auto_now_add=True)
@@ -152,9 +176,8 @@ class AthleteReferenceMax(models.Model):
     estimates not tied to a single session; SET_NULL so the reference survives if
     that session is ever deleted.
 
-    `exercise` is a plain movement name for now, matching how Program and Set
-    already name exercises — it upgrades to a real catalog link later, for all
-    three together.
+    `exercise` links to the Exercise catalog (same as Program and Set) so every
+    reference points at one official movement identity, not a loose name string.
     """
     SOURCE_MANUAL = 'manual'
     SOURCE_ESTIMATED = 'estimated'
@@ -164,7 +187,7 @@ class AthleteReferenceMax(models.Model):
     ]
 
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='reference_maxes')
-    exercise = models.CharField(max_length=255)
+    exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='reference_maxes')
     reference_weight_lbs = models.FloatField()
     rep_basis = models.IntegerField(default=1)  # the N in an N-rep effort (1 = true 1RM)
     source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
@@ -176,7 +199,8 @@ class AthleteReferenceMax(models.Model):
         # newest-first, and indexed on the lookup we always do: "this athlete's
         # current reference for this movement" == first row of this ordering.
         ordering = ['-recorded_at']
-        indexes = [models.Index(fields=['athlete', 'exercise', '-recorded_at'])]
+        indexes = [models.Index(fields=['athlete', 'exercise', '-recorded_at'],
+                                name='aref_athlete_exercise_idx')]
 
     def __str__(self):
         return f"{self.exercise} ref {self.reference_weight_lbs}lb ({self.athlete.name}, {self.source})"

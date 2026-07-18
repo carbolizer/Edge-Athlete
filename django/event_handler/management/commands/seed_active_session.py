@@ -17,7 +17,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from event_handler.models import (Athlete, Program, Session, Set, Rep, Node,
-                                   AthleteReferenceMax)
+                                   AthleteReferenceMax, Exercise)
 
 SESSION_LABEL = "Thursday — Lower + Push"
 NODE_ID = "rack_1"
@@ -61,18 +61,22 @@ class Command(BaseCommand):
         node, _ = Node.objects.get_or_create(
             node_id=NODE_ID, defaults={"rack_number": 1, "mount_type": Node.MOUNT_BAR})
 
+        # The two movements, in the catalog. Everything below links to these.
+        squat, _ = Exercise.objects.get_or_create(name=SQUAT)
+        bench, _ = Exercise.objects.get_or_create(name=BENCH)
+
         # Athletes + their per-exercise training plans.
         athletes = {}
         for spec in ATHLETES:
             athlete, _ = Athlete.objects.get_or_create(name=spec["name"])
             athletes[spec["name"]] = athlete
             Program.objects.get_or_create(
-                athlete=athlete, exercise=SQUAT,
+                athlete=athlete, exercise=squat,
                 defaults={"target_sets": 5, "target_reps": 3,
                           "target_weight_lbs": spec["squat_target"],
                           "velocity_zone_min": 0.5, "velocity_zone_max": 0.8})
             Program.objects.get_or_create(
-                athlete=athlete, exercise=BENCH,
+                athlete=athlete, exercise=bench,
                 defaults={"target_sets": 4, "target_reps": 5,
                           "target_weight_lbs": spec["bench_target"],
                           "velocity_zone_min": 0.4, "velocity_zone_max": 0.7})
@@ -84,22 +88,22 @@ class Command(BaseCommand):
         # Give TWO of the four a finished set already, so has_data is non-trivial
         # (Jordan + Sam read as has_data=true; Alex + Taylor as false → their next
         # set would NOT be a makeup, the first two's WOULD).
-        self._finish_a_set(session, node, athletes["Jordan Lee"], SQUAT, 1, 205.0)
-        self._finish_a_set(session, node, athletes["Sam Rivera"], SQUAT, 1, 255.0)
+        self._finish_a_set(session, node, athletes["Jordan Lee"], squat, 1, 205.0)
+        self._finish_a_set(session, node, athletes["Sam Rivera"], squat, 1, 255.0)
 
         # Recorded reference maxes (AthleteReferenceMax). Deliberately shaped to
         # exercise the endpoint:
         #  - Jordan gets an OLD squat ref then a NEWER one → endpoint must return 315.
         #  - Most athletes have both lifts; Taylor has NO bench ref → the rack
         #    screen's inline "set your max" prompt has a real gap to fill.
-        self._record_max(athletes["Jordan Lee"], SQUAT, 300.0, days_ago=40)
-        self._record_max(athletes["Jordan Lee"], SQUAT, 315.0, days_ago=3)
-        self._record_max(athletes["Jordan Lee"], BENCH, 205.0, days_ago=5)
-        self._record_max(athletes["Sam Rivera"], SQUAT, 365.0, days_ago=7)
-        self._record_max(athletes["Sam Rivera"], BENCH, 245.0, days_ago=7)
-        self._record_max(athletes["Alex Kim"],   SQUAT, 245.0, days_ago=10)
-        self._record_max(athletes["Alex Kim"],   BENCH, 175.0, days_ago=10)
-        self._record_max(athletes["Taylor Fox"], SQUAT, 275.0, days_ago=14)
+        self._record_max(athletes["Jordan Lee"], squat, 300.0, days_ago=40)
+        self._record_max(athletes["Jordan Lee"], squat, 315.0, days_ago=3)
+        self._record_max(athletes["Jordan Lee"], bench, 205.0, days_ago=5)
+        self._record_max(athletes["Sam Rivera"], squat, 365.0, days_ago=7)
+        self._record_max(athletes["Sam Rivera"], bench, 245.0, days_ago=7)
+        self._record_max(athletes["Alex Kim"],   squat, 245.0, days_ago=10)
+        self._record_max(athletes["Alex Kim"],   bench, 175.0, days_ago=10)
+        self._record_max(athletes["Taylor Fox"], squat, 275.0, days_ago=14)
         # Taylor Fox — Bench Press: intentionally left with no max on file.
 
         self.stdout.write(self.style.SUCCESS(
