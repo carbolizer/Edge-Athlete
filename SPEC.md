@@ -1475,6 +1475,19 @@ Every file opens with a WHY comment.
 - [ ] Rest timer works; set_number increments; athlete/exercise selection persists across sets in the same rotation
 - [ ] Every file has a WHY comment
 
+### Built — Phase 11 minimal-path corrections (authoritative; supersedes the prompt above where they conflict)
+The Phase 11 prompt above was written against the FULL Phase 5 contract (SessionExercise + percent×max + an athlete-maxes endpoint). The vertical slice was built on the MINIMAL models instead (see the design memory + the exercise-identity note in Data Models), so several steps above are stale. Build to THIS:
+
+- **Target weight — READ, don't compute.** The tablet reads `roster[athlete].targets[exercise_id]` — an already-resolved absolute weight (from the athlete's `Program`) — and never computes `percent × max`. `session_exercises[]` has NO `target_weight_percent`. (Supersedes §1412–1414. Resolution is server-side; a future percent×max swap leaves the tablet unchanged — the settled "seam".)
+- **`maxes` is informational only** in the minimal build. `targets` and `maxes` are INDEPENDENT: a target comes from `Program`, not from a max, so a missing max does NOT mean a missing target, and entering a max would NOT by itself produce a target.
+- **Missing TARGET fallback (not missing max).** The real gap is an athlete with no `Program` for the picked exercise → no key in `targets`. Then show an inline "Set starting weight" numeric field; the entered value becomes the displayed target AND the set's `weight_lbs` — a LOCAL, per-set weight only. It writes NO reference max and hits NO maxes endpoint. (Supersedes §1415–1423. `POST /api/athlete-maxes/` does NOT exist and is not built in Phase 11; the column is `reference_weight_lbs`, not `max_weight_lbs`.)
+- **Set-create body:** `POST /api/sets/` = `{ session, athlete, node?, exercise, set_number, weight_lbs, is_makeup }`. `exercise` is the catalog INTEGER id; `weight_lbs` MUST be sent at create (from `targets[exercise_id]` or the entered starting weight) so `is_weight_pr` works at complete. (Corrects §1427, which omitted `weight_lbs`.)
+- **`is_makeup` requires a one-field migration.** `Set` currently has NO `is_makeup` column (deferred from the full Phase 5). The recorded decision is `is_makeup` driven by `has_data` — so Phase 11 must ADD `Set.is_makeup` (BooleanField default False) + the serializer field + set_create pass-through, then send `is_makeup: has_data` on create. (Without the field, sending `is_makeup` is silently ignored.)
+- **`node` on set-create is the Node's INTEGER pk, not `node_id`.** `NodeSerializer` doesn't expose the pk, so either add `"id"` to it, or OMIT `node` (nullable — the set still saves; only the `set_complete`/`athlete_checkin` broadcasts, which need `node.rack_number` and feed the Phase 12 dashboard, won't fire). Omitting is fine for the minimal rack flow.
+- **`session_exercises` is DERIVED from `Program` per request** — there is no `SessionExercise` table (deferred). Don't query one.
+- **Blueprint extras are OUT of minimal scope:** the "suggested next set" insight card (insights are Phase 8/15), the "3 of 5" sets-progress dots, the rep-by-rep velocity breakdown, and the elapsed/duration timer. Keep only: idle picker → countdown (3-2-1) → active (rep count + velocity color) → summary (`reps_completed`, avg/peak) → rest (countdown).
+- **`GET /api/sessions/active/` exact shape** is pinned in MESSAGE_CONTRACT.md §3.
+
 **STOP. Review the above before moving to Phase 12.**
 
 ---
