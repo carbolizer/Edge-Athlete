@@ -141,6 +141,9 @@ class Set(models.Model):
     avg_velocity = models.FloatField(null=True, blank=True)
     peak_velocity = models.FloatField(null=True, blank=True)
     is_false_set = models.BooleanField(default=False)
+    is_makeup = models.BooleanField(default=False)  # True when this set is logged
+    # retroactively for an athlete who missed the original run. The tablet sets it
+    # from the roster's has_data flag (already has data this session => a makeup).
 
     class Meta:
         ordering = ['set_number']

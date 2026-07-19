@@ -39,8 +39,10 @@ class SetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Set
         fields = ["id", "session", "athlete", "node", "exercise", "set_number",
-                  "weight_lbs", "started_at", "ended_at", "reps_completed",
+                  "weight_lbs", "is_makeup", "started_at", "ended_at", "reps_completed",
                   "avg_velocity", "peak_velocity", "is_false_set"]
+        # is_makeup is intentionally writable at create; everything system-filled
+        # (times, totals, false-set) stays read-only.
         read_only_fields = ["id", "started_at", "ended_at", "reps_completed",
                             "avg_velocity", "peak_velocity", "is_false_set"]
 
@@ -92,5 +94,8 @@ class NodeSerializer(serializers.ModelSerializer):
     """A sensor node and its latest status (battery, signal, which rack it's on)."""
     class Meta:
         model = Node
-        fields = ["node_id", "rack_number", "mount_type", "firmware_version",
+        # `id` (the integer primary key) is exposed so the rack tablet can send it
+        # as the `node` foreign key when it creates a Set — the tablet only knows
+        # the sensor by its string node_id otherwise.
+        fields = ["id", "node_id", "rack_number", "mount_type", "firmware_version",
                   "battery_level", "signal_strength", "last_seen", "is_active"]
