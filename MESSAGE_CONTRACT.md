@@ -118,10 +118,42 @@ the type.
 
 ---
 
-## 3. REST — the batch set-complete body
+## 3. REST — request/response bodies the tablet builds against
 
-Not MQTT, but the same data contract, so it lives here too.
+Not MQTT, but the same data contract, so they live here too.
 
+### `GET /api/sessions/active/` — the rack tablet's one startup fetch (open)
+```jsonc
+{
+  "session_id": 1,
+  "label": "Thursday — Lower + Push",
+  "roster": [
+    { "athlete_id": 4, "name": "Jordan Lee", "has_data": true,
+      "maxes":   { "1": 315.0 },    // { exercise_id: current reference max (lbs) }
+      "targets": { "1": 225.0 } }   // { exercise_id: resolved target weight (lbs) }
+  ],
+  "session_exercises": [
+    { "exercise_id": 1, "name": "Back Squat", "target_sets": 5, "target_reps": 3,
+      "velocity_zone_min": 0.5, "velocity_zone_max": 0.8 }
+  ]
+}
+```
+- **Fetched ONCE** at rack-assignment time, never polled — it drives the whole session.
+- `exercise_id` is the **Exercise catalog id** (Program, Set, and reference maxes all
+  link to that catalog); `maxes` and `targets` are keyed by it.
+- **MINIMAL-PATH shape (as actually built on the existing models).** It differs on
+  purpose from the fuller shape in the Phase 10/11 prompts: `targets[exercise_id]` is a
+  RESOLVED absolute weight (straight from the athlete's `Program`), so
+  `session_exercises` omits `target_weight_percent`. When percent-of-max programming
+  arrives, that same `targets` number gets computed server-side (percent × reference
+  max) and the tablet code does not change. This is the one place the minimal path and
+  the full contract diverge — keep them in sync here.
+- `has_data` = the athlete has ≥1 completed `Set` in THIS session (drives `is_makeup`).
+- An exercise the athlete has no reference max for simply has **no key** in `maxes` —
+  that's the "no max on file" case the Phase 11 inline-entry prompt fills.
+- **No active session →** `{ "session_id": null, "label": null, "roster": [], "session_exercises": [] }`.
+
+### `POST /api/sets/{id}/complete/` — the batch set-complete body
 ```jsonc
 // POST /api/sets/{id}/complete/
 {

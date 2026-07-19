@@ -364,6 +364,11 @@ POST  /api/sessions/upload/            CSV import — creates/reuses the full   
                                         transaction; stubs unrecognized
                                         exercises rather than rejecting
 
+GET   /api/exercises/                  list the movement catalog — what the   (open)
+                                        rack/coach pickers choose from
+                                        (BUILT early; see the exercise-identity
+                                        note in Data Models)
+
 PATCH /api/exercises/{id}/confirm/     confirm or reject a stubbed exercise   (coach only)
 
 GET   /api/sessions/{id}/roster-status/  per-athlete has_data flags for a     (coach only)
@@ -391,7 +396,11 @@ GET   /api/athlete-maxes/?athlete={id}&exercise={id}   full max history,     (co
 
 `GET /api/sessions/active/` being open (not JWT-gated) matches the existing
 open/coach-only split: it's read by an unauthenticated rack tablet, the same
-trust tier as the other rack-facing endpoints above it.
+trust tier as the other rack-facing endpoints above it. **The exact AS-BUILT
+minimal response shape is pinned in MESSAGE_CONTRACT.md §3** — it returns resolved
+absolute target weights (from `Program`) keyed by catalog `exercise_id`, not the
+`target_weight_percent` × max form the Phase 10/11 prompts describe; see the seam
+note there.
 
 ---
 
