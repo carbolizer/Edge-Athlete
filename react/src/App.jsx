@@ -21,7 +21,7 @@ import RackSetup from './rack/RackSetup.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
-import { swapManifest, getDeviceId } from './device.js'
+import { applyRoleIdentity, getDeviceId } from './device.js'
 import { Centered } from './ui.jsx'
 import { T } from './theme.js'
 
@@ -42,7 +42,7 @@ function Picker() {
   ]
   function pick(role) {
     localStorage.setItem('device_role', role)
-    swapManifest(role)
+    applyRoleIdentity(role)
     if (role === 'rack') {
       const n = localStorage.getItem('rack_number')
       navigate(n != null ? `/rack/${n}` : '/rack/setup')
@@ -95,7 +95,7 @@ function RackLive({ rackNumber }) {
     getDeviceId()
     localStorage.setItem('device_role', 'rack')
     localStorage.setItem('rack_number', String(rackNumber))
-    swapManifest('rack')
+    applyRoleIdentity('rack')
   }, [rackNumber])
 
   useEffect(() => {

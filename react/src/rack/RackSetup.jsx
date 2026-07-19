@@ -15,7 +15,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { registerRack, getRackNumber } from '../api/client.js'
-import { getDeviceId, swapManifest } from '../device.js'
+import { getDeviceId, applyRoleIdentity } from '../device.js'
 import { navigate } from '../router.js'
 import { Centered } from '../ui.jsx'
 import { T } from '../theme.js'
@@ -64,7 +64,7 @@ function Waiting() {
 
   useEffect(() => {
     localStorage.setItem('device_role', 'rack')
-    swapManifest('rack')
+    applyRoleIdentity('rack')
 
     let timer = null
     let stopped = false

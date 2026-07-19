@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#070b0e" />
+
+    <!-- Apple / iOS "Add to Home Screen" support. iOS Safari mostly ignores the
+         web manifest, so these Apple-specific tags are what make an installed
+         icon behave like a real app: run full-screen (no Safari chrome), use a
+         dark translucent status bar, and show a real PNG icon (iOS ignores SVG).
+         These default to the RACK role; device.js swaps the icon + title per role
+         at pick time, the same way it swaps the manifest above. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Edge Athlete" />
+    <link rel="apple-touch-icon" href="/icon-rack-180.png" />
+
     <!-- Default manifest; App.jsx swaps this to the picked role's manifest so the
          browser installs the right specialized PWA. -->
     <link rel="manifest" href="/manifest.rack.json" />
