@@ -11,9 +11,13 @@ set -e
 #
 # Install (done for you by setup.sh):
 #   Service file:  /etc/systemd/system/edgeathlete.service
-#   ExecStart:     /home/pi/edge-athlete/startup.sh
+#   ExecStart:     /home/pi/edge-athlete/scripts/basestation/startup.sh
 #   Enable:        sudo systemctl daemon-reload && sudo systemctl enable edgeathlete.service
-#   Executable:    chmod +x startup.sh
+#   Executable:    chmod +x scripts/basestation/startup.sh
+#
+# NOTE: PROJECT_DIR below is the REPO ROOT (where docker-compose.yml lives), not
+# this script's folder — that's why the docker stack still comes up correctly
+# even though this script now lives under scripts/basestation/.
 
 ##################################### BEGIN SCRIPT ###################################
 

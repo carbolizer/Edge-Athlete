@@ -2,7 +2,8 @@
 set -e
 
 # setup.sh — one-time Edge Athlete base-station provisioner.
-# Run this ONCE on a fresh Pi (sudo ./setup.sh). It installs the tools the base
+# Run this ONCE on a fresh Pi, from the repo root: sudo scripts/basestation/setup.sh
+# It installs the tools the base
 # station needs (NetworkManager, Docker), loads the Wi-Fi adapter firmware,
 # auto-detects the Wi-Fi device, and installs the systemd service that runs
 # startup.sh on every boot. After this, the Pi comes up as its own access point
@@ -60,7 +61,7 @@ if [ ! -f ".env" ]; then
 fi
 
 echo "[6] preparing startup script..."
-chmod +x startup.sh
+chmod +x scripts/basestation/startup.sh
 
 echo "[7] creating state flags..."
 mkdir -p /var/lib/edgeathlete
@@ -74,7 +75,7 @@ Wants=network-online.target docker.service NetworkManager.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/pi/edge-athlete/startup.sh
+ExecStart=/home/pi/edge-athlete/scripts/basestation/startup.sh
 RemainAfterExit=yes
 User=root
 
@@ -114,7 +115,7 @@ fi
 echo "[✔] wifi adapter detected: $WIFI_IFACE"
 
 echo "[10.5] updating startup.sh wifi interface..."
-sed -i "s/^WIFI_IFACE=.*/WIFI_IFACE=\"$WIFI_IFACE\"/" startup.sh
+sed -i "s/^WIFI_IFACE=.*/WIFI_IFACE=\"$WIFI_IFACE\"/" scripts/basestation/startup.sh
 
 echo "[11] building docker stack..."
 docker compose build
@@ -123,7 +124,7 @@ echo "[✔] setup complete"
 echo " ===================== *****IMPORTANT**** ===================="
 echo " MAKE SURE TO ADD .env FILE that FITS THE STRUCTURE OF .env.example "
 echo "Next:"
-echo "  1. update startup.sh WIFI_IFACE=\"$WIFI_IFACE\" if needed"
+echo "  1. update scripts/basestation/startup.sh WIFI_IFACE=\"$WIFI_IFACE\" if needed"
 echo "  2. reboot"
 echo "  3. service should run automatically"
 echo ""
