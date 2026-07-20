@@ -41,3 +41,10 @@ export function getActiveSession() {
 export function getNodes() {
   return jsonFetch('/nodes/')
 }
+
+// One athlete's DAY VIEW: their planned movements + live per-set progress, derived
+// server-side from their Program + Set rows. Fetched when an athlete checks in at
+// the rack (Phase 11 Step 2), so any rack shows the same, up-to-date view.
+export function getAthleteProgress(athleteId) {
+  return jsonFetch(`/sessions/active/athlete/${athleteId}/progress/`)
+}
