@@ -87,7 +87,11 @@ function Waiting() {
     return () => { stopped = true; if (timer) clearTimeout(timer) }
   }, [deviceId, baseline])
 
-  const shortId = deviceId.slice(0, 8)
+  // Show the LAST 8 chars of the device id so this matches how the coach admin
+  // page labels the same tablet in its "unassigned screen" dropdown (its shortId
+  // helper also uses the last 8). If these two ever disagree, a coach can't tell
+  // which dropdown entry is this physical tablet.
+  const shortId = deviceId.slice(-8)
   return (
     <Centered>
       <div style={{ fontSize: 13, color: T.muted, textTransform: 'uppercase',
