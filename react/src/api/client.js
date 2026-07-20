@@ -48,3 +48,20 @@ export function getNodes() {
 export function getAthleteProgress(athleteId) {
   return jsonFetch(`/sessions/active/athlete/${athleteId}/progress/`)
 }
+
+// Record that an athlete signed in at this rack (their "check-in"). This makes the
+// rack the athlete's current one for the session (newest-wins) — what a hand tap,
+// or a future NFC tap, triggers.
+export function checkInAthlete(rackNumber, athleteId) {
+  return jsonFetch(`/racks/${rackNumber}/checkin/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ athlete: athleteId }),
+  })
+}
+
+// This rack's HOT LIST: the athletes it currently "owns" (checked in here, not
+// since moved). Surfaced first on the check-in screen for fast re-pick.
+export function getRackHotList(rackNumber) {
+  return jsonFetch(`/racks/${rackNumber}/checkins/`)
+}
