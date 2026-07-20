@@ -114,7 +114,11 @@ export default function Idle({ roster, hotList, groupName, selectedAthlete, onSe
     // fresh rack (empty hot list) just shows the group — no special case. Names sort
     // alphabetically so a lifter can scan for theirs.
     const hotIds = new Set((hotList ?? []).map((h) => h.athlete_id))
-    const byName = (a, b) => a.name.localeCompare(b.name)
+    // Sort by SURNAME — the last word of the single `name` field. Stopgap until
+    // athletes have structured first/last names; fragile for multi-word or
+    // single-name cases, so ties fall back to the full name.
+    const surname = (a) => a.name.trim().split(/\s+/).pop() || a.name
+    const byName = (a, b) => surname(a).localeCompare(surname(b)) || a.name.localeCompare(b.name)
     const hot = roster.filter((a) => hotIds.has(a.athlete_id)).sort(byName)
     const rest = roster.filter((a) => !hotIds.has(a.athlete_id)).sort(byName)
     return (
