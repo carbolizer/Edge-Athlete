@@ -33,6 +33,7 @@ Phases 1–4 are complete. Phases 5–13 (through the Sprint 4 handoff gate) are
 These are real gaps, not stretch goals — they were deliberately deferred to get a demo-able slice built in a tight window. Whoever starts the referenced phase should resolve or explicitly re-defer each one rather than being surprised by it mid-phase:
 
 - **Batch-POST failure/retry (affects Phase 11, hardens in Phase 16/18):** if `POST /api/sets/{id}/complete/` fails (e.g. an AP drop at the exact moment a set ends), there is currently no defined retry/backoff — the buffer only clears on success, but nothing describes what happens on failure. Fine for a controlled demo; needs a real answer before unattended/production use.
+- **Live cross-rack progress refresh while displayed (affects Phase 11; natural home: the Phase 12 dashboard real-time work or a dedicated rack real-time pass):** Step 2's athlete-centric day view fetches derived progress fresh **on check-in**, which already covers an athlete MOVING between racks mid-workout (superset across stations). NOT built: pushing a live update to a rack that is ALREADY displaying an athlete when that same athlete completes a set at a DIFFERENT rack at the same instant. The `set_complete` MQTT broadcast already exists; the deferred piece is having the rack subscribe and re-fetch that athlete's progress on a matching `set_complete`. Rare in practice (a lifter is normally at one rack at a time), so deferred to keep Phase 11 focused — this is "Step 2b" from the design discussion.
 - **Analytics response contract (affects Phase 4, consumed by Phase 14):** `GET /api/analytics/session/{id}/` and `.../athlete/{id}/` only have a prose description, not an exact field list like every other endpoint. Pin down the actual JSON shape before or during Phase 4 so Phase 14 isn't guessing at what it receives.
 - **No rack "unassign" path (affects Phase 14):** only registration + assignment exist; there's no way to free a rack number back to the unassigned pool if a screen is retired or replaced.
 - **Clock reliability on the offline Pi (affects Phase 1/RUNBOOK, Phase 18):** the base station never touches the internet, so there's no NTP sync. If it lacks a hardware RTC, a cold boot could start with a wrong system clock, silently corrupting every `timestamp` field. Needs either an RTC module or a manual time-set step documented in the boot procedure.
@@ -1487,6 +1488,49 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 - **`session_exercises` is DERIVED from `Program` per request** — there is no `SessionExercise` table (deferred). Don't query one.
 - **Blueprint extras are OUT of minimal scope:** the "suggested next set" insight card (insights are Phase 8/15), the "3 of 5" sets-progress dots, the rep-by-rep velocity breakdown, and the elapsed/duration timer. Keep only: idle picker → countdown (3-2-1) → active (rep count + velocity color) → summary (`reps_completed`, avg/peak) → rest (countdown).
 - **`GET /api/sessions/active/` exact shape** is pinned in MESSAGE_CONTRACT.md §3.
+
+### Built — Phase 11 Step 2 redesign: athlete-centric day view (authoritative; expands the idle/picker step above)
+
+**Why this changed.** The idle/picker was originally a bare athlete+exercise dropdown read off the one-shot session snapshot. Real training is fluid — athletes rotate between stations, superset across racks, and don't finish one movement before touching another — and the rack is a **vertical tablet read at a glance**, so density is the enemy. Step 2 is therefore rebuilt around the athlete's *live, server-derived progress*, shown the same way at every rack. This deliberately borrows the good ideas from Braydon's athlete-driven screen (`braydons-dev-branch`) **without his extra tables** — everything below derives from the existing `Program` + `Set` rows.
+
+1. **Athlete-centric, progress-derived — NO new tables.** An athlete's "workout for the day" = their `Program` rows (one planned movement each: `target_sets`/`target_reps`/`target_weight_lbs`/velocity zone). Their *progress* = their completed `Set` rows this session, counted per exercise. Nothing new is stored; it is all derived per request from `Program` + `Set`.
+
+2. **Fetch-on-check-in, not a one-shot snapshot.** The one-shot `GET /api/sessions/active/` still loads the roster + session exercises. When an athlete is **selected (checks in)** at a rack, the tablet additionally fetches that athlete's derived progress (endpoint below). Because it's server truth, the SAME athlete shows the SAME up-to-date view at ANY rack — an athlete supersetting across stations sees correct progress wherever they land. (Live *push* to an already-displayed rack is deferred — see Known Open Items → "Live cross-rack progress refresh".)
+
+3. **New derived endpoint (no new tables):** `GET /api/sessions/active/athlete/{athlete_id}/progress/` (open, like active-session). Shape:
+   ```jsonc
+   {
+     "session_id": 1,
+     "athlete": { "id": 4, "name": "Jordan Lee" },
+     "current_exercise_id": 1,        // SUGGESTED current = first movement not yet complete (in order)
+     "movements": [
+       { "exercise_id": 1, "name": "Back Squat",
+         "planned_sets": 5, "target_reps": 3,
+         "target_weight_lbs": 225.0,   // resolved from Program; null → no Program target → inline "starting weight"
+         "velocity_zone_min": 0.5, "velocity_zone_max": 0.8,
+         "completed_sets": 2, "false_sets": 0,
+         "next_set_number": 3,         // completed (non-false) sets + 1 — the authoritative set_number
+         "status": "in_progress" }     // not_started | in_progress | complete
+     ]
+   }
+   ```
+   Derived from `Program` (planned) + `Set` (this session, this athlete, grouped by exercise). **Movement order = `Program.id`** — the order the athlete's programs were created, which is the intended workout order in practice (a coach entering the day's movements in order gets that order for free). The server order NEVER changes; a deliberate-reorder `Program.order` field is an open nicety, not built.
+
+4. **`set_number` now comes from the server (`next_set_number`), NOT a client counter.** This SUPERSEDES the earlier "increment set_number client-side across sets" note — a client counter can't stay correct across racks or superset switches. On set-create, send the `next_set_number` from the freshly-fetched progress.
+
+5. **Superset switching is free.** "Current" is a *suggestion* (`current_exercise_id`), not a lock. The athlete may pick any of the day's movements; progress is per-exercise counts, so bouncing between movements keeps every count correct.
+   - **Active-set float-to-top (client-side, transient):** when a set goes ACTIVE at this rack (countdown/active), that movement's card floats to the TOP of the stack so the in-progress movement is front-and-center. This reorder is presentational and **per-rack only — NOT persisted and NOT in the endpoint**; on any other rack, or once the set ends, the list returns to `Program.id` order. (Server order is immutable; only the client floats the active card. This is the one and only thing that ever reorders the stack.)
+
+6. **Fluid check-in — NO athlete↔rack assignment, ever.** The coach assigns racks↔screens/nodes only (Carl's admin); athletes are never bound to a rack. Selecting an athlete at a rack is a lightweight "check-in."
+   - **Session hot list (fast re-pick):** each rack surfaces the athletes who've used it this session first, so a lifter doing 5 sets doesn't re-scroll the full roster. Derivable server-side (athletes with ≥1 `Set` at this rack's node in the active session) so it survives a tablet reload; the full roster stays reachable. **Session-scoped only — nothing about it persists past the session.**
+   - **"Not here?" guard:** an auto-suggested next-up athlete/movement is only a suggestion; a "Not here?" control clears it so a set is never armed for someone who walked away.
+
+7. **Vertical, glanceable layout (hard constraint).** Single column, current movement prominent; previous/next movements as compact cards or a slim rail; only pertinent numbers (movement, set X of N, load, target velocity). **No dense grid** — it does not read on a portrait tablet at a glance.
+   - **Per-movement progress:** each movement card carries a small progress bar + a `completed/planned` fraction (e.g. "2/3"), from `completed_sets`/`planned_sets` (false sets don't count toward completed).
+   - **Overall session progress bar:** one bar for the athlete's whole day = total completed sets ÷ total planned sets across their movements.
+   - **Completion-confirmation animation:** on set completion (summary → next state), animate the session bar advancing to its new fill as a satisfying "done" beat — a completeness confirmation at the state boundary.
+
+8. **Carries forward the minimal-path corrections above** unchanged: target is READ (`target_weight_lbs`, or the inline "starting weight" when null); `weight_lbs` sent at set-create; `is_makeup = has_data`; `node` = Node pk or omitted; catalog integer `exercise` id.
 
 **STOP. Review the above before moving to Phase 12.**
 
