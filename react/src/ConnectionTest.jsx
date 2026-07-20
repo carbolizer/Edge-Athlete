@@ -16,14 +16,14 @@ import mqtt from 'mqtt'
 const OPEN_GETS = [
   { key: 'nodes', path: '/api/nodes/',
     what: 'List every sensor node and its latest status — battery, signal, and which rack it is on.' },
-  { key: 'athletes', path: '/api/athletes/',
-    what: 'List every lifter in the system.' },
   { key: 'programs', path: '/api/programs/?athlete=2',
     what: "Get one athlete's training plan — the targets plus the speed zone the tablet uses to color reps green / yellow / red." },
 ]
 
 // ── coach-only reads (need a login token) ──
 const COACH_GETS = [
+  { key: 'athletes', path: '/api/athletes/',
+    what: 'List every lifter in the system.' },
   { key: 'aSession', path: '/api/analytics/session/2/',
     what: "Session summary — total sets, total reps, and each athlete's average bar speed." },
   { key: 'aAthlete', path: '/api/analytics/athlete/2/',
@@ -39,15 +39,15 @@ const REFERENCE = [
   { group: 'Tablet — racks & sets', items: [
     { m: 'POST', p: '/api/racks/register/', a: 'open', w: 'A tablet introduces itself so a coach can assign it a rack.' },
     { m: 'POST', p: '/api/racks/racknumber/', a: 'open', w: 'A waiting tablet sends its device ID privately and asks which rack it has been given.' },
-    { m: 'POST', p: '/api/sets/', a: 'open', w: 'Start a set — create the empty record when a lifter begins.' },
-    { m: 'POST', p: '/api/sets/{id}/complete/', a: 'open', w: 'Finish a set — save every rep + totals in one shot. The only way reps get saved.' },
+    { m: 'POST', p: '/api/sets/', a: 'simulation', w: 'Legacy simulator-owned set start. Real sessions use the rack-bound route.' },
+    { m: 'POST', p: '/api/racks/{rack}/sets/{id}/complete/', a: 'rack screen', w: 'Finish an athlete-driven set with X-Rack-Device-Id and save reps atomically.' },
   ]},
   { group: 'Reads', items: [
     { m: 'GET', p: '/api/nodes/', a: 'open', w: 'List all sensor nodes.' },
-    { m: 'GET', p: '/api/athletes/', a: 'open', w: 'List all lifters.' },
     { m: 'GET', p: '/api/programs/?athlete={id}', a: 'open', w: "An athlete's training plans (targets + speed zone)." },
   ]},
   { group: 'Coach — manage', items: [
+    { m: 'GET', p: '/api/athletes/', a: 'coach', w: 'List all lifters.' },
     { m: 'POST/PATCH', p: '/api/athletes/ · /api/athletes/{id}/', a: 'coach', w: 'Add or edit a lifter.' },
     { m: 'POST', p: '/api/programs/', a: 'coach', w: 'Create a training plan for a lifter.' },
     { m: 'POST/PATCH', p: '/api/sessions/ · /api/sessions/{id}/', a: 'coach', w: 'Start a session; a PATCH with no end time ends it now.' },
@@ -88,12 +88,10 @@ function ConnectionTest() {
   const [wsLog, setWsLog] = useState([])
   const mqttRef = useRef(null)
 
-  // logs to the on-page panel AND to the browser console. The console line
-  // carries the REAL underlying data (mqtt packets, client options), so you can
-  // prove in DevTools it's a live client, not a scripted-looking UI.
-  function wsAdd(line, data) {
+  // Keep diagnostics to connection state only. Raw MQTT packets may contain
+  // private device or training data and must not reach the page or console.
+  function wsAdd(line) {
     setWsLog(l => [...l, `${new Date().toLocaleTimeString()}  ${line}`])
-    console.log('%c[MQTT]', 'color:#6f8cff;font-weight:bold', line)
   }
 
   // STEP 1 — open the WebSocket connection to the broker
@@ -101,18 +99,17 @@ function ConnectionTest() {
     if (mqttRef.current) { mqttRef.current.end(true); mqttRef.current = null }
     setWsLog([]); setWsSubscribed(false); setWsStatus('connecting')
     const url = `ws://${window.location.hostname}:9001`
-    wsAdd(`STEP 1 — connecting to the broker at ${url} …`, { url })
+    wsAdd('STEP 1 — connecting to the local broker …')
     const client = mqtt.connect(url)
     mqttRef.current = client
-    client.on('connect', (connack) => {
+    client.on('connect', () => {
       setWsStatus('connected')
-      wsAdd('✓ connected — the browser is talking straight to Mosquitto over WebSockets',
-        { connack, options: client.options })
+      wsAdd('✓ connected — the browser is talking straight to Mosquitto over WebSockets')
     })
-    client.on('message', (t, msg, packet) => {
-      wsAdd(`← message on ${t}: ${msg.toString()}`, { topic: t, payload: msg.toString(), packet })
+    client.on('message', () => {
+      wsAdd('← dashboard state update received')
     })
-    client.on('error', (e) => { setWsStatus('error'); wsAdd('error: ' + (e && e.message), e) })
+    client.on('error', (e) => { setWsStatus('error'); wsAdd('error: ' + (e && e.message)) })
     client.on('close', () => wsAdd('connection closed'))
   }
 
@@ -122,9 +119,9 @@ function ConnectionTest() {
     if (!client) return
     wsAdd('STEP 2 — subscribing to the public dashboard state topic')
     client.subscribe('edgeathlete/dashboard/state', (err, granted) => {
-      if (err) { wsAdd('subscribe failed: ' + err.message, err); return }
+      if (err) { wsAdd('subscribe failed: ' + err.message); return }
       setWsSubscribed(true)
-      wsAdd('✓ subscribed to public room-state invalidations', { granted })
+      wsAdd('✓ subscribed to public room-state invalidations')
     })
   }
 
@@ -134,7 +131,7 @@ function ConnectionTest() {
     if (!client) return
     const topic = 'edgeathlete/demo/handshake'
     const body = { hello: 'browser', at: new Date().toISOString() }
-    wsAdd(`STEP 3 — publishing to ${topic} …`, body)
+    wsAdd('STEP 3 — publishing a demo handshake …')
     client.publish(topic, JSON.stringify(body))
     wsAdd(`→ sent to ${topic}`)
   }
@@ -235,9 +232,8 @@ function ConnectionTest() {
           sub="The real-time layer, step by step — the browser talks straight to the Mosquitto broker, no server in between.">
           <p style={{ color: C.ink2, fontSize: 13.5, margin: '0 0 12px' }}>
             Walk it one step at a time: <b>connect</b> to <code style={{ fontFamily: C.mono, color: C.ink }}>{'ws://<host>:9001'}</code>,
-            then <b>subscribe</b> to start listening on <code style={{ fontFamily: C.mono, color: C.ink }}>edgeathlete/#</code>,
-            then <b>publish</b> a message and watch it arrive below. Publish again to show ongoing communication; any other live
-            traffic (like a running node simulator) appears here too.
+            then <b>subscribe</b> to the public dashboard state topic,
+            then <b>publish</b> a harmless demo handshake. The status log confirms connection events without displaying MQTT packet bodies.
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button style={btn(wsStatus === 'connecting' || wsStatus === 'connected')} disabled={wsStatus === 'connecting' || wsStatus === 'connected'} onClick={mqttConnect}>1 · Connect ▸</button>

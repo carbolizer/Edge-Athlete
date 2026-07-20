@@ -6,6 +6,13 @@ import { useEffect, useState } from "react";
 import "./App.css";
 import useLiveRoomState from "./useLiveRoomState.js";
 import { compareReps, groupHistorySets } from "./historyView.js";
+import WorkoutCatalog from "./WorkoutCatalog.jsx";
+import AthleteWorkoutPlanning from "./AthleteWorkoutPlanning.jsx";
+import TrainingDayPanel from "./TrainingDayPanel.jsx";
+import ReportsWorkspace from "./ReportsWorkspace.jsx";
+import { sameOriginPath } from "./workoutCatalog.js";
+import { buildRackAssignmentPayload } from "./rackState.js";
+import { coachRackView, wallDisplayState, wallMovementView } from "./dashboardView.js";
 
 function velocity(value) {
   return value === null || value === undefined ? "--" : Number(value).toFixed(2);
@@ -83,10 +90,10 @@ function WallRackTile({ rack }) {
   );
 }
 
-function WallLeaderboard({ rows }) {
+function WallLeaderboard({ rows, movementName }) {
   return (
     <section className="wall-board-card wall-leaders">
-      <div className="wall-card-title"><span>Session leaders</span><b>Best set avg</b></div>
+      <div className="wall-card-title"><span>{movementName} leaders</span><b>Best set avg</b></div>
       {rows.length === 0 && <p className="monitor-empty">Complete a set to begin the leaderboard.</p>}
       {rows.slice(0, 5).map((row) => (
         <div className="wall-leader" key={`${row.rank}-${row.athlete.name}`}>
@@ -114,18 +121,20 @@ function WallInsights({ insights }) {
 }
 
 function WallView({ monitor }) {
-  const { roomState, requestState, connectionState, lastError, refresh } = monitor;
-  if (!roomState && requestState === "loading") {
+  const { requestState, connectionState, refresh } = monitor;
+  const display = wallDisplayState(monitor);
+  if (display.status === "loading") {
     return <div className="monitor wall-monitor"><StatePanel title="Opening the weight room" body="Loading the current session from the base station." /></div>;
   }
-  if (!roomState) {
-    return <div className="monitor wall-monitor"><StatePanel title="Scoreboard unavailable" body={lastError || "The base station could not be reached."} action={refresh} /></div>;
+  if (display.status === "unavailable") {
+    return <div className="monitor wall-monitor"><StatePanel title="Live scoreboard unavailable" body={display.message} action={refresh} /></div>;
   }
-  if (!roomState.session) {
+  if (display.status === "empty") {
     return <div className="monitor wall-monitor"><StatePanel title="The room is ready" body="The scoreboard will begin when a coach starts a training session." action={refresh} actionLabel="Check again" /></div>;
   }
 
-  const summary = roomState.summary;
+  const roomState = display.roomState;
+  const movement = wallMovementView(roomState);
   return (
     <main className="monitor wall-monitor">
       <header className="wall-topbar">
@@ -137,27 +146,12 @@ function WallView({ monitor }) {
         <ConnectionBadge connectionState={connectionState} requestState={requestState} />
       </header>
 
-      <section className="wall-metrics" aria-label="Session summary">
-        <div><span>Active racks</span><strong>{summary.active_racks}<small> / {roomState.racks.length}</small></strong></div>
-        <div><span>Athletes</span><strong>{summary.athletes_with_sets}</strong></div>
-        <div><span>Sets complete</span><strong>{summary.completed_sets}</strong></div>
-        <div><span>Awaiting saved result</span><strong>{roomState.racks.filter((rack) => !rack.latest_set).length}</strong></div>
-        <div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div>
+      <section className={`wall-movement-board ${movement.waiting ? "waiting" : ""}`}>
+        <header><span>Current room movement</span><h2>{movement.name}</h2><p>{movement.detail}</p></header>
+        {movement.waiting
+          ? <div className="wall-movement-wait"><b>READY</b><span>Signed-in athlete progress chooses the movement automatically.</span></div>
+          : <div className="wall-movement-grid"><WallLeaderboard rows={movement.rows} movementName={movement.name} /><WallInsights insights={roomState.insights} /></div>}
       </section>
-
-      {roomState.racks.length === 0 ? (
-        <StatePanel title="No racks assigned" body="Assign rack screens or sensor nodes to populate this board." />
-      ) : (
-        <section className="wall-content">
-          <div className="wall-rack-grid">
-            {roomState.racks.map((rack) => <WallRackTile rack={rack} key={rack.rack_number} />)}
-          </div>
-          <aside className="wall-rail">
-            <WallLeaderboard rows={roomState.leaderboard} />
-            <WallInsights insights={roomState.insights} />
-          </aside>
-        </section>
-      )}
 
       {(roomState.truncated.racks || roomState.truncated.leaderboard) && (
         <div className="wall-truncation">Additional room results are available in the coach view.</div>
@@ -193,12 +187,12 @@ function CoachLogin({ onLogin, error, busy }) {
 }
 
 function CoachRackButton({ rack, selected, onSelect }) {
-  const workoutSet = rack.latest_set;
+  const view = coachRackView(rack);
   return (
     <button className={`coach-rack-row ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={onSelect}>
       <i className={rack.status_color} />
-      <span><b>Rack {rack.rack_number}</b><small>{workoutSet?.athlete.name || "No saved set"}</small></span>
-      <strong>{velocity(workoutSet?.avg_velocity)}</strong>
+      <span><b>Rack {rack.rack_number}</b><small>{view.athleteName} · {view.movementName}</small></span>
+      <strong>{velocity(view.latestResult?.avg_velocity)}</strong>
     </button>
   );
 }
@@ -344,9 +338,9 @@ function HistoryTab({ context }) {
   </section></div>;
 }
 
-function ProgramsTab({ athlete, programs }) {
+function ProgramsTab({ athlete, programs, accessToken, onLogout }) {
   if (!athlete) return <StatePanel title="Choose an athlete" body="Select an athlete to see their recorded prescriptions." />;
-  return <div className="context-tab-content"><section className="context-section"><header><span>Recorded prescriptions</span><h3>{athlete.name} · Programs</h3><p>No program is labeled current without effective dates.</p></header><div className="program-card-grid">{programs.map((program) => <article key={program.id}><span>{program.exercise}</span><strong>{program.target_sets} × {program.target_reps}</strong><p>{program.target_weight_lbs} lbs</p><div>Target velocity <b>{program.velocity_zone_min === null && program.velocity_zone_max === null ? "No velocity target" : `${velocity(program.velocity_zone_min)}–${velocity(program.velocity_zone_max)} m/s`}</b></div></article>)}</div></section></div>;
+  return <div className="context-tab-content"><section className="context-section"><header><span>Recorded prescriptions</span><h3>{athlete.name} · Programs</h3><p>No program is labeled current without effective dates.</p></header><div className="program-card-grid">{programs.map((program) => <article key={program.id}><span>{program.exercise}</span><strong>{program.target_sets} × {program.target_reps}</strong><p>{program.target_weight_lbs} lbs</p><div>Target velocity <b>{program.velocity_zone_min === null && program.velocity_zone_max === null ? "No velocity target" : `${velocity(program.velocity_zone_min)}–${velocity(program.velocity_zone_max)} m/s`}</b></div></article>)}</div></section><AthleteWorkoutPlanning athlete={athlete} accessToken={accessToken} onLogout={onLogout} /></div>;
 }
 
 function NotesTab({ athlete, note, draft, setDraft, onSave, saving, error, conflict }) {
@@ -354,7 +348,7 @@ function NotesTab({ athlete, note, draft, setDraft, onSave, saving, error, confl
   return <div className="context-tab-content"><section className="context-section notes-workspace"><header><span>Coach memory</span><h3>Notes for {athlete.name}</h3><p>Record durable context another coach should know next session.</p></header>{conflict && <div className="note-conflict" role="alert"><strong>Another coach changed this note.</strong><blockquote>{conflict.text || "(empty note)"}</blockquote><p>Your draft is preserved and can now be merged with this server version.</p></div>}<textarea aria-label={`Coach notes for ${athlete.name}`} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={65536} placeholder="Record durable athlete context..." /><div className="notes-actions"><span>{draft.length.toLocaleString()} / 65,536 · {draft !== note?.text ? "Unsaved changes" : "Saved"}</span><button onClick={onSave} disabled={saving || draft === note?.text}>{saving ? "Saving..." : "Save note"}</button></div>{error && <p className="coach-login-error" role="alert">{error}</p>}</section></div>;
 }
 
-function RackSelectionControls({ rack, athleteId, athletes, programs, accessToken, onChooseAthlete, onLogout, refresh }) {
+function LegacyRackSelectionControls({ rack, athleteId, athletes, programs, accessToken, onChooseAthlete, onLogout, refresh }) {
   const selectedAthleteId = rack.selection?.athlete?.id;
   const selectedProgramId = rack.selection?.active_program?.id;
   const eligibleAthleteId = athletes.some((athlete) => Number(athlete.id) === Number(athleteId)) ? athleteId : null;
@@ -362,6 +356,20 @@ function RackSelectionControls({ rack, athleteId, athletes, programs, accessToke
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [catalogWorkouts, setCatalogWorkouts] = useState([]);
+  const [workoutPrograms, setWorkoutPrograms] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState("");
+  const [assignmentType, setAssignmentType] = useState("workout");
+  const [workoutId, setWorkoutId] = useState("");
+  const [workoutProgramId, setWorkoutProgramId] = useState("");
+  const [selectedWorkoutId, setSelectedWorkoutId] = useState("");
+  const [catalogSaving, setCatalogSaving] = useState(false);
+  const [catalogStatus, setCatalogStatus] = useState("");
+  const [loadedCatalogAssignment, setLoadedCatalogAssignment] = useState({ rackNumber: null, assignment: null });
+  const authoritativeCatalogAssignment = loadedCatalogAssignment.rackNumber === rack.rack_number
+    ? loadedCatalogAssignment.assignment
+    : rack.catalog_assignment || rack.workout_assignment || null;
 
   useEffect(() => {
     setProgramId(Number(selectedAthleteId) === Number(eligibleAthleteId) && selectedProgramId ? String(selectedProgramId) : "");
@@ -371,6 +379,70 @@ function RackSelectionControls({ rack, athleteId, athletes, programs, accessToke
     setStatus("");
     setError("");
   }, [rack.rack_number, athleteId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function readAll(initialUrl) {
+      let url = initialUrl;
+      const results = [];
+      for (let page = 0; url && page < 20; page += 1) {
+        const response = await fetch(url, { headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` } });
+        if (response.status === 401 || response.status === 403) {
+          onLogout();
+          throw new Error("Coach access expired.");
+        }
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || "Catalog choices could not be loaded.");
+        results.push(...(Array.isArray(body) ? body : body.results || []));
+        url = Array.isArray(body) ? null : sameOriginPath(body.next, window.location.origin);
+      }
+      return results;
+    }
+    setCatalogLoading(true);
+    setCatalogError("");
+    Promise.all([readAll("/api/workouts/?page_size=100"), readAll("/api/workout-programs/?page_size=100")])
+      .then(([nextWorkouts, nextPrograms]) => {
+        if (!cancelled) {
+          setCatalogWorkouts(nextWorkouts);
+          setWorkoutPrograms(nextPrograms);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled && loadError.message !== "Coach access expired.") setCatalogError(loadError.message || "Catalog choices could not be loaded.");
+      })
+      .finally(() => { if (!cancelled) setCatalogLoading(false); });
+    return () => { cancelled = true; };
+  }, [accessToken]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`/api/racks/${rack.rack_number}/state/`, { headers: { Accept: "application/json" }, signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || "Current rack assignment could not be loaded.");
+        setLoadedCatalogAssignment({ rackNumber: rack.rack_number, assignment: body.assignment || null });
+      })
+      .catch((loadError) => { if (loadError.name !== "AbortError") setCatalogError(loadError.message); });
+    return () => controller.abort();
+  }, [rack.rack_number]);
+
+  useEffect(() => {
+    const assignedProgram = authoritativeCatalogAssignment?.program || authoritativeCatalogAssignment?.workout_program;
+    const assignedWorkout = authoritativeCatalogAssignment?.workout;
+    if (assignedProgram) {
+      setAssignmentType("workout_program");
+      setWorkoutProgramId(String(assignedProgram.id));
+      setSelectedWorkoutId(String(assignedWorkout?.id || ""));
+      setWorkoutId("");
+    } else if (assignedWorkout) {
+      setAssignmentType("workout");
+      setWorkoutId(String(assignedWorkout.id));
+      setWorkoutProgramId("");
+      setSelectedWorkoutId("");
+    }
+    setCatalogStatus("");
+    setCatalogError("");
+  }, [rack.rack_number, authoritativeCatalogAssignment?.workout?.id, authoritativeCatalogAssignment?.program?.id, authoritativeCatalogAssignment?.workout_program?.id]);
 
   async function saveSelection() {
     setSaving(true);
@@ -388,6 +460,7 @@ function RackSelectionControls({ rack, athleteId, athletes, programs, accessToke
       }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(`${body.code ? `${body.code}: ` : ""}${body.detail || "Rack selection could not be saved."}`);
+      setLoadedCatalogAssignment({ rackNumber: rack.rack_number, assignment: null });
       setStatus("Selection saved. Refreshing room state...");
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
       setStatus("Rack selection saved.");
@@ -398,8 +471,47 @@ function RackSelectionControls({ rack, athleteId, athletes, programs, accessToke
     }
   }
 
+  async function saveCatalogAssignment() {
+    setCatalogSaving(true);
+    setCatalogStatus("");
+    setCatalogError("");
+    try {
+      const response = await fetch(`/api/racks/${rack.rack_number}/assignment/`, {
+        method: "PUT",
+        headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(buildRackAssignmentPayload(assignmentType, workoutId, workoutProgramId, selectedWorkoutId)),
+      });
+      if (response.status === 401 || response.status === 403) {
+        onLogout();
+        return;
+      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(`${body.code ? `${body.code}: ` : ""}${body.detail || "Catalog assignment could not be saved."}`);
+      setLoadedCatalogAssignment({ rackNumber: rack.rack_number, assignment: body.assignment || null });
+      setCatalogStatus("Catalog assignment saved. Refreshing rack state...");
+      await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
+      setCatalogStatus("Catalog assignment saved.");
+    } catch (saveError) {
+      setCatalogError(saveError.message || "Catalog assignment could not be saved.");
+    } finally {
+      setCatalogSaving(false);
+    }
+  }
+
+  const selectedWorkoutProgram = workoutPrograms.find((workoutProgram) => Number(workoutProgram.id) === Number(workoutProgramId));
+  const includedWorkouts = selectedWorkoutProgram?.items || [];
+  const catalogReady = assignmentType === "workout" ? Boolean(workoutId) : Boolean(workoutProgramId && selectedWorkoutId);
+  const legacyLabel = selectedAthleteId && selectedProgramId
+    ? `${rack.selection.athlete.name} · ${rack.selection.active_program.exercise}`
+    : "No legacy athlete and movement selected";
+  const catalogLabel = authoritativeCatalogAssignment?.workout?.name
+    ? (authoritativeCatalogAssignment?.program || authoritativeCatalogAssignment?.workout_program ? `${(authoritativeCatalogAssignment.program || authoritativeCatalogAssignment.workout_program).name} · ${authoritativeCatalogAssignment.workout.name}` : authoritativeCatalogAssignment.workout.name)
+    : "No catalog workout assigned";
+
   return <section className="coach-panel coach-rack-selection">
-    <header><div><span>Rack workout</span><h3>Select athlete and movement</h3></div><b>Rack {rack.rack_number}</b></header>
+    <header><div><span>Rack workout</span><h3>Choose legacy or catalog training</h3></div><b>Rack {rack.rack_number}</b></header>
+    <div className="coach-assignment-current"><span>Current legacy selection</span><b>{legacyLabel}</b><span>Current catalog assignment</span><b>{catalogLabel}</b></div>
+    <h4 className="coach-assignment-subhead">Legacy athlete prescription</h4>
     <div className="coach-rack-selection-fields">
       <label>Athlete<select value={eligibleAthleteId || ""} onChange={(event) => onChooseAthlete(event.target.value)} disabled={saving}><option value="">Select active-session athlete</option>{athletes.map((athlete) => <option value={athlete.id} key={athlete.id}>{athlete.name}</option>)}</select></label>
       <label>Movement<select value={programId} onChange={(event) => setProgramId(event.target.value)} disabled={!eligibleAthleteId || saving}><option value="">Select movement</option>{eligibleAthleteId ? programs.map((program) => <option value={program.id} key={program.id}>{program.exercise}</option>) : null}</select></label>
@@ -407,6 +519,33 @@ function RackSelectionControls({ rack, athleteId, athletes, programs, accessToke
     </div>
     {status && <p className="coach-selection-status" role="status">{status}</p>}
     {error && <p className="coach-login-error" role="alert">{error}</p>}
+    <div className="coach-catalog-assignment">
+      <h4 className="coach-assignment-subhead">Catalog assignment</h4>
+      <p>Saving switches this rack to catalog mode. The current legacy selection remains available until the switch succeeds.</p>
+      {catalogLoading ? <p className="monitor-empty" role="status">Loading workout choices...</p> : <div className="coach-catalog-assignment-fields">
+        <label>Assignment type<select value={assignmentType} onChange={(event) => { setAssignmentType(event.target.value); setWorkoutId(""); setWorkoutProgramId(""); setSelectedWorkoutId(""); }} disabled={catalogSaving}><option value="workout">Workout</option><option value="workout_program">Workout program</option></select></label>
+        {assignmentType === "workout" ? <label>Workout<select value={workoutId} onChange={(event) => setWorkoutId(event.target.value)} disabled={catalogSaving}><option value="">Select workout</option>{catalogWorkouts.map((workout) => <option value={workout.id} key={workout.id}>{workout.name}</option>)}</select></label> : <><label>Workout program<select value={workoutProgramId} onChange={(event) => { setWorkoutProgramId(event.target.value); setSelectedWorkoutId(""); }} disabled={catalogSaving}><option value="">Select program</option>{workoutPrograms.map((workoutProgram) => <option value={workoutProgram.id} key={workoutProgram.id}>{workoutProgram.name}</option>)}</select></label><label>Included workout<select value={selectedWorkoutId} onChange={(event) => setSelectedWorkoutId(event.target.value)} disabled={!workoutProgramId || catalogSaving}><option value="">Select included workout</option>{includedWorkouts.map((item) => <option value={item.workout.id} key={item.id || item.workout.id}>{item.position}. {item.workout.name}</option>)}</select></label></>}
+        <button onClick={saveCatalogAssignment} disabled={!catalogReady || catalogSaving}>{catalogSaving ? "Saving..." : "Switch rack to catalog"}</button>
+      </div>}
+      {catalogStatus && <p className="coach-selection-status" role="status">{catalogStatus}</p>}
+      {catalogError && <p className="coach-login-error" role="alert">{catalogError}</p>}
+    </div>
+  </section>;
+}
+
+function RackSelectionControls({ rack }) {
+  const view = coachRackView(rack);
+  const training = rack.training;
+  return <section className="coach-panel coach-rack-observation">
+    <header><div><span>Rack observation</span><h3>{view.athleteName}</h3></div><b>Rack {rack.rack_number}</b></header>
+    <div className="coach-observation-grid">
+      <div><span>Program</span><strong>{training?.program?.name || "--"}</strong></div>
+      <div><span>Workout</span><strong>{training?.workout?.name || "--"}</strong></div>
+      <div><span>Movement</span><strong>{view.movementName}</strong></div>
+      <div><span>Progress</span><strong>{view.progressLabel}</strong></div>
+      <div><span>Latest result</span><strong>{view.latestResult ? `${velocity(view.latestResult.avg_velocity)} m/s · ${view.latestResult.reps_completed} reps` : "No persisted result"}</strong></div>
+      <div><span>Hardware</span><strong className={rack.assignment_conflict ? "coach-observation-conflict" : ""}>{rack.assignment_conflict ? "Assignment conflict" : `${rack.screen_count} screen · ${rack.nodes.length} node${rack.nodes.length === 1 ? "" : "s"}`}</strong></div>
+    </div>
   </section>;
 }
 
@@ -416,16 +555,16 @@ function CoachView({ monitor, accessToken, onLogout }) {
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
   useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
   useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");setConflict(null);if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/programs/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/notes/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete.id===selectedAthleteId&&n.athlete_id===selectedAthleteId){setContext(c);setPrograms(p);setNote(n);setDraft(n.text);}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
-  useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.selection?.athlete?.id||rack.latest_set?.athlete.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
+  useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.training?.athlete?.id||rack.selection?.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
   const dirty=note&&draft!==note.text;
   const chooseAthlete=id=>{if(dirty&&!window.confirm("Discard the unsaved note draft?"))return;setSelectedAthleteId(id?Number(id):null);};
   const chooseTab=tab=>{if(activeTab==="notes"&&tab!=="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;setActiveTab(tab);};
   async function saveNote(){if(!note||note.athlete_id!==selectedAthleteId){setError("Reload this athlete before saving notes.");return;}setSaving(true);setError("");setConflict(null);try{const r=await fetch(`/api/athletes/${selectedAthleteId}/notes/`,{method:"PUT",headers:{...headers,"Content-Type":"application/json"},body:JSON.stringify({text:draft,expected_version:note.version})});if(r.status===401||r.status===403){onLogout();return;}const b=await r.json();if(r.status===409){setConflict(b.current);setNote({athlete_id:selectedAthleteId,...b.current});return;}if(!r.ok)throw new Error(b.detail||"The note could not be saved.");setNote(b);setDraft(b.text);}catch(e){setError(e.message);}finally{setSaving(false);}}
   if(!roomState&&requestState==="loading")return <main className="monitor coach-monitor"><StatePanel title="Loading coach workspace" body="Reconciling saved room state." /></main>;
   if(!roomState)return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body={lastError||"The base station could not be reached."} action={refresh} /></main>;
-  const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set;
+  const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],observedResultId=selectedRack?.training?.latest_result?.id,workoutSet=selectedRack?.latest_set?.id===observedResultId?selectedRack.latest_set:null;
   const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.selection?.athlete?.id||r.latest_set?.athlete.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?<StatePanel title="No racks assigned" body="Assign room hardware before monitoring sets."/>:<><RackSelectionControls rack={selectedRack} athleteId={selectedAthleteId} athletes={roomState.participants||[]} programs={programs} accessToken={accessToken} onChooseAthlete={chooseAthlete} onLogout={onLogout} refresh={refresh}/>{!workoutSet?<StatePanel title={`Rack ${selectedRack.rack_number} is ready`} body="No completed set saved for this rack."/>:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{workoutSet.athlete.name}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}</>}</div></section>;
-  return <main className="monitor coach-monitor"><header className="coach-topbar"><div className="monitor-brand"><b>EA</b><span>Edge Athlete</span></div><div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div><ConnectionBadge connectionState={connectionState} requestState={requestState}/><select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select><button className="coach-logout" onClick={onLogout}>Log out</button></header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{["room","athlete","history","programs","notes"].map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav>{activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error} conflict={conflict}/>}</main>;
+  return <main className="monitor coach-monitor"><header className="coach-topbar"><div className="monitor-brand"><b>EA</b><span>Edge Athlete</span></div><div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div><ConnectionBadge connectionState={connectionState} requestState={requestState}/><select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select><button className="coach-logout" onClick={onLogout}>Log out</button></header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{["room","workouts","reports","athlete","history","programs","notes"].map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav><div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div>{activeTab==="workouts"||activeTab==="reports"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error} conflict={conflict}/>}</main>;
 }
 
 export default function Dashboard({ mode = "wall" }) {

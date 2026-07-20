@@ -1,13 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import mqtt from "mqtt";
 import "./App.css";
+import { effectiveAssignmentLabel, resolveRackPlanningState } from "./athletePlanning.js";
 import { parseMonitoringEvent, ROOM_STATE_TOPIC } from "./roomMonitor.js";
 import {
   appendLiveRep,
+  athleteNameLabels,
+  buildAthleteIdentityPayload,
+  buildRackSetStartPayload,
+  buildSetCompletionPayload,
   classifyVelocity,
   createDeviceId,
   hasVelocityTarget,
   parseRepMessage,
+  orderedEffectiveExercises,
+  rackAssignmentChanged,
+  rackProgressView,
   repKey,
   repTopic,
   shouldRefreshRack,
@@ -55,6 +63,16 @@ export default function RackScreen() {
   const [refreshRequest, setRefreshRequest] = useState(0);
   const [mqttState, setMqttState] = useState("idle");
   const [liveReps, setLiveReps] = useState([]);
+  const [pendingAthleteId, setPendingAthleteId] = useState("");
+  const [confirmAthleteId, setConfirmAthleteId] = useState("");
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityError, setIdentityError] = useState("");
+  const [identityStatus, setIdentityStatus] = useState("");
+  const [activeSetId, setActiveSetId] = useState(null);
+  const [executionBusy, setExecutionBusy] = useState(false);
+  const [executionError, setExecutionError] = useState("");
+  const [executionStatus, setExecutionStatus] = useState("");
+  const rackNumberRef = useRef(null);
   const seenRepKeys = useRef(new Set());
   const refreshTimer = useRef(null);
   const pendingRevision = useRef(0);
@@ -70,26 +88,45 @@ export default function RackScreen() {
       if (!response.ok) throw new Error(`Base station returned HTTP ${response.status}`);
       const body = await response.json();
       if (cancelled) return;
-      if (body.rack_number !== null && body.rack_number !== undefined) {
-        setRackNumber(body.rack_number);
+      const nextRackNumber = body.rack_number ?? null;
+      if (rackAssignmentChanged(rackNumberRef.current, nextRackNumber)) {
+        rackNumberRef.current = nextRackNumber;
+        setRackNumber(nextRackNumber);
+        setRackState(null);
+        setLiveReps([]);
+        setMqttState("idle");
+        seenRepKeys.current.clear();
+        processedEventIds.current.clear();
+        if (refreshTimer.current) {
+          clearTimeout(refreshTimer.current);
+          refreshTimer.current = null;
+        }
+        currentRevision.current = 0;
+        pendingRevision.current = 0;
+        setRefreshRequest(0);
+        setPendingAthleteId("");
+        setConfirmAthleteId("");
+        setIdentityError("");
+        setIdentityStatus("");
+      }
+      if (nextRackNumber !== null) {
         setAssignmentState("assigned");
-        if (pollTimer) clearInterval(pollTimer);
       } else {
         setAssignmentState("waiting");
       }
       setAssignmentError("");
-      return body.rack_number !== null && body.rack_number !== undefined;
+      return nextRackNumber !== null;
     }
 
     async function register() {
       setAssignmentState("registering");
       try {
-        const assigned = await readAssignment("/api/racks/register/", {
+        await readAssignment("/api/racks/register/", {
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify({ device_id: rackDeviceId }),
         });
-        if (!cancelled && !assigned) {
+        if (!cancelled) {
           pollTimer = setInterval(() => {
             readAssignment("/api/racks/racknumber/", {
               method: "POST",
@@ -98,7 +135,7 @@ export default function RackScreen() {
             }).catch((error) => {
               if (!cancelled) {
                 setAssignmentError(error.message);
-                setAssignmentState("error");
+                if (rackNumberRef.current === null) setAssignmentState("error");
               }
             });
           }, 2_000);
@@ -122,7 +159,7 @@ export default function RackScreen() {
     if (rackNumber === null) return undefined;
     const controller = new AbortController();
     setRequestState((current) => rackState && current !== "loading" ? "refreshing" : "loading");
-    fetch(`/api/racks/${rackNumber}/state/`, { headers: { Accept: "application/json" }, signal: controller.signal })
+    fetch(`/api/racks/${rackNumber}/state/`, { headers: { Accept: "application/json", "X-Rack-Device-Id": rackDeviceId }, signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Rack state returned HTTP ${response.status}`);
         return response.json();
@@ -139,16 +176,25 @@ export default function RackScreen() {
         setRequestState(rackState ? "stale" : "error");
       });
     return () => controller.abort();
-  }, [rackNumber, refreshRequest]);
+  }, [rackDeviceId, rackNumber, refreshRequest]);
 
   const activeProgram = rackState?.active_program;
+  const planningState = resolveRackPlanningState(rackState);
+  const catalogMode = rackState?.mode === "catalog" || rackState?.assignment_mode === "catalog" || Boolean(rackState?.catalog_assignment) || Boolean(rackState?.assignment) || planningState.identityAvailable;
+  const effectiveWorkout = rackState?.effective_workout;
+  const effectiveExercises = orderedEffectiveExercises(effectiveWorkout);
+  const progress = rackProgressView(rackState?.progress);
+  const feedbackTarget = catalogMode ? progress?.exercise : activeProgram;
+  const targetMinimum = feedbackTarget?.velocity_zone_min ?? feedbackTarget?.velocity_min;
+  const targetMaximum = feedbackTarget?.velocity_zone_max ?? feedbackTarget?.velocity_max;
   const node = rackState?.node;
-  const liveTopic = node?.state === "ready" && node.node_id && hasVelocityTarget(activeProgram)
+  const liveTopic = node?.state === "ready" && node.node_id && hasVelocityTarget(feedbackTarget)
     ? repTopic(node.node_id)
     : null;
-  const selectionKey = `${rackState?.rack_number || ""}:${rackState?.selected_athlete?.id || ""}:${activeProgram?.id || ""}:${node?.state || ""}:${node?.node_id || ""}`;
+  const selectionKey = `${rackState?.rack_number || ""}:${rackState?.selected_athlete?.id || ""}:${progress?.exercise?.id || activeProgram?.id || ""}:${progress?.expectedSetNumber || ""}:${node?.state || ""}:${node?.node_id || ""}`;
 
   useEffect(() => setLiveReps([]), [selectionKey]);
+  useEffect(() => setActiveSetId(progress?.activeSet?.id || null), [progress?.activeSet?.id]);
 
   useEffect(() => {
     if (rackNumber === null) return undefined;
@@ -218,11 +264,118 @@ export default function RackScreen() {
     return <main className="monitor rack-screen rack-waiting-screen"><section className="rack-waiting-card"><p className="rack-kicker">Rack {rackNumber}</p><h1>Workout unavailable</h1><p>{requestError}</p><button onClick={() => setRefreshRequest((value) => value + 1)}>Retry</button></section></main>;
   }
 
+  async function updateAthleteIdentity(method, athleteId = null) {
+    setIdentityBusy(true);
+    setIdentityError("");
+    setIdentityStatus("");
+    try {
+      const payload = athleteId === null ? { device_id: rackDeviceId } : buildAthleteIdentityPayload(rackDeviceId, athleteId);
+      const response = await fetch(`/api/racks/${rackNumber}/athlete/`, {
+        method,
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setIdentityError(`${body.code ? `${body.code}: ` : ""}${body.detail || "Athlete selection could not be changed."}`);
+        if (response.status === 409) setRefreshRequest((value) => value + 1);
+        return;
+      }
+      setPendingAthleteId("");
+      setConfirmAthleteId("");
+      setIdentityStatus(method === "DELETE" ? "Signed out. Refreshing rack..." : "Athlete confirmed. Loading workout...");
+      setRefreshRequest((value) => value + 1);
+    } catch (error) {
+      setIdentityError(error.message || "Athlete selection could not be changed.");
+    } finally {
+      setIdentityBusy(false);
+    }
+  }
+
+  async function startExpectedSet() {
+    setExecutionBusy(true);
+    setExecutionError("");
+    setExecutionStatus("");
+    try {
+      const response = await fetch(`/api/racks/${rackNumber}/sets/`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(buildRackSetStartPayload(rackDeviceId)),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setExecutionError(`${body.code ? `${body.code}: ` : ""}${body.detail || "Set could not be started."}`);
+        setRefreshRequest((value) => value + 1);
+        return;
+      }
+      setActiveSetId(body.id);
+      setLiveReps([]);
+      setExecutionStatus(`Set ${body.set_number} started. Live reps are not saved until completion.`);
+      setRefreshRequest((value) => value + 1);
+    } catch (error) {
+      setExecutionError(error.message || "Set could not be started.");
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
+
+  async function finishExpectedSet(isFalseSet) {
+    if (!activeSetId) return;
+    setExecutionBusy(true);
+    setExecutionError("");
+    setExecutionStatus("");
+    try {
+      const response = await fetch(`/api/racks/${rackNumber}/sets/${activeSetId}/complete/`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json", "X-Rack-Device-Id": rackDeviceId },
+        body: JSON.stringify(buildSetCompletionPayload(liveReps, progress?.exercise, isFalseSet)),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setExecutionError(`${body.code ? `${body.code}: ` : ""}${body.detail || body.error || "Set could not be completed."}`);
+        setRefreshRequest((value) => value + 1);
+        return;
+      }
+      setActiveSetId(null);
+      setLiveReps([]);
+      setExecutionStatus(isFalseSet ? "False set saved. The same set remains expected." : "Set and live reps saved. Loading the next step...");
+      setRefreshRequest((value) => value + 1);
+    } catch (error) {
+      setExecutionError(error.message || "Set could not be completed.");
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
+
   const latestRep = liveReps.at(-1);
-  const targetLabel = latestRep && hasVelocityTarget(activeProgram)
-    ? classifyVelocity(latestRep.mean_velocity, activeProgram.velocity_zone_min, activeProgram.velocity_zone_max)
+  const targetLabel = latestRep && hasVelocityTarget(feedbackTarget)
+    ? classifyVelocity(latestRep.mean_velocity, targetMinimum, targetMaximum)
     : "Waiting for a rep";
   const mqttLabel = mqttState === "live" ? "MQTT connected" : mqttState === "reconnecting" ? "MQTT reconnecting" : "MQTT connecting";
+
+  if (catalogMode) {
+    const athletes = athleteNameLabels(rackState.active_athletes || rackState.available_athletes || rackState.athletes || []);
+    const pendingAthlete = athletes.find((athlete) => Number(athlete.id) === Number(confirmAthleteId));
+    const effectiveSourceLabel = effectiveAssignmentLabel(planningState.source, effectiveWorkout);
+    return <main className="monitor rack-screen">
+      <header className="rack-topbar"><div className="monitor-brand"><b>EA</b><span>Edge Athlete</span></div><div><span>Training station</span><h1>Rack {rackState.rack_number}</h1></div><div className={`rack-status ${requestState === "stale" || mqttState !== "live" ? "warning" : ""}`} role="status"><b>{requestState === "stale" ? "Rack state retry needed" : mqttLabel}</b><span>{requestState === "stale" ? requestError : "Catalog workout mode"}</span></div></header>
+      {requestState === "stale" && <div className="rack-retry" role="alert"><span>Showing the last valid rack assignment.</span><button onClick={() => setRefreshRequest((value) => value + 1)}>Retry rack state</button></div>}
+      {!rackState.active_session ? <section className="rack-empty-state"><p className="rack-kicker">Rack ready</p><h2>No active session</h2><p>A coach must start a training session before athletes can identify themselves.</p></section>
+        : !rackState.selected_athlete && !planningState.identityAvailable && !rackState.catalog_assignment && !rackState.assignment ? <section className="rack-empty-state"><p className="rack-kicker">Catalog mode</p><h2>Waiting for a workout</h2><p>A coach must assign a catalog workout to this rack.</p></section>
+        : !rackState.selected_athlete ? <section className="rack-identity"><header><p className="rack-kicker">{rackState.active_session.label}</p><h2>Who is training?</h2><p>Select your name, then confirm before opening the workout.</p></header>
+          {athletes.length === 0 ? <p className="monitor-empty">No athletes are available for this training day.</p> : confirmAthleteId ? <div className="rack-identity-confirm" role="group" aria-labelledby="confirm-athlete-heading"><span>Confirm athlete</span><h3 id="confirm-athlete-heading">{pendingAthlete?.label}</h3><p>This rack will show this athlete’s effective workout.</p><div><button className="rack-secondary" onClick={() => setConfirmAthleteId("")} disabled={identityBusy}>Go back</button><button onClick={() => updateAthleteIdentity("PUT", confirmAthleteId)} disabled={identityBusy}>{identityBusy ? "Confirming..." : "Confirm athlete"}</button></div></div> : <div className="rack-identity-picker"><label>Athlete name<select value={pendingAthleteId} onChange={(event) => setPendingAthleteId(event.target.value)} disabled={identityBusy}><option value="">Select your name</option>{athletes.map((athlete) => <option value={athlete.id} key={athlete.id}>{athlete.label}</option>)}</select></label><button onClick={() => setConfirmAthleteId(pendingAthleteId)} disabled={!pendingAthleteId || identityBusy}>Continue to confirmation</button></div>}
+          {rackState.active_athletes_truncated && <p className="monitor-empty">Only the first 100 athletes are shown. Ask a coach if your name is not listed.</p>}
+          {identityStatus && <p className="rack-identity-status" role="status">{identityStatus}</p>}{identityError && <p className="rack-identity-error" role="alert">{identityError}</p>}
+        </section>
+        : !progress ? <section className="rack-empty-state"><p className="rack-kicker">{rackState.selected_athlete.name}</p><h2>Progress unavailable</h2><p>The athlete’s program progress could not be restored.</p><button onClick={() => updateAthleteIdentity("DELETE")} disabled={identityBusy}>Sign out</button>{identityError && <p className="rack-identity-error" role="alert">{identityError}</p>}</section>
+        : progress.complete ? <section className="rack-empty-state"><p className="rack-kicker">{progress.programName}</p><h2>Program complete</h2><p>{rackState.selected_athlete.name} has completed today’s assigned program.</p><button onClick={() => updateAthleteIdentity("DELETE")} disabled={identityBusy}>Sign out</button>{identityError && <p className="rack-identity-error" role="alert">{identityError}</p>}</section>
+        : <div className="rack-layout catalog-rack-layout">
+          <section className="rack-current"><div className="rack-current-heading"><div><p className="rack-kicker">{progress.programName} · Workout {progress.workoutPosition}</p><span className="rack-effective-source">{effectiveSourceLabel}</span><h2>{progress.exercise.exercise}</h2><p className="rack-athlete-name">{rackState.selected_athlete.name}</p></div><button className="rack-signout" onClick={() => updateAthleteIdentity("DELETE")} disabled={identityBusy || Boolean(activeSetId)}>{identityBusy ? "Signing out..." : "Sign out"}</button></div><dl className="rack-prescription-summary"><div><dt>Expected set</dt><dd>{progress.expectedSetNumber} of {progress.exercise.sets}</dd></div><div><dt>Reps</dt><dd>{progress.exercise.reps}</dd></div><div><dt>Load</dt><dd>{progress.exercise.default_weight_lbs ?? "--"}<small> lbs</small></dd></div></dl><div className="rack-node-state"><b>{nodeMessage(node)}</b><span>{node?.node_id || "No node ID"}</span></div><div className="rack-set-actions">{activeSetId ? <><button onClick={() => finishExpectedSet(false)} disabled={executionBusy}>{executionBusy ? "Saving..." : `Save ${liveReps.length} live reps and complete`}</button><button className="rack-false-set" onClick={() => finishExpectedSet(true)} disabled={executionBusy}>Mark false set</button></> : <button onClick={startExpectedSet} disabled={executionBusy || node?.state !== "ready"}>{executionBusy ? "Starting..." : `Start expected set ${progress.expectedSetNumber}`}</button>}</div>{executionStatus && <p className="rack-execution-status" role="status">{executionStatus}</p>}{executionError && <p className="rack-identity-error" role="alert">{executionError}</p>}{identityError && <p className="rack-identity-error" role="alert">{identityError}</p>}</section>
+          <section className={`rack-live ${targetLabel.toLowerCase().replaceAll(" ", "-")}`} aria-label="Unsaved live velocity feedback"><header><div><p className="rack-kicker">Current exercise feedback</p><b>Unsaved</b></div><button onClick={() => setLiveReps([])} disabled={liveReps.length === 0}>Reset reps</button></header>{feedbackTarget && !hasVelocityTarget(feedbackTarget) ? <div className="rack-no-velocity"><strong>No velocity target</strong><p>This exercise does not use live velocity feedback.</p></div> : <div className="rack-live-grid"><div><span>Accepted reps</span><strong>{latestRep?.arrival_number || 0}</strong></div><div><span>Latest mean</span><strong>{latestRep ? velocity(latestRep.mean_velocity) : "--"}<small> m/s</small></strong></div><div><span>Target range</span><strong>{feedbackTarget && hasVelocityTarget(feedbackTarget) ? `${velocity(targetMinimum)}-${velocity(targetMaximum)}` : "--"}<small> m/s</small></strong></div><p role="status" aria-live="polite">{liveTopic ? targetLabel : "Live feedback unavailable"}</p></div>}</section>
+          <section className="rack-programs"><header><p className="rack-kicker">Persisted progress</p><h3>{progress.workoutName}</h3></header><div className="catalog-exercise-list"><article><header><span>Exercise {progress.exercise.position}</span><h4>{progress.exercise.exercise}</h4></header><dl><div><dt>Sets x reps</dt><dd>{progress.exercise.sets} x {progress.exercise.reps}</dd></div><div><dt>Completed sets</dt><dd>{progress.currentExerciseCompletion?.completed_sets || 0}</dd></div><div><dt>False sets</dt><dd>{progress.currentExerciseCompletion?.false_sets || 0}</dd></div><div><dt>Velocity</dt><dd>{hasVelocityTarget(progress.exercise) ? `${velocity(progress.exercise.velocity_min)}-${velocity(progress.exercise.velocity_max)} m/s` : "No velocity target"}</dd></div></dl></article></div>{progress.currentExerciseCompletion?.sets.length > 0 && <div className="rack-persisted-sets" aria-label="Persisted completed sets">{progress.currentExerciseCompletion.sets.map((workoutSet) => <article key={workoutSet.id}><b>{workoutSet.is_false_set ? "False set" : `Persisted set ${workoutSet.set_number}`}</b><span>{workoutSet.reps_completed} reps · {workoutSet.weight_lbs ?? "--"} lbs</span></article>)}</div>}</section>
+        </div>}
+    </main>;
+  }
 
   return <main className="monitor rack-screen">
     <header className="rack-topbar">

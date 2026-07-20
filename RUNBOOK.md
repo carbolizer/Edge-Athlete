@@ -53,6 +53,33 @@ First boot builds the Django and React images; the Django service runs database
 migrations before starting the server. The app is reachable at
 `http://<pi-ip>:8081/` (or `http://localhost:8081/` on the dev host).
 
+## Training-day flow
+
+1. **Coach setup:** Sign in at `/coach`. Create ordered workouts and a
+   `WorkoutProgram`, assign the complete program to each athlete, and set any
+   athlete exercise overrides. Do not assign normal athlete-driven work to racks.
+2. **Start Day:** Select the athlete roster and start one day. The start
+   transaction activates uniquely registered racks and publishes a
+   `session_started` room revision.
+3. **Athlete sign-in:** At `/rack`, use manual name selection and explicit
+   confirmation. This is the supported identity flow until PN532 hardware,
+   wristband payloads, and firmware are verified. A generic
+   `rack_screen_conflict` means the rack does not have exactly one registered
+   screen; use the authenticated coach room view to inspect registration counts.
+4. **Train and progress:** The rack starts the server-derived current set through
+   `POST /api/racks/{rack}/sets/` and completes it through
+   `POST /api/racks/{rack}/sets/{id}/complete/` with `X-Rack-Device-Id`. A
+   qualifying completion advances the expected set, exercise, or workout in the
+   same transaction. False or unfinished sets do not advance progress.
+5. **Move racks:** Finish the active set, then confirm the athlete at the new
+   rack. Progress follows the athlete; an unfinished set blocks movement.
+6. **End Day:** Resolve unfinished sets, then use End Day. Django ends the day,
+   clears active rack identities, and creates one immutable schema 2 report for
+   athlete-driven days.
+7. **Download reports:** In the coach report workspace, download the whole-day
+   PDF or an athlete-day PDF. JSON report detail remains available if PDF
+   rendering fails. All report and PDF routes require an active staff JWT.
+
 ## Config files and where they live
 
 | File | What it controls |
@@ -70,6 +97,24 @@ Retrieve the generated access-point password locally with
 `sudoedit /etc/edgeathlete/ap.env`, set a new 8-63 character `AP_PASSWORD`, and
 rerun `sudo ./setup.sh` to atomically rebuild the root-only NetworkManager
 profile. Connected devices must then join with the new password.
+
+## Rebuilds and Nginx service discovery
+
+Rebuild changed application images with:
+
+```bash
+docker compose up --build -d --remove-orphans
+```
+
+`nginx/nginx.conf` uses Docker's `127.0.0.11` resolver and variable upstreams for
+`django` and `react`. Nginx refreshes those service addresses every 10 seconds,
+so recreating either application container does not leave Nginx pinned to its old
+IP. If `nginx/nginx.conf` itself changes, recreate Nginx so it reloads the mounted
+configuration:
+
+```bash
+docker compose up -d --force-recreate nginx
+```
 
 ## MQTT test commands
 
@@ -130,9 +175,10 @@ docker compose run --rm -e SIMULATOR_ENABLED=True django \
 ```
 
 Open `http://localhost:8081/rack` before rack-mode simulation. The screen must
-first register and receive a rack assignment plus coach-selected athlete and
-movement. Rack-mode reps are labeled unsaved and do not create `Set` or `Rep`
-rows in PostgreSQL.
+first register, receive a rack assignment, and have an eligible roster athlete
+sign in through manual confirmation. Django selects the athlete's current
+movement from progress. Rack-mode reps are labeled unsaved and do not create
+`Set` or `Rep` rows in PostgreSQL.
 
 The default session is named `[SIMULATION] Live training`. Generated records carry
 durable simulation ownership fields; prefixes remain human-readable labels only.
@@ -166,6 +212,11 @@ date and time with a trusted clock before a session and correct it through the
 operating-system time settings. Do not record sets until the clock is correct;
 otherwise persisted rep, set, pulse, and monitoring timestamps will be unreliable.
 
+Set `DJANGO_TIME_ZONE` to the site's IANA timezone, such as
+`America/Chicago`, before generating or browsing reports. It defaults to `UTC`.
+This setting controls each report's `local_date`; stored timestamps remain
+timezone-aware and unchanged.
+
 ### Set completion failed
 
 Keep the complete set payload intact and retry the same completion request rather
@@ -174,6 +225,75 @@ validation or database errors and `docker compose logs -f monitoring-publisher`
 for post-commit broker failures. A broker failure leaves the committed set intact
 and the monitoring event pending; a retry response indicating the set is already
 complete must be reconciled from REST rather than submitted as a new set.
+
+### Training-day limit reached
+
+One training day can persist at most 100 athletes, 500 sets, and 5,000 reps. A
+set or rep overflow returns `session_set_limit` or `session_rep_limit` without a
+partial write. Set creation returns `athlete_not_in_session` when the athlete is
+outside the submitted Session roster. Set create and complete requests from one
+anonymous client share a 120-per-minute throttle and may return HTTP 429 during
+a request burst.
+
+Ending a day also caps the compact UTF-8 report snapshot at 4 MiB. A
+`report_too_large` response reports only aggregate dimensions and leaves the day
+active, rack identity selected, and report absent. Do not edit PostgreSQL rows to
+bypass a limit. Correct accidental data or begin a new training day, then retry
+through the coach interface.
+
+Coach report details provide daily and athlete-scoped PDF downloads. PDFs are
+rendered only from the immutable report snapshot and are capped at 250 pages and
+8 MiB. `unsupported_report_schema`, `pdf_too_large`, and `pdf_render_failed`
+leave the stored report unchanged; use the JSON report detail if rendering fails.
+Both PDF routes share a per-coach limit of 10 requests per minute. Requests over
+the limit return HTTP 429 before a report lookup or PDF render.
+
+## Disposable migration rollback check for 0012/0013
+
+Do not run this procedure against the normal `POSTGRES_DB`. Reversing `0013`
+deletes `AthleteRackParticipation` timestamps and rack-visit metadata. Reversing
+`0012` then deletes whole-program assignment, athlete/day progress, and stable Set
+binding metadata. Athletes, Sessions, Sets, Reps, legacy assignments, and
+immutable report snapshots remain, but reapplying the migrations cannot recreate
+the removed metadata.
+
+The commands below use the fixed database name
+`edgeathlete_rollback_0012_0013`. The first command refuses to continue if that
+name already exists. The Django assertion verifies every migration command is
+connected to that disposable database.
+
+```bash
+# Refuse to reuse an existing database, then create the disposable database.
+docker compose exec postgres sh -eu -c \
+  'test -z "$(psql -U "$POSTGRES_USER" -d postgres -Atc "SELECT datname FROM pg_database WHERE datname = '\''edgeathlete_rollback_0012_0013'\''")"; createdb -U "$POSTGRES_USER" edgeathlete_rollback_0012_0013'
+
+# Verify the target name and build it through 0013.
+docker compose run --rm -e POSTGRES_DB=edgeathlete_rollback_0012_0013 django \
+  python manage.py shell -c 'from django.db import connection; assert connection.settings_dict["NAME"] == "edgeathlete_rollback_0012_0013"; print(connection.settings_dict["NAME"])'
+docker compose run --rm -e POSTGRES_DB=edgeathlete_rollback_0012_0013 django \
+  python manage.py migrate event_handler 0013
+
+# Seed metadata that 0012/0013 own, plus one Set whose legacy row must survive.
+docker compose run --rm -e POSTGRES_DB=edgeathlete_rollback_0012_0013 django \
+  python manage.py shell -c 'from event_handler.models import Athlete, AthleteDayProgress, AthleteRackParticipation, AthleteWorkoutProgramAssignment, Node, Session, Set, Workout, WorkoutExercise, WorkoutProgram, WorkoutProgramItem; a=Athlete.objects.create(name="ROLLBACK_SENTINEL"); w=Workout.objects.create(name="Rollback Workout"); e=WorkoutExercise.objects.create(workout=w, exercise="Rollback Squat", position=1, sets=1, reps=1, default_weight_lbs=0); p=WorkoutProgram.objects.create(name="Rollback Program"); i=WorkoutProgramItem.objects.create(workout_program=p, workout=w, position=1); s=Session.objects.create(label="ROLLBACK_SENTINEL"); s.athletes.add(a); AthleteWorkoutProgramAssignment.objects.create(athlete=a, workout_program=p); progress=AthleteDayProgress.objects.create(session=s, athlete=a, workout_program=p, current_program_item=i, current_workout_exercise=e, expected_set_number=1); AthleteRackParticipation.objects.create(session=s, athlete=a, rack_number=1); n=Node.objects.create(node_id="rollback-sentinel", rack_number=1); Set.objects.create(session=s, athlete=a, node=n, exercise=e.exercise, set_number=1, athlete_day_progress=progress, workout_program_item=i, workout_exercise=e); print("disposable metadata seeded")'
+
+# Exercise the metadata-losing rollback, then reapply it on the disposable DB.
+docker compose run --rm -e POSTGRES_DB=edgeathlete_rollback_0012_0013 django \
+  python manage.py migrate event_handler 0011
+docker compose run --rm -e POSTGRES_DB=edgeathlete_rollback_0012_0013 django \
+  python manage.py migrate event_handler 0013
+
+# Confirm legacy rows remain while 0012/0013 metadata and Set bindings are gone.
+docker compose run --rm -e POSTGRES_DB=edgeathlete_rollback_0012_0013 django \
+  python manage.py shell -c 'from event_handler.models import Athlete, AthleteWorkoutProgramAssignment, AthleteDayProgress, AthleteRackParticipation, Session, Set; assert Athlete.objects.filter(name="ROLLBACK_SENTINEL").exists(); assert Session.objects.filter(label="ROLLBACK_SENTINEL").exists(); retained=Set.objects.get(exercise="Rollback Squat"); assert retained.athlete_day_progress_id is None and retained.workout_program_item_id is None and retained.workout_exercise_id is None; assert not AthleteWorkoutProgramAssignment.objects.exists(); assert not AthleteDayProgress.objects.exists(); assert not AthleteRackParticipation.objects.exists(); print("disposable rollback/reapply verified")'
+
+# Remove only the fixed disposable database.
+docker compose exec postgres sh -eu -c \
+  'test "$POSTGRES_DB" != "edgeathlete_rollback_0012_0013"; dropdb -U "$POSTGRES_USER" edgeathlete_rollback_0012_0013'
+```
+
+For a production rollback, export the `0012`/`0013` metadata or take and verify a
+database backup first. Do not treat migration reapplication as data recovery.
 
 ## Firmware flashing
 

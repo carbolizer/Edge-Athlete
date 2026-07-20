@@ -8,3 +8,4 @@ psycopg2-binary==2.9.9      # PostgreSQL database driver — required for Docker
 paho-mqtt==1.6.1            # Python Mosquitto broker library
 djangorestframework-simplejwt==5.5.1 # JWT token auth for the React frontend
 django-cors-headers==4.4.0 # Allows React (port 5173) to call Django (port 8000)
+reportlab==4.5.1           # Bounded immutable report PDF rendering; Python 3.11/aarch64 wheels

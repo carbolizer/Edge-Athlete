@@ -18,6 +18,8 @@ from event_handler.models import Athlete, Node, Program, Session, Set
 from event_handler.realtime.mqtt_ingester.parser import parse_rep_payload
 from event_handler.serializers import SetCompleteSerializer
 from event_handler.services.set_completion import complete_set, SetAlreadyComplete
+from event_handler.services.training_days import lock_training_day
+from event_handler.services.training_limits import MAX_SESSION_REPS, MAX_SESSION_SETS
 
 
 SIMULATED_ATHLETES = [
@@ -222,6 +224,14 @@ class Command(BaseCommand):
             raise CommandError("--reps-per-set must be between 1 and 100.")
         if not 1 <= options["sets"] <= 1000 or not 1 <= options["max_cycles"] <= 1000:
             raise CommandError("--sets and --max-cycles must be between 1 and 1000.")
+        cycle_limit = options["max_cycles"] if options["continuous"] else options["sets"]
+        if options["mode"] == "monitoring" and options["racks"] * cycle_limit > MAX_SESSION_SETS:
+            raise CommandError(f"Simulation would exceed the {MAX_SESSION_SETS}-set session limit.")
+        if (
+            options["mode"] == "monitoring"
+            and options["racks"] * cycle_limit * options["reps_per_set"] > MAX_SESSION_REPS
+        ):
+            raise CommandError(f"Simulation would exceed the {MAX_SESSION_REPS}-rep session limit.")
         if not math.isfinite(options["interval"]) or not math.isfinite(options["rest"]):
             raise CommandError("--interval and --rest must be finite numbers.")
         if options["interval"] < 0 or options["rest"] < 0:
@@ -235,12 +245,12 @@ class Command(BaseCommand):
     def _prepare_room(self, options, randomizer):
         contexts = []
         with transaction.atomic():
-            conflicting_session = Session.objects.filter(ended_at=None, is_simulated=False).first()
-            if conflicting_session:
+            lock_training_day()
+            session = Session.objects.select_for_update().filter(ended_at=None).first()
+            if session and not session.is_simulated:
                 raise CommandError("End the active non-simulation session before starting simulated data.")
-            session = Session.objects.filter(
-                label=options["session_label"], ended_at=None, is_simulated=True,
-            ).order_by("-id").first()
+            if session and session.label != options["session_label"]:
+                raise CommandError("Another simulated training session is already active.")
             if session is None:
                 if Session.objects.filter(label=options["session_label"], is_simulated=False).exists():
                     raise CommandError("The simulation session label is already owned by non-simulation data.")
@@ -299,6 +309,12 @@ class Command(BaseCommand):
     def _start_sets(self, contexts, session, reps_per_set, randomizer, persist):
         active_sets = []
         with transaction.atomic():
+            if persist:
+                session = Session.objects.select_for_update().get(id=session.id)
+                if session.ended_at is not None:
+                    raise CommandError("The simulation session ended before set creation.")
+                if Set.objects.filter(session=session).count() + len(contexts) > MAX_SESSION_SETS:
+                    raise CommandError(f"Simulation reached the {MAX_SESSION_SETS}-set session limit.")
             for context in contexts:
                 workout_set = None
                 if persist:

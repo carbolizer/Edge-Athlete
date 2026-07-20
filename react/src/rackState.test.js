@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendLiveRep, classifyVelocity, createDeviceId, parseRepMessage, repTopic, shouldRefreshRack } from "./rackState.js";
+import { appendLiveRep, athleteNameLabels, buildAthleteIdentityPayload, buildRackAssignmentPayload, buildRackSetStartPayload, buildSetCompletionPayload, classifyVelocity, createDeviceId, orderedEffectiveExercises, parseRepMessage, rackAssignmentChanged, rackProgressView, repTopic, shouldRefreshRack } from "./rackState.js";
 
 describe("rack live rep state", () => {
   const nodeId = "rack-node-2";
@@ -73,5 +73,76 @@ describe("rack live rep state", () => {
       shouldRefreshRack(0, { revision, event_id: `00000000-0000-4000-8000-${String(revision).padStart(12, "0")}` }, seen);
     }
     expect(seen.size).toBe(100);
+  });
+});
+
+describe("catalog rack state", () => {
+  it("derives current server-owned progress for rack presentation", () => {
+    const exercise = { id: 9, exercise: "Squat", sets: 3, reps: 5 };
+    expect(rackProgressView({
+      status: "ready",
+      program: { name: "Strength" },
+      current_workout: { name: "Lower", position: 2 },
+      current_exercise: exercise,
+      expected_set_number: 2,
+      active_set: { id: 12, set_number: 2 },
+      current_exercise_completion: { completed_sets: 1, false_sets: 1, sets: [{ id: 4 }] },
+      persisted_sets: [{ id: 4 }],
+    })).toEqual({
+      complete: false,
+      programName: "Strength",
+      workoutName: "Lower",
+      workoutPosition: 2,
+      exercise,
+      expectedSetNumber: 2,
+      activeSet: { id: 12, set_number: 2 },
+      currentExerciseCompletion: { completed_sets: 1, false_sets: 1, sets: [{ id: 4 }] },
+      persistedSets: [{ id: 4 }],
+    });
+  });
+
+  it("builds mutually exclusive coach and athlete payloads", () => {
+    expect(buildRackAssignmentPayload("workout", "4", "", "")).toEqual({ workout_id: 4, workout_program_id: null });
+    expect(buildRackAssignmentPayload("workout_program", "", "8", "12")).toEqual({ workout_id: 12, workout_program_id: 8 });
+    expect(buildAthleteIdentityPayload("screen-id", "5")).toEqual({ device_id: "screen-id", athlete_id: 5 });
+    expect(buildRackSetStartPayload("screen-id")).toEqual({ device_id: "screen-id" });
+  });
+
+  it("builds bounded live reps into authoritative completion order and false sets", () => {
+    const target = { velocity_min: 0.5, velocity_max: 0.8 };
+    const reps = [
+      { rep_number: 42, mean_velocity: 0.4, peak_velocity: 0.6, duration_ms: 600, timestamp: "2026-07-15T12:00:00Z" },
+      { rep_number: 2, mean_velocity: 0.9, peak_velocity: 1.0, duration_ms: 550, timestamp: "2026-07-15T12:00:01Z" },
+    ];
+    expect(buildSetCompletionPayload(reps, target)).toEqual({
+      reps_completed: 2,
+      is_false_set: false,
+      reps: [
+        { rep_number: 1, mean_velocity: 0.4, peak_velocity: 0.6, duration_ms: 600, timestamp: "2026-07-15T12:00:00Z", velocity_color: "red" },
+        { rep_number: 2, mean_velocity: 0.9, peak_velocity: 1.0, duration_ms: 550, timestamp: "2026-07-15T12:00:01Z", velocity_color: "yellow" },
+      ],
+    });
+    expect(buildSetCompletionPayload(reps, target, true)).toEqual({ reps_completed: 0, is_false_set: true, reps: [] });
+  });
+
+  it("disambiguates duplicate athlete names without exposing extra fields", () => {
+    expect(athleteNameLabels([{ id: 2, name: "Alex" }, { id: 7, name: "Alex" }, { id: 9, name: "Sam" }])).toEqual([
+      { id: 2, name: "Alex", label: "Alex (athlete 2)" },
+      { id: 7, name: "Alex", label: "Alex (athlete 7)" },
+      { id: 9, name: "Sam", label: "Sam" },
+    ]);
+  });
+
+  it("orders effective exercises without mutating the API response", () => {
+    const exercises = [{ position: 2, exercise: "Press" }, { position: 1, exercise: "Squat" }];
+    expect(orderedEffectiveExercises({ exercises })).toEqual([{ position: 1, exercise: "Squat" }, { position: 2, exercise: "Press" }]);
+    expect(exercises[0].position).toBe(2);
+  });
+
+  it("detects assignment, reassignment, and unassignment transitions", () => {
+    expect(rackAssignmentChanged(null, 3)).toBe(true);
+    expect(rackAssignmentChanged(3, "3")).toBe(false);
+    expect(rackAssignmentChanged(3, 4)).toBe(true);
+    expect(rackAssignmentChanged(4, null)).toBe(true);
   });
 });

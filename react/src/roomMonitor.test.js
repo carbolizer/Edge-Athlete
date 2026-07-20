@@ -30,4 +30,10 @@ describe("room monitor events", () => {
     expect(shouldReconcile(7, event)).toBe(false);
     expect(shouldReconcile(8, event)).toBe(false);
   });
+
+  it("reconciles already-open clients when a training day starts", () => {
+    const started = { ...event, reason: "session_started", revision: 8 };
+    expect(parseMonitoringEvent(JSON.stringify(started))).toEqual(started);
+    expect(shouldReconcile(7, started)).toBe(true);
+  });
 });

@@ -61,8 +61,8 @@ Before this feature, the views loaded one persisted snapshot but did not update 
 ## Failure behavior
 
 - Initial REST failure: offline screen with retry.
-- MQTT disconnect with a valid snapshot: retain data and show reconnecting; mark stale after 15 seconds.
-- REST refresh failure: retain the last valid snapshot and mark it stale.
+- MQTT disconnect or delay: hide wall results and show the live-scoreboard unavailable state until reconnection and REST reconciliation succeed.
+- REST refresh failure: hide wall results and show the live-scoreboard unavailable state; the coach view may retain its stale operational snapshot.
 - Broker publish failure: keep the outbox event pending and retry; never roll back an already committed set after commit.
 - JWT expiry: clear detailed coach state and return to login. Token refresh is deferred because the current login UI does not persist refresh tokens.
 

@@ -78,8 +78,8 @@ Edge Athlete is real-time barbell velocity tracking for weight rooms that can't 
 ### End-to-end user flow
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.
-3. The **rack screen** subscribes over MQTT-over-WebSockets to its assigned node's rep topic and shows bounded, unsaved feedback for the coach-selected athlete and movement.
-4. Rack-owned set completion and durable browser buffering remain deferred; the existing batch endpoint accepts the completed set and every rep in one request.
+3. The **rack screen** subscribes over MQTT-over-WebSockets to its assigned node's rep topic and shows bounded, unsaved feedback for the signed-in athlete's server-selected movement.
+4. The rack starts the athlete's current set through `POST /api/racks/{rack}/sets/`. It completes that set through `POST /api/racks/{rack}/sets/{id}/complete/` with `X-Rack-Device-Id`; Django saves the batch and advances athlete progress atomically. Durable browser buffering remains deferred.
 5. The base station writes that set, its reps, and a monitoring-outbox revision to Postgres in one transaction. A dedicated publisher delivers a privacy-safe retained invalidation event to Mosquitto with QoS 1.
 6. The **team dashboard** and **coach tablet** subscribe to `edgeathlete/dashboard/state`, then refetch their privacy-appropriate REST snapshot when its revision increases. PostgreSQL remains authoritative.
 
@@ -97,8 +97,31 @@ Rationale: this repository runs synchronous Django with REST, so adding Channels
 ### PostgreSQL persists reps in one completed-set transaction
 PostgreSQL stores the completed `Set` and all of its `Rep` rows. Reps are not written individually as they occur; the completion service bulk-creates the full rep list together with the set update and monitoring event in one atomic transaction.
 
-### Deferred rack-screen durability design
-The implemented rack screen keeps a bounded in-memory live display. Durable local buffering and rack-owned batch completion are not included in this slice.
+### Rack execution and deferred durability
+The rack screen keeps a bounded in-memory live display. Rack-bound set start and
+atomic batch completion are implemented. Durable local buffering and automatic
+retry after an interrupted completion request remain deferred.
+
+### Athlete-owned training state
+A coach assigns one complete ordered `WorkoutProgram` to each athlete. Starting a
+day activates uniquely registered racks for athlete sign-in; racks do not own
+normal-operation workout assignments or progression. `AthleteDayProgress` follows
+the athlete between racks and advances after each qualifying completed set.
+Legacy rack catalog assignment and legacy `Program` records remain readable for
+compatibility, but they do not select athlete-driven execution steps.
+
+### Automatic wall movement and leaderboard
+The public wall chooses the velocity-targeted stable exercise used by the most
+signed-in athletes. It breaks ties by normalized exercise name and exercise ID,
+then ranks each athlete by the best qualifying completed set for that exercise in
+the active day. If no signed-in athlete has a velocity-targeted exercise, the wall
+returns no movement and an empty leaderboard.
+
+### Athlete data access
+Global athlete records, assignments, overrides, notes, analytics, reports, and
+PDFs require an active staff JWT. The private-AP rack identity flow is not athlete
+authentication: its bounded active-day roster exposes only athlete ID and name,
+and rack writes bind the canonical registered screen to the active rack state.
 
 ### MQTT topic scheme is namespaced under `edgeathlete/`
 See **Real-Time Layer Reference** for the full table. Key rule: **Django's MQTT subscriber listens ONLY to `edgeathlete/node/+/pulse`** — rep topics never reach Django/Postgres at runtime. Node reassignment = the rack screen resubscribes to a different node topic string. No IP lookup, no socket teardown.
@@ -181,7 +204,7 @@ Anonymous MQTT is accepted only inside the controlled Pi access-point boundary, 
 
 | Client | Subscribes to |
 |---|---|
-| Rack screen (deferred) | Proposed: `edgeathlete/node/{current_linked_node_id}/rep`; final contract is deferred with the rack UI |
+| Rack screen | `edgeathlete/node/{current_linked_node_id}/rep` for bounded, unsaved live feedback |
 | Team dashboard | `edgeathlete/dashboard/state` |
 | Coach tablet | `edgeathlete/dashboard/state` |
 | Django subscriber | `edgeathlete/node/+/pulse` **only** — never rep topics |
@@ -190,7 +213,7 @@ Anonymous MQTT is accepted only inside the controlled Pi access-point boundary, 
 
 ## Data Models
 
-Eight models. All live in `django/event_handler/models.py`.
+Nineteen models. All live in `django/event_handler/models.py`.
 
 ```
 Node       — node_id (CharField, unique), rack_number (Int, nullable),
@@ -203,19 +226,47 @@ RackScreen — device_id (CharField, unique, client-generated at first setup),
 Athlete    — name, nfc_tag_id (unique, nullable), created_at (auto), notes (Text, blank)
 Program    — athlete (FK→Athlete), exercise, target_sets (Int), target_reps (Int),
              target_weight_lbs (Float), velocity_zone_min (Float), velocity_zone_max (Float)
+Workout    — name (case-insensitive unique), normalized_name, created_at
+WorkoutExercise — workout (FK→Workout), exercise, position, sets, reps,
+                  default_weight_lbs, velocity_min (nullable), velocity_max (nullable)
+WorkoutProgram — name (case-insensitive unique), normalized_name, created_at
+WorkoutProgramItem — workout_program (FK→WorkoutProgram), workout
+                     (FK→Workout), position
+AthleteWorkoutAssignment — athlete (one-to-one), exactly one assigned_workout
+                            (FK→Workout) or assigned_program_item
+                            (FK→WorkoutProgramItem), updated_at; legacy compatibility
+AthleteWorkoutProgramAssignment — athlete (one-to-one), workout_program
+                                  (FK→WorkoutProgram), updated_at; canonical assignment
+AthleteWorkoutExerciseOverride — athlete (FK→Athlete), workout_exercise
+                                  (FK→WorkoutExercise), nullable sets, reps, and
+                                  weight_lbs; at least one override is required
 Session    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
+AthleteDayProgress — session (FK→Session), athlete (FK→Athlete), workout_program,
+                     current_program_item, current_workout_exercise,
+                     expected_set_number, status (ready/in_set/complete), timestamps
+DailyReport — session (one-to-one), schema_version, generated_at, immutable snapshot
+AthleteRackParticipation — session, athlete, rack_number, first_seen_at, last_seen_at;
+                           unique per session/athlete/rack
 Set        — session (FK→Session), athlete (FK→Athlete), node (FK→Node, nullable),
-             rack_number (Int, nullable snapshot), exercise, set_number (Int),
-             weight_lbs (Float, nullable), started_at, ended_at (nullable),
-             reps_completed (Int, default 0), avg_velocity (Float, nullable),
-             peak_velocity (Float, nullable), is_false_set (Bool, default False)
+              rack_number (Int, nullable snapshot), exercise, set_number (Int),
+              weight_lbs (Float, nullable), started_at, ended_at (nullable),
+              reps_completed (Int, default 0), avg_velocity (Float, nullable),
+              peak_velocity (Float, nullable), is_false_set (Bool, default False),
+              nullable stable bindings to AthleteDayProgress, WorkoutProgramItem,
+              and WorkoutExercise
 Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float),
              peak_velocity (Float), duration_ms (Int), velocity_color (Char)
 MonitoringEvent — event_id (UUID, unique), reason, occurred_at, published_at
-                  (nullable), publish_attempts, last_error, is_simulated
+                   (nullable), publish_attempts, last_error, is_simulated
+RackWorkoutState — rack_number (unique), active_session (FK→Session, nullable),
+                    active_program (FK→legacy Program, nullable),
+                    assigned_workout (FK→Workout, nullable),
+                    assigned_program_item (FK→WorkoutProgramItem, nullable),
+                    selected_athlete (FK→Athlete, nullable), updated_at; assignment
+                    fields are retained for legacy compatibility
 ```
 
-**`Rep` rows are created ONLY via the batch set-complete endpoint, never one at a time.**
+**`Rep` rows are created ONLY through the shared atomic set-completion service, never one at a time.**
 **`RackScreen` is the physical screen's own identity — separate from `Node.rack_number`, which tracks which sensor is linked to a rack. A rack screen and its sensor node are assigned independently.**
 
 ---
@@ -238,31 +289,66 @@ POST  /api/racks/racknumber/          body: {device_id}; poll while awaiting ass
 GET   /api/racks/unassigned/           list screens with rack_number=null  (coach only)
 PATCH /api/racks/{device_id}/          assign rack_number                  (coach only)
 GET   /api/racks/{rack_number}/state/  selected workout + node readiness   (open)
-PATCH /api/racks/{rack_number}/state/  select athlete + prescribed movement (coach only)
+PATCH /api/racks/{rack_number}/state/  legacy coach movement selection      (coach only)
+PUT   /api/racks/{rack_number}/assignment/ legacy rack catalog assignment   (coach only)
+PUT   /api/racks/{rack_number}/athlete/ sign in roster athlete by rack device (open/private AP)
+DELETE /api/racks/{rack_number}/athlete/ clear selected athlete by rack device (open)
 
-GET   /api/athletes/                   list                               (open read)
+GET   /api/wall-state/                 automatic movement + leaderboard     (open)
+GET   /api/room-state/                 detailed room/progress state          (coach only)
+
+GET   /api/athletes/                   list                               (coach only)
 POST  /api/athletes/                   create                             (coach only)
 PATCH /api/athletes/{id}/              update                             (coach only)
+GET/PUT /api/athletes/{id}/notes/      versioned coach notes              (coach only)
+GET/PUT/DELETE /api/athletes/{id}/workout-assignment/ whole-program assignment (coach only)
+GET/PATCH/DELETE /api/athletes/{id}/workout-exercises/{exercise_id}/override/ target override (coach only)
 
 GET   /api/programs/?athlete={id}      list for athlete                   (open read)
 POST  /api/programs/                   create                             (coach only)
 
+GET/POST /api/workouts/                list/create reusable workouts       (coach only)
+POST  /api/workouts/imports/preview/   validate workout CSV                (coach only)
+POST  /api/workouts/imports/           import workout CSV atomically       (coach only)
+GET/POST /api/workout-programs/        list/create ordered programs        (coach only)
+
 POST  /api/sessions/                   create session                     (coach only)
 PATCH /api/sessions/{id}/              end session                        (coach only)
+POST  /api/sessions/{id}/end/          end day + immutable report         (coach only)
 
-POST  /api/sets/                       create a set (on set_start)        (open)
-POST  /api/sets/{id}/complete/         *** THE BATCH WRITE ***            (open)
+POST  /api/racks/{rack}/sets/          start server-derived current set    (open/private AP)
+      body: { device_id }
+POST  /api/racks/{rack}/sets/{id}/complete/ batch write + progress         (open/private AP)
+      header: X-Rack-Device-Id: canonical rack screen UUID
       body: { reps_completed, avg_velocity, peak_velocity, is_false_set,
               reps: [ {rep_number, mean_velocity, peak_velocity, duration_ms,
                        timestamp, velocity_color}, ... ] }
-      effect: one bulk_create of all Rep rows + one Set update, single transaction
+      effect: validates rack/set/progress under lock; bulk-creates Rep rows,
+              completes the Set, and advances progress in one transaction
+
+POST  /api/sets/                       legacy simulator set start          (open)
+POST  /api/sets/{id}/complete/         legacy simulator batch completion   (open)
+      real athlete-driven days return rack_bound_set_required
+
+GET   /api/reports/                    report summaries                    (coach only)
+GET   /api/reports/{id}/               schema 1/2 report detail             (coach only)
+GET   /api/reports/{id}/pdf/           immutable daily PDF                 (coach only)
+GET   /api/athletes/{id}/reports/      athlete report summaries            (coach only)
+GET   /api/athletes/{id}/reports/{report_id}/ schema 1/2 athlete detail     (coach only)
+GET   /api/athletes/{id}/reports/{report_id}/pdf/ athlete-day PDF           (coach only)
 
 GET   /api/analytics/session/{id}/     summary stats                      (coach only)
 GET   /api/analytics/athlete/{id}/     trend data                         (coach only)
 ```
 
-**Open (no auth):** node/rack/dashboard reads, rack-screen self-registration + assignment polling, and the set-complete write.
-**Coach-only (JWT):** athlete/program writes, node reassignment, rack-screen assignment, session create/end, analytics.
+**Open on the private AP:** node/rack/wall reads, rack-screen registration and
+polling, rack identity, and rack-bound or simulator set writes. Public rack
+responses may return generic `rack_screen_conflict` without screen IDs; detailed
+registration counts and diagnosis are coach-only.
+**Coach-only (active staff JWT):** all global athlete data, assignments,
+overrides, notes, room details, analytics, immutable reports, and PDFs. The open
+athlete-filtered legacy `Program` read remains a compatibility exception; it is
+not the canonical whole-program assignment.
 
 ---
 
@@ -333,6 +419,15 @@ Edge-Athlete/
 ```
 
 ---
+
+# Historical phase prompts
+
+The phase prompts below record the build sequence and legacy contracts. The
+current Architecture Decisions, Data Models, and REST API sections above are
+authoritative. `ATHLETE_DRIVEN_TRAINING.md` supersedes phase wording that assigns
+normal training to racks, lets clients select workout items, exposes global
+athlete data, or treats rack-bound start/completion as deferred. Generic set
+routes remain only for simulator-owned sessions.
 
 # SPRINT 1 — Foundation
 
@@ -613,11 +708,11 @@ Open (AllowAny):
   POST  /api/racks/register/          upsert a RackScreen by device_id, rack_number stays null if new
   POST  /api/racks/racknumber/        accept {device_id}; return {rack_number} while unassigned
   GET   /api/racks/{rack_number}/state/ return the bounded rack workout state
-  GET   /api/athletes/
   GET   /api/programs/?athlete={id}
   POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, weight_lbs, started_at=now)
   POST  /api/sets/{id}/complete/      *** batch write, see below ***
 Coach-only (IsCoach):
+  GET   /api/athletes/
   PATCH /api/nodes/{node_id}/         reassign rack_number
   GET   /api/racks/unassigned/        list RackScreen rows where rack_number is null
   PATCH /api/racks/{device_id}/       assign rack_number
@@ -704,19 +799,21 @@ Deliver committed room-state revisions without coupling broker availability to t
 
 ## Phase 6 — Rack Tablet Workflow
 
-The first rack display/control slice is implemented at `/rack`: stable screen
-registration, coach-selected athlete and prescribed movement, complete program
-visibility, and unsaved live rep velocity feedback. Atomic rack-owned set
-creation/completion, offline buffering, NFC, and installable PWA behavior remain
-deferred and require separate acceptance criteria.
+The rack display/control workflow is implemented at `/rack`: stable screen
+registration, bounded athlete sign-in, athlete-owned program/progress visibility,
+unsaved live rep velocity feedback, rack-bound set start, and atomic completion.
+Offline buffering, physical PN532 identity, and installable PWA behavior remain
+deferred. Legacy coach-selected rack assignments remain compatibility-only.
 
 ---
 
 # SPRINT 3 — First Vertical Slice + Handoff
 
-## Phase 7 — Rack Screen End-to-End (Deferred)
+## Phase 7 — Rack Screen End-to-End
 
-The rack display/control frontend is implemented. Rack-owned set start, atomic completion, and offline recovery remain deferred and require fresh acceptance criteria.
+Rack-bound set start and atomic completion are implemented. The rack supplies its
+canonical screen identity, while Django derives the athlete, day, stable exercise,
+set number, and load. Offline recovery remains deferred.
 
 ---
 
@@ -831,9 +928,15 @@ All handoff checks must pass.
 These phases are intentionally lighter. A lot will shift across Phases 1–9; each of these gets expanded to full paste-ready depth at the start of its sprint.
 
 ## Phase 10 — Coach Tablet (one page)
-The `/coach` route uses `Dashboard.jsx` in coach mode with a JWT login gate, REST snapshots, and MQTT revision reconciliation. It provides room monitoring, athlete history, programs, versioned notes, and coach selection of the active athlete and prescribed movement for each rack.
+The `/coach` route uses `Dashboard.jsx` in coach mode with an active-staff JWT
+gate, REST snapshots, and MQTT revision reconciliation. It provides room
+monitoring, athlete history, whole-program assignment, versioned notes, training
+day controls, and report/PDF access. Athletes sign in at racks and progress
+server-side; routine rack workout selection is superseded.
 
-**Room layout assignment (deferred):** the current coach workspace does not assign rack screens or nodes. The existing rack and node endpoints can support a future assignment workflow after the rack-tablet requirements are defined.
+**Legacy compatibility:** rack catalog assignment and coach movement-selection
+routes remain available for older data and clients. They do not drive the
+athlete-owned training flow.
 
 ## Phase 11 — Fatigue Scaffold
 `django/event_handler/ml/inference.py` with a REAL function signature (e.g. `predict_fatigue(set_summary: dict) -> dict`) and a real call site firing after set-complete (Phase 4/5). Returns a **stub** value. Not a trained model — training is explicitly out of scope.
@@ -858,3 +961,6 @@ Don't let these block a phase — they're intentionally punted:
 - **Coach tablet multi-page expansion** (separate Room / Athletes / Racks / Analytics tabs).
 - **Consumer "One Device" mode / PvP BLE mode** — not in this spec at all.
 - **3D bar-path tracing** — future hardware, not this project.
+- **Physical PN532 identity** — wiring, wristband payloads, firmware, retries, and
+  offline reader behavior remain deferred until the exact hardware contract is
+  verified. Manual athlete selection and confirmation are the supported flow.

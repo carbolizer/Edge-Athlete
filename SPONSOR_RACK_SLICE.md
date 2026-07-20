@@ -30,7 +30,7 @@ and movement for a rack and see the same selection beside its latest saved set.
 - [x] AC7: For a ready velocity movement, the rack subscribes only to its assigned node topic and displays unsaved rep count, latest mean velocity, target range, and below/on/above-target text.
 - [x] AC8: Rack selection or manual reset clears unsaved live reps; malformed or wrong-node MQTT payloads are ignored.
 - [x] AC9: The authenticated coach room view shows and changes rack selection, preserves athlete context across tabs, and reconciles after the monitoring revision.
-- [x] AC10: Primary wall and coach summaries omit room total reps and room average velocity while preserving per-set measurements.
+- [x] AC10: The athlete-facing wall omits the operational session summary strip while preserving rack results and per-set measurements.
 
 ## Failure behavior
 
@@ -67,7 +67,7 @@ and movement for a rack and see the same selection beside its latest saved set.
 - Headless Chrome at 1024x768 observed waiting assignment, selected workout, five accepted reps at 0.53 m/s, below-target feedback, and reset to zero.
 - Headless Chrome at 768x1024 observed the selected workout, live panel, and full prescription without horizontal overflow.
 - Authenticated coach Chrome observed Rack 1 athlete/movement controls, saved `Mobility circuit`, and the rack view reconciled to `No velocity target`.
-- Wall Chrome at 1366x768 observed active racks, athletes, sets, awaiting saved result, and last reconciled without room total reps or room average.
+- Wall Chrome at 1366x768 confirmed the operational session summary strip is absent while rack cards retain per-set results.
 - Physical ESP32 delivery, touch hardware, and screen-reader behavior remain unverified.
 
 ## Migration rollback
@@ -84,4 +84,4 @@ velocity targets.
 3. Run rack-mode simulation and confirm live rep count and target text update without creating saved reps.
 4. Reset live feedback and confirm the count clears.
 5. Select a non-velocity movement and confirm the workout remains visible without velocity claims.
-6. Confirm wall and coach summary strips no longer emphasize total reps or room average.
+6. Confirm the wall opens directly into rack results without the operational session summary strip.

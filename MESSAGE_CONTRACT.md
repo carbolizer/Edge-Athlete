@@ -84,7 +84,8 @@ publish or consume against this contract.
 Not MQTT, but the same data contract, so it lives here too.
 
 ```jsonc
-// POST /api/sets/{id}/complete/
+// POST /api/racks/{rack}/sets/{id}/complete/
+// Header: X-Rack-Device-Id: canonical screen UUID
 {
   "reps_completed": 5,
   "avg_velocity": 0.70,
@@ -97,12 +98,17 @@ Not MQTT, but the same data contract, so it lives here too.
   ]
 }
 ```
-- **Weight is not in this body.** The load (`weight_lbs`) is set when the set is
-  *created* (`POST /api/sets/`), not when it completes.
-- The completion endpoint and `simulate_node --mode monitoring` call the same
-  atomic set-completion service. The current `/rack` slice does not call that
-  endpoint; it labels MQTT reps unsaved. The shared completion service remains
-  the only code path that creates `Rep` rows.
+- **Weight is not in this body.** Athlete-driven load is derived when the
+  rack-bound set is started. Generic set creation remains only for
+  simulator-owned sessions.
+- Rack completion and `simulate_node --mode monitoring` call the same atomic
+  set-completion service. Rack completion revalidates the sole assigned screen
+  under the rack lock. The shared service remains the only code path that creates
+  `Rep` rows.
+- Saved rep velocity values must be finite JSON numbers. `NaN`, positive or
+  negative infinity, and exponent-overflow values are rejected. Physical maximum
+  velocity, duration, and timestamp-age ranges remain deferred until the sensor
+  board, sampling behavior, and firmware contract are verified.
 
 ---
 

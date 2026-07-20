@@ -16,7 +16,9 @@ export function repTopic(nodeId) {
 }
 
 export function hasVelocityTarget(program) {
-  return Number.isFinite(program?.velocity_zone_min) && Number.isFinite(program?.velocity_zone_max);
+  const minimum = program?.velocity_zone_min ?? program?.velocity_min;
+  const maximum = program?.velocity_zone_max ?? program?.velocity_max;
+  return Number.isFinite(minimum) && Number.isFinite(maximum);
 }
 
 export function classifyVelocity(meanVelocity, minimum, maximum) {
@@ -66,4 +68,73 @@ export function appendLiveRep(reps, rep, limit = MAX_LIVE_REPS) {
   if (reps.some((existing) => repKey(existing) === key)) return reps;
   const arrivalNumber = (reps.at(-1)?.arrival_number || 0) + 1;
   return [...reps, { ...rep, arrival_number: arrivalNumber }].slice(-limit);
+}
+
+export function buildRackAssignmentPayload(type, workoutId, workoutProgramId, selectedWorkoutId) {
+  return type === "workout_program"
+    ? { workout_id: Number(selectedWorkoutId), workout_program_id: Number(workoutProgramId) }
+    : { workout_id: Number(workoutId), workout_program_id: null };
+}
+
+export function buildAthleteIdentityPayload(deviceId, athleteId) {
+  return { device_id: deviceId, athlete_id: Number(athleteId) };
+}
+
+export function buildRackSetStartPayload(deviceId) {
+  return { device_id: deviceId };
+}
+
+export function buildSetCompletionPayload(reps, target, isFalseSet = false) {
+  if (isFalseSet) return { reps_completed: 0, is_false_set: true, reps: [] };
+  const minimum = target?.velocity_zone_min ?? target?.velocity_min;
+  const maximum = target?.velocity_zone_max ?? target?.velocity_max;
+  return {
+    reps_completed: reps.length,
+    is_false_set: false,
+    reps: reps.map((rep, index) => ({
+      rep_number: index + 1,
+      mean_velocity: rep.mean_velocity,
+      peak_velocity: rep.peak_velocity,
+      duration_ms: rep.duration_ms,
+      timestamp: rep.timestamp,
+      velocity_color: rep.mean_velocity < minimum ? "red" : rep.mean_velocity > maximum ? "yellow" : "green",
+    })),
+  };
+}
+
+export function athleteNameLabels(athletes) {
+  const counts = new Map();
+  athletes.forEach((athlete) => {
+    const key = athlete.name.trim().toLocaleLowerCase();
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return athletes.map((athlete) => {
+    const duplicate = counts.get(athlete.name.trim().toLocaleLowerCase()) > 1;
+    return { ...athlete, label: duplicate ? `${athlete.name} (athlete ${athlete.id})` : athlete.name };
+  });
+}
+
+export function orderedEffectiveExercises(effectiveWorkout) {
+  return [...(effectiveWorkout?.exercises || [])].sort((left, right) => left.position - right.position);
+}
+
+export function rackProgressView(progress) {
+  if (!progress) return null;
+  return {
+    complete: progress.status === "complete",
+    programName: progress.program?.name || "Program unavailable",
+    workoutName: progress.current_workout?.name || null,
+    workoutPosition: progress.current_workout?.position ?? null,
+    exercise: progress.current_exercise || null,
+    expectedSetNumber: progress.expected_set_number ?? null,
+    activeSet: progress.active_set || null,
+    currentExerciseCompletion: progress.current_exercise_completion || null,
+    persistedSets: progress.persisted_sets || [],
+  };
+}
+
+export function rackAssignmentChanged(currentRackNumber, nextRackNumber) {
+  const current = currentRackNumber === null || currentRackNumber === undefined ? null : Number(currentRackNumber);
+  const next = nextRackNumber === null || nextRackNumber === undefined ? null : Number(nextRackNumber);
+  return current !== next;
 }

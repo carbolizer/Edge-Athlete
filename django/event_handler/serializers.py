@@ -11,6 +11,7 @@ from rest_framework import serializers
 import math
 
 from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
+from .services.training_limits import MAX_SESSION_ATHLETES
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -21,6 +22,16 @@ class RepInputSerializer(serializers.Serializer):
     duration_ms = serializers.IntegerField(min_value=0)
     timestamp = serializers.DateTimeField()
     velocity_color = serializers.ChoiceField(choices=["green", "yellow", "red"])
+
+    def validate_mean_velocity(self, value):
+        if not math.isfinite(value):
+            raise serializers.ValidationError("Must be a finite number.")
+        return value
+
+    def validate_peak_velocity(self, value):
+        if not math.isfinite(value):
+            raise serializers.ValidationError("Must be a finite number.")
+        return value
 
 
 class SetCompleteSerializer(serializers.Serializer):
@@ -140,6 +151,13 @@ class SessionSerializer(serializers.ModelSerializer):
         model = Session
         fields = ["id", "label", "started_at", "ended_at", "athletes", "notes"]
         read_only_fields = ["id", "started_at"]
+
+    def validate_athletes(self, athletes):
+        if len(athletes) > MAX_SESSION_ATHLETES:
+            raise serializers.ValidationError(
+                f"A training day may include at most {MAX_SESSION_ATHLETES} athletes."
+            )
+        return athletes
 
 
 class NodeSerializer(serializers.ModelSerializer):
