@@ -193,6 +193,55 @@ class AthleteProgressEndpointTests(APITestCase):
         self.assertEqual(res.data["current_exercise_id"], bench.id)
 
 
+class RackCheckInEndpointTests(APITestCase):
+    """POST /api/racks/{n}/checkin/ + GET /api/racks/{n}/checkins/ — the hot list.
+    Pins: a check-in appears on that rack's list, ownership transfers to the newest
+    rack (one athlete = one rack), and the guards."""
+
+    def _session_with(self, *names):
+        session = Session.objects.create(label="Live")
+        athletes = [Athlete.objects.create(name=n) for n in names]
+        session.athletes.add(*athletes)
+        return session, athletes
+
+    def _checkin(self, rack, athlete):
+        return self.client.post(f"/api/racks/{rack}/checkin/", {"athlete": athlete.id}, format="json")
+
+    def _hot_list(self, rack):
+        return self.client.get(f"/api/racks/{rack}/checkins/")
+
+    def test_checkin_appears_on_that_racks_hot_list(self):
+        _, (jordan, _sam) = self._session_with("Jordan", "Sam")
+        self.assertEqual(self._checkin(3, jordan).status_code, 201)
+        self.assertEqual([a["name"] for a in self._hot_list(3).data["athletes"]], ["Jordan"])
+        self.assertEqual(self._hot_list(4).data["athletes"], [])   # nobody at rack 4
+
+    def test_ownership_transfers_to_newest_rack(self):
+        _, (jordan,) = self._session_with("Jordan")
+        self._checkin(1, jordan)
+        self._checkin(2, jordan)   # moved to rack 2
+        self.assertEqual(self._hot_list(1).data["athletes"], [])   # left rack 1
+        self.assertEqual([a["name"] for a in self._hot_list(2).data["athletes"]], ["Jordan"])
+
+    def test_no_active_session_checkin_is_400(self):
+        Session.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
+        athlete = Athlete.objects.create(name="Nobody")
+        self.assertEqual(self._checkin(1, athlete).status_code, 400)
+
+    def test_unknown_and_offroster_athlete_are_404(self):
+        self._session_with("Jordan")
+        self.assertEqual(
+            self.client.post("/api/racks/1/checkin/", {"athlete": 999999}, format="json").status_code, 404)
+        outsider = Athlete.objects.create(name="Outsider")   # exists but not on the roster
+        self.assertEqual(self._checkin(1, outsider).status_code, 404)
+
+    def test_no_active_session_hot_list_is_empty(self):
+        res = self._hot_list(1)
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data["session_id"])
+        self.assertEqual(res.data["athletes"], [])
+
+
 class ExerciseCatalogEndpointTests(APITestCase):
     def test_lists_catalog_by_name(self):
         Exercise.objects.create(name="Bench Press")

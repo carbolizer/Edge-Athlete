@@ -19,6 +19,8 @@ urlpatterns = [
     path('racks/register/', views.rack_register, name='rack_register'),
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),
     path('racks/unassigned/', views.racks_unassigned, name='racks_unassigned'),
+    path('racks/<int:rack_number>/checkin/', views.rack_checkin, name='rack_checkin'),
+    path('racks/<int:rack_number>/checkins/', views.rack_checkins, name='rack_checkins'),
 
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),

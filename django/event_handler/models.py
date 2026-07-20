@@ -225,3 +225,30 @@ class Rep(models.Model):
 
     def __str__(self):
         return f"Rep {self.rep_number} of set {self.set_id}"
+
+
+class RackCheckIn(models.Model):
+    """A record that an athlete signed in ("checked in") at a rack during a session.
+
+    ADD-ONLY, newest-wins — the same shape as AthleteReferenceMax. An athlete's
+    CURRENT rack for a session is simply their newest row for that session. Because
+    a newer check-in supersedes the older one, an athlete is only ever "owned" by
+    one rack at a time: we assume they can't lift at two racks at once, so checking
+    in somewhere new just moves them there. This is what a rack's HOT LIST (the
+    fast re-pick shortcut on the check-in screen) reads from — the athletes whose
+    newest check-in is that rack. Nothing here is meant to outlive the session.
+    """
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='checkins')
+    athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='checkins')
+    rack_number = models.IntegerField()
+    checked_in_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # newest-first, indexed on the lookup we always do: "this athlete's current
+        # rack this session" == first row of this ordering for (session, athlete).
+        ordering = ['-checked_in_at']
+        indexes = [models.Index(fields=['session', 'athlete', '-checked_in_at'],
+                                name='checkin_session_athlete_idx')]
+
+    def __str__(self):
+        return f"{self.athlete.name} → rack {self.rack_number} (session {self.session_id})"
