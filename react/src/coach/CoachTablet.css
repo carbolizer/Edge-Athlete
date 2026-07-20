@@ -1,0 +1,258 @@
+/* Coach tablet — JWT gate + Room Layout. Matches main theme (theme.js / .monitor). */
+
+.coach-root {
+  --coach-bg: #070b0e;
+  --coach-card: #10171b;
+  --coach-card2: #151e23;
+  --coach-line: #263239;
+  --coach-ink: #f5f7f2;
+  --coach-ink2: #89969d;
+  --coach-ink3: #6f7a82;
+  --coach-accent: #a9f04d;
+  --coach-good: #45dcb3;
+  --coach-warn: #ffb63e;
+  --coach-sans: "Inter Variable", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --coach-mono: ui-monospace, Menlo, Consolas, monospace;
+
+  min-height: 100vh;
+  background: var(--coach-bg);
+  color: var(--coach-ink);
+  font-family: var(--coach-sans);
+}
+
+.coach-shell {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 22px 64px;
+}
+
+.coach-eyebrow {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--coach-accent);
+  margin: 0 0 10px;
+}
+
+.coach-brand {
+  font-size: clamp(26px, 4vw, 32px);
+  margin: 0 0 8px;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+}
+
+.coach-lede {
+  color: var(--coach-ink2);
+  font-size: 15px;
+  max-width: 56ch;
+  margin: 0 0 28px;
+  line-height: 1.5;
+}
+
+.coach-card {
+  background: var(--coach-card);
+  border: 1px solid var(--coach-line);
+  border-radius: 12px;
+  padding: 22px 24px;
+  margin-top: 18px;
+}
+
+.coach-card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--coach-ink);
+}
+
+.coach-card-sub {
+  color: var(--coach-ink2);
+  font-size: 13px;
+  margin: 4px 0 16px;
+  line-height: 1.45;
+}
+
+.coach-form {
+  display: grid;
+  gap: 12px;
+  max-width: 360px;
+}
+
+.coach-label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--coach-ink2);
+}
+
+.coach-input,
+.coach-select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--coach-ink);
+  background: var(--coach-bg);
+  border: 1px solid var(--coach-line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.coach-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.coach-input:focus,
+.coach-select:focus {
+  outline: 2px solid rgba(169, 240, 77, 0.35);
+  outline-offset: 1px;
+  border-color: var(--coach-accent);
+}
+
+.coach-btn {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--coach-line);
+  background: var(--coach-card);
+  color: var(--coach-ink);
+  cursor: pointer;
+}
+
+.coach-btn:hover:not(:disabled) {
+  border-color: var(--coach-ink2);
+}
+
+.coach-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.coach-btn-primary {
+  background: var(--coach-accent);
+  color: #0a1106;
+  border-color: var(--coach-accent);
+  font-weight: 700;
+}
+
+.coach-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.coach-btn-ghost {
+  background: transparent;
+  border-color: var(--coach-line);
+  color: var(--coach-ink2);
+  font-size: 13px;
+  padding: 10px 14px;
+}
+
+.coach-msg {
+  font-size: 13px;
+  margin: 10px 0 0;
+  color: var(--coach-ink2);
+}
+
+.coach-msg-ok { color: var(--coach-good); }
+.coach-msg-err { color: var(--coach-warn); }
+
+.coach-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.coach-topbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.coach-assign-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 640px) {
+  .coach-assign-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.coach-divider {
+  border: 0;
+  border-top: 1px solid var(--coach-line);
+  margin: 20px 0;
+}
+
+.coach-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.coach-slot {
+  background: var(--coach-card2);
+  border: 1px solid var(--coach-line);
+  border-radius: 12px;
+  padding: 12px 12px 14px;
+  min-height: 96px;
+}
+
+.coach-slot-num {
+  font-family: var(--coach-mono);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--coach-accent);
+  margin-bottom: 8px;
+}
+
+.coach-slot-line {
+  font-size: 12.5px;
+  color: var(--coach-ink2);
+  line-height: 1.4;
+}
+
+.coach-slot-line strong {
+  color: var(--coach-ink);
+  font-weight: 600;
+  font-family: var(--coach-mono);
+  font-size: 12px;
+}
+
+.coach-slot-empty {
+  color: var(--coach-ink3);
+  font-size: 12.5px;
+}
+
+.coach-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.coach-hint {
+  font-size: 12.5px;
+  color: var(--coach-ink3);
+  margin: 0 0 14px;
+  line-height: 1.45;
+}
+
+.coach-hint code {
+  font-family: var(--coach-mono);
+  font-size: 11px;
+  color: var(--coach-ink2);
+}

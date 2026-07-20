@@ -4,7 +4,7 @@
 //   /                → role picker (only if this device has no role yet)
 //   /rack/setup      → rack registration + "waiting for a rack" screen (see rack/RackSetup)
 //   /rack/:n         → the live rack screen for rack n
-//   /coach           → coach admin (stub until a later phase)
+//   /coach           → coach Room Layout (JWT gate + dropdown assign)
 //   /dashboard       → base-station display (stub until a later phase)
 //   /connection-test → the API/architecture demo kept from the scaffold
 //
@@ -18,6 +18,7 @@ import { useEffect, useState } from 'react'
 import ConnectionTest from './ConnectionTest.jsx'
 import RackScreen from './rack/RackScreen.jsx'
 import RackSetup from './rack/RackSetup.jsx'
+import CoachTablet from './coach/CoachTablet.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
@@ -108,7 +109,7 @@ function RackLive({ rackNumber }) {
   return <RackScreen rackNumber={rackNumber} session={session} />
 }
 
-// ─────────────────────────── /coach and /dashboard — stubs ───────────────────────────
+// ─────────────────────────── /dashboard — stub ───────────────────────────
 
 function StubRole({ role }) {
   return (
@@ -155,7 +156,7 @@ function RackCommandListener() {
 function route(pathname) {
   if (pathname === '/connection-test') return <ConnectionTest />
   if (pathname === '/rack/setup') return <RackSetup />
-  if (pathname === '/coach') return <StubRole role="coach" />
+  if (pathname === '/coach') return <CoachTablet />
   if (pathname === '/dashboard') return <StubRole role="dashboard" />
 
   if (pathname.startsWith('/rack/')) {
