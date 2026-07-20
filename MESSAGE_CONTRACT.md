@@ -153,6 +153,30 @@ Not MQTT, but the same data contract, so they live here too.
   that's the "no max on file" case the Phase 11 inline-entry prompt fills.
 - **No active session →** `{ "session_id": null, "label": null, "roster": [], "session_exercises": [] }`.
 
+### `GET /api/sessions/active/athlete/{athlete_id}/progress/` — the rack's athlete day-view (open)
+```jsonc
+{
+  "session_id": 1,
+  "athlete": { "id": 4, "name": "Jordan Lee" },
+  "current_exercise_id": 1,          // SUGGESTED current = first movement not yet complete (Program.id order)
+  "movements": [
+    { "exercise_id": 1, "name": "Back Squat",
+      "planned_sets": 5, "target_reps": 3,
+      "target_weight_lbs": 225.0,    // resolved from Program; null → inline "starting weight" (SPEC Phase 11)
+      "velocity_zone_min": 0.5, "velocity_zone_max": 0.8,
+      "completed_sets": 2, "false_sets": 0,
+      "next_set_number": 3,          // completed (non-false) sets + 1 — authoritative set_number at set-create
+      "status": "in_progress" }      // not_started | in_progress | complete
+  ]
+}
+```
+- Fetched when an athlete **checks in** at a rack (Phase 11 Step 2), and again after each of their sets completes. **Derived per request** from the athlete's `Program` rows + their completed `Set` rows this session — **no new tables**.
+- **`movements` order = `Program.id`** (the athlete's program-creation order = intended workout order). The server order never changes; the tablet may float an *in-progress* movement to the top presentationally only (see SPEC Phase 11 Step 2).
+- **`next_set_number` is the source of truth for `set_number`** on `POST /api/sets/` — NOT a client counter, so numbering stays correct across rack moves + supersets.
+- **`completed_sets`** counts non-false `Set` rows for that athlete/exercise this session; **`false_sets`** counts false ones. `status` = `complete` once `completed_sets >= planned_sets`.
+- **`current_exercise_id`** is a suggestion only; the athlete may pick any movement.
+- **No active session →** `{ "session_id": null, "athlete": {…}, "current_exercise_id": null, "movements": [] }`. **Athlete not in the session roster →** `404`.
+
 ### `POST /api/sets/{id}/complete/` — the batch set-complete body
 ```jsonc
 // POST /api/sets/{id}/complete/
