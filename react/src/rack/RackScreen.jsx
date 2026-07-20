@@ -10,18 +10,20 @@
 // to show and which button or timer moves to the next one. Keeping it this strict
 // is what stops the screen from getting into confusing half-states.
 //
-// ── WHAT THIS STEP BUILDS ──────────────────────────────────────────────────────
-// This is the SKELETON only: placeholder content and manual buttons/timers so you
-// can watch the five modes flip in order. There are NO server calls and NO live
-// reps yet. Later steps hang the real pieces onto this same skeleton:
-//   • the athlete/exercise picker  (Step 2, replaces the idle placeholder)
+// ── WHAT'S BUILT SO FAR ─────────────────────────────────────────────────────────
+// The state-machine skeleton (Step 1) plus the real IDLE screen (Step 2): the
+// athlete check-in + day-view picker (see Idle.jsx), which fetches the selected
+// athlete's live progress and hands the chosen movement to the countdown. The
+// remaining modes are still placeholders, coming next:
 //   • the live MQTT rep stream + buffer  (Step 3, fills the active mode)
 //   • saving + completing the set on the server  (Step 4)
-//   • the real rest timer behaviour + set numbering  (Step 5)
+//   • the real rest timer behaviour  (Step 5)
 //
 // Styling matches the team's `.monitor` design system (see theme.js).
 
 import { useEffect, useState } from 'react'
+import { getAthleteProgress } from '../api/client.js'
+import Idle from './Idle.jsx'
 import { T } from '../theme.js'
 
 const REST_SECONDS = 120 // default rest between sets (real behaviour lands in Step 5)
@@ -60,20 +62,8 @@ const PHASE_BADGE = {
 }
 
 // ─────────────────────────── the five phases ───────────────────────────
-// Each is a placeholder for now; real content arrives in later steps.
-
-function IdlePhase({ onStart }) {
-  return (
-    <PhaseBody>
-      <div style={{ ...LABEL, marginBottom: 12 }}>Waiting to start</div>
-      <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.03em', color: T.muted,
-        marginBottom: 32, textAlign: 'center' }}>
-        (athlete + exercise picker goes here — Step 2)
-      </div>
-      <Button onClick={onStart}>Start Set</Button>
-    </PhaseBody>
-  )
-}
+// idle is now the real day-view picker (Idle.jsx); the rest are placeholders that
+// real content arrives in over Steps 3–5.
 
 function CountdownPhase({ onDone }) {
   const [n, setN] = useState(3)
@@ -161,6 +151,31 @@ function PhaseBody({ children }) {
 
 export default function RackScreen({ rackNumber, session }) {
   const [phase, setPhase] = useState('idle')
+
+  // Step 2 selection: who's lifting + which movement, plus that athlete's day view.
+  // Held HERE (not inside Idle) so the choice survives into countdown/active/etc.
+  const [selectedAthlete, setSelectedAthlete] = useState(null)      // a roster entry | null
+  const [progress, setProgress] = useState(null)                   // /progress payload | null
+  const [progressLoading, setProgressLoading] = useState(false)
+  const [selectedExerciseId, setSelectedExerciseId] = useState(null)
+
+  // When an athlete checks in, fetch their day view; default the "up now" movement
+  // to the server's suggested current (first not-complete), else the first movement.
+  useEffect(() => {
+    if (!selectedAthlete) { setProgress(null); setSelectedExerciseId(null); return }
+    let cancelled = false
+    setProgressLoading(true)
+    getAthleteProgress(selectedAthlete.athlete_id)
+      .then((d) => {
+        if (cancelled) return
+        setProgress(d)
+        setSelectedExerciseId(d.current_exercise_id ?? d.movements?.[0]?.exercise_id ?? null)
+      })
+      .catch(() => { if (!cancelled) setProgress({ movements: [] }) })
+      .finally(() => { if (!cancelled) setProgressLoading(false) })
+    return () => { cancelled = true }
+  }, [selectedAthlete])
+
   const badge = PHASE_BADGE[phase]
 
   return (
@@ -189,7 +204,19 @@ export default function RackScreen({ rackNumber, session }) {
       </div>
 
       {/* the current phase */}
-      {phase === 'idle' && <IdlePhase onStart={() => setPhase('countdown')} />}
+      {phase === 'idle' && (
+        <Idle
+          session={session}
+          selectedAthlete={selectedAthlete}
+          onSelectAthlete={setSelectedAthlete}
+          onClearAthlete={() => setSelectedAthlete(null)}
+          progress={progress}
+          progressLoading={progressLoading}
+          selectedExerciseId={selectedExerciseId}
+          onSelectMovement={setSelectedExerciseId}
+          onStart={() => setPhase('countdown')}
+        />
+      )}
       {phase === 'countdown' && <CountdownPhase onDone={() => setPhase('active')} />}
       {phase === 'active' && <ActivePhase onEnd={() => setPhase('summary')} onFalseSet={() => setPhase('idle')} />}
       {phase === 'summary' && <SummaryPhase onRest={() => setPhase('rest')} onFalseSet={() => setPhase('idle')} />}
