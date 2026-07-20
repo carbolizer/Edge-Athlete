@@ -304,6 +304,88 @@ def sessions_active(request):
     })
 
 
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def athlete_progress(request, athlete_id):
+    """The rack's athlete DAY-VIEW (open, no login). For one athlete in the active
+    session, returns their planned movements (from Program) with live progress
+    (derived from their completed Set rows THIS session) — so any rack shows the
+    same, up-to-date view. Everything is DERIVED per request; no new tables.
+
+    Fetched when an athlete checks in at a rack, and again after each of their sets
+    completes (Phase 11 Step 2). "Active" session is resolved exactly like
+    sessions_active (most recent with ended_at null).
+
+    Progress rules:
+      - A set counts as COMPLETED once it has an ended_at (set-complete stamps it).
+      - False sets are counted separately and NEVER advance the set number.
+      - next_set_number = completed (non-false) sets + 1 — the authoritative
+        set_number to send at set-create (a client counter can't stay correct
+        across rack moves + supersets, so the server owns it).
+      - Movements are ordered by Program.id (the athlete's program-creation order,
+        which is the intended workout order).
+    """
+    session = Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    athlete = Athlete.objects.filter(id=athlete_id).first()
+    if athlete is None:
+        return Response({"error": "athlete not found"}, status=404)
+
+    if session is None:
+        # Same empty-envelope convention as sessions_active: no HTTP error, just
+        # nulls/empties so the tablet renders a plain "no active session" screen.
+        return Response({
+            "session_id": None,
+            "athlete": {"id": athlete.id, "name": athlete.name},
+            "current_exercise_id": None,
+            "movements": [],
+        })
+
+    if not session.athletes.filter(id=athlete_id).exists():
+        return Response({"error": "athlete is not in the active session"}, status=404)
+
+    # Tally this athlete's finished sets in THIS session, per exercise — real
+    # (non-false) and false counted separately, in one query.
+    completed_by_exercise = {}
+    false_by_exercise = {}
+    for s in Set.objects.filter(session=session, athlete_id=athlete_id, ended_at__isnull=False):
+        bucket = false_by_exercise if s.is_false_set else completed_by_exercise
+        bucket[s.exercise_id] = bucket.get(s.exercise_id, 0) + 1
+
+    movements = []
+    current_exercise_id = None  # suggested current = first movement not yet complete
+    for p in Program.objects.filter(athlete_id=athlete_id).select_related("exercise").order_by("id"):
+        completed = completed_by_exercise.get(p.exercise_id, 0)
+        false_count = false_by_exercise.get(p.exercise_id, 0)
+        if completed >= p.target_sets:
+            status = "complete"
+        elif completed > 0:
+            status = "in_progress"
+        else:
+            status = "not_started"
+        if current_exercise_id is None and status != "complete":
+            current_exercise_id = p.exercise_id
+        movements.append({
+            "exercise_id": p.exercise_id,
+            "name": p.exercise.name,
+            "planned_sets": p.target_sets,
+            "target_reps": p.target_reps,
+            "target_weight_lbs": p.target_weight_lbs,
+            "velocity_zone_min": p.velocity_zone_min,
+            "velocity_zone_max": p.velocity_zone_max,
+            "completed_sets": completed,
+            "false_sets": false_count,
+            "next_set_number": completed + 1,
+            "status": status,
+        })
+
+    return Response({
+        "session_id": session.id,
+        "athlete": {"id": athlete.id, "name": athlete.name},
+        "current_exercise_id": current_exercise_id,
+        "movements": movements,
+    })
+
+
 # ─────────────────────────── sets ───────────────────────────
 
 @api_view(["POST"])

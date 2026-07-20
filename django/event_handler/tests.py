@@ -107,6 +107,92 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertEqual(ex["velocity_zone_max"], 0.8)
 
 
+class AthleteProgressEndpointTests(APITestCase):
+    """GET /api/sessions/active/athlete/{id}/progress/ — the rack day-view. Pins:
+    which sets count as completed, that false sets don't advance the number, the
+    Program.id movement order, the status/current-movement logic, and the guards."""
+
+    def _exercise(self, name):
+        exercise, _ = Exercise.objects.get_or_create(name=name)
+        return exercise
+
+    def _program(self, athlete, exercise, weight, sets=5):
+        return Program.objects.create(
+            athlete=athlete, exercise=exercise, target_sets=sets, target_reps=3,
+            target_weight_lbs=weight, velocity_zone_min=0.5, velocity_zone_max=0.8)
+
+    def _finished_set(self, session, athlete, exercise, n, false=False):
+        return Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, set_number=n,
+            is_false_set=false, ended_at=timezone.now())
+
+    def _url(self, athlete_id):
+        return f"/api/sessions/active/athlete/{athlete_id}/progress/"
+
+    def test_no_active_session_returns_empty(self):
+        athlete = Athlete.objects.create(name="Nobody")
+        res = self.client.get(self._url(athlete.id))
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data["session_id"])
+        self.assertEqual(res.data["movements"], [])
+
+    def test_unknown_athlete_is_404(self):
+        Session.objects.create(label="Live")
+        res = self.client.get(self._url(999999))
+        self.assertEqual(res.status_code, 404)
+
+    def test_athlete_not_on_roster_is_404(self):
+        Session.objects.create(label="Live")
+        outsider = Athlete.objects.create(name="Outsider")
+        res = self.client.get(self._url(outsider.id))
+        self.assertEqual(res.status_code, 404)
+
+    def test_derives_progress_in_program_order(self):
+        session = Session.objects.create(label="Live")
+        squat = self._exercise("Back Squat")
+        bench = self._exercise("Bench Press")
+        athlete = Athlete.objects.create(name="Lifter")
+        session.athletes.add(athlete)
+        self._program(athlete, squat, 225.0)   # created first  → movement 1
+        self._program(athlete, bench, 135.0)    # created second → movement 2
+        self._finished_set(session, athlete, squat, 1)
+        self._finished_set(session, athlete, squat, 2)
+        self._finished_set(session, athlete, squat, 3, false=True)  # doesn't advance
+
+        res = self.client.get(self._url(athlete.id))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["session_id"], session.id)
+        self.assertEqual(res.data["current_exercise_id"], squat.id)
+        moves = res.data["movements"]
+        self.assertEqual([m["exercise_id"] for m in moves], [squat.id, bench.id])
+        sq = moves[0]
+        self.assertEqual(sq["completed_sets"], 2)
+        self.assertEqual(sq["false_sets"], 1)
+        self.assertEqual(sq["next_set_number"], 3)   # false set didn't count
+        self.assertEqual(sq["status"], "in_progress")
+        self.assertEqual(sq["target_weight_lbs"], 225.0)
+        bn = moves[1]
+        self.assertEqual(bn["completed_sets"], 0)
+        self.assertEqual(bn["next_set_number"], 1)
+        self.assertEqual(bn["status"], "not_started")
+
+    def test_completed_movement_advances_current(self):
+        session = Session.objects.create(label="Live")
+        squat = self._exercise("Back Squat")
+        bench = self._exercise("Bench Press")
+        athlete = Athlete.objects.create(name="Lifter")
+        session.athletes.add(athlete)
+        self._program(athlete, squat, 225.0, sets=2)
+        self._program(athlete, bench, 135.0, sets=3)
+        self._finished_set(session, athlete, squat, 1)
+        self._finished_set(session, athlete, squat, 2)   # squat now 2/2 → complete
+
+        res = self.client.get(self._url(athlete.id))
+        moves = {m["exercise_id"]: m for m in res.data["movements"]}
+        self.assertEqual(moves[squat.id]["status"], "complete")
+        self.assertEqual(res.data["current_exercise_id"], bench.id)
+
+
 class ExerciseCatalogEndpointTests(APITestCase):
     def test_lists_catalog_by_name(self):
         Exercise.objects.create(name="Bench Press")
