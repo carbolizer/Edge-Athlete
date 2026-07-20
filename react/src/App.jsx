@@ -4,7 +4,8 @@
 //   /                → role picker (only if this device has no role yet)
 //   /rack/setup      → rack registration + "waiting for a rack" screen (see rack/RackSetup)
 //   /rack/:n         → the live rack screen for rack n
-//   /coach           → coach Room Layout (JWT gate + dropdown assign)
+//   /coach/setup     → coach admin Room Layout (JWT gate + dropdown assign)
+//   /coach           → (reserved) live coach view — Braydon's screen, not yet integrated
 //   /dashboard       → base-station display (stub until a later phase)
 //   /connection-test → the API/architecture demo kept from the scaffold
 //
@@ -47,6 +48,9 @@ function Picker() {
     if (role === 'rack') {
       const n = localStorage.getItem('rack_number')
       navigate(n != null ? `/rack/${n}` : '/rack/setup')
+    } else if (role === 'coach') {
+      // admin lives at /coach/setup; /coach is reserved for the live coach view
+      navigate('/coach/setup')
     } else {
       navigate(`/${role}`)
     }
@@ -80,6 +84,7 @@ function Home() {
     const n = localStorage.getItem('rack_number')
     return <Redirect to={n != null ? `/rack/${n}` : '/rack/setup'} />
   }
+  if (role === 'coach') return <Redirect to="/coach/setup" />
   return <Redirect to={`/${role}`} />
 }
 
@@ -156,7 +161,10 @@ function RackCommandListener() {
 function route(pathname) {
   if (pathname === '/connection-test') return <ConnectionTest />
   if (pathname === '/rack/setup') return <RackSetup />
-  if (pathname === '/coach') return <CoachTablet />
+  if (pathname === '/coach/setup') return <CoachTablet />
+  // /coach is reserved for Braydon's live coach view (not yet integrated); until
+  // then, send it to the admin so the coach role still has a home.
+  if (pathname === '/coach') return <Redirect to="/coach/setup" />
   if (pathname === '/dashboard') return <StubRole role="dashboard" />
 
   if (pathname.startsWith('/rack/')) {

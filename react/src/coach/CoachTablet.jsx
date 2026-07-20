@@ -1,5 +1,5 @@
 /*
- * CoachTablet.jsx — route /coach
+ * CoachTablet.jsx — route /coach/setup
  * --------------------------------
  * Coach Room Layout: JWT login gate, then a dropdown-and-assign UI that wires
  * unassigned rack screens and nodes into numbered rack slots via coach PATCH
