@@ -31,7 +31,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise
+from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise, RackCheckIn
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
@@ -91,6 +91,59 @@ def rack_assign(request, device_id):
     screen.rack_number = rack_number
     screen.save()
     return Response(RackScreenSerializer(screen).data)
+
+
+def _active_session():
+    """The current session (most recent with no end), or None — resolved the same
+    way everywhere so every endpoint agrees on which session is 'active'."""
+    return Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def rack_checkin(request, rack_number):
+    """Record that an athlete signed in at this rack (Phase 11 Step 2). Append-only:
+    writes a new RackCheckIn, which makes THIS rack the athlete's current one for the
+    session (newest wins). This is the one thing that "moves" an athlete to a rack —
+    a hand tap on the check-in screen today, an NFC tap later. Body: { athlete }."""
+    session = _active_session()
+    if session is None:
+        return Response({"error": "no active session"}, status=400)
+    athlete = Athlete.objects.filter(id=request.data.get("athlete")).first()
+    if athlete is None:
+        return Response({"error": "athlete not found"}, status=404)
+    if not session.athletes.filter(id=athlete.id).exists():
+        return Response({"error": "athlete is not in the active session"}, status=404)
+    RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=rack_number)
+    return Response({
+        "session_id": session.id,
+        "athlete": {"id": athlete.id, "name": athlete.name},
+        "rack_number": rack_number,
+    }, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def rack_checkins(request, rack_number):
+    """The rack's HOT LIST: athletes this rack currently 'owns' — those whose NEWEST
+    check-in this session is this rack. Surfaced first on the check-in screen for
+    fast re-pick. Derived from RackCheckIn (newest-wins per athlete); nothing new
+    stored; session-scoped."""
+    session = _active_session()
+    if session is None:
+        return Response({"session_id": None, "rack_number": rack_number, "athletes": []})
+
+    # newest check-in per athlete this session → their current rack
+    current_rack = {}
+    for c in RackCheckIn.objects.filter(session=session).select_related("athlete").order_by(
+        "athlete_id", "-checked_in_at"
+    ):
+        if c.athlete_id not in current_rack:  # first seen == newest, thanks to the ordering
+            current_rack[c.athlete_id] = (c.rack_number, c.athlete.name)
+
+    athletes = [{"athlete_id": aid, "name": name}
+                for aid, (rn, name) in current_rack.items() if rn == rack_number]
+    return Response({"session_id": session.id, "rack_number": rack_number, "athletes": athletes})
 
 
 # ─────────────────────────── nodes ───────────────────────────
