@@ -388,10 +388,14 @@ export default function CoachTablet() {
   useCoachIdentity()
   const [token, setToken] = useState(() => getCoachToken())
 
-  function logout() {
+  // Stable identity (useCallback) on purpose: this is passed down as onAuthLost,
+  // which RoomLayout's `load` depends on. A fresh function each render made `load`
+  // churn and re-fire its load-on-mount effect repeatedly (a burst of fetches at
+  // page load). Both setters are stable, so [] deps are correct.
+  const logout = useCallback(() => {
     setCoachToken(null)
     setToken(null)
-  }
+  }, [])
 
   return (
     <div className="coach-root">
