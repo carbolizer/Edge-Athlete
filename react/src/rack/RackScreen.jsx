@@ -21,8 +21,8 @@
 //
 // Styling matches the team's `.monitor` design system (see theme.js).
 
-import { useEffect, useState } from 'react'
-import { getAthleteProgress } from '../api/client.js'
+import { useCallback, useEffect, useState } from 'react'
+import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete } from '../api/client.js'
 import Idle from './Idle.jsx'
 import { T } from '../theme.js'
 
@@ -159,6 +159,11 @@ export default function RackScreen({ rackNumber, session }) {
   const [progressLoading, setProgressLoading] = useState(false)
   const [selectedExerciseId, setSelectedExerciseId] = useState(null)
 
+  // Check-in screen data: the session roster (who can lift) + this rack's hot list
+  // (who it currently owns). Seeded from the one-shot fetch, kept fresh by a poll.
+  const [roster, setRoster] = useState(session?.roster ?? [])
+  const [hotList, setHotList] = useState([])
+
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
   useEffect(() => {
@@ -175,6 +180,31 @@ export default function RackScreen({ rackNumber, session }) {
       .finally(() => { if (!cancelled) setProgressLoading(false) })
     return () => { cancelled = true }
   }, [selectedAthlete])
+
+  // Tapping a name IS the check-in: record it (this rack now owns the athlete),
+  // then open their day view. A future NFC tap would call this same path.
+  function selectAthlete(a) {
+    checkInAthlete(rackNumber, a.athlete_id).catch(() => { /* harmless if it fails */ })
+    setSelectedAthlete(a)
+  }
+
+  // Freshness-only refresh of the roster + hot list: picks up a coach adding/removing
+  // a session athlete, and drops anyone who has since checked in at another rack.
+  const refreshCheckIn = useCallback(async () => {
+    try {
+      const [active, hot] = await Promise.all([getActiveSession(), getRackHotList(rackNumber)])
+      setRoster(active?.roster ?? [])
+      setHotList(hot?.athletes ?? [])
+    } catch { /* keep the last known lists */ }
+  }, [rackNumber])
+
+  // Poll ONLY while the check-in screen is up (idle + nobody selected).
+  useEffect(() => {
+    if (phase !== 'idle' || selectedAthlete) return
+    refreshCheckIn()
+    const id = setInterval(refreshCheckIn, 5000)
+    return () => clearInterval(id)
+  }, [phase, selectedAthlete, refreshCheckIn])
 
   const badge = PHASE_BADGE[phase]
 
@@ -206,9 +236,11 @@ export default function RackScreen({ rackNumber, session }) {
       {/* the current phase */}
       {phase === 'idle' && (
         <Idle
-          session={session}
+          roster={roster}
+          hotList={hotList}
+          groupName={session?.label}
           selectedAthlete={selectedAthlete}
-          onSelectAthlete={setSelectedAthlete}
+          onSelectAthlete={selectAthlete}
           onClearAthlete={() => setSelectedAthlete(null)}
           progress={progress}
           progressLoading={progressLoading}
@@ -226,7 +258,7 @@ export default function RackScreen({ rackNumber, session }) {
       <div style={{ padding: '14px 28px', borderTop: `1px solid ${T.line}`,
         display: 'flex', justifyContent: 'space-between', ...LABEL, fontSize: 10 }}>
         <span>phase: {phase}</span>
-        <span>roster: {session?.roster?.length ?? 0}</span>
+        <span>roster: {roster.length}</span>
       </div>
     </div>
   )

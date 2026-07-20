@@ -67,6 +67,31 @@ function Stat({ label, value }) {
   )
 }
 
+// A titled, scrollable box of athletes — one tap checks in and opens their day view.
+// The SAME component renders both the "At this rack" hot list and the main group, so
+// a fresh rack (empty hot list) just shows the group with no special-casing. The
+// inner box scrolls (groups can be large) while the title, other sections, and the
+// NFC hint stay put; the cards look identical to before, just inside an invisible
+// scroll area. No pagination needed — the whole roster is already in memory, so this
+// scroll box IS the "swipe to find your name" behaviour.
+function Group({ title, athletes, onSelect, accent = T.muted }) {
+  if (!athletes || athletes.length === 0) return null
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ ...LABEL, color: accent, marginBottom: 8 }}>{title}</div>
+      <div style={{ maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column',
+        gap: 8, paddingRight: 4 }}>
+        {athletes.map((a) => (
+          <button key={a.athlete_id} onClick={() => onSelect(a)} style={ROW}>
+            <span style={{ fontSize: 17, fontWeight: 700 }}>{a.name}</span>
+            {a.has_data && <span style={{ ...LABEL, color: T.mint }}>✓ in progress</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // The whole idle screen lives in one top-aligned, scrollable column.
 function Scroll({ children }) {
   return (
@@ -77,31 +102,29 @@ function Scroll({ children }) {
   )
 }
 
-export default function Idle({ session, selectedAthlete, onSelectAthlete, onClearAthlete,
-  progress, progressLoading, selectedExerciseId, onSelectMovement, onStart }) {
+export default function Idle({ roster, hotList, groupName, selectedAthlete, onSelectAthlete,
+  onClearAthlete, progress, progressLoading, selectedExerciseId, onSelectMovement, onStart }) {
 
-  const roster = session?.roster ?? []
+  roster = roster ?? []
 
-  // ── no athlete yet: the check-in list ────────────────────────────────────────
+  // ── no athlete yet: the check-in screen ──────────────────────────────────────
   if (!selectedAthlete) {
+    // "At this rack" = athletes this rack currently owns (the hot list); the rest of
+    // the roster is the group below. Both render with the SAME Group component, so a
+    // fresh rack (empty hot list) just shows the group — no special case. Names sort
+    // alphabetically so a lifter can scan for theirs.
+    const hotIds = new Set((hotList ?? []).map((h) => h.athlete_id))
+    const byName = (a, b) => a.name.localeCompare(b.name)
+    const hot = roster.filter((a) => hotIds.has(a.athlete_id)).sort(byName)
+    const rest = roster.filter((a) => !hotIds.has(a.athlete_id)).sort(byName)
     return (
       <Scroll>
-        <div style={{ ...LABEL, marginBottom: 4 }}>Rack check-in</div>
-        <div style={{ fontSize: 24, fontWeight: 850, letterSpacing: '-.03em', marginBottom: 20 }}>
-          Who&apos;s lifting?
-        </div>
-        {roster.length === 0
-          ? <div style={{ color: T.muted, fontSize: 14 }}>No athletes in this session.</div>
-          : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {roster.map((a) => (
-                <button key={a.athlete_id} onClick={() => onSelectAthlete(a)} style={ROW}>
-                  <span style={{ fontSize: 17, fontWeight: 700 }}>{a.name}</span>
-                  {a.has_data && <span style={{ ...LABEL, color: T.mint }}>✓ in progress</span>}
-                </button>
-              ))}
-            </div>
-          )}
+        <div style={{ ...LABEL, marginBottom: 18 }}>Rack check-in</div>
+        {roster.length === 0 && (
+          <div style={{ color: T.muted, fontSize: 14, marginBottom: 18 }}>No athletes in this session.</div>
+        )}
+        <Group title="At this rack" accent={T.lime} athletes={hot} onSelect={onSelectAthlete} />
+        <Group title={groupName || 'Athletes'} athletes={rest} onSelect={onSelectAthlete} />
         <NfcHint />
       </Scroll>
     )
