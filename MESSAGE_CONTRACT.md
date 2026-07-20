@@ -177,6 +177,22 @@ Not MQTT, but the same data contract, so they live here too.
 - **`current_exercise_id`** is a suggestion only; the athlete may pick any movement.
 - **No active session →** `{ "session_id": null, "athlete": {…}, "current_exercise_id": null, "movements": [] }`. **Athlete not in the session roster →** `404`.
 
+### `POST /api/racks/{rack_number}/checkin/` — record an athlete signing in at a rack (open)
+Body: `{ "athlete": 4 }`. Writes an append-only `RackCheckIn`, making THIS rack the athlete's current one for the session (newest-wins). Returns `201`:
+```jsonc
+{ "session_id": 1, "athlete": { "id": 4, "name": "Jordan Lee" }, "rack_number": 3 }
+```
+- No active session → `400`. Unknown athlete, or athlete not on the session roster → `404`.
+- Called when an athlete taps in on the rack's check-in screen (Phase 11 Step 2). This is the ONE thing that "moves" an athlete to a rack; a later NFC tap would shortcut into the same call.
+
+### `GET /api/racks/{rack_number}/checkins/` — the rack's hot list (open)
+The athletes this rack currently "owns" — those whose NEWEST `RackCheckIn` this session is this rack. Surfaced first on the check-in screen for fast re-pick; the full roster (from `/api/sessions/active/`) stays reachable below it.
+```jsonc
+{ "session_id": 1, "rack_number": 3, "athletes": [ { "athlete_id": 4, "name": "Jordan Lee" } ] }
+```
+- **Derived** from `RackCheckIn` (newest-wins per athlete); session-scoped; nothing new stored. Polled (~5s) alongside the roster while the check-in screen is up.
+- No active session → `{ "session_id": null, "rack_number": 3, "athletes": [] }`.
+
 ### `POST /api/sets/{id}/complete/` — the batch set-complete body
 ```jsonc
 // POST /api/sets/{id}/complete/
