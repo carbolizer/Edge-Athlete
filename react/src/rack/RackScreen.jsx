@@ -22,7 +22,10 @@
 // Styling matches the team's `.monitor` design system (see theme.js).
 
 import { useCallback, useEffect, useState } from 'react'
-import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete } from '../api/client.js'
+import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, getNodes, createSet } from '../api/client.js'
+import { subscribeNodeReps } from '../mqtt/client.js'
+import { addRep, clearBuffer, getBufferedReps } from '../db/repBuffer.js'
+import { velocityColor, VELOCITY_HEX } from './velocity.js'
 import Idle from './Idle.jsx'
 import { T } from '../theme.js'
 
@@ -83,15 +86,26 @@ function CountdownPhase({ onDone }) {
   )
 }
 
-function ActivePhase({ onEnd, onFalseSet }) {
+function ActivePhase({ movementName, repCount, lastVelocity, lastColor, onEnd, onFalseSet }) {
+  const hex = VELOCITY_HEX[lastColor]
   return (
     <PhaseBody>
+      {movementName && <div style={{ ...LABEL, color: T.lime, marginBottom: 8 }}>{movementName}</div>}
       <div style={{ ...LABEL, marginBottom: 10 }}>Reps this set</div>
       <div style={{ fontSize: 128, fontWeight: 800, lineHeight: 0.9, letterSpacing: '-.06em',
-        fontVariantNumeric: 'tabular-nums', color: T.ink }}>0</div>
-      <div style={{ fontSize: 13, color: T.muted, marginTop: 18, marginBottom: 36 }}>
-        (live reps stream in here — Step 3)
+        fontVariantNumeric: 'tabular-nums', color: T.ink }}>{repCount}</div>
+
+      {/* latest rep's velocity + its green/yellow/red read against the movement's zone */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 26, marginBottom: 34 }}>
+        <div style={{ fontSize: 44, fontWeight: 800, color: hex, letterSpacing: '-.05em',
+          fontVariantNumeric: 'tabular-nums' }}>
+          {lastVelocity == null ? '—' : lastVelocity.toFixed(2)}
+          <span style={{ fontSize: 13, fontWeight: 700, color: T.muted, marginLeft: 5 }}>m/s</span>
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '.1em',
+          padding: '6px 12px', borderRadius: 999, background: hex + '22', color: hex }}>{lastColor}</span>
       </div>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
         <Button onClick={onEnd} tone="ghost">End Set</Button>
         <Button onClick={onFalseSet} tone="danger">False Set</Button>
@@ -164,6 +178,15 @@ export default function RackScreen({ rackNumber, session }) {
   const [roster, setRoster] = useState(session?.roster ?? [])
   const [hotList, setHotList] = useState([])
 
+  // Step 3 live-set data: the linked sensor node, the created set's id, and the
+  // live rep readout (count + latest velocity + its color).
+  const [node, setNode] = useState(null)
+  const [setId, setSetId] = useState(null)
+  const [repCount, setRepCount] = useState(0)
+  const [lastVelocity, setLastVelocity] = useState(null)
+  const [lastColor, setLastColor] = useState('green')
+  const [buffered, setBuffered] = useState(0)
+
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
   useEffect(() => {
@@ -205,6 +228,56 @@ export default function RackScreen({ rackNumber, session }) {
     const id = setInterval(refreshCheckIn, 5000)
     return () => clearInterval(id)
   }, [phase, selectedAthlete, refreshCheckIn])
+
+  // Find this rack's linked sensor once — its node_id for the rep topic, its integer
+  // pk for linking the Set on create.
+  useEffect(() => {
+    let cancelled = false
+    getNodes().then((nodes) => {
+      if (!cancelled) setNode(nodes.find((n) => n.rack_number === rackNumber) || null)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [rackNumber])
+
+  // The movement the athlete is about to do (from the day view) — drives the set's
+  // exercise, weight, and set number, and the velocity zone reps are colored against.
+  const selectedMovement = progress?.movements?.find((m) => m.exercise_id === selectedExerciseId) || null
+  const zoneMin = selectedMovement?.velocity_zone_min ?? null
+
+  // Countdown → active: start a fresh set. Clear the buffer first so no stray reps
+  // carry over, reset the live readout, flip to active (reps start streaming), then
+  // create the Set row and keep its id for the complete POST in Step 4.
+  async function beginActiveSet() {
+    await clearBuffer()
+    setRepCount(0); setLastVelocity(null); setLastColor('green'); setBuffered(0); setSetId(null)
+    setPhase('active')
+    const body = {
+      session: session?.session_id,
+      athlete: selectedAthlete.athlete_id,
+      exercise: selectedExerciseId,
+      set_number: selectedMovement?.next_set_number ?? 1,
+      weight_lbs: selectedMovement?.target_weight_lbs ?? null,
+      is_makeup: !!selectedAthlete?.has_data,
+    }
+    if (node?.id != null) body.node = node.id
+    createSet(body).then((s) => setSetId(s.id)).catch(() => { /* the retry story is Step 4 */ })
+  }
+
+  // Live reps — subscribe ONLY while a set is active. This gates buffering to the
+  // set: reps arriving in idle/countdown/rest are never captured. Each rep is
+  // written to the durable buffer FIRST, then updates the live readout.
+  useEffect(() => {
+    if (phase !== 'active' || !node) return
+    const onRep = async (rep) => {
+      await addRep(rep)
+      setRepCount((n) => n + 1)
+      setLastVelocity(rep.mean_velocity)
+      setLastColor(velocityColor(rep.mean_velocity, zoneMin))
+      getBufferedReps().then((rows) => setBuffered(rows.length))
+    }
+    const unsub = subscribeNodeReps(node.node_id, onRep)
+    return () => unsub()
+  }, [phase, node, zoneMin])
 
   const badge = PHASE_BADGE[phase]
 
@@ -249,8 +322,17 @@ export default function RackScreen({ rackNumber, session }) {
           onStart={() => setPhase('countdown')}
         />
       )}
-      {phase === 'countdown' && <CountdownPhase onDone={() => setPhase('active')} />}
-      {phase === 'active' && <ActivePhase onEnd={() => setPhase('summary')} onFalseSet={() => setPhase('idle')} />}
+      {phase === 'countdown' && <CountdownPhase onDone={beginActiveSet} />}
+      {phase === 'active' && (
+        <ActivePhase
+          movementName={selectedMovement?.name}
+          repCount={repCount}
+          lastVelocity={lastVelocity}
+          lastColor={lastColor}
+          onEnd={() => setPhase('summary')}
+          onFalseSet={() => setPhase('idle')}
+        />
+      )}
       {phase === 'summary' && <SummaryPhase onRest={() => setPhase('rest')} onFalseSet={() => setPhase('idle')} />}
       {phase === 'rest' && <RestPhase onDone={() => setPhase('idle')} />}
 
@@ -258,7 +340,8 @@ export default function RackScreen({ rackNumber, session }) {
       <div style={{ padding: '14px 28px', borderTop: `1px solid ${T.line}`,
         display: 'flex', justifyContent: 'space-between', ...LABEL, fontSize: 10 }}>
         <span>phase: {phase}</span>
-        <span>roster: {roster.length}</span>
+        <span>node: {node?.node_id || '—'}</span>
+        <span>buffered: {buffered}</span>
       </div>
     </div>
   )

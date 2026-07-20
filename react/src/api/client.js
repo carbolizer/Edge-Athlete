@@ -65,3 +65,14 @@ export function checkInAthlete(rackNumber, athleteId) {
 export function getRackHotList(rackNumber) {
   return jsonFetch(`/racks/${rackNumber}/checkins/`)
 }
+
+// Create a Set when a set STARTS (Phase 11 Step 3). Body: { session, athlete,
+// exercise, set_number, weight_lbs, is_makeup, node? }. The server returns the Set
+// including its id, which we keep to complete it at set end (Step 4).
+export function createSet(body) {
+  return jsonFetch('/sets/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
