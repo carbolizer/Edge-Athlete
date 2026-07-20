@@ -162,8 +162,11 @@ function RoomLayout({ token, onAuthLost }) {
   const [busyNode, setBusyNode] = useState(false)
   const [screenBySlot, setScreenBySlot] = useState({})
 
-  const load = useCallback(async ({ clearMessage = true } = {}) => {
-    setLoading(true)
+  // `silent` is for the background poll below: refresh the lists without flipping
+  // the loading spinner, clearing the coach's message, or otherwise disturbing a
+  // selection that's in progress.
+  const load = useCallback(async ({ clearMessage = true, silent = false } = {}) => {
+    if (!silent) setLoading(true)
     if (clearMessage) setMsg({ text: '', kind: '' })
     try {
       const [unassigned, allNodes] = await Promise.all([
@@ -178,13 +181,21 @@ function RoomLayout({ token, onAuthLost }) {
         onAuthLost()
         return
       }
-      setMsg({ text, kind: 'err' })
+      if (!silent) setMsg({ text, kind: 'err' })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [token, onAuthLost])
 
   useEffect(() => { load() }, [load])
+
+  // Keep the waiting-tablet + node lists fresh on their own: a tablet that enters
+  // setup mode should show up here without the coach hitting Refresh. Poll quietly
+  // every 3s (matches the "within about three seconds" note in the copy above).
+  useEffect(() => {
+    const id = setInterval(() => { load({ clearMessage: false, silent: true }) }, 3000)
+    return () => clearInterval(id)
+  }, [load])
 
   const occupancyBySlot = {}
   for (const n of RACK_SLOTS) occupancyBySlot[n] = { screenId: screenBySlot[n] || null, node: null }
