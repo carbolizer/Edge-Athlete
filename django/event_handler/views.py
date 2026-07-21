@@ -439,6 +439,65 @@ def athlete_progress(request, athlete_id):
     })
 
 
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def session_status(request):
+    """Room state for the active session: each athlete's live status + since-when.
+    The rack's rest/check-in cards turn this into a ticking timer + status label,
+    and a coach tablet can reuse the exact same data. Derived per request from
+    `Set` + `RackCheckIn` — no new tables.
+
+    Status per athlete (first match wins):
+      lifting     — a set is in progress right now  → `since` = when it started
+      resting     — their most recent set has ended → `since` = when it ended
+      ready       — checked in at a rack, no set yet → `since` = check-in time
+      not_started — no activity this session         → `since` = null
+    """
+    session = _active_session()
+    if session is None:
+        return Response({"session_id": None, "athletes": []})
+
+    athletes = list(session.athletes.order_by("name", "id"))
+    ids = [a.id for a in athletes]
+
+    # in-progress set (lifting) per athlete
+    lifting = {}
+    for s in Set.objects.filter(session=session, athlete_id__in=ids, ended_at__isnull=True):
+        lifting.setdefault(s.athlete_id, s.started_at)
+
+    # most recent finished set (resting) per athlete
+    last_done = {}
+    for s in Set.objects.filter(session=session, athlete_id__in=ids,
+                                ended_at__isnull=False).order_by("athlete_id", "-ended_at"):
+        last_done.setdefault(s.athlete_id, s.ended_at)  # first == newest, thanks to ordering
+
+    # newest check-in (which rack + when) per athlete
+    checkin = {}
+    for c in RackCheckIn.objects.filter(session=session, athlete_id__in=ids).order_by(
+        "athlete_id", "-checked_in_at"
+    ):
+        checkin.setdefault(c.athlete_id, (c.rack_number, c.checked_in_at))
+
+    out = []
+    for a in athletes:
+        if a.id in lifting:
+            status, since = "lifting", lifting[a.id]
+        elif a.id in last_done:
+            status, since = "resting", last_done[a.id]
+        elif a.id in checkin:
+            status, since = "ready", checkin[a.id][1]
+        else:
+            status, since = "not_started", None
+        out.append({
+            "athlete_id": a.id,
+            "name": a.name,
+            "status": status,
+            "since": since,  # DRF serializes to ISO 8601; the tablet ticks a timer from it
+            "rack_number": checkin.get(a.id, (None, None))[0],
+        })
+    return Response({"session_id": session.id, "athletes": out})
+
+
 # ─────────────────────────── sets ───────────────────────────
 
 @api_view(["POST"])

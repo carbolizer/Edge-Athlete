@@ -177,6 +177,22 @@ Not MQTT, but the same data contract, so they live here too.
 - **`current_exercise_id`** is a suggestion only; the athlete may pick any movement.
 - **No active session →** `{ "session_id": null, "athlete": {…}, "current_exercise_id": null, "movements": [] }`. **Athlete not in the session roster →** `404`.
 
+### `GET /api/sessions/active/status/` — room state: every athlete's live status (open)
+Each session athlete's current status + when it started, so the rack's rest/check-in cards can show a ticking timer + status label, and a coach tablet can reuse the same data. **Derived** from `Set` + `RackCheckIn`; no new tables.
+```jsonc
+{
+  "session_id": 1,
+  "athletes": [
+    { "athlete_id": 4, "name": "Jordan Lee", "status": "lifting",
+      "since": "2026-07-07T07:35:00Z", "rack_number": 1 }
+    // status ∈ lifting | resting | ready | not_started
+  ]
+}
+```
+- **`status`** (first match wins): `lifting` = a set is in progress → `since` = when it started; `resting` = their most recent set has ended → `since` = when it ended; `ready` = checked in, no set yet → `since` = check-in time; `not_started` = no activity → `since` = `null`.
+- **The tablet turns `since` into a live timer** (ticks locally every second; the endpoint is polled, not the clock).
+- `rack_number` = the athlete's newest check-in rack (or `null`). No active session → `{ "session_id": null, "athletes": [] }`.
+
 ### `POST /api/racks/{rack_number}/checkin/` — record an athlete signing in at a rack (open)
 Body: `{ "athlete": 4 }`. Writes an append-only `RackCheckIn`, making THIS rack the athlete's current one for the session (newest-wins). Returns `201`:
 ```jsonc
