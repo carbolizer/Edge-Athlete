@@ -189,7 +189,7 @@ Each session athlete's current status + when it started, so the rack's rest/chec
   ]
 }
 ```
-- **`status`** (first match wins): `lifting` = a set is in progress → `since` = when it started; `resting` = their most recent set has ended → `since` = when it ended; `ready` = checked in, no set yet → `since` = check-in time; `not_started` = no activity → `since` = `null`.
+- **`status`** (first match wins): `lifting` = a set is in progress → `since` = when it started; `resting` = their most recent set ended **within the last ~20 min** (actively between sets) → `since` = when it ended; `ready` = checked in, no set (or rested past the window) → `since` = check-in time; `not_started` = no activity → `since` = `null`.
 - **The tablet turns `since` into a live timer** (ticks locally every second; the endpoint is polled, not the clock).
 - `rack_number` = the athlete's newest check-in rack (or `null`). No active session → `{ "session_id": null, "athletes": [] }`.
 
@@ -208,6 +208,22 @@ The athletes this rack currently "owns" — those whose NEWEST `RackCheckIn` thi
 ```
 - **Derived** from `RackCheckIn` (newest-wins per athlete); session-scoped; nothing new stored. Polled (~5s) alongside the roster while the check-in screen is up.
 - No active session → `{ "session_id": null, "rack_number": 3, "athletes": [] }`.
+
+### `POST /api/sets/` — start a set (create) (open)
+Called when a set STARTS (Phase 11 Step 3). The server returns the created `Set` incl. its `id`, kept for the complete POST at set end.
+```jsonc
+{
+  "session": 1,          // session_id from GET /api/sessions/active/
+  "athlete": 4,          // the checked-in lifter's athlete_id
+  "exercise": 1,         // catalog exercise id (the selected movement)
+  "set_number": 3,       // = next_set_number from the athlete's progress — NOT a client counter
+  "weight_lbs": 225.0,   // the resolved target (or the manually-entered starting weight)
+  "is_makeup": true,     // = the athlete's has_data (already has a set this session)
+  "node": 2              // OPTIONAL: the Node's INTEGER pk (not node_id) — links the set to its sensor
+}
+```
+- `weight_lbs` and `is_makeup` are set HERE (at create), not at complete.
+- `node` may be omitted (nullable) — the set still saves, but then the `set_complete`/`athlete_checkin` broadcasts (which need `node.rack_number`) don't fire.
 
 ### `POST /api/sets/{id}/complete/` — the batch set-complete body
 ```jsonc

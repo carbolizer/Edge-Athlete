@@ -168,6 +168,17 @@ sensor system exists to capture.
 
 *Think of it as:* the play-by-play detail behind each set's summary line.
 
+### `RackCheckIn` — who's at which rack, right now
+A little logbook: every time an athlete "checks in" (taps their name, or later scans a
+band) at a rack, one row is added — who, which rack, which session, and when. Nobody
+ever edits or deletes a row; the **newest** row for an athlete says which rack they're
+currently at. So when someone moves to a new rack, a newer row quietly takes over and
+they leave the old rack's list. A rack's "hot list" (the athletes it currently owns) and
+the room's live "who's lifting / resting / ready" view are both just *questions asked of
+this logbook plus the set times* — nothing extra is stored.
+
+*Think of it as:* a sign-in sheet where only the latest signature counts.
+
 ---
 
 ## How the connections read in plain English
@@ -205,6 +216,6 @@ sensor system exists to capture.
 
 ---
 
-*This describes the current 10 tables (`Node`, `RackScreen`, `Athlete`, `Tag`, `Exercise`,
-`Program`, `Session`, `Set`, `AthleteReferenceMax`, `Rep`). If the data model changes, the
-source of truth is `django/event_handler/models.py`; keep this overview in step with it.*
+*This describes the current 11 tables (`Node`, `RackScreen`, `Athlete`, `Tag`, `Exercise`,
+`Program`, `Session`, `Set`, `AthleteReferenceMax`, `Rep`, `RackCheckIn`). If the data model
+changes, the source of truth is `django/event_handler/models.py`; keep this overview in step with it.*

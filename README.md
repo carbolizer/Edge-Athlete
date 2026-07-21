@@ -31,9 +31,11 @@ Mosquitto broker, Nginx, React) that runs on the Pi.
   (`edgeathlete/node/+/pulse`). Reps are saved in **one batch** when a set
   finishes (`POST /api/sets/{id}/complete/`) — never streamed one at a time.
 
-**Seven database tables:** `Node`, `RackScreen`, `Athlete`, `Program`, `Session`,
-`Set`, `Rep`. (`RackScreen` = the tablet at a rack; `Node` = the sensor. They
-share a `rack_number` but are assigned independently.)
+**Database tables** (11): `Node`, `RackScreen`, `Athlete`, `Tag`, `Exercise`,
+`Program`, `Session`, `Set`, `AthleteReferenceMax`, `Rep`, `RackCheckIn`.
+(`RackScreen` = the tablet at a rack; `Node` = the sensor — they share a
+`rack_number` but are assigned independently.) A plain-English tour of every table
+is in [DATABASE-OVERVIEW.md](DATABASE-OVERVIEW.md).
 
 ---
 
@@ -71,7 +73,12 @@ Request/response shapes for the real-time messages are in [MESSAGE_CONTRACT.md](
 |---|---|---|---|
 | POST | `/api/racks/register/` | open | A tablet introduces itself (`{device_id}`) so a coach can assign it a rack. |
 | GET | `/api/racks/racknumber/?device_id=` | open | A waiting tablet asks which rack it's been given → `{rack_number}`. |
-| POST | `/api/sets/` | open | Start a set — create the empty record when a lifter begins. |
+| GET | `/api/sessions/active/` | open | The rack's one startup fetch — roster, each athlete's maxes/targets, planned exercises + velocity zones. |
+| GET | `/api/sessions/active/athlete/{id}/progress/` | open | One athlete's day view — their movements + live per-set progress (derived from Program + Set). |
+| GET | `/api/sessions/active/status/` | open | Room state — each athlete's live status (lifting/resting/ready) + since-when, for the check-in timers (coach-reusable). |
+| POST | `/api/racks/{n}/checkin/` | open | Record an athlete checking in at a rack (newest-wins "hot list" ownership). |
+| GET | `/api/racks/{n}/checkins/` | open | The rack's hot list — the athletes it currently owns. |
+| POST | `/api/sets/` | open | Start a set — create the record when a lifter begins (`set_number`, `weight_lbs`, `is_makeup`, node pk). |
 | POST | `/api/sets/{id}/complete/` | open | Finish a set — save all reps + totals in one transaction. **The only way reps get saved.** Returns the set plus `is_velocity_pr` / `is_weight_pr`. |
 
 ### Reads
@@ -79,6 +86,7 @@ Request/response shapes for the real-time messages are in [MESSAGE_CONTRACT.md](
 |---|---|---|---|
 | GET | `/api/nodes/` | open | List all sensor nodes and their status. |
 | GET | `/api/athletes/` | open | List all lifters. |
+| GET | `/api/exercises/` | open | The movement catalog (`Exercise` rows). |
 | GET | `/api/programs/?athlete={id}` | open | An athlete's training plans — targets + the speed zone used to color reps. |
 
 ### Coach — manage
@@ -102,5 +110,6 @@ Request/response shapes for the real-time messages are in [MESSAGE_CONTRACT.md](
 ## Docs
 - [SPEC.md](SPEC.md) — the single source of truth (phases, models, topics).
 - [MESSAGE_CONTRACT.md](MESSAGE_CONTRACT.md) — exact shapes of every MQTT / API message.
+- [DATABASE-OVERVIEW.md](DATABASE-OVERVIEW.md) — plain-English tour of every table + how they relate.
 - [DESIGN_NOTES.md](DESIGN_NOTES.md) — deliberate choices we may revisit.
 - [RUNBOOK.md](RUNBOOK.md) — services, start/stop, and operational notes.
