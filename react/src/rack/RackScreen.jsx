@@ -22,11 +22,12 @@
 // Styling matches the team's `.monitor` design system (see theme.js).
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, getNodes, createSet, completeSet } from '../api/client.js'
+import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, getNodes, createSet, completeSet, getSessionStatus } from '../api/client.js'
 import { subscribeNodeReps } from '../mqtt/client.js'
 import { addRep, clearBuffer, getBufferedReps } from '../db/repBuffer.js'
 import { velocityColor, VELOCITY_HEX } from './velocity.js'
 import Idle from './Idle.jsx'
+import CheckInList from './CheckInList.jsx'
 import { T } from '../theme.js'
 
 const REST_SECONDS = 120 // default rest between sets (real behaviour lands in Step 5)
@@ -140,7 +141,7 @@ function SummaryPhase({ summary, onRest }) {
   )
 }
 
-function RestPhase({ onDone, movementName, nextSetNumber }) {
+function RestPhase({ onDone, movementName, nextSetNumber, roster, hotList, groupName, statusMap, onSelectAthlete }) {
   const [secs, setSecs] = useState(REST_SECONDS)
   useEffect(() => {
     if (secs <= 0) { onDone(); return }
@@ -150,17 +151,30 @@ function RestPhase({ onDone, movementName, nextSetNumber }) {
   const mm = Math.floor(secs / 60)
   const ss = String(secs % 60).padStart(2, '0')
   return (
-    <PhaseBody>
-      <div style={{ ...LABEL, marginBottom: 14 }}>Rest</div>
-      <div style={{ fontSize: 92, fontWeight: 800, letterSpacing: '-.05em', color: T.ink,
-        fontVariantNumeric: 'tabular-nums', marginBottom: 14 }}>{mm}:{ss}</div>
-      {movementName && (
-        <div style={{ ...LABEL, color: T.lime, marginBottom: 32 }}>
-          Up next · {movementName} · Set {nextSetNumber}
-        </div>
-      )}
+    <div style={{ flex: 1, overflowY: 'auto', padding: '22px 22px 32px', width: '100%',
+      maxWidth: 460, margin: '0 auto', display: 'flex', flexDirection: 'column' }}>
+      {/* the resting athlete's timer + what's up next + continue */}
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ ...LABEL, marginBottom: 10 }}>Rest</div>
+        <div style={{ fontSize: 84, fontWeight: 800, letterSpacing: '-.05em', color: T.ink,
+          fontVariantNumeric: 'tabular-nums', marginBottom: 10 }}>{mm}:{ss}</div>
+        {movementName && (
+          <div style={{ ...LABEL, color: T.lime, marginBottom: 18 }}>
+            Up next · {movementName} · Set {nextSetNumber}
+          </div>
+        )}
+      </div>
       <Button onClick={onDone}>Next Set</Button>
-    </PhaseBody>
+
+      {/* or hand the rack to the next lifter — athletes rotate one set at a time */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '26px 0 18px' }}>
+        <div style={{ flex: 1, height: 1, background: T.line }} />
+        <span style={LABEL}>or, next lifter</span>
+        <div style={{ flex: 1, height: 1, background: T.line }} />
+      </div>
+      <CheckInList roster={roster} hotList={hotList} groupName={groupName}
+        statusMap={statusMap} onSelect={onSelectAthlete} />
+    </div>
   )
 }
 
@@ -190,6 +204,7 @@ export default function RackScreen({ rackNumber, session }) {
   // (who it currently owns). Seeded from the one-shot fetch, kept fresh by a poll.
   const [roster, setRoster] = useState(session?.roster ?? [])
   const [hotList, setHotList] = useState([])
+  const [statusMap, setStatusMap] = useState({})   // athlete_id → { status, since, rack_number }
 
   // Step 3 live-set data: the linked sensor node, the created set's id, and the
   // live rep readout (count + latest velocity + its color).
@@ -220,29 +235,38 @@ export default function RackScreen({ rackNumber, session }) {
   }, [selectedAthlete])
 
   // Tapping a name IS the check-in: record it (this rack now owns the athlete),
-  // then open their day view. A future NFC tap would call this same path.
+  // then open their day view. Called from the check-in screen AND the rest screen
+  // (handing the rack to the next lifter), so it always lands on idle. NFC later
+  // calls this same path.
   function selectAthlete(a) {
     checkInAthlete(rackNumber, a.athlete_id).catch(() => { /* harmless if it fails */ })
     setSelectedAthlete(a)
+    setPhase('idle')
   }
 
-  // Freshness-only refresh of the roster + hot list: picks up a coach adding/removing
-  // a session athlete, and drops anyone who has since checked in at another rack.
+  // Freshness-only refresh of the roster, hot list, and live statuses: picks up a
+  // coach adding/removing a session athlete, someone checking in elsewhere, and each
+  // athlete's lifting/resting/ready status for the timer cards.
   const refreshCheckIn = useCallback(async () => {
     try {
-      const [active, hot] = await Promise.all([getActiveSession(), getRackHotList(rackNumber)])
+      const [active, hot, stat] = await Promise.all([
+        getActiveSession(), getRackHotList(rackNumber), getSessionStatus(),
+      ])
       setRoster(active?.roster ?? [])
       setHotList(hot?.athletes ?? [])
+      setStatusMap(Object.fromEntries((stat?.athletes ?? []).map((a) => [a.athlete_id, a])))
     } catch { /* keep the last known lists */ }
   }, [rackNumber])
 
-  // Poll ONLY while the check-in screen is up (idle + nobody selected).
+  // Poll while the check-in list is visible — the idle check-in screen OR the rest
+  // screen (where the next lifter can tap in).
+  const showCheckInList = (phase === 'idle' && !selectedAthlete) || phase === 'rest'
   useEffect(() => {
-    if (phase !== 'idle' || selectedAthlete) return
+    if (!showCheckInList) return
     refreshCheckIn()
     const id = setInterval(refreshCheckIn, 5000)
     return () => clearInterval(id)
-  }, [phase, selectedAthlete, refreshCheckIn])
+  }, [showCheckInList, refreshCheckIn])
 
   // Find this rack's linked sensor once — its node_id for the rep topic, its integer
   // pk for linking the Set on create.
@@ -374,6 +398,7 @@ export default function RackScreen({ rackNumber, session }) {
           roster={roster}
           hotList={hotList}
           groupName={session?.label}
+          statusMap={statusMap}
           selectedAthlete={selectedAthlete}
           onSelectAthlete={selectAthlete}
           onClearAthlete={() => setSelectedAthlete(null)}
@@ -401,6 +426,11 @@ export default function RackScreen({ rackNumber, session }) {
           onDone={() => setPhase('idle')}
           movementName={selectedMovement?.name}
           nextSetNumber={selectedMovement?.next_set_number}
+          roster={roster}
+          hotList={hotList}
+          groupName={session?.label}
+          statusMap={statusMap}
+          onSelectAthlete={selectAthlete}
         />
       )}
 

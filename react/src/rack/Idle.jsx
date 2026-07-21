@@ -3,19 +3,21 @@
 // ── WHY THIS FILE EXISTS (plain version) ───────────────────────────────────────
 // Before a set can start, the rack needs to know WHO is lifting and WHICH movement.
 // This screen does both, athlete-first:
-//   1. tap the athlete who's at the rack (from the session roster), then
+//   1. tap the athlete who's at the rack (the shared CheckInList), then
 //   2. see that athlete's whole day for the session — every planned movement with
 //      live progress (how many sets done of how many) — pulled fresh from the
 //      server, so it looks the same and stays correct at ANY rack the athlete uses.
 // The movement they're about to do is shown big ("Up now"); the rest of the day
 // sits below as compact cards they can tap to switch to (e.g. for a superset).
 // "Start Set" hands off to the countdown. All the numbers come from the athlete
-// progress endpoint (Step 2a-i).
+// progress endpoint.
 //
-// Kept deliberately lean: this is a portrait tablet read at a glance, so it's ONE
-// vertical column with only the pertinent numbers — no dense grid.
+// The check-in list itself lives in CheckInList.jsx because the rest screen shares
+// it. Kept deliberately lean: a portrait tablet read at a glance, one vertical
+// column, only the pertinent numbers — no dense grid.
 
 import { T } from '../theme.js'
+import CheckInList from './CheckInList.jsx'
 
 const LABEL = {
   fontSize: 10, fontWeight: 900, letterSpacing: '.14em',
@@ -33,61 +35,12 @@ function Bar({ value, max, height = 6 }) {
   )
 }
 
-// A purely-decorative NFC affordance under the check-in list. It hints at the
-// future "tap your band to sign in" flow (NFC itself is out of scope this phase,
-// per SPEC) and fills the empty space on a tall portrait screen. Not interactive.
-function NfcHint() {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 52 }}>
-      <style>{'@keyframes eaNfcPulse{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.06);opacity:1}}'}</style>
-      <div style={{ width: 104, height: 104, borderRadius: '50%', border: `2px dashed ${T.line}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16,
-        animation: 'eaNfcPulse 2.4s ease-in-out infinite' }}>
-        <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={T.muted}
-          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M6 9a4.5 4.5 0 0 1 0 6" />
-          <path d="M9.5 6.5a9 9 0 0 1 0 11" />
-          <path d="M13 4a13 13 0 0 1 0 16" />
-        </svg>
-      </div>
-      <div style={{ fontSize: 13, color: T.muted, fontWeight: 600, letterSpacing: '-.01em' }}>
-        Tap your name — or scan your NFC band
-      </div>
-    </div>
-  )
-}
-
 // One label + value pair, used in the "Up now" card's stat row.
 function Stat({ label, value }) {
   return (
     <div>
       <div style={{ ...LABEL, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-.02em' }}>{value}</div>
-    </div>
-  )
-}
-
-// A titled, scrollable box of athletes — one tap checks in and opens their day view.
-// The SAME component renders both the "At this rack" hot list and the main group, so
-// a fresh rack (empty hot list) just shows the group with no special-casing. The
-// inner box scrolls (groups can be large) while the title, other sections, and the
-// NFC hint stay put; the cards look identical to before, just inside an invisible
-// scroll area. No pagination needed — the whole roster is already in memory, so this
-// scroll box IS the "swipe to find your name" behaviour.
-function Group({ title, athletes, onSelect, accent = T.muted }) {
-  if (!athletes || athletes.length === 0) return null
-  return (
-    <div style={{ marginBottom: 18 }}>
-      <div style={{ ...LABEL, color: accent, marginBottom: 8 }}>{title}</div>
-      <div style={{ maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column',
-        gap: 8, paddingRight: 4 }}>
-        {athletes.map((a) => (
-          <button key={a.athlete_id} onClick={() => onSelect(a)} style={ROW}>
-            <span style={{ fontSize: 17, fontWeight: 700 }}>{a.name}</span>
-            {a.has_data && <span style={{ ...LABEL, color: T.mint }}>✓ in progress</span>}
-          </button>
-        ))}
-      </div>
     </div>
   )
 }
@@ -102,34 +55,16 @@ function Scroll({ children }) {
   )
 }
 
-export default function Idle({ roster, hotList, groupName, selectedAthlete, onSelectAthlete,
+export default function Idle({ roster, hotList, groupName, statusMap, selectedAthlete, onSelectAthlete,
   onClearAthlete, progress, progressLoading, selectedExerciseId, onSelectMovement, onStart }) {
-
-  roster = roster ?? []
 
   // ── no athlete yet: the check-in screen ──────────────────────────────────────
   if (!selectedAthlete) {
-    // "At this rack" = athletes this rack currently owns (the hot list); the rest of
-    // the roster is the group below. Both render with the SAME Group component, so a
-    // fresh rack (empty hot list) just shows the group — no special case. Names sort
-    // alphabetically so a lifter can scan for theirs.
-    const hotIds = new Set((hotList ?? []).map((h) => h.athlete_id))
-    // Sort by SURNAME — the last word of the single `name` field. Stopgap until
-    // athletes have structured first/last names; fragile for multi-word or
-    // single-name cases, so ties fall back to the full name.
-    const surname = (a) => a.name.trim().split(/\s+/).pop() || a.name
-    const byName = (a, b) => surname(a).localeCompare(surname(b)) || a.name.localeCompare(b.name)
-    const hot = roster.filter((a) => hotIds.has(a.athlete_id)).sort(byName)
-    const rest = roster.filter((a) => !hotIds.has(a.athlete_id)).sort(byName)
     return (
       <Scroll>
         <div style={{ ...LABEL, marginBottom: 18 }}>Rack check-in</div>
-        {roster.length === 0 && (
-          <div style={{ color: T.muted, fontSize: 14, marginBottom: 18 }}>No athletes in this session.</div>
-        )}
-        <Group title="At this rack" accent={T.lime} athletes={hot} onSelect={onSelectAthlete} />
-        <Group title={groupName || 'Athletes'} athletes={rest} onSelect={onSelectAthlete} />
-        <NfcHint />
+        <CheckInList roster={roster} hotList={hotList} groupName={groupName}
+          statusMap={statusMap} onSelect={onSelectAthlete} />
       </Scroll>
     )
   }
@@ -231,9 +166,6 @@ export default function Idle({ roster, hotList, groupName, selectedAthlete, onSe
   )
 }
 
-const ROW = { display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  padding: '16px 18px', borderRadius: 12, border: `1px solid ${T.line}`, background: T.panel,
-  color: T.ink, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }
 const COMPACT = { display: 'flex', alignItems: 'center', padding: '12px 16px', borderRadius: 12,
   border: `1px solid ${T.line}`, background: T.bg, color: T.ink, cursor: 'pointer',
   fontFamily: 'inherit', width: '100%' }

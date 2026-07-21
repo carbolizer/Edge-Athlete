@@ -25,6 +25,8 @@ Grouped by who uses them:
 
 Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 """
+from datetime import timedelta
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
@@ -478,11 +480,17 @@ def session_status(request):
     ):
         checkin.setdefault(c.athlete_id, (c.rack_number, c.checked_in_at))
 
+    # "resting" only counts as ACTIVELY between sets — a set that ended long ago
+    # means they've moved on, not that they're resting for hours. Past this window
+    # they fall through to "ready" (if still checked in) or "not_started".
+    RESTING_WINDOW = timedelta(minutes=20)
+    now = timezone.now()
+
     out = []
     for a in athletes:
         if a.id in lifting:
             status, since = "lifting", lifting[a.id]
-        elif a.id in last_done:
+        elif a.id in last_done and (now - last_done[a.id]) <= RESTING_WINDOW:
             status, since = "resting", last_done[a.id]
         elif a.id in checkin:
             status, since = "ready", checkin[a.id][1]
