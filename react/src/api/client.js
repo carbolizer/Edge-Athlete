@@ -66,6 +66,12 @@ export function getRackHotList(rackNumber) {
   return jsonFetch(`/racks/${rackNumber}/checkins/`)
 }
 
+// Room state: every session athlete's live status (lifting/resting/ready) + a
+// `since` timestamp, so the check-in cards can show a ticking timer + status label.
+export function getSessionStatus() {
+  return jsonFetch('/sessions/active/status/')
+}
+
 // Create a Set when a set STARTS (Phase 11 Step 3). Body: { session, athlete,
 // exercise, set_number, weight_lbs, is_makeup, node? }. The server returns the Set
 // including its id, which we keep to complete it at set end (Step 4).
