@@ -140,7 +140,7 @@ function SummaryPhase({ summary, onRest }) {
   )
 }
 
-function RestPhase({ onDone }) {
+function RestPhase({ onDone, movementName, nextSetNumber }) {
   const [secs, setSecs] = useState(REST_SECONDS)
   useEffect(() => {
     if (secs <= 0) { onDone(); return }
@@ -153,7 +153,12 @@ function RestPhase({ onDone }) {
     <PhaseBody>
       <div style={{ ...LABEL, marginBottom: 14 }}>Rest</div>
       <div style={{ fontSize: 92, fontWeight: 800, letterSpacing: '-.05em', color: T.ink,
-        fontVariantNumeric: 'tabular-nums', marginBottom: 36 }}>{mm}:{ss}</div>
+        fontVariantNumeric: 'tabular-nums', marginBottom: 14 }}>{mm}:{ss}</div>
+      {movementName && (
+        <div style={{ ...LABEL, color: T.lime, marginBottom: 32 }}>
+          Up next · {movementName} · Set {nextSetNumber}
+        </div>
+      )}
       <Button onClick={onDone}>Next Set</Button>
     </PhaseBody>
   )
@@ -299,8 +304,18 @@ export default function RackScreen({ rackNumber, session }) {
       await clearBuffer()                        // only AFTER a successful POST
       setBuffered(0)
       setSummary({ reps: reps.length, avg, peak })
-      // refresh the day view so the just-finished set shows in the progress bars
-      if (selectedAthlete) getAthleteProgress(selectedAthlete.athlete_id).then(setProgress).catch(() => {})
+      // refresh the day view so the just-finished set shows in the progress bars,
+      // and if that movement is now fully done, advance to the next one the server
+      // suggests so the rotation flows on its own.
+      if (selectedAthlete) {
+        getAthleteProgress(selectedAthlete.athlete_id).then((d) => {
+          setProgress(d)
+          const m = d.movements?.find((x) => x.exercise_id === selectedExerciseId)
+          if (!isFalseSet && m && m.completed_sets >= m.planned_sets && d.current_exercise_id) {
+            setSelectedExerciseId(d.current_exercise_id)
+          }
+        }).catch(() => {})
+      }
       setPhase(isFalseSet ? 'idle' : 'summary')
     } catch {
       // POST failed — leave the buffer intact so the set can be retried (no defined
@@ -381,7 +396,13 @@ export default function RackScreen({ rackNumber, session }) {
         />
       )}
       {phase === 'summary' && <SummaryPhase summary={summary} onRest={() => setPhase('rest')} />}
-      {phase === 'rest' && <RestPhase onDone={() => setPhase('idle')} />}
+      {phase === 'rest' && (
+        <RestPhase
+          onDone={() => setPhase('idle')}
+          movementName={selectedMovement?.name}
+          nextSetNumber={selectedMovement?.next_set_number}
+        />
+      )}
 
       {/* footer: phase readout (proof the machine is where we think it is) */}
       <div style={{ padding: '14px 28px', borderTop: `1px solid ${T.line}`,
