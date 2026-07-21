@@ -1459,7 +1459,7 @@ Every file opens with a WHY comment.
 - With no athlete/exercise selected, "idle" shows the picker (sourced from the active session, not open lists) and set start is disabled.
 - Selecting an athlete + exercise, then running a full simulated session (idle → countdown → active → summary → rest) produces **exactly one** `POST /api/sets/{id}/complete/`, and the created `Set` row has the correct `athlete`/`exercise` values.
 - Selecting an athlete with `has_data: true` automatically creates a Set with `is_makeup: true`.
-- An athlete/exercise pair with no AthleteMax shows the inline entry field; submitting it posts to `/api/athlete-maxes/` and immediately displays a computed target with no refetch.
+- The working weight is editable on the fly (pencil → numpad): the entered value shows immediately and saves as the set's `weight_lbs` (actual load), never the `Program` target. It carries forward to the next set via `last_weight_lbs`, session-scoped. (SUPERSEDES the old missing-max inline entry — see Built Step 2 redesign item 9.)
 - The server's rep count for that set matches what streamed in.
 - The False-Set button returns to idle and writes zero reps (`Rep.objects.filter(set=...).count() == 0`, `Set.is_false_set == True`).
 - Rest timer counts down and returns to idle, keeping the same athlete/exercise selected for the next set.
@@ -1470,7 +1470,7 @@ Every file opens with a WHY comment.
 - [ ] Full flow idle → countdown → active → summary → rest works against the simulator
 - [ ] Exactly one `complete/` POST per set, with correct rep count, summary stats, athlete, and exercise
 - [ ] Selecting a `has_data: true` athlete automatically sets `is_makeup: true`, no manual toggle
-- [ ] Target weight calculates correctly when a max exists; missing-max entry posts and displays immediately with no refetch
+- [x] Target weight displays from `targets`; the working weight is editable on the fly (pencil → numpad) into the set's actual `weight_lbs`, carried forward per session via `last_weight_lbs`, prescription untouched (supersedes missing-max inline entry)
 - [ ] IndexedDB buffer cleared only after a successful POST
 - [ ] False-set undo returns to idle and writes no reps
 - [ ] Rest timer works; set_number increments; athlete/exercise selection persists across sets in the same rotation
@@ -1506,7 +1506,8 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
      "movements": [
        { "exercise_id": 1, "name": "Back Squat",
          "planned_sets": 5, "target_reps": 3,
-         "target_weight_lbs": 225.0,   // resolved from Program; null → no Program target → inline "starting weight"
+         "target_weight_lbs": 225.0,   // the PRESCRIPTION from Program (never changed by the tablet)
+         "last_weight_lbs": 230.0,     // actual load of the newest non-false set THIS session (null if none) — next-set default
          "velocity_zone_min": 0.5, "velocity_zone_max": 0.8,
          "completed_sets": 2, "false_sets": 0,
          "next_set_number": 3,         // completed (non-false) sets + 1 — the authoritative set_number
@@ -1532,7 +1533,10 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
    - **Overall session progress bar:** one bar for the athlete's whole day = total completed sets ÷ total planned sets across their movements.
    - **Completion-confirmation animation:** on set completion (summary → next state), animate the session bar advancing to its new fill as a satisfying "done" beat — a completeness confirmation at the state boundary.
 
-8. **Carries forward the minimal-path corrections above** unchanged: target is READ (`target_weight_lbs`, or the inline "starting weight" when null); `weight_lbs` sent at set-create; `is_makeup = has_data`; `node` = Node pk or omitted; catalog integer `exercise` id.
+8. **Carries forward the minimal-path corrections above**, with one supersession (see item 9): target is READ (`target_weight_lbs`); `weight_lbs` sent at set-create; `is_makeup = has_data`; `node` = Node pk or omitted; catalog integer `exercise` id.
+
+9. **On-the-fly working weight + session carry-forward (authoritative; SUPERSEDES the "missing target → inline starting weight" fallback).** `Program.target_weight_lbs` is `NOT NULL` and the day view only lists a lifter's `Program` movements, so the old "missing target" case is unreachable — that inline-entry fallback is retired. In its place, a general edit: a **pencil beside LOAD** opens a full-screen themed numpad (`rack/WeightPad.jsx`) where the athlete sets what they're ACTUALLY loading. **Storage — no schema change:** the entered value becomes the set's `weight_lbs` at create (the "actual load lifted" column), a DIFFERENT slot from `Program.target_weight_lbs` (the prescription, never touched). It feeds weight-PR + future-target math downstream; the plan stays clean.
+   - **Next-set default = `last_weight_lbs ?? target_weight_lbs`.** The progress endpoint returns `last_weight_lbs` — the actual load of the athlete's newest **non-false** set of that movement **this session** (null before their first). So a weight change carries forward across sets, tablet reloads, and rack moves — but is **session-scoped**: a prior session's loads are never read (the endpoint only queries the active session), so every session opens at the prescription. A local numpad edit (client `weightOverrides`, per exercise, reset on athlete change) takes precedence until the set is created. The LOAD reads lime whenever it differs from the prescribed target.
 
 ### Built — Phase 11 Steps 3–5 + room state (authoritative)
 

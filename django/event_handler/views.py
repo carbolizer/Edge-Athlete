@@ -379,6 +379,12 @@ def athlete_progress(request, athlete_id):
         across rack moves + supersets, so the server owns it).
       - Movements are ordered by Program.id (the athlete's program-creation order,
         which is the intended workout order).
+      - last_weight_lbs = the actual load of this athlete's NEWEST non-false
+        completed set of that movement THIS session (null if none yet). It lets the
+        tablet default the next set to what they last actually lifted — carrying an
+        on-the-fly weight change forward across reloads/rack moves WITHIN the
+        session, while never touching the prescribed target. Session-scoped only:
+        a prior session's loads are never read, so each session starts at target.
     """
     session = Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
     athlete = Athlete.objects.filter(id=athlete_id).first()
@@ -399,12 +405,21 @@ def athlete_progress(request, athlete_id):
         return Response({"error": "athlete is not in the active session"}, status=404)
 
     # Tally this athlete's finished sets in THIS session, per exercise — real
-    # (non-false) and false counted separately, in one query.
+    # (non-false) and false counted separately, plus the actual load of the newest
+    # non-false set (for the next-set default). Ordered oldest→newest so the last
+    # write per exercise IS the newest.
     completed_by_exercise = {}
     false_by_exercise = {}
-    for s in Set.objects.filter(session=session, athlete_id=athlete_id, ended_at__isnull=False):
-        bucket = false_by_exercise if s.is_false_set else completed_by_exercise
-        bucket[s.exercise_id] = bucket.get(s.exercise_id, 0) + 1
+    last_weight_by_exercise = {}
+    for s in Set.objects.filter(
+        session=session, athlete_id=athlete_id, ended_at__isnull=False
+    ).order_by("started_at", "id"):
+        if s.is_false_set:
+            false_by_exercise[s.exercise_id] = false_by_exercise.get(s.exercise_id, 0) + 1
+        else:
+            completed_by_exercise[s.exercise_id] = completed_by_exercise.get(s.exercise_id, 0) + 1
+            if s.weight_lbs is not None:
+                last_weight_by_exercise[s.exercise_id] = s.weight_lbs
 
     movements = []
     current_exercise_id = None  # suggested current = first movement not yet complete
@@ -425,6 +440,7 @@ def athlete_progress(request, athlete_id):
             "planned_sets": p.target_sets,
             "target_reps": p.target_reps,
             "target_weight_lbs": p.target_weight_lbs,
+            "last_weight_lbs": last_weight_by_exercise.get(p.exercise_id),
             "velocity_zone_min": p.velocity_zone_min,
             "velocity_zone_max": p.velocity_zone_max,
             "completed_sets": completed,

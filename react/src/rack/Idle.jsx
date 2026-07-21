@@ -45,6 +45,25 @@ function Stat({ label, value }) {
   )
 }
 
+// The Load stat, but tappable: a small pencil opens the numpad so the athlete can
+// set what they're ACTUALLY lifting. Tinted lime once they've changed it from the
+// prescribed target, so an override reads at a glance.
+function LoadStat({ load, edited, onEdit }) {
+  return (
+    <div>
+      <div style={{ ...LABEL, marginBottom: 4 }}>Load</div>
+      <button onClick={onEdit} style={{ display: 'flex', alignItems: 'center', gap: 7,
+        background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}>
+        <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-.02em', color: edited ? T.lime : T.ink }}>
+          {load != null ? `${load} lb` : '—'}
+        </span>
+        <span aria-hidden style={{ fontSize: 12, color: edited ? T.lime : T.muted,
+          border: `1px solid ${T.line}`, borderRadius: 6, padding: '2px 5px', lineHeight: 1 }}>✎</span>
+      </button>
+    </div>
+  )
+}
+
 // The whole idle screen lives in one top-aligned, scrollable column.
 function Scroll({ children }) {
   return (
@@ -56,7 +75,8 @@ function Scroll({ children }) {
 }
 
 export default function Idle({ roster, hotList, groupName, statusMap, selectedAthlete, onSelectAthlete,
-  onClearAthlete, progress, progressLoading, selectedExerciseId, onSelectMovement, onStart }) {
+  onClearAthlete, progress, progressLoading, selectedExerciseId, onSelectMovement,
+  effectiveLoad, onEditWeight, onStart }) {
 
   // ── no athlete yet: the check-in screen ──────────────────────────────────────
   if (!selectedAthlete) {
@@ -129,7 +149,9 @@ export default function Idle({ roster, hotList, groupName, statusMap, selectedAt
             </div>
             <div style={{ display: 'flex', gap: 22, marginBottom: 18 }}>
               <Stat label="Set" value={`${selected.next_set_number} of ${selected.planned_sets}`} />
-              <Stat label="Load" value={selected.target_weight_lbs != null ? `${selected.target_weight_lbs} lb` : '—'} />
+              <LoadStat load={effectiveLoad ?? selected.target_weight_lbs}
+                edited={effectiveLoad != null && effectiveLoad !== selected.target_weight_lbs}
+                onEdit={onEditWeight} />
               <Stat label="Target m/s" value={zone(selected)} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, ...LABEL }}>
