@@ -21,8 +21,8 @@
 //
 // Styling matches the team's `.monitor` design system (see theme.js).
 
-import { useCallback, useEffect, useState } from 'react'
-import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, getNodes, createSet } from '../api/client.js'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, getNodes, createSet, completeSet } from '../api/client.js'
 import { subscribeNodeReps } from '../mqtt/client.js'
 import { addRep, clearBuffer, getBufferedReps } from '../db/repBuffer.js'
 import { velocityColor, VELOCITY_HEX } from './velocity.js'
@@ -114,20 +114,28 @@ function ActivePhase({ movementName, repCount, lastVelocity, lastColor, onEnd, o
   )
 }
 
-function SummaryPhase({ onRest, onFalseSet }) {
+function SummaryPhase({ summary, onRest }) {
+  const stat = (label, val) => (
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ ...LABEL, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: '-.04em', color: T.mint,
+        fontVariantNumeric: 'tabular-nums' }}>
+        {val == null ? '—' : val.toFixed(2)}
+        <span style={{ fontSize: 13, fontWeight: 700, color: T.muted, marginLeft: 4 }}>m/s</span>
+      </div>
+    </div>
+  )
   return (
     <PhaseBody>
       <div style={{ ...LABEL, marginBottom: 6 }}>Set complete</div>
-      <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-.03em', marginBottom: 28 }}>
-        0 reps
+      <div style={{ fontSize: 30, fontWeight: 850, letterSpacing: '-.03em', marginBottom: 32 }}>
+        {summary?.reps ?? 0} reps
       </div>
-      <div style={{ fontSize: 13, color: T.muted, marginBottom: 36, textAlign: 'center' }}>
-        (avg / peak velocity summary goes here — Step 4)
+      <div style={{ display: 'flex', gap: 40, marginBottom: 44 }}>
+        {stat('Avg', summary?.avg)}
+        {stat('Peak', summary?.peak)}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
-        <Button onClick={onRest}>Start Rest Timer</Button>
-        <Button onClick={onFalseSet} tone="danger">False Set</Button>
-      </div>
+      <Button onClick={onRest}>Start Rest Timer</Button>
     </PhaseBody>
   )
 }
@@ -186,6 +194,8 @@ export default function RackScreen({ rackNumber, session }) {
   const [lastVelocity, setLastVelocity] = useState(null)
   const [lastColor, setLastColor] = useState('green')
   const [buffered, setBuffered] = useState(0)
+  const [summary, setSummary] = useState(null)   // { reps, avg, peak } for the summary screen
+  const finishingRef = useRef(false)             // guards EXACTLY ONE complete POST per set
 
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
@@ -260,7 +270,44 @@ export default function RackScreen({ rackNumber, session }) {
       is_makeup: !!selectedAthlete?.has_data,
     }
     if (node?.id != null) body.node = node.id
-    createSet(body).then((s) => setSetId(s.id)).catch(() => { /* the retry story is Step 4 */ })
+    createSet(body).then((s) => setSetId(s.id)).catch(() => { /* the retry story is a Known Open Item */ })
+  }
+
+  // Set end: build the ONE batch complete from the buffered reps and send it. Reps
+  // are renumbered 1..N HERE (the node's rep_number is advisory ordering only); the
+  // buffer is cleared only AFTER the POST succeeds. A false set sends zero reps and
+  // returns to idle. The ref guard makes double-taps impossible — exactly one POST.
+  async function finishSet(isFalseSet) {
+    if (finishingRef.current || setId == null) return
+    finishingRef.current = true
+    try {
+      const rows = isFalseSet ? [] : await getBufferedReps()
+      const reps = rows.map((r, i) => ({
+        rep_number: i + 1,                       // authoritative 1..N, not the node's number
+        mean_velocity: r.mean_velocity,
+        peak_velocity: r.peak_velocity,
+        duration_ms: r.duration_ms,
+        timestamp: r.timestamp,
+        velocity_color: velocityColor(r.mean_velocity, zoneMin),
+      }))
+      const avg = reps.length ? reps.reduce((s, x) => s + x.mean_velocity, 0) / reps.length : null
+      const peak = reps.length ? Math.max(...reps.map((x) => x.peak_velocity)) : null
+      await completeSet(setId, {
+        reps_completed: reps.length, avg_velocity: avg, peak_velocity: peak,
+        is_false_set: isFalseSet, reps,
+      })
+      await clearBuffer()                        // only AFTER a successful POST
+      setBuffered(0)
+      setSummary({ reps: reps.length, avg, peak })
+      // refresh the day view so the just-finished set shows in the progress bars
+      if (selectedAthlete) getAthleteProgress(selectedAthlete.athlete_id).then(setProgress).catch(() => {})
+      setPhase(isFalseSet ? 'idle' : 'summary')
+    } catch {
+      // POST failed — leave the buffer intact so the set can be retried (no defined
+      // retry/backoff yet; it's a Known Open Item).
+    } finally {
+      finishingRef.current = false
+    }
   }
 
   // Live reps — subscribe ONLY while a set is active. This gates buffering to the
@@ -329,11 +376,11 @@ export default function RackScreen({ rackNumber, session }) {
           repCount={repCount}
           lastVelocity={lastVelocity}
           lastColor={lastColor}
-          onEnd={() => setPhase('summary')}
-          onFalseSet={() => setPhase('idle')}
+          onEnd={() => finishSet(false)}
+          onFalseSet={() => finishSet(true)}
         />
       )}
-      {phase === 'summary' && <SummaryPhase onRest={() => setPhase('rest')} onFalseSet={() => setPhase('idle')} />}
+      {phase === 'summary' && <SummaryPhase summary={summary} onRest={() => setPhase('rest')} />}
       {phase === 'rest' && <RestPhase onDone={() => setPhase('idle')} />}
 
       {/* footer: phase readout (proof the machine is where we think it is) */}

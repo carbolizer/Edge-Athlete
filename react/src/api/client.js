@@ -76,3 +76,14 @@ export function createSet(body) {
     body: JSON.stringify(body),
   })
 }
+
+// Complete a Set at set end — the ONE batch write of a set's reps + totals (Phase 11
+// Step 4). Body: { reps_completed, avg_velocity, peak_velocity, is_false_set, reps }.
+// A false set sends an empty reps array. This is the only path that writes Rep rows.
+export function completeSet(setId, body) {
+  return jsonFetch(`/sets/${setId}/complete/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
