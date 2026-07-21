@@ -192,6 +192,30 @@ class AthleteProgressEndpointTests(APITestCase):
         self.assertEqual(moves[squat.id]["status"], "complete")
         self.assertEqual(res.data["current_exercise_id"], bench.id)
 
+    def test_last_weight_is_newest_non_false_lift(self):
+        # The day-view default for the next set follows what the athlete LAST
+        # actually lifted this session (so an on-the-fly weight change carries
+        # forward), never the prescribed target, and a false attempt doesn't count.
+        session = Session.objects.create(label="Live")
+        squat = self._exercise("Back Squat")
+        bench = self._exercise("Bench Press")
+        athlete = Athlete.objects.create(name="Lifter")
+        session.athletes.add(athlete)
+        self._program(athlete, squat, 225.0)
+        self._program(athlete, bench, 135.0)
+        Set.objects.create(session=session, athlete=athlete, exercise=squat,
+                           set_number=1, weight_lbs=225.0, ended_at=timezone.now())
+        Set.objects.create(session=session, athlete=athlete, exercise=squat,
+                           set_number=2, weight_lbs=230.0, ended_at=timezone.now())
+        Set.objects.create(session=session, athlete=athlete, exercise=squat,   # botched, heavier
+                           set_number=3, weight_lbs=240.0, is_false_set=True, ended_at=timezone.now())
+
+        res = self.client.get(self._url(athlete.id))
+        moves = {m["exercise_id"]: m for m in res.data["movements"]}
+        self.assertEqual(moves[squat.id]["target_weight_lbs"], 225.0)  # prescription untouched
+        self.assertEqual(moves[squat.id]["last_weight_lbs"], 230.0)    # newest non-false lift
+        self.assertIsNone(moves[bench.id]["last_weight_lbs"])          # not yet lifted → null
+
 
 class RackCheckInEndpointTests(APITestCase):
     """POST /api/racks/{n}/checkin/ + GET /api/racks/{n}/checkins/ — the hot list.

@@ -28,6 +28,7 @@ import { addRep, clearBuffer, getBufferedReps } from '../db/repBuffer.js'
 import { velocityColor, VELOCITY_HEX } from './velocity.js'
 import Idle from './Idle.jsx'
 import CheckInList from './CheckInList.jsx'
+import WeightPad from './WeightPad.jsx'
 import { T } from '../theme.js'
 
 const REST_SECONDS = 120 // default rest between sets (real behaviour lands in Step 5)
@@ -200,6 +201,14 @@ export default function RackScreen({ rackNumber, session }) {
   const [progressLoading, setProgressLoading] = useState(false)
   const [selectedExerciseId, setSelectedExerciseId] = useState(null)
 
+  // On-the-fly working weight: what the athlete is ACTUALLY loading, per movement,
+  // when it differs from the session's prescribed target. Keyed by exercise_id and
+  // kept only in the client while this athlete is at the rack — it overrides the
+  // displayed load and the weight_lbs sent at set-create, but NEVER the target. The
+  // numpad (WeightPad) writes here; `editingWeight` toggles that pad.
+  const [weightOverrides, setWeightOverrides] = useState({})
+  const [editingWeight, setEditingWeight] = useState(false)
+
   // Check-in screen data: the session roster (who can lift) + this rack's hot list
   // (who it currently owns). Seeded from the one-shot fetch, kept fresh by a poll.
   const [roster, setRoster] = useState(session?.roster ?? [])
@@ -220,6 +229,7 @@ export default function RackScreen({ rackNumber, session }) {
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
   useEffect(() => {
+    setWeightOverrides({})   // a new athlete brings their own prescriptions
     if (!selectedAthlete) { setProgress(null); setSelectedExerciseId(null); return }
     let cancelled = false
     setProgressLoading(true)
@@ -283,6 +293,18 @@ export default function RackScreen({ rackNumber, session }) {
   const selectedMovement = progress?.movements?.find((m) => m.exercise_id === selectedExerciseId) || null
   const zoneMin = selectedMovement?.velocity_zone_min ?? null
 
+  // The load actually going on the bar for the selected movement, in priority:
+  //   1. an on-the-fly override entered at this rack this visit, else
+  //   2. what they LAST actually lifted for this movement THIS session (so a weight
+  //      change carries forward across sets/reloads/rack moves), else
+  //   3. the prescribed target (session start, or a movement not yet touched).
+  // This is what the day view shows and what gets saved as the set's actual weight_lbs.
+  const effectiveLoad = selectedMovement
+    ? (weightOverrides[selectedMovement.exercise_id]
+        ?? selectedMovement.last_weight_lbs
+        ?? selectedMovement.target_weight_lbs)
+    : null
+
   // Countdown → active: start a fresh set. Clear the buffer first so no stray reps
   // carry over, reset the live readout, flip to active (reps start streaming), then
   // create the Set row and keep its id for the complete POST in Step 4.
@@ -295,7 +317,7 @@ export default function RackScreen({ rackNumber, session }) {
       athlete: selectedAthlete.athlete_id,
       exercise: selectedExerciseId,
       set_number: selectedMovement?.next_set_number ?? 1,
-      weight_lbs: selectedMovement?.target_weight_lbs ?? null,
+      weight_lbs: effectiveLoad ?? null,   // actual load (override or target), not the prescription itself
       is_makeup: !!selectedAthlete?.has_data,
     }
     if (node?.id != null) body.node = node.id
@@ -406,6 +428,8 @@ export default function RackScreen({ rackNumber, session }) {
           progressLoading={progressLoading}
           selectedExerciseId={selectedExerciseId}
           onSelectMovement={setSelectedExerciseId}
+          effectiveLoad={effectiveLoad}
+          onEditWeight={() => setEditingWeight(true)}
           onStart={() => setPhase('countdown')}
         />
       )}
@@ -431,6 +455,20 @@ export default function RackScreen({ rackNumber, session }) {
           groupName={session?.label}
           statusMap={statusMap}
           onSelectAthlete={selectAthlete}
+        />
+      )}
+
+      {/* on-the-fly weight entry — a full-screen overlay above whatever phase shows.
+          Only meaningful with a movement selected; writes an override, never the target. */}
+      {editingWeight && selectedMovement && (
+        <WeightPad
+          initial={effectiveLoad}
+          movementName={selectedMovement.name}
+          onCancel={() => setEditingWeight(false)}
+          onConfirm={(w) => {
+            setWeightOverrides((prev) => ({ ...prev, [selectedMovement.exercise_id]: w }))
+            setEditingWeight(false)
+          }}
         />
       )}
 

@@ -162,7 +162,8 @@ Not MQTT, but the same data contract, so they live here too.
   "movements": [
     { "exercise_id": 1, "name": "Back Squat",
       "planned_sets": 5, "target_reps": 3,
-      "target_weight_lbs": 225.0,    // resolved from Program; null → inline "starting weight" (SPEC Phase 11)
+      "target_weight_lbs": 225.0,    // the PRESCRIPTION from Program (never changes here)
+      "last_weight_lbs": 230.0,      // actual load of the newest non-false set THIS session (null if none) — the next-set default
       "velocity_zone_min": 0.5, "velocity_zone_max": 0.8,
       "completed_sets": 2, "false_sets": 0,
       "next_set_number": 3,          // completed (non-false) sets + 1 — authoritative set_number at set-create
@@ -171,6 +172,7 @@ Not MQTT, but the same data contract, so they live here too.
 }
 ```
 - Fetched when an athlete **checks in** at a rack (Phase 11 Step 2), and again after each of their sets completes. **Derived per request** from the athlete's `Program` rows + their completed `Set` rows this session — **no new tables**.
+- **`target_weight_lbs` vs `last_weight_lbs` (the weight seam):** `target_weight_lbs` is the coach's prescription (`Program`, `NOT NULL`, untouched by the tablet). `last_weight_lbs` is what the athlete ACTUALLY last lifted this session (newest non-false `Set.weight_lbs`, `null` before their first set). The tablet defaults the next set's load to `last_weight_lbs ?? target_weight_lbs`, so an on-the-fly weight change carries forward across sets, reloads, and rack moves **within the session** — while the prescription stays clean. **Session-scoped:** a prior session's loads are never read, so each session starts at target. (A local, unsaved numpad edit takes precedence over both until the set is created.)
 - **`movements` order = `Program.id`** (the athlete's program-creation order = intended workout order). The server order never changes; the tablet may float an *in-progress* movement to the top presentationally only (see SPEC Phase 11 Step 2).
 - **`next_set_number` is the source of truth for `set_number`** on `POST /api/sets/` — NOT a client counter, so numbering stays correct across rack moves + supersets.
 - **`completed_sets`** counts non-false `Set` rows for that athlete/exercise this session; **`false_sets`** counts false ones. `status` = `complete` once `completed_sets >= planned_sets`.
@@ -217,7 +219,7 @@ Called when a set STARTS (Phase 11 Step 3). The server returns the created `Set`
   "athlete": 4,          // the checked-in lifter's athlete_id
   "exercise": 1,         // catalog exercise id (the selected movement)
   "set_number": 3,       // = next_set_number from the athlete's progress — NOT a client counter
-  "weight_lbs": 225.0,   // the resolved target (or the manually-entered starting weight)
+  "weight_lbs": 230.0,   // the ACTUAL load (last_weight_lbs / target, or a numpad edit) — NOT the prescription
   "is_makeup": true,     // = the athlete's has_data (already has a set this session)
   "node": 2              // OPTIONAL: the Node's INTEGER pk (not node_id) — links the set to its sensor
 }
