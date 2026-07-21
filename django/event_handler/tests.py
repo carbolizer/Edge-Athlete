@@ -10,7 +10,7 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import Athlete, Program, Session, Set, AthleteReferenceMax, Exercise
+from .models import Athlete, Program, Session, Set, AthleteReferenceMax, Exercise, RackCheckIn
 
 
 class ActiveSessionEndpointTests(APITestCase):
@@ -237,6 +237,49 @@ class RackCheckInEndpointTests(APITestCase):
 
     def test_no_active_session_hot_list_is_empty(self):
         res = self._hot_list(1)
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data["session_id"])
+        self.assertEqual(res.data["athletes"], [])
+
+
+class SessionStatusEndpointTests(APITestCase):
+    """GET /api/sessions/active/status/ — room state. Pins the status each athlete
+    reads as (lifting / resting / ready / not_started) and that a `since` timestamp
+    rides along for the lifting/resting/ready cases."""
+
+    def _live(self, *names):
+        session = Session.objects.create(label="Live")
+        athletes = [Athlete.objects.create(name=n) for n in names]
+        session.athletes.add(*athletes)
+        return session, athletes
+
+    def test_status_reflects_each_athletes_activity(self):
+        session, (lift, rest, ready, idle) = self._live("Lift", "Rest", "Ready", "Idle")
+        squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        # lifting: an in-progress set (no ended_at)
+        Set.objects.create(session=session, athlete=lift, exercise=squat, set_number=1)
+        # resting: a finished set
+        Set.objects.create(session=session, athlete=rest, exercise=squat, set_number=1,
+                           ended_at=timezone.now())
+        # ready: checked in, no set
+        RackCheckIn.objects.create(session=session, athlete=ready, rack_number=2)
+        # idle: nothing
+
+        res = self.client.get("/api/sessions/active/status/")
+        self.assertEqual(res.status_code, 200)
+        by_name = {a["name"]: a for a in res.data["athletes"]}
+        self.assertEqual(by_name["Lift"]["status"], "lifting")
+        self.assertEqual(by_name["Rest"]["status"], "resting")
+        self.assertEqual(by_name["Ready"]["status"], "ready")
+        self.assertEqual(by_name["Idle"]["status"], "not_started")
+        # a since timestamp rides along for everything but not_started
+        self.assertIsNotNone(by_name["Lift"]["since"])
+        self.assertIsNotNone(by_name["Ready"]["since"])
+        self.assertIsNone(by_name["Idle"]["since"])
+        self.assertEqual(by_name["Ready"]["rack_number"], 2)
+
+    def test_no_active_session_is_empty(self):
+        res = self.client.get("/api/sessions/active/status/")
         self.assertEqual(res.status_code, 200)
         self.assertIsNone(res.data["session_id"])
         self.assertEqual(res.data["athletes"], [])

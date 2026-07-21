@@ -39,6 +39,7 @@ urlpatterns = [
     path('sessions/', views.sessions_view, name='sessions'),
     path('sessions/active/', views.sessions_active, name='sessions_active'),
     path('sessions/active/athlete/<int:athlete_id>/progress/', views.athlete_progress, name='athlete_progress'),
+    path('sessions/active/status/', views.session_status, name='session_status'),
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
 
     # sets
