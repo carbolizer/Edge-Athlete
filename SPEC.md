@@ -1534,6 +1534,28 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 
 8. **Carries forward the minimal-path corrections above** unchanged: target is READ (`target_weight_lbs`, or the inline "starting weight" when null); `weight_lbs` sent at set-create; `is_makeup = has_data`; `node` = Node pk or omitted; catalog integer `exercise` id.
 
+### Built — Phase 11 Steps 3–5 + room state (authoritative)
+
+The full set lifecycle + rotation, on branch `phase-11-set-lifecycle`. State machine: `idle → countdown → active → summary → rest`.
+
+**Set lifecycle (Steps 3–4):**
+- **Start** (idle picker → countdown → active): `POST /api/sets/` with the selected movement's `next_set_number`, `weight_lbs` (resolved target or entered starting weight), `is_makeup = has_data`, and the Node **pk** (or omit). Keep the returned `set_id`.
+- **Active**: subscribe to the linked node's reps over MQTT **only while active**; buffer each rep to the Dexie buffer FIRST, then update the live count + per-rep velocity color (against the movement's zone). `clearBuffer()` at the countdown→active edge so no stray idle/rest reps leak.
+- **End** ("End Set"): read the buffer, **renumber reps 1..N** (ignore the node's advisory `rep_number`), compute `reps_completed`/`avg`/`peak`, send EXACTLY ONE `POST /api/sets/{id}/complete/` (a ref guard makes a double-tap impossible), clear the buffer only on success → `summary` (reps + avg/peak). Refetch progress so the day-view bars advance.
+- **False set** ("False Set", active only): one complete POST with `is_false_set:true` + empty `reps` → `idle`; writes zero Rep rows, doesn't advance progress. (No summary "undo" — a set completes exactly once.)
+
+**Rest + rotation (Step 5):**
+- `summary` → `rest`: a countdown (default 120s) showing "Up next · {movement} · Set N".
+- **`set_number` always comes from the server** (`next_set_number`) — survives rack moves + supersets.
+- **Selection persists** across the whole loop (athlete + movement); only changed explicitly.
+- **Auto-advance**: when a movement's planned sets are all done, the selection advances to the next movement on its own.
+- **Rest-screen check-in** (athletes rotate ONE set at a time): the rest screen shows "Next Set" (current lifter continues) AND the shared check-in list — the next lifter taps in (or scans, later) to take the rack, which checks them in and opens their day view. NFC is the same code path.
+
+**Room state / athlete status — `GET /api/sessions/active/status/` (open, coach-reusable):**
+- Each session athlete's live `status` (`lifting` / `resting` / `ready` / `not_started`) + a `since` timestamp, DERIVED from `Set` (start/end) + `RackCheckIn` — **no new tables**. The tablet ticks a local per-second timer from `since` (lifting-since-start, resting-since-end, ready-since-check-in). `resting` is bounded to ~20 min (actively *between* sets, not "finished hours ago"). A coach tablet can read the same endpoint for a room view. Shape in MESSAGE_CONTRACT §3.
+
+**Check-in / hot list (recap):** `RackCheckIn` (append-only, newest-wins, migration `0007`) via `POST /api/racks/{n}/checkin/`; the rack's hot list ("At this rack") via `GET /api/racks/{n}/checkins/`. One athlete = one rack (newest check-in wins). The check-in list is a shared component (`react/src/rack/CheckInList.jsx`) used by both the idle and rest screens, sorted by **surname** (last word of the single `name` field — stopgap until structured names), the group titled by the **session label** (real `TrainingGroup`/`Block` are deferred — see Data Models §Extended in Phase 5+).
+
 **STOP. Review the above before moving to Phase 12.**
 
 ---
