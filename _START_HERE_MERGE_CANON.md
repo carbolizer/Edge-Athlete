@@ -441,20 +441,38 @@ against (names are the canonical spelling; `is_stub=False`):
 ### 5.5 Migration plan
 
 Our lineage ends at **`0007_rackcheckin.py`**. His `0003`–`0013` are **never brought over** (they build tables
-we drop or replace). Stack **new** migrations on top of our `0007`, in this order:
+we drop or replace). We stack **new** migrations `0008+` on top of our `0007`.
 
-1. Seed `Exercise` starter movements (§5.4).
-2. Add `is_simulated` columns + `Set.is_coach_adjustment` (D15) + `Node.allowed_exercises` +
-   `Athlete.training_groups` (M2M — Django creates a join table; there is no column on `athlete` itself).
-3. Create `TrainingGroup`, `TrainingBlock`(+Workout/Exercise), `TrainingProgram`(+Workout/Exercise),
-   `SessionParticipation`, `AthleteWorkoutExerciseOverride`.
-4. Add `DailyReport` + `MonitoringEvent`.
-5. *(P6, late)* Rename `Session`→`TrainingSession`; retire `Program`; **MUST-FIX: change `Set.session` to
-   `on_delete=models.PROTECT`** so deleting a session can never silently wipe historical `Set`/`Rep` rows.
-   This is not optional and is easy to lose across phases — **P6 is not done until this is verified.**
+**Lineage context (why this is safe):** `main` is a byte-identical prefix of our lineage (`main` = `0001–0005`,
+`SprintBranch` = `0001–0007`), so when this branch eventually lands in `main` it is a **forward-only**
+fast-forward — no rollback, no DB wipe, no collision. The only divergent lineage is
+`braydons-dev-branch` (`0003–0013`), which we never migrate — his *frontend* is cherry-picked, his migrations
+abandoned. See the model-handoff note; do not try to reconcile his migration graph.
 
-Steps 1–4 are all **purely additive** (no existing column changes type, no table is dropped), which is why
-they're safe to land before the risky P6.
+**Target migration list (the explicit goal — generate against this, don't improvise).** Django auto-numbers and
+auto-names; the numbers below are the expected sequence *assuming nothing between generates a migration*, which
+holds because **P2, P3, and P5 add no models** (they're services/endpoints against existing tables). After
+generating, rename the file to the readable name shown and confirm the number is still contiguous — don't
+hand-edit numbers, let Django assign them and adjust the name only.
+
+| File (target) | Phase | Type | Contents |
+|---|---|---|---|
+| `0008_training_hierarchy_and_columns` | **P1** | schema (auto) | **One `makemigrations` run captures everything currently in `models.py`:** create `TrainingGroup`, `TrainingBlock`(+`Workout`+`Exercise`), `TrainingProgram`(+`Workout`+`Exercise`), `SessionParticipation`, `AthleteWorkoutExerciseOverride`, `MonitoringEvent`; add columns `is_simulated` (Node/Athlete/Session/Set), `Set.is_coach_adjustment` (D15); add M2M `Node.allowed_exercises` and `Athlete.training_groups` (each makes a join table). |
+| `0009_seed_exercise_catalog` | **P1** | **data (manual `RunPython`)** | Insert the §5.4 starter movements (D1). Not auto-generated — hand-write it. Make it **reversible** (reverse deletes exactly those rows). Only needs the `Exercise` table (exists since `0004`), so it's independent of `0008`. |
+| `0010_daily_report` | **P4** | schema (auto) | Adopt `DailyReport` (OneToOne→`Session`, `schema_version`, `snapshot` JSONField, `generated_at`). ⚠️ Its **GinIndex on `$.athletes[*].athlete.id` is Postgres-only** — the migration will emit `jsonb_path_query_array`; do not try to apply it on SQLite. The reference-max **write** endpoint (§7.2) needs **no migration** — `AthleteReferenceMax` already exists. |
+| `0011_trainingsession_rename_and_program_retire` ⚠️ | **P6** | schema (auto + hand-check) | The dangerous one. `RenameModel Session → TrainingSession` (Django rewrites every FK); `DeleteModel Program`; **`AlterField Set.session` → `on_delete=PROTECT`** — the MUST-FIX so a session delete can never wipe historical `Set`/`Rep`. Django may split this into 2–3 migrations; that's fine, keep them stacked in order. Verify the `Set.session` PROTECT change is actually present before calling P6 done — it is the single easiest thing to lose. |
+
+**Phases that generate NO migration:** P0 (build only), P2 (realtime backbone — code), P3 (derived reads —
+code), P5 (planning/CRUD/CSV/override/`% × max` re-point — all against existing tables), P7 (frontend), P8
+(verify). If any of these *does* produce a migration, something drifted from this plan — stop and reconcile
+here before committing it.
+
+**`0008`–`0010` are purely additive** (no existing column changes type, no table dropped) — safe to land before
+the risky P6. Only `0011` mutates/drops existing structure, which is why it's quarantined to the last phase.
+
+*(Checked 2026-07-23: the `notification_flow/` cruft dropped in D5 defines **no DB models** — `grep -r
+"models.Model" django/event_handler/notification_flow/` is empty — so P2 truly adds no migration. Noted here so
+nobody re-worries about it.)*
 
 `makemigrations --merge` is **banned**. Generate inside the container and `docker cp` back (§0.5).
 
@@ -830,12 +848,12 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 | Phase | Scope | Exit gate |
 |---|---|---|
 | **P0 — Cold-build smoke test** *(first)* | Prove the checked-out tree builds and runs from a clean clone **before changing anything**: `git fetch --all` (so `braydons-dev-branch`/`main` are present for later `git show`/`checkout`); `cp .env.example .env`; `docker compose up --build`. | All containers reach healthy; `http://localhost/` loads; the **rack screen runs its full loop** (§8 definition); existing tests pass (`docker exec edgeathlete-django python manage.py test event_handler`). ⚠️ `makemigrations --check` will report the `Training*` models as **pending** — that's expected (P1 generates them), not a P0 failure. If the build itself fails, **stop and escalate** — do not start P1 on a tree that doesn't boot. |
-| **P1 — Models + migration** *(after P0 green)* | Confirm the model diff already in `models.py` matches §5.2. Generate migrations per §5.5 steps 1–4. | `makemigrations --check --dry-run` clean; `docker compose down -v && up --build` applies all migrations on a fresh DB; tests green; seed movements present. **Commit.** |
+| **P1 — Models + migration** *(after P0 green)* | Confirm the model diff already in `models.py` matches §5.2. Generate the two P1 migrations from the §5.5 target list: `0008` (auto — all the additive schema already in `models.py`) and `0009` (hand-written `RunPython` seeding the §5.4 movements). | `makemigrations --check --dry-run` clean (no pending model changes left); `docker compose down -v && up --build` applies `0001`→`0009` on a fresh DB; tests green; seed movements present in the DB. **Commit `0008`+`0009`.** |
 | **P2 — Realtime backbone (D5)** | Bring his `realtime/` + `services/` + the `MonitoringEvent` publisher. Fold our rack `broadcast/publisher` into it **without changing any rack topic or payload**. Drop our `notification_flow/` ntfy/motion cruft. Webhooks untouched. | Every existing rack topic still fires identically (incl. the `enter_setup` "all racks → pairing mode" signal); `MonitoringEvent` rows get `published_at` set; tests green. |
 | **P3 — Derived reads** | `services/` **`room-state/`** (§6.4, absorbing `wall-state/` via `?details=`), day-progress (D3), `auth/refresh/`. **Build no per-rack state route** — §7.4. | Endpoints return the shapes his consumers expect (§6.4); his `dashboardView.test.js` / `roomMonitor.test.js` pass; documented in SPEC + MESSAGE_CONTRACT. |
-| **P4 — Reports + finalization** | Adopt `DailyReport` + `reports/` family + PDF (**one family, `?athlete=` filter** — R6). Add the completion service to **our existing `sessions/{id}/` PATCH** (R2), firing report generation + ref-max recalc (D10; estimation method still deferred). **No `notes` route** (R1) and **no `sessions/{id}/end/` route** (R2). | Ending a session via `PATCH /api/sessions/{id}/` generates exactly one `DailyReport`; a new `AthleteReferenceMax` row appears with `source=estimated`; `PATCH /api/athletes/{id}/ {"notes":…}` round-trips. |
+| **P4 — Reports + finalization** | Adopt `DailyReport` + `reports/` family + PDF (**one family, `?athlete=` filter** — R6). Add the completion service to **our existing `sessions/{id}/` PATCH** (R2), firing report generation + ref-max recalc (D10; estimation method still deferred). Generates migration **`0010_daily_report`** (§5.5). **No `notes` route** (R1) and **no `sessions/{id}/end/` route** (R2). | Ending a session via `PATCH /api/sessions/{id}/` generates exactly one `DailyReport`; a new `AthleteReferenceMax` row appears with `source=estimated`; `PATCH /api/athletes/{id}/ {"notes":…}` round-trips. |
 | **P5 — Planning + the `% × max` swap** ⚠️ | `TrainingBlock`/`TrainingProgram` CRUD; CSV import at both levels (D7); the override endpoint; **the coach weight adjustment (D15) + its exclusion list across all reads in §6.5**; **re-point `athlete_progress` and `programs/` to §6.1/§6.2.** | **§6.3 key-diff is empty**; the §6.1 worked example reproduces exactly (225×3 @80% → 200 lb); **the §6.2 multi-group worked example reproduces exactly (5 movements, Back Squat once at 3×5 @70%, team lift first)**; an athlete with no reference max gets `null` and the rack still works; an athlete in two groups never sees a duplicated `exercise_id`; **a coach weight adjustment (D15) changes `last_weight_lbs` for an athlete's subsequent sets WITHOUT changing `next_set_number`, `completed_sets`, `false_sets`, or `status`, and the adjusted athlete does not appear as "resting" in `session_status`**; rack screen visually unchanged. |
-| **P6 — Rename + retirement** ⚠️ *(highest blast radius — do last)* | `Session`→`TrainingSession` across views/serializers/tests; group link fully on `SessionParticipation`; retire `Program`; **`Set.session` → `on_delete=PROTECT`.** | `/sessions/*` shapes unchanged; **deleting a session cannot delete `Set`/`Rep` rows (test this explicitly)**; full suite green. |
+| **P6 — Rename + retirement** ⚠️ *(highest blast radius — do last)* | `Session`→`TrainingSession` across views/serializers/tests; group link fully on `SessionParticipation`; retire `Program`; **`Set.session` → `on_delete=PROTECT`.** Generates migration **`0011_*`** (§5.5; Django may split into 2–3). | `/sessions/*` shapes unchanged; **deleting a session cannot delete `Set`/`Rep` rows (test this explicitly — verify `Set.session` is actually PROTECT in the applied migration)**; full suite green. |
 | **P7 — Coach frontend + `App.jsx` seam** | `git checkout braydons-dev-branch -- <his coach files>` (§0.4); wire each to our APIs (§7); drop the panels whose backends died; hand-merge `App.jsx` so **our** role splash + rack route survive alongside **his** coach/dashboard/reports routes. | His coach pages load and function against our APIs; role splash + rack route intact; §2.1 check clean. |
 | **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
 
