@@ -5,11 +5,13 @@
 3. copy the generated migration file back into ./django/event_handler/migrations/
 4. git add + commit the migration file
 
-models.py — the seven Edge Athlete database tables.
+models.py — the Edge Athlete database tables.
 ------------------------------------------------------
 Each class below is one table; each attribute is one column. This file is the
 whole data model for the base station: the hardware (Node), the tablet screens
-(RackScreen), and the training data (Athlete → Program, and Session → Set → Rep).
+(RackScreen), the training data (Athlete → Program, and Session → Set → Rep),
+and — new, mid-merge — the Training* org/planning hierarchy (see that block's
+own comment below for what it's for and why it looks the way it does).
 
 Two things worth understanding before you read:
   • A RackScreen (the tablet at a rack) and a Node (the sensor on the bar) are
@@ -20,6 +22,9 @@ Two things worth understanding before you read:
 
 See https://docs.djangoproject.com/en/5.1/topics/db/models/
 """
+import uuid
+
+from django.conf import settings
 from django.db import models
 
 
@@ -43,6 +48,12 @@ class Node(models.Model):
     signal_strength = models.IntegerField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    is_simulated = models.BooleanField(default=False)  # stamped by the simulator so demo data is easy to wipe
+    # A hardware fact, not a schedule: what this sensor's rack is physically able to
+    # run (e.g. a power rack can't be a high-jump pit). Empty = unrestricted, so this
+    # costs nothing for a normal rack. Filtered into athlete_progress, never enforced
+    # by rejecting a set — see the merge canon D9 for why.
+    allowed_exercises = models.ManyToManyField('Exercise', related_name='allowed_on_nodes', blank=True)
 
     def __str__(self):
         rack = self.rack_number if self.rack_number is not None else "unassigned"
@@ -68,6 +79,15 @@ class Athlete(models.Model):
     nfc_tag_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
+    is_simulated = models.BooleanField(default=False)
+    # Every group this athlete CURRENTLY trains with. Many-to-many on purpose: a
+    # football player can also sit in a speed squad, and each group runs its own
+    # program. Which of those programs applies on a given day is answered by the
+    # session itself — whichever of their groups is participating in it (see
+    # SessionParticipation). Membership is current-state only: adding or removing
+    # a group never rewrites history, because past Sessions/Sets stay attached to
+    # whatever they were actually created under.
+    training_groups = models.ManyToManyField('TrainingGroup', related_name='athletes', blank=True)
 
     def __str__(self):
         return self.name
@@ -112,17 +132,228 @@ class Program(models.Model):
         return f"{self.exercise} for {self.athlete.name}"
 
 
+class TrainingGroup(models.Model):
+    """A NAMED SUBSET of athletes who train together on one program — e.g.
+    "Varsity Football" or "Freshman Speed".
+
+    ⚠️ This is NOT the list of everyone in the system. Every registered person
+    lives in the Athlete table; a TrainingGroup is a slice of them that a coach
+    hangs a TrainingProgram on. A gym runs many groups at once, each on its own
+    program, and several groups can share one session (see SessionParticipation).
+
+    Membership lives on Athlete.training_groups (M2M), not here — an athlete can
+    be in several groups at once. Long-lived: a group
+    outlives many blocks/programs. It carries no dates and no workouts itself —
+    it's "who trains together," not a schedule."""
+    coach = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='training_groups')
+    name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+
+class TrainingBlock(models.Model):
+    """A reusable, timeless TEMPLATE a coach designs once and redeploys (tweak
+    last year's block, run it again next year). Deliberately has no group and no
+    dates — those only exist once a TrainingProgram instantiates it. ⚠️ This name
+    is intentionally the OPPOSITE of the old, retired meaning ("Block" used to be
+    a dated phase owned by a group) — here it's purely the template.
+
+    Carries a duration/cadence so a future calendar-generator feature can
+    auto-place sessions from it later. That generator isn't built yet — this
+    just keeps the door open without inventing more structure than needed today."""
+    coach = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='training_blocks')
+    name = models.CharField(max_length=255)
+    duration_weeks = models.IntegerField(null=True, blank=True)
+    cadence_days_of_week = models.CharField(max_length=100, blank=True)  # e.g. "Mon,Wed,Fri"
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+
+class TrainingBlockWorkout(models.Model):
+    """One ordered workout inside a block's template (e.g. "Day 1: Squat")."""
+    training_block = models.ForeignKey(TrainingBlock, on_delete=models.CASCADE, related_name='workouts')
+    name = models.CharField(max_length=255)
+    position = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ['position']
+        constraints = [
+            models.UniqueConstraint(fields=['training_block', 'position'], name='block_workout_unique_position'),
+        ]
+
+    def __str__(self):
+        return f"{self.name} (block {self.training_block_id})"
+
+
+class TrainingBlockExercise(models.Model):
+    """One prescription row inside a block workout — the MASTER copy a program
+    snapshot-copies from at instantiation. Always a percent of the athlete's
+    reference max plus a velocity zone, never an absolute weight."""
+    training_block_workout = models.ForeignKey(TrainingBlockWorkout, on_delete=models.CASCADE,
+                                               related_name='exercises')
+    exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='training_block_exercises')
+    position = models.PositiveIntegerField()
+    sets = models.PositiveIntegerField()
+    reps = models.PositiveIntegerField()
+    target_percent = models.FloatField()  # percent of the athlete's reference max, e.g. 80.0 = 80%
+    velocity_zone_min = models.FloatField(null=True, blank=True)
+    velocity_zone_max = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['position']
+        constraints = [
+            models.UniqueConstraint(fields=['training_block_workout', 'position'],
+                                    name='block_exercise_unique_position'),
+        ]
+
+    def __str__(self):
+        return f"{self.exercise} @ {self.target_percent}% (block workout {self.training_block_workout_id})"
+
+
+class TrainingProgram(models.Model):
+    """A scheduled INSTANCE for a group, placed in time. Usually instantiated
+    from a TrainingBlock (its prescription gets snapshot-copied down at creation
+    time), but training_block is NULLABLE — a coach can also build a standalone
+    one-off program with its own prescription and no template behind it. Both
+    are permanent, first-class paths, not a migration shim. Promoting a one-off
+    into a reusable template later is just adding a TrainingBlock row and
+    pointing this FK at it — no data migration, no rewrite."""
+    training_group = models.ForeignKey(TrainingGroup, on_delete=models.CASCADE, related_name='programs')
+    training_block = models.ForeignKey(TrainingBlock, on_delete=models.PROTECT, null=True, blank=True,
+                                       related_name='programs')
+    name = models.CharField(max_length=255)
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.training_group.name})"
+
+
+class TrainingProgramWorkout(models.Model):
+    """The editable copy of a TrainingBlockWorkout, living on this program
+    instance. Editing this affects only this program; editing the block affects
+    future instances instantiated from it later."""
+    training_program = models.ForeignKey(TrainingProgram, on_delete=models.CASCADE, related_name='workouts')
+    name = models.CharField(max_length=255)
+    position = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ['position']
+        constraints = [
+            models.UniqueConstraint(fields=['training_program', 'position'], name='program_workout_unique_position'),
+        ]
+
+    def __str__(self):
+        return f"{self.name} (program {self.training_program_id})"
+
+
+class TrainingProgramExercise(models.Model):
+    """The editable copy of a TrainingBlockExercise — the runtime prescription
+    row. The absolute target is always DERIVED at read time (target_percent ×
+    the athlete's CURRENT AthleteReferenceMax, which itself keeps updating as new
+    session data comes in) — never stored here as a fixed number."""
+    training_program_workout = models.ForeignKey(TrainingProgramWorkout, on_delete=models.CASCADE,
+                                                  related_name='exercises')
+    exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='training_program_exercises')
+    position = models.PositiveIntegerField()
+    sets = models.PositiveIntegerField()
+    reps = models.PositiveIntegerField()
+    target_percent = models.FloatField()
+    velocity_zone_min = models.FloatField(null=True, blank=True)
+    velocity_zone_max = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['position']
+        constraints = [
+            models.UniqueConstraint(fields=['training_program_workout', 'position'],
+                                    name='program_exercise_unique_position'),
+        ]
+
+    def __str__(self):
+        return f"{self.exercise} @ {self.target_percent}% (program workout {self.training_program_workout_id})"
+
+
+class AthleteWorkoutExerciseOverride(models.Model):
+    """A coach-set per-athlete EXCEPTION for one prescription row — for the rare
+    outlier where a percent doesn't fit that specific athlete. Overrides the
+    PERCENT, never a static weight — the derivation still multiplies whatever's
+    overridden here against the athlete's current reference max, so it stays
+    dynamic instead of freezing a number in time. Most athletes need no override
+    at all; this is a thin escape hatch, not the common path."""
+    athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='workout_exercise_overrides')
+    training_program_exercise = models.ForeignKey(TrainingProgramExercise, on_delete=models.CASCADE,
+                                                   related_name='athlete_overrides')
+    target_percent = models.FloatField(null=True, blank=True)
+    sets = models.PositiveIntegerField(null=True, blank=True)
+    reps = models.PositiveIntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['athlete', 'training_program_exercise'],
+                                    name='athlete_override_unique_per_exercise'),
+            models.CheckConstraint(
+                check=(
+                    models.Q(target_percent__isnull=False)
+                    | models.Q(sets__isnull=False)
+                    | models.Q(reps__isnull=False)
+                ),
+                name='athlete_override_at_least_one_field',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Override for {self.athlete.name} on program exercise {self.training_program_exercise_id}"
+
+
 class Session(models.Model):
     """One training session in the gym — a window of time containing many sets
-    across the athletes who took part."""
+    across the athletes who took part.
+
+    NOTE (merge in progress): the canon renames this to TrainingSession and moves
+    the group link to a SessionParticipation join row (a session becomes a SHARED
+    timeslot many groups can be on). That rename touches every call site across
+    views/serializers/tests, so it's deliberately deferred to its own phase — this
+    model still reads/writes exactly as it always has for now."""
     label = models.CharField(max_length=255)
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     athletes = models.ManyToManyField(Athlete, related_name='sessions')
     notes = models.TextField(blank=True)
+    is_simulated = models.BooleanField(default=False)
 
     def __str__(self):
         return self.label
+
+
+class SessionParticipation(models.Model):
+    """The join between a shared session and one group's program — this is what
+    lets many groups be on the same session at once instead of a session
+    belonging to just one group.
+
+    Deliberately carries NO snapshot blob: what was actually performed already
+    lives in Set/Rep, and what was prescribed gets frozen for the whole session
+    by DailyReport at end-of-day. Storing a third copy here would be two write
+    paths for one guarantee (see merge canon D14)."""
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='participations')
+    training_program = models.ForeignKey(TrainingProgram, on_delete=models.PROTECT,
+                                         related_name='session_participations')
+    training_program_workout = models.ForeignKey(TrainingProgramWorkout, on_delete=models.PROTECT, null=True,
+                                                  blank=True, related_name='session_participations')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['session', 'training_program'], name='session_participation_unique'),
+        ]
+
+    def __str__(self):
+        return f"{self.training_program} in session {self.session_id}"
 
 
 class Set(models.Model):
@@ -141,9 +372,19 @@ class Set(models.Model):
     avg_velocity = models.FloatField(null=True, blank=True)
     peak_velocity = models.FloatField(null=True, blank=True)
     is_false_set = models.BooleanField(default=False)
+    # True when a COACH wrote this row to adjust an athlete's carried-forward
+    # working weight (the load the tablet defaults the next set to), not to log a
+    # real lift. It must be a COMPLETED set (ended_at + weight_lbs) to move that
+    # weight — but that same shape would otherwise count as a real set. So every
+    # read over Set rows must consciously INCLUDE or EXCLUDE these: they feed
+    # last_weight_lbs ONLY, and are excluded from set counts, "resting" status,
+    # analytics, has_data/is_makeup, and reports. See merge canon D15 for the
+    # exhaustive list — do not add a Set read without deciding this.
+    is_coach_adjustment = models.BooleanField(default=False)
     is_makeup = models.BooleanField(default=False)  # True when this set is logged
     # retroactively for an athlete who missed the original run. The tablet sets it
     # from the roster's has_data flag (already has data this session => a makeup).
+    is_simulated = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['set_number']
@@ -252,3 +493,21 @@ class RackCheckIn(models.Model):
 
     def __str__(self):
         return f"{self.athlete.name} → rack {self.rack_number} (session {self.session_id})"
+
+
+class MonitoringEvent(models.Model):
+    """A durable record that "something changed" — written the instant it
+    happens; a separate publisher loop delivers it to the dashboard afterward and
+    marks it published. Adopted from Braydon's realtime/ layer: sturdier than a
+    fire-and-forget MQTT publish, because a dropped connection just leaves the
+    row unpublished for the next attempt instead of losing the update outright."""
+    event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    reason = models.CharField(max_length=32)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    publish_attempts = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=255, blank=True)
+    is_simulated = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.reason} ({self.event_id})"
