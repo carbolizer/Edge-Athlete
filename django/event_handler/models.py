@@ -1,7 +1,9 @@
 """
 *** IMPORTANT — how to regenerate migrations after editing this file ***
-1. docker exec -it edgeathlete-django python manage.py makemigrations event_handler
-2. docker exec -it edgeathlete-django python manage.py migrate
+   (drop the `-it` flags if you run these from a script / non-interactive shell —
+    an agent with no TTY errors on `-it`; a human at a terminal can keep them.)
+1. docker exec edgeathlete-django python manage.py makemigrations event_handler
+2. docker exec edgeathlete-django python manage.py migrate
 3. copy the generated migration file back into ./django/event_handler/migrations/
 4. git add + commit the migration file
 
@@ -9,9 +11,10 @@ models.py — the Edge Athlete database tables.
 ------------------------------------------------------
 Each class below is one table; each attribute is one column. This file is the
 whole data model for the base station: the hardware (Node), the tablet screens
-(RackScreen), the training data (Athlete → Program, and Session → Set → Rep),
-and — new, mid-merge — the Training* org/planning hierarchy (see that block's
-own comment below for what it's for and why it looks the way it does).
+(RackScreen), the athlete training data (Session → Set → Rep), and — new,
+mid-merge — the Training* org/planning hierarchy that supersedes the legacy
+per-athlete Program table (see that block's comment for what it's for). Program
+still exists for now; it retires in the later Session→TrainingSession phase.
 
 Two things worth understanding before you read:
   • A RackScreen (the tablet at a rack) and a Node (the sensor on the bar) are
