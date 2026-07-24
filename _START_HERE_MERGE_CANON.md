@@ -97,13 +97,17 @@ docker exec edgeathlete-django python manage.py test event_handler
 More detail lives in `RUNBOOK.md`. Our migration lineage currently ends at **`0007_rackcheckin.py`** — every
 new migration stacks on top of that.
 
-### 0.6 Where we are right now (2026-07-23)
+### 0.6 Where we are right now (updated 2026-07-24)
 The additive Phase-1 model changes are **committed on `merge-braydon`** in `django/event_handler/models.py`
 (the new `Training*` tables, `is_simulated`, `is_coach_adjustment`, `Athlete.training_groups` M2M,
 `Node.allowed_exercises`, `AthleteWorkoutExerciseOverride`, `MonitoringEvent`) and were independently reviewed
-as clean. **No migration has been generated yet** — that's the first real task. The `Session`→`TrainingSession`
-rename and `Program` retirement are deliberately still pending (§7 P6). Nothing else from Braydon's branch has
-been brought over. **Your first action is §7 P0 (cold-build smoke test), then P1.**
+as clean. **Migration `0008_training_hierarchy_and_columns` has now been generated and committed** (commit
+`356ceca`); it captures all of the above and applies clean on a fresh DB, so `makemigrations --check` is
+currently **clean** (no pending model changes). **The one remaining P1 task is the hand-written data migration
+`0009_seed_exercise_catalog`** (the §5.4 starter movements) — not yet written; the `Exercise` table is
+currently empty. The `Session`→`TrainingSession` rename and `Program` retirement are deliberately still pending
+(§7 P6). Nothing else from Braydon's branch has been brought over. **P0 (cold-build smoke test) was verified
+green on 2026-07-24; the next action is finishing P1 — write and apply `0009`.**
 
 ---
 
@@ -131,7 +135,8 @@ react/src/ (service worker + manifest.* + icons)
 
 **Verify you haven't touched them** before every commit:
 ```bash
-git diff --name-only SprintBranch -- react/src/rack react/src/db/repBuffer.js react/src/device.js
+# Use origin/SprintBranch — a fresh clone has no LOCAL SprintBranch branch (only the remote-tracking one).
+git diff --name-only origin/SprintBranch -- react/src/rack react/src/db/repBuffer.js react/src/device.js
 ```
 That command must print **nothing**. If it prints a file, your change is wrong — find another way.
 
@@ -439,6 +444,12 @@ against (names are the canonical spelling; `is_stub=False`):
 
 **No backfill of existing rows** — all current data is disposable dev/seed data.
 
+> ⚠️ **Seed data is present in the TEST database too.** Django applies every migration — including
+> the `0009` seed — when it builds the test DB, so a test must **not** assume `Exercise` (or any seeded
+> reference table) starts empty. This bit `test_lists_catalog_by_name` in P1 (it created `Bench Press`,
+> already a seeded row → `UniqueViolation`); the fix asserts the *name-sorted* invariant robustly instead
+> of hard-coding the catalog contents. **Default rule for any new test: account for seeded rows.**
+
 ### 5.5 Migration plan
 
 Our lineage ends at **`0007_rackcheckin.py`**. His `0003`–`0013` are **never brought over** (they build tables
@@ -458,7 +469,7 @@ hand-edit numbers, let Django assign them and adjust the name only.
 
 | File (target) | Phase | Type | Contents |
 |---|---|---|---|
-| `0008_training_hierarchy_and_columns` | **P1** | schema (auto) | **One `makemigrations` run captures everything currently in `models.py`:** create `TrainingGroup`, `TrainingBlock`(+`Workout`+`Exercise`), `TrainingProgram`(+`Workout`+`Exercise`), `SessionParticipation`, `AthleteWorkoutExerciseOverride`, `MonitoringEvent`; add columns `is_simulated` (Node/Athlete/Session/Set), `Set.is_coach_adjustment` (D15); add M2M `Node.allowed_exercises` and `Athlete.training_groups` (each makes a join table). |
+| `0008_training_hierarchy_and_columns` ✅ **DONE (`356ceca`)** | **P1** | schema (auto) | **One `makemigrations` run captures everything currently in `models.py`:** create `TrainingGroup`, `TrainingBlock`(+`Workout`+`Exercise`), `TrainingProgram`(+`Workout`+`Exercise`), `SessionParticipation`, `AthleteWorkoutExerciseOverride`, `MonitoringEvent`; add columns `is_simulated` (Node/Athlete/Session/Set), `Set.is_coach_adjustment` (D15); add M2M `Node.allowed_exercises` and `Athlete.training_groups` (each makes a join table). |
 | `0009_seed_exercise_catalog` | **P1** | **data (manual `RunPython`)** | Insert the §5.4 starter movements (D1). Not auto-generated — hand-write it. Make it **reversible** (reverse deletes exactly those rows). Only needs the `Exercise` table (exists since `0004`), so it's independent of `0008`. |
 | `0010_daily_report` | **P4** | schema (auto) | Adopt `DailyReport` (OneToOne→`Session`, `schema_version`, `snapshot` JSONField, `generated_at`). ⚠️ Its **GinIndex on `$.athletes[*].athlete.id` is Postgres-only** — the migration will emit `jsonb_path_query_array`; do not try to apply it on SQLite. The reference-max **write** endpoint (§7.2) needs **no migration** — `AthleteReferenceMax` already exists. |
 | `0011_trainingsession_rename_and_program_retire` ⚠️ | **P6** | schema (auto + hand-check) | The dangerous one. `RenameModel Session → TrainingSession` (Django rewrites every FK); `DeleteModel Program`; **`AlterField Set.session` → `on_delete=PROTECT`** — the MUST-FIX so a session delete can never wipe historical `Set`/`Rep`. Django may split this into 2–3 migrations; that's fine, keep them stacked in order. Verify the `Set.session` PROTECT change is actually present before calling P6 done — it is the single easiest thing to lose. |
@@ -848,8 +859,8 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 
 | Phase | Scope | Exit gate |
 |---|---|---|
-| **P0 — Cold-build smoke test** *(first)* | Prove the checked-out tree builds and runs from a clean clone **before changing anything**: `git fetch --all` (so `braydons-dev-branch`/`main` are present for later `git show`/`checkout`); `cp .env.example .env`; `docker compose up --build`. | All containers reach healthy; `http://localhost/` loads; the **rack screen runs its full loop** (§8 definition); existing tests pass (`docker exec edgeathlete-django python manage.py test event_handler`). ⚠️ `makemigrations --check` will report the `Training*` models as **pending** — that's expected (P1 generates them), not a P0 failure. If the build itself fails, **stop and escalate** — do not start P1 on a tree that doesn't boot. |
-| **P1 — Models + migration** *(after P0 green)* | Confirm the model diff already in `models.py` matches §5.2. Generate the two P1 migrations from the §5.5 target list: `0008` (auto — all the additive schema already in `models.py`) and `0009` (hand-written `RunPython` seeding the §5.4 movements). | `makemigrations --check --dry-run` clean (no pending model changes left); `docker compose down -v && up --build` applies `0001`→`0009` on a fresh DB; tests green; seed movements present in the DB. **Commit `0008`+`0009`.** |
+| **P0 — Cold-build smoke test** *(first)* | Prove the checked-out tree builds and runs from a clean clone **before changing anything**: `git fetch --all` (so `braydons-dev-branch`/`main` are present for later `git show`/`checkout`); `cp .env.example .env`; `docker compose up --build`. | All containers reach healthy; `http://localhost/` loads; the **rack screen runs its full loop** (§8 definition); existing tests pass (`docker exec edgeathlete-django python manage.py test event_handler`). ⚠️ `makemigrations --check` is **clean** now that `0008` is committed (an earlier draft of this note warned it would show `Training*` as **pending** — that was written before `0008` existed). If it *does* report pending changes, something drifted from `models.py` — reconcile before starting P1. If the build itself fails, **stop and escalate** — do not start P1 on a tree that doesn't boot. |
+| **P1 — Models + migration** *(after P0 green)* | Confirm the model diff already in `models.py` matches §5.2. **`0008` (auto schema) is already generated and committed (`356ceca`) — do NOT regenerate it.** The one remaining P1 task is `0009` (hand-written `RunPython` seeding the §5.4 movements). | `makemigrations --check --dry-run` clean (no pending model changes left); `docker compose down -v && up --build` applies `0001`→`0009` on a fresh DB; tests green; seed movements present in the DB. **Commit `0008`+`0009`.** |
 | **P2 — Realtime backbone (D5)** | Bring his `realtime/` + `services/` + the `MonitoringEvent` publisher. Fold our rack `broadcast/publisher` into it **without changing any rack topic or payload**. Drop our `notification_flow/` ntfy/motion cruft. Webhooks untouched. | Every existing rack topic still fires identically (incl. the `enter_setup` "all racks → pairing mode" signal); `MonitoringEvent` rows get `published_at` set; tests green. |
 | **P3 — Derived reads** | `services/` **`room-state/`** (§6.4, absorbing `wall-state/` via `?details=`), day-progress (D3), `auth/refresh/`. **Build no per-rack state route** — §7.4. | Endpoints return the shapes his consumers expect (§6.4); his `dashboardView.test.js` / `roomMonitor.test.js` pass; documented in SPEC + MESSAGE_CONTRACT. |
 | **P4 — Reports + finalization** | Adopt `DailyReport` + `reports/` family + PDF (**one family, `?athlete=` filter** — R6). Add the completion service to **our existing `sessions/{id}/` PATCH** (R2), firing report generation + ref-max recalc (D10; estimation method still deferred). Generates migration **`0010_daily_report`** (§5.5). **No `notes` route** (R1) and **no `sessions/{id}/end/` route** (R2). | Ending a session via `PATCH /api/sessions/{id}/` generates exactly one `DailyReport`; a new `AthleteReferenceMax` row appears with `source=estimated`; `PATCH /api/athletes/{id}/ {"notes":…}` round-trips. |
