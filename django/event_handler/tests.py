@@ -311,8 +311,17 @@ class SessionStatusEndpointTests(APITestCase):
 
 class ExerciseCatalogEndpointTests(APITestCase):
     def test_lists_catalog_by_name(self):
-        Exercise.objects.create(name="Bench Press")
-        Exercise.objects.create(name="Back Squat")
+        # Migration 0009_seed_exercise_catalog already seeds the canonical movements,
+        # so this test can no longer assume an empty table (its original assumption).
+        # Add two rows whose names bracket the alphabet — chosen NOT to collide with
+        # the seeded set — then assert the endpoint returns the whole catalog sorted
+        # by name and includes them. This checks the real invariant (name-sorted
+        # ordering) robustly, instead of hard-coding the exact catalog contents.
+        Exercise.objects.create(name="Aardvark Raise")
+        Exercise.objects.create(name="Zercher Carry")
         res = self.client.get("/api/exercises/")
         self.assertEqual(res.status_code, 200)
-        self.assertEqual([e["name"] for e in res.data], ["Back Squat", "Bench Press"])
+        names = [e["name"] for e in res.data]
+        self.assertIn("Aardvark Raise", names)
+        self.assertIn("Zercher Carry", names)
+        self.assertEqual(names, sorted(names))
