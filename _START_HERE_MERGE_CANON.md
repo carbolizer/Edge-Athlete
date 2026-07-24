@@ -84,7 +84,8 @@ docker compose down -v && docker compose up --build
 # with "the input device is not a TTY". Add `-it` back ONLY when you (a human) run
 # these by hand in a real terminal.
 docker exec edgeathlete-django python manage.py makemigrations event_handler
-docker cp edgeathlete-django:/app/event_handler/migrations/. ./django/event_handler/migrations/
+# NOTE: the container WORKDIR is /backend_container (NOT /app — verified 2026-07-24).
+docker cp edgeathlete-django:/backend_container/event_handler/migrations/. ./django/event_handler/migrations/
 
 # Prove there are no un-generated model changes (must be clean before any commit)
 docker exec edgeathlete-django python manage.py makemigrations --check --dry-run
