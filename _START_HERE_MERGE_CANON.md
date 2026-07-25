@@ -101,13 +101,29 @@ new migration stacks on top of that.
 The additive Phase-1 model changes are **committed on `merge-braydon`** in `django/event_handler/models.py`
 (the new `Training*` tables, `is_simulated`, `is_coach_adjustment`, `Athlete.training_groups` M2M,
 `Node.allowed_exercises`, `AthleteWorkoutExerciseOverride`, `MonitoringEvent`) and were independently reviewed
-as clean. **Migration `0008_training_hierarchy_and_columns` has now been generated and committed** (commit
-`356ceca`); it captures all of the above and applies clean on a fresh DB, so `makemigrations --check` is
-currently **clean** (no pending model changes). **The one remaining P1 task is the hand-written data migration
-`0009_seed_exercise_catalog`** (the §5.4 starter movements) — not yet written; the `Exercise` table is
-currently empty. The `Session`→`TrainingSession` rename and `Program` retirement are deliberately still pending
-(§7 P6). Nothing else from Braydon's branch has been brought over. **P0 (cold-build smoke test) was verified
-green on 2026-07-24; the next action is finishing P1 — write and apply `0009`.**
+as clean. **P1 IS ESSENTIALLY COMPLETE (verified 2026-07-24):**
+- `0008_training_hierarchy_and_columns` (`356ceca`) — generated, applied, committed.
+- `0009_seed_exercise_catalog` (`670d4a5`) — hand-written, applied; all 10 §5.4 movements confirmed in the DB
+  via `GET /api/exercises/`.
+- `makemigrations --check --dry-run` → **"No changes detected"** (models ↔ migrations ↔ DB consistent).
+- Test suite: **20 tests, all green.** §2.1 frozen-file check: **clean**.
+
+**The only P1 gate item not yet re-verified is the fresh-DB run** (`docker compose down -v && up --build`
+applying `0001`→`0009` from scratch) — deferred because it wipes the local demo database. Do it when the demo
+data is expendable.
+
+The `Session`→`TrainingSession` rename and `Program` retirement are deliberately still pending (§7 P6). Nothing
+else from Braydon's branch has been brought over. **P0 was verified green on 2026-07-24. Next action: the
+fresh-DB check to formally close P1, then P2 (realtime backbone).**
+
+> ⚠️ **Running-container gotcha (cost real time twice — 2026-07-24).** The Django image **bakes the source in
+> at build time; it is NOT bind-mounted.** So after `git pull` (or any host-side edit), the *running* container
+> still has the OLD code — `migrate` won't see a new migration and `test` won't see updated tests. Either
+> `docker compose up --build`, or hot-sync just what you need:
+> ```bash
+> docker cp ./django/event_handler/migrations/. edgeathlete-django:/backend_container/event_handler/migrations/
+> docker cp ./django/event_handler/tests.py     edgeathlete-django:/backend_container/event_handler/tests.py
+> ```
 
 ---
 
