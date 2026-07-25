@@ -154,6 +154,28 @@ reads.**
 > published **by the frontend** over MQTT-websockets (`react/src/App.jsx` → `edgeathlete/rack/command`), not by
 > Django — so no backend MQTT change can affect it. Noted so a future phase doesn't re-audit it.
 
+✅ **P3 CLOSED (2026-07-25).** `GET /api/room-state/` built in `services/room_state.py` — the whole live room
+picture derived per request from `RackCheckIn` + `Set`/`Rep`, with **no** room-state table. Verified live: rack
+occupancy follows the newest check-in, a newer check-in *moves* the athlete (they never appear at two racks),
+`status`/`status_color` derive correctly, `?details=true` 401s without a coach login and adds ids/roster/node
+health with one. Documented in `MESSAGE_CONTRACT.md` §3. **27 tests green** (7 new). **➡️ NEXT: P4 — reports,
+notes, finalization.**
+
+> **Two P3 corrections to the plan above, both verified against code:**
+> 1. **`auth/refresh/` already existed** (SimpleJWT `TokenRefreshView` in `basestation_config/urls.py`) and
+>    round-trips a new access token. Nothing to build.
+> 2. **`movement` and `leaderboard` needed re-derivation, not just `racks[]`.** §6.4 flagged the rack list as
+>    the D8 rebuild, but his `movement` came from `AthleteDayProgress.current_workout_exercise` and his
+>    `leaderboard` filtered on `workout_exercise` + `athlete_day_progress` — *both dropped tables*. They are now
+>    derived from what athletes are actually lifting (most-common current movement; that movement's real
+>    finished sets), which is simpler and cannot disagree with reality.
+>
+> **Deliberately deferred from P3 to P5:** `services/room_state.py::_target_zone_for()` still reads the legacy
+> per-athlete `Program` table, because that is what the rack itself resolves targets from *today*. It moves to
+> `TrainingProgramExercise` (`% × max`, §6.1) as part of the P5 swap — it is isolated in one small function
+> specifically so that is a one-place change. **Do not re-point it early**, or the room view and the rack will
+> disagree about targets mid-merge.
+
 > ⚠️ **Running-container gotcha (cost real time twice — 2026-07-24).** The Django image **bakes the source in
 > at build time; it is NOT bind-mounted.** So after `git pull` (or any host-side edit), the *running* container
 > still has the OLD code — `migrate` won't see a new migration and `test` won't see updated tests. Either
@@ -854,7 +876,7 @@ Every row here is called by a **surviving** coach screen, so every row is requir
 
 | Route | Called by (his file) | Backed by | Phase |
 |---|---|---|---|
-| `auth/refresh/` | `coach/api.js` | SimpleJWT refresh view | P3 |
+| ~~`auth/refresh/`~~ ✅ **ALREADY EXISTED** | `coach/api.js` | SimpleJWT `TokenRefreshView`, already wired in `basestation_config/urls.py` | — *(verified working 2026-07-25; listing it as missing was a doc error)* |
 | **reference-max write** (e.g. `athletes/reference-maxes/` POST, **accepts a list of athlete ids for bulk entry**) | — *(gap: no FE calls it yet, but §6.1 needs the data)* | `AthleteReferenceMax` (add-only, newest-wins, applies forward — no new schema) | P4 |
 | `room-state/` **(absorbs `wall-state/` — R3)** | `useLiveRoomState.js`, `ConnectionTest.jsx` | **derived** room-state (§6.4) | P3 |
 | `reports/` · `reports/{id}/` · `reports/{id}/pdf/` **(absorbs the athlete-scoped family — R6)** | `ReportsWorkspace.jsx`, `reportBrowsing.js` | `DailyReport`, `?athlete={id}` filter | P4 |
