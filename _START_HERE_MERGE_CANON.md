@@ -460,6 +460,24 @@ against (names are the canonical spelling; `is_stub=False`):
 
 **No backfill of existing rows** — all current data is disposable dev/seed data.
 
+> **Two different "seed" mechanisms — do not confuse them** (this trips people up):
+>
+> | | `0009_seed_exercise_catalog` (RunPython migration) | `seed_active_session` (management command) |
+> |---|---|---|
+> | Seeds | the **10 canonical `Exercise` rows** above | demo fixtures: athletes, `Program`s, a session, sets/reps, reference maxes |
+> | Runs | **automatically** on every `migrate` (incl. the test DB) | **only when invoked by hand** |
+> | Is | canonical reference data, part of the migration lineage | dev/demo convenience, predates the migration |
+>
+> **After `docker compose down -v`:** the exercise catalog returns **by itself**; the demo fixtures do **not** —
+> re-run `docker exec edgeathlete-django python manage.py seed_active_session` (and `ensure_demo_coach` for the
+> `coach`/`coachpass` login). Until then the rack screen shows an empty movement list, because `athlete_progress`
+> still reads the legacy `Program` rows (until the P5 `% × max` swap).
+>
+> ⚠️ **Keep the names in sync.** `seed_active_session` does `Exercise.objects.get_or_create(name=…)` with
+> `"Back Squat"` / `"Bench Press"` — spellings that **must** match §5.4 exactly, or it silently creates a second
+> near-duplicate movement (the exact drift D1's canonical catalog exists to prevent). Verified aligned
+> 2026-07-24; re-check if either list changes.
+
 > ⚠️ **Seed data is present in the TEST database too.** Django applies every migration — including
 > the `0009` seed — when it builds the test DB, so a test must **not** assume `Exercise` (or any seeded
 > reference table) starts empty. This bit `test_lists_catalog_by_name` in P1 (it created `Bench Press`,
