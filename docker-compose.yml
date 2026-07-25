@@ -31,16 +31,6 @@ services:
       - "9001:9001"
     restart: unless-stopped
 
-  ntfy:
-    image: binwiederhier/ntfy
-    container_name: edgeathlete-ntfy
-    volumes:
-      - ntfy_data:/var/lib/ntfy
-    ports:
-      - "8080:80"
-    restart: unless-stopped
-    command: serve
-
   django:
     build: ./django
     container_name: edgeathlete-django
@@ -63,6 +53,25 @@ services:
     # raced it at boot and crashed on a duplicate django_migrations table. The
     # listener only reads/writes rows once real messages arrive, long after boot.
     command: python manage.py run_mqtt_subscriber
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  # The OUTBOX DRAIN (merge phase P2 / D5). Separate from mqtt-listener on
+  # purpose: the listener is inbound (node pulses -> DB), this is outbound
+  # (committed MonitoringEvent rows -> retained MQTT invalidation). Splitting
+  # them means a stall in one can't block the other. Like the listener, it does
+  # NOT migrate — Django's Dockerfile CMD is the sole migrator.
+  monitoring-publisher:
+    build: ./django
+    container_name: edgeathlete-monitoring-publisher
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    command: python manage.py publish_monitoring_events
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,4 +105,3 @@ services:
 
 volumes:
   postgres_data:
-  ntfy_data:

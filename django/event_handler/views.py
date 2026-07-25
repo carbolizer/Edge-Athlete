@@ -38,7 +38,7 @@ from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
                           NodeSerializer, ExerciseSerializer)
-from .notification_flow.broadcast.publisher import publish_rack_state, publish_dashboard_state
+from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:

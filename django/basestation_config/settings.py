@@ -15,7 +15,7 @@ Works with:
   - basestation_config/urls.py — ROOT_URLCONF points Django to the router
   - postgres container — DATABASES connects Django to PostgreSQL
   - mosquitto container — MQTT settings tell Django where the broker is
-  - ntfy container — NTFY settings tell Django where to send notifications
+  - monitoring-publisher container — drains the MonitoringEvent outbox to MQTT
 
 For more information on this file, see
 https://docs.djangoproject.com/en/5.1/topics/settings/
@@ -123,12 +123,10 @@ DATABASES = {
 MQTT_HOST = os.environ.get('MQTT_HOST', 'mosquitto')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 
-# Ntfy Configuration
-# Ntfy is the push notification service Django posts to when motion is detected
-# NTFY_URL and NTFY_TOPIC are read from .env
-# Django sends HTTP POST requests to NTFY_URL/NTFY_TOPIC when an event comes in
-NTFY_URL = os.getenv("NTFY_URL", "http://ntfy:80")
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "edgeathlete-alerts")
+# (Ntfy settings removed in merge phase P2 / D5 — the motion-alert notification
+# path was inherited from this project's fork parent and never served Edge
+# Athlete. Real-time delivery now goes through the MonitoringEvent outbox in
+# event_handler/realtime/. Nothing reads NTFY_* anymore.)
 
 # Password validation rules for user accounts
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
