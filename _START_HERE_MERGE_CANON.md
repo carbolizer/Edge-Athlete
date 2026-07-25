@@ -69,9 +69,15 @@ His `django/event_handler/migrations/*` are **never** brought over. `makemigrati
 ### 0.5 Commands you'll actually type
 
 ```bash
-# FIRST TIME on a fresh clone: create the .env the stack reads (it is gitignored,
-# so it never arrives with the clone). .env.example ships runnable dev-safe values.
-cp .env.example .env
+# Create/refresh the .env the stack reads. `.env` is gitignored, so it never
+# arrives with a clone — and `.env.example` is the SOURCE OF TRUTH: it ships
+# complete, runnable dev-safe values, so `.env` is just a disposable copy of it.
+# This OVERWRITES any existing .env on purpose — re-run it any time to resync
+# (e.g. after a pull that adds a new variable). `-f` so it can't be blocked by a
+# `cp -i` alias prompting in an automated shell.
+# Only edit `.env` directly if you deliberately want a local-only value; that
+# edit is what the next copy discards.
+cp -f .env.example .env
 
 # Start the whole stack (from the repo root, where docker-compose.yml lives)
 docker compose up --build   # then open http://localhost/ (nginx publishes port 80)
@@ -893,7 +899,7 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 
 | Phase | Scope | Exit gate |
 |---|---|---|
-| **P0 — Cold-build smoke test** *(first)* | Prove the checked-out tree builds and runs from a clean clone **before changing anything**: `git fetch --all` (so `braydons-dev-branch`/`main` are present for later `git show`/`checkout`); `cp .env.example .env`; `docker compose up --build`. | All containers reach healthy; `http://localhost/` loads; the **rack screen runs its full loop** (§8 definition); existing tests pass (`docker exec edgeathlete-django python manage.py test event_handler`). ⚠️ `makemigrations --check` is **clean** now that `0008` is committed (an earlier draft of this note warned it would show `Training*` as **pending** — that was written before `0008` existed). If it *does* report pending changes, something drifted from `models.py` — reconcile before starting P1. If the build itself fails, **stop and escalate** — do not start P1 on a tree that doesn't boot. |
+| **P0 — Cold-build smoke test** *(first)* | Prove the checked-out tree builds and runs from a clean clone **before changing anything**: `git fetch --all` (so `braydons-dev-branch`/`main` are present for later `git show`/`checkout`); `cp -f .env.example .env` (overwrites — `.env.example` is the source of truth, §0.5); `docker compose up --build`. | All containers reach healthy; `http://localhost/` loads; the **rack screen runs its full loop** (§8 definition); existing tests pass (`docker exec edgeathlete-django python manage.py test event_handler`). ⚠️ `makemigrations --check` is **clean** now that `0008` is committed (an earlier draft of this note warned it would show `Training*` as **pending** — that was written before `0008` existed). If it *does* report pending changes, something drifted from `models.py` — reconcile before starting P1. If the build itself fails, **stop and escalate** — do not start P1 on a tree that doesn't boot. |
 | **P1 — Models + migration** *(after P0 green)* | Confirm the model diff already in `models.py` matches §5.2. **`0008` (auto schema) is already generated and committed (`356ceca`) — do NOT regenerate it.** The one remaining P1 task is `0009` (hand-written `RunPython` seeding the §5.4 movements). | `makemigrations --check --dry-run` clean (no pending model changes left); `docker compose down -v && up --build` applies `0001`→`0009` on a fresh DB; tests green; seed movements present in the DB. **Commit `0008`+`0009`.** |
 | **P2 — Realtime backbone (D5)** | Bring his `realtime/` + `services/` + the `MonitoringEvent` publisher. Fold our rack `broadcast/publisher` into it **without changing any rack topic or payload**. Drop our `notification_flow/` ntfy/motion cruft. Webhooks untouched. | Every existing rack topic still fires identically (incl. the `enter_setup` "all racks → pairing mode" signal); `MonitoringEvent` rows get `published_at` set; tests green. |
 | **P3 — Derived reads** | `services/` **`room-state/`** (§6.4, absorbing `wall-state/` via `?details=`), day-progress (D3), `auth/refresh/`. **Build no per-rack state route** — §7.4. | Endpoints return the shapes his consumers expect (§6.4); his `dashboardView.test.js` / `roomMonitor.test.js` pass; documented in SPEC + MESSAGE_CONTRACT. |
