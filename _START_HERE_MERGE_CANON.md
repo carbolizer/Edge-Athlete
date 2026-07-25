@@ -170,6 +170,28 @@ notes, finalization.**
 >    derived from what athletes are actually lifting (most-common current movement; that movement's real
 >    finished sets), which is simpler and cannot disagree with reality.
 >
+✅ **P4 CLOSED (2026-07-25).** `DailyReport` + migration `0010`; finalization on our existing
+`PATCH /api/sessions/{id}/` (R2 — **no `end/` route**); `reports/` family with `?athlete=` filter + PDF (R6);
+notes confirmed round-tripping through `PATCH /api/athletes/{id}/` (R1 — **no notes route**); reference-max
+write endpoint added. **Verified live:** ending a session froze exactly one report, wrote 2 `source=estimated`
+ref-max rows, ending twice returned the same report (still 1 row), `?athlete=` filtered correctly, and the PDF
+rendered as a real 4-page document. **41 tests green** (14 new). **➡️ NEXT: P5 — planning + the `% × max` swap.**
+
+> **P4 build notes (what a future reader will want to know):**
+> - **Adopted `services/reports.py` + `report_pdf.py` nearly unchanged** — they read the frozen snapshot, not
+>   the dropped tables, so they ported cleanly.
+> - **Did NOT adopt `training_days.py` / `set_completion.py`** (his finalization): 26 references across 6
+>   dropped models between them. The finalization is written fresh in `services/session_completion.py` and is
+>   far smaller as a result. **Don't try to port those two later** — the fresh one is the canon path.
+> - **`reportlab` added to `requirements.txt`** for the PDF. Needs a `--build`, not just a restart.
+> - **D10 estimation method — now partially decided, and the rest still open.** It applies **Epley** (the same
+>   D11 formula, in one helper) to the athlete's best real set, ignoring false sets, coach adjustments, and
+>   anything outside 1–12 reps (where the formula stops meaning anything). Still deliberately open per D10:
+>   how many sessions to blend and how to reject a fluke. **This is a floor, not a final answer.**
+> - **Snapshot fields `assigned_program` / `final_progress` are `null` today** — they fill in once P5 gives
+>   athletes real group programs. The report reader tolerates missing pieces by design, so reports get richer
+>   without a schema change.
+
 > **Deliberately deferred from P3 to P5:** `services/room_state.py::_target_zone_for()` still reads the legacy
 > per-athlete `Program` table, because that is what the rack itself resolves targets from *today*. It moves to
 > `TrainingProgramExercise` (`% × max`, §6.1) as part of the P5 swap — it is isolated in one small function
