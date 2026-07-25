@@ -28,6 +28,7 @@ See https://docs.djangoproject.com/en/5.1/topics/db/models/
 import uuid
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 
 
@@ -496,6 +497,57 @@ class RackCheckIn(models.Model):
 
     def __str__(self):
         return f"{self.athlete.name} → rack {self.rack_number} (session {self.session_id})"
+
+
+class DailyReport(models.Model):
+    """The permanent record of one finished training day — written once, never
+    edited.
+
+    WHY THIS IS STORED RATHER THAN DERIVED (the one deliberate exception to this
+    codebase's derive-don't-store rule): a report has to keep saying what was
+    true on the day it was generated. If we recomputed it on demand, a coach
+    editing next week's program — or an athlete's max drifting — would silently
+    rewrite last month's history. Immutability IS the feature here, so the whole
+    day gets frozen into `snapshot` at the moment the session ends.
+
+    `snapshot` holds the entire report as JSON (roster, each athlete's sets and
+    reps, which racks they used, room totals) so reading a report never depends
+    on the live tables it came from. `schema_version` lets an older stored
+    snapshot still be read correctly after the shape evolves.
+    """
+    session = models.OneToOneField(Session, on_delete=models.PROTECT, related_name='daily_report')
+    schema_version = models.PositiveIntegerField(default=1)
+    generated_at = models.DateTimeField(auto_now_add=True)
+    snapshot = models.JSONField()
+
+    class Meta:
+        ordering = ['-generated_at', '-id']
+        indexes = [
+            models.Index(fields=['-generated_at', '-id'], name='daily_report_newest_idx'),
+            # "Which reports mention this athlete?" is the main way reports get
+            # browsed, and the answer lives inside the JSON rather than in a
+            # column. This indexes just the athlete ids out of the snapshot so
+            # that lookup stays fast instead of re-reading every report.
+            # POSTGRES-ONLY (jsonb) — fine here, the base station always runs
+            # Postgres. The query works without it, just slower.
+            GinIndex(
+                models.Func(
+                    models.F('snapshot'),
+                    models.Value('$.athletes[*].athlete.id'),
+                    function='jsonb_path_query_array',
+                ),
+                name='daily_report_athlete_ids_gin',
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(schema_version__gte=1),
+                name='daily_report_positive_schema_version',
+            ),
+        ]
+
+    def __str__(self):
+        return f"Daily report for {self.session.label}"
 
 
 class MonitoringEvent(models.Model):

@@ -11,7 +11,8 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
 
-from .models import Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise, RackCheckIn
+from .models import (Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise,
+                     RackCheckIn, DailyReport)
 
 
 class ActiveSessionEndpointTests(APITestCase):
@@ -431,3 +432,168 @@ class RoomStateEndpointTests(APITestCase):
         self.assertIsNone(res.data["session"])
         self.assertEqual(res.data["summary"]["completed_sets"], 0)
         self.assertEqual(res.data["leaderboard"], [])
+
+
+class SessionCompletionTests(APITestCase):
+    """Ending a training day (merge canon R2 + D10).
+
+    Pins the two things that must happen exactly once when a coach ends a
+    session: an immutable report gets frozen, and everyone's reference maxes
+    move forward from what they actually lifted.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.session = Session.objects.create(label="Thursday")
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.session.athletes.add(self.athlete)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+
+    def _completed_set(self, weight, reps, **kwargs):
+        return Set.objects.create(
+            session=self.session, athlete=self.athlete, exercise=self.squat,
+            set_number=kwargs.pop("set_number", 1), weight_lbs=weight,
+            reps_completed=reps, ended_at=timezone.now(), **kwargs)
+
+    def test_patching_a_session_ends_it_and_freezes_a_report(self):
+        """There is no `end/` route — ending IS the PATCH (canon R2)."""
+        self._completed_set(225, 3)
+        res = self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNotNone(res.data["ended_at"])
+        self.assertIn("daily_report", res.data)
+        self.assertEqual(DailyReport.objects.filter(session=self.session).count(), 1)
+
+    def test_ending_twice_does_not_write_a_second_report(self):
+        """A double-tapped "end session" button must not produce two records of
+        one day, so the second call returns the first report unchanged."""
+        self._completed_set(225, 3)
+        first = self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        second = self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        self.assertEqual(first.data["daily_report"]["id"], second.data["daily_report"]["id"])
+        self.assertEqual(DailyReport.objects.count(), 1)
+
+    def test_report_snapshot_captures_the_days_work(self):
+        self._completed_set(225, 3)
+        self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        snapshot = DailyReport.objects.get().snapshot
+        self.assertEqual(snapshot["summary"]["completed_sets"], 1)
+        self.assertEqual(snapshot["summary"]["completed_reps"], 3)
+        self.assertEqual(snapshot["athletes"][0]["athlete"]["name"], "Jordan Lee")
+
+    def test_rack_participation_comes_from_checkins(self):
+        """Which racks an athlete used is derived from the check-in log, not a
+        stored participation table (canon D2)."""
+        self._completed_set(225, 3)
+        RackCheckIn.objects.create(session=self.session, athlete=self.athlete, rack_number=4)
+        RackCheckIn.objects.create(session=self.session, athlete=self.athlete, rack_number=2)
+        self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        snapshot = DailyReport.objects.get().snapshot
+        self.assertEqual(snapshot["athletes"][0]["rack_participation"], [2, 4])
+
+    def test_ending_writes_a_new_estimated_reference_max(self):
+        """D10: today's real work sets tomorrow's targets, append-only."""
+        self._completed_set(225, 3)
+        self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        estimated = AthleteReferenceMax.objects.filter(
+            athlete=self.athlete, exercise=self.squat,
+            source=AthleteReferenceMax.SOURCE_ESTIMATED)
+        self.assertEqual(estimated.count(), 1)
+        # Epley: 225 x (1 + 3/30) = 247.5
+        self.assertAlmostEqual(estimated.first().reference_weight_lbs, 247.5, places=1)
+        self.assertEqual(estimated.first().rep_basis, 1)
+
+    def test_reference_max_estimate_ignores_junk_sets(self):
+        """A false set, a coach's weight adjustment, and a 30-rep conditioning
+        set are all real rows but none of them describe a max."""
+        self._completed_set(500, 3, set_number=1, is_false_set=True)
+        self._completed_set(500, 3, set_number=2, is_coach_adjustment=True)
+        self._completed_set(500, 40, set_number=3)          # outside the rep window
+        self._completed_set(225, 3, set_number=4)           # the one honest effort
+        self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        best = AthleteReferenceMax.objects.filter(
+            source=AthleteReferenceMax.SOURCE_ESTIMATED).first()
+        self.assertAlmostEqual(best.reference_weight_lbs, 247.5, places=1)
+
+    def test_reference_max_can_go_down(self):
+        """The reference is "what can they do now", not a trophy — a weaker day
+        must be allowed to pull tomorrow's prescribed weights back."""
+        AthleteReferenceMax.objects.create(
+            athlete=self.athlete, exercise=self.squat, reference_weight_lbs=400,
+            source=AthleteReferenceMax.SOURCE_MANUAL)
+        self._completed_set(225, 3)
+        self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+        newest = AthleteReferenceMax.objects.filter(
+            athlete=self.athlete, exercise=self.squat).first()  # ordering is newest-first
+        self.assertAlmostEqual(newest.reference_weight_lbs, 247.5, places=1)
+
+
+class ReportsEndpointTests(APITestCase):
+    """GET /api/reports/ — one family, athlete view is a filter (canon R6)."""
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.session = Session.objects.create(label="Thursday")
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.session.athletes.add(self.athlete)
+        squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        Set.objects.create(session=self.session, athlete=self.athlete, exercise=squat,
+                           set_number=1, weight_lbs=225, reps_completed=3,
+                           ended_at=timezone.now())
+        self.client.patch(f"/api/sessions/{self.session.id}/", {}, format="json")
+
+    def test_lists_reports(self):
+        res = self.client.get("/api/reports/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 1)
+
+    def test_filters_by_athlete(self):
+        self.assertEqual(len(self.client.get(f"/api/reports/?athlete={self.athlete.id}").data), 1)
+        self.assertEqual(len(self.client.get("/api/reports/?athlete=9999").data), 0)
+
+    def test_reports_require_a_coach(self):
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get("/api/reports/").status_code, 401)
+
+    def test_missing_report_is_404(self):
+        self.assertEqual(self.client.get("/api/reports/9999/").status_code, 404)
+
+
+class ReferenceMaxWriteTests(APITestCase):
+    """POST /api/reference-maxes/ — the prescription lever."""
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.a1 = Athlete.objects.create(name="A One")
+        self.a2 = Athlete.objects.create(name="A Two")
+
+    def test_records_a_whole_squad_in_one_call(self):
+        res = self.client.post("/api/reference-maxes/", {
+            "exercise": self.squat.id, "rep_basis": 1,
+            "entries": [{"athlete": self.a1.id, "reference_weight_lbs": 315},
+                        {"athlete": self.a2.id, "reference_weight_lbs": 275}],
+        }, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(AthleteReferenceMax.objects.count(), 2)
+
+    def test_re_entering_supersedes_without_deleting_history(self):
+        """Append-only: the newest row wins, the old one stays graphable."""
+        for weight in (300, 315):
+            self.client.post("/api/reference-maxes/", {
+                "exercise": self.squat.id,
+                "entries": [{"athlete": self.a1.id, "reference_weight_lbs": weight}],
+            }, format="json")
+        rows = AthleteReferenceMax.objects.filter(athlete=self.a1)
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(rows.first().reference_weight_lbs, 315)  # newest-first ordering
+
+    def test_rejects_unknown_athlete_and_empty_entries(self):
+        self.assertEqual(self.client.post("/api/reference-maxes/", {
+            "exercise": self.squat.id,
+            "entries": [{"athlete": 9999, "reference_weight_lbs": 315}]}, format="json").status_code, 404)
+        self.assertEqual(self.client.post("/api/reference-maxes/", {
+            "exercise": self.squat.id, "entries": []}, format="json").status_code, 400)

@@ -320,6 +320,63 @@ advance, so there is nothing to store.
 **No live session is not an error.** `session` is `null`, counts are `0`, lists are
 empty, HTTP is still 200 — the wall has to render something before the day starts.
 
+### `PATCH /api/sessions/{id}/` — end a training day (coach)
+
+**There is no `sessions/{id}/end/` route.** Ending a day IS this PATCH — it
+already meant "set the end time", so a second route would be two ways to do one
+thing. Sending `{}` (no `ended_at`) is the shorthand for "end it now".
+
+Ending a day atomically: freezes an immutable `DailyReport`, recalculates every
+athlete's reference max from what they actually lifted, and announces the change.
+**Idempotent** — ending an already-ended day returns the existing report rather
+than writing a second one.
+
+```jsonc
+// PATCH /api/sessions/3/   body: {}
+{
+  "id": 3, "label": "Thursday — Lower + Push",
+  "ended_at": "2026-07-25T06:24:28Z",
+  "daily_report": { "id": 1, "generated_at": "2026-07-25T06:24:28Z" }
+}
+```
+
+### `GET /api/reports/` — finished training days (coach)
+
+One family of routes. "This athlete's reports" is the same list **filtered**, not
+a parallel set of endpoints:
+
+| Call | Returns |
+|---|---|
+| `GET /api/reports/` | every finished day, newest first |
+| `GET /api/reports/?athlete={id}` | only days that athlete took part in |
+| `GET /api/reports/{id}/` | one day in full |
+| `GET /api/reports/{id}/?athlete={id}` | that day through one athlete's lens |
+| `GET /api/reports/{id}/pdf/` | the same day as a printable PDF (`?athlete=` also works) |
+
+Reports read from a **frozen snapshot**, never from live tables — so a report
+says what was true on the day it was generated even after programs or maxes
+change later. The PDF renders from that same snapshot, so print and screen can
+never disagree.
+
+### `POST /api/reference-maxes/` — record what athletes can lift (coach)
+
+**The prescription lever.** Every target weight is a percentage of these numbers.
+Takes a list so a whole squad's testing day goes in with one call.
+
+```jsonc
+{ "exercise": 1, "rep_basis": 1,
+  "entries": [ { "athlete": 3, "reference_weight_lbs": 315 },
+               { "athlete": 4, "reference_weight_lbs": 275 } ] }
+```
+
+Every entry writes a **new row**; nothing is overwritten. An athlete's current
+reference is their newest row, so re-entering supersedes the old value while the
+history stays intact. **Applies forward only** — targets already trained against
+are never rewritten.
+
+> Distinct from adjusting the load on a bar today: that rides on the set itself
+> and changes nothing about the plan. See §4.
+
 ---
 
 ## 4. Derived values — who computes what (read this)

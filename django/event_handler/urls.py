@@ -49,6 +49,16 @@ urlpatterns = [
     path('sessions/active/status/', views.session_status, name='session_status'),
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
 
+    # reports — ONE family. "This athlete's reports" is the same list filtered
+    # (?athlete={id}), not a parallel athletes/{id}/reports/... set of routes.
+    path('reports/', views.reports_view, name='reports'),
+    path('reports/<int:report_id>/', views.report_detail_view, name='report_detail'),
+    path('reports/<int:report_id>/pdf/', views.report_pdf_view, name='report_pdf'),
+
+    # reference maxes — the prescription lever (% of these = every target weight).
+    # Accepts a list so a whole squad's testing day goes in with one call.
+    path('reference-maxes/', views.reference_maxes_view, name='reference_maxes'),
+
     # sets
     path('sets/', views.set_create, name='set_create'),
     path('sets/<int:set_id>/complete/', views.set_complete, name='set_complete'),

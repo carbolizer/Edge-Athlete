@@ -9,4 +9,4 @@ requests==2.31.0            # HTTP client used to send notifications to Ntfy
 paho-mqtt==1.6.1            # Python Mosquitto broker library
 djangorestframework-simplejwt==5.3.1 # JWT token auth for the React frontend
 django-cors-headers==4.4.0 # Allows React (port 5173) to call Django (port 8000)
-
+reportlab==4.5.1           # renders the immutable DailyReport snapshot as a printable PDF

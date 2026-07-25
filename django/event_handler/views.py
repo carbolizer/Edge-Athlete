@@ -28,18 +28,24 @@ Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 from datetime import timedelta
 
 from django.db import transaction
+from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise, RackCheckIn
+from .models import (Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax,
+                     Exercise, RackCheckIn, DailyReport)
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
                           NodeSerializer, ExerciseSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.room_state import room_state_snapshot
+from .services.session_completion import end_session
+from .services.reports import (reports_for_athlete, report_list_item, report_detail,
+                               athlete_report_detail)
+from .services.report_pdf import render_report_pdf, PdfTooLarge
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -249,17 +255,41 @@ def sessions_view(request):
 @api_view(["PATCH"])
 @permission_classes([IsCoach])
 def session_detail(request, session_id):
-    """Coach-only: update a session. A PATCH with no ended_at means "end it now"."""
+    """Coach-only: update a session. A PATCH with no ended_at means "end it now".
+
+    ENDING A SESSION IS A BIG DEAL, and it happens right here — there is no
+    separate `end/` route, because "end the session" is just "set its end time"
+    and this endpoint already did that (merge canon R2). When this PATCH ends a
+    day it hands off to the completion service, which atomically freezes the
+    immutable DailyReport and recalculates everyone's reference maxes (D10).
+
+    The response gains a `daily_report` block when a report was produced, so a
+    coach tablet can jump straight to the finished report without a second call.
+    Ending an already-ended session is safe: it returns the existing report
+    rather than writing a second one.
+    """
     session = Session.objects.filter(id=session_id).first()
     if session is None:
         return Response({"error": "session not found"}, status=404)
     form = SessionSerializer(session, data=request.data, partial=True)
     form.is_valid(raise_exception=True)
-    session = form.save()
-    if "ended_at" not in request.data:
-        session.ended_at = timezone.now()
-        session.save()
-    return Response(SessionSerializer(session).data)
+
+    # "Is this PATCH ending the day?" — either the caller omitted ended_at (our
+    # long-standing shorthand for "end it now") or passed a real timestamp.
+    ends_session = ("ended_at" not in request.data
+                    or form.validated_data.get("ended_at") is not None)
+
+    if not ends_session:
+        return Response(SessionSerializer(form.save()).data)
+
+    requested_end = form.validated_data.get("ended_at") if "ended_at" in request.data else None
+    report, _created = end_session(session_id, ended_at=requested_end)
+
+    session.refresh_from_db()
+    body = SessionSerializer(session).data
+    if report is not None:
+        body["daily_report"] = {"id": report.id, "generated_at": report.generated_at}
+    return Response(body)
 
 
 @api_view(["GET"])
@@ -721,4 +751,131 @@ def room_state(request):
     # per-viewer data on a shared network.
     response["Cache-Control"] = "private, no-store"
     response["Pragma"] = "no-cache"
+    return response
+
+
+# ─────────────────────────── reports (immutable history) ───────────────────────────
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def reports_view(request):
+    """Coach-only: browse finished training days, newest first.
+
+    ONE family of report routes serves both "all reports" and "this athlete's
+    reports" — the athlete view is just a filter, so it is a query parameter
+    rather than a parallel set of `athletes/{id}/reports/...` endpoints (merge
+    canon R6). Query: ?athlete={id}
+    """
+    athlete_id = request.query_params.get("athlete")
+    if athlete_id:
+        reports = reports_for_athlete(athlete_id)
+    else:
+        reports = DailyReport.objects.all()
+    reports = reports.order_by("-generated_at", "-id")[:200]
+    return Response([report_list_item(r) for r in reports])
+
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def report_detail_view(request, report_id):
+    """Coach-only: one finished day in full.
+
+    With ?athlete={id} the report is narrowed to that athlete's own work — the
+    same stored snapshot, read through a single-athlete lens, so an athlete's
+    record and the team record can never disagree.
+    """
+    report = DailyReport.objects.filter(id=report_id).first()
+    if report is None:
+        return Response({"error": "report not found"}, status=404)
+    athlete_id = request.query_params.get("athlete")
+    if athlete_id:
+        return Response(athlete_report_detail(report, athlete_id))
+    return Response(report_detail(report))
+
+
+# ─────────────────────────── reference maxes ───────────────────────────
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+def reference_maxes_view(request):
+    """Coach-only: record what athletes can currently lift.
+
+    THIS IS THE PRESCRIPTION LEVER. Every target weight is a percentage of these
+    numbers, so this is how a coach moves what the whole gym is prescribed. It is
+    a different thing from adjusting the load on a bar today — that rides on the
+    set itself and changes nothing about the plan.
+
+    Takes a LIST so a coach can enter a whole squad's testing day in one go
+    rather than one athlete at a time:
+
+        { "exercise": 1, "rep_basis": 1,
+          "entries": [ {"athlete": 3, "reference_weight_lbs": 315},
+                       {"athlete": 4, "reference_weight_lbs": 275} ] }
+
+    Every entry writes a NEW row; nothing is overwritten. An athlete's current
+    reference is simply their newest row, so re-entering a number supersedes the
+    old one while the history stays intact and graphable. Applies forward only —
+    targets an athlete already trained against are never rewritten.
+    """
+    exercise_id = request.data.get("exercise")
+    if not Exercise.objects.filter(id=exercise_id).exists():
+        return Response({"error": "exercise not found"}, status=404)
+
+    entries = request.data.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return Response({"error": "entries must be a non-empty list"}, status=400)
+
+    rep_basis = request.data.get("rep_basis", 1)
+    created = []
+    for entry in entries:
+        athlete_id = entry.get("athlete")
+        weight = entry.get("reference_weight_lbs")
+        if not Athlete.objects.filter(id=athlete_id).exists():
+            return Response({"error": f"athlete {athlete_id} not found"}, status=404)
+        if weight is None:
+            return Response({"error": f"reference_weight_lbs is required for athlete {athlete_id}"},
+                            status=400)
+        created.append(AthleteReferenceMax(
+            athlete_id=athlete_id, exercise_id=exercise_id,
+            reference_weight_lbs=weight, rep_basis=entry.get("rep_basis", rep_basis),
+            source=AthleteReferenceMax.SOURCE_MANUAL,
+        ))
+    AthleteReferenceMax.objects.bulk_create(created)
+
+    return Response({
+        "exercise_id": exercise_id,
+        "recorded": [{"athlete_id": m.athlete_id,
+                      "reference_weight_lbs": m.reference_weight_lbs,
+                      "rep_basis": m.rep_basis} for m in created],
+    }, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def report_pdf_view(request, report_id):
+    """Coach-only: the same finished day, as a printable PDF.
+
+    Coaches hand these to athletes and staff who are nowhere near a tablet, so
+    the PDF renders from the SAME frozen snapshot the JSON detail view reads —
+    a printout and the screen can never disagree. ?athlete={id} narrows it to
+    one athlete's copy.
+    """
+    report = DailyReport.objects.filter(id=report_id).first()
+    if report is None:
+        return Response({"error": "report not found"}, status=404)
+
+    athlete_id = request.query_params.get("athlete")
+    detail = athlete_report_detail(report, athlete_id) if athlete_id else report_detail(report)
+
+    try:
+        pdf_bytes = render_report_pdf(detail)
+    except PdfTooLarge:
+        # A day so large it would produce an unusable document. Better a clear
+        # refusal than a multi-hundred-page download that times out the tablet.
+        return Response({"error": "report is too large to render as a PDF"}, status=413)
+
+    filename = f"report-{report.id}.pdf"
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response["Cache-Control"] = "private, no-store"
     return response
