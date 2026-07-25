@@ -131,6 +131,29 @@ else from Braydon's branch has been brought over yet. **➡️ NEXT ACTION: P2 �
 > docker exec edgeathlete-django python manage.py ensure_demo_coach
 > ```
 
+> ⚠️ **502 Bad Gateway after `docker compose up --build`? Restart nginx — it is NOT a code bug.**
+> nginx resolves the `django` hostname **once at startup** and caches the IP. A rebuild gives Django a new
+> container IP, so nginx keeps proxying to the dead one and every `/api/` call returns 502 while Django is
+> perfectly healthy. Confirm by hitting Django directly (`docker exec edgeathlete-django python -c "import
+> urllib.request;print(urllib.request.urlopen('http://localhost:8000/api/exercises/').status)"` → 200), then:
+> ```bash
+> docker compose restart nginx
+> ```
+> Also pass `--remove-orphans` when a service is deleted from `docker-compose.yml` (e.g. the P2 `ntfy` removal),
+> or its container keeps running detached from the project.
+
+✅ **P2 CLOSED (2026-07-25).** Braydon's `realtime/` adopted; our rack publisher folded into
+`realtime/broadcast/publisher.py`; `notification_flow/` + ntfy service/volume/settings dropped; new
+`monitoring-publisher` container drains the outbox. **Verified on the live broker, not just by tests:**
+`edgeathlete/rack/{n}/state` fires byte-identically for `athlete_checkin` **and** `set_complete`;
+`edgeathlete/dashboard/state` still carries `leaderboard_update`; a written `MonitoringEvent` is published as a
+retained invalidation and marked `published_at`. 20 tests green, frozen files clean. **➡️ NEXT: P3 — derived
+reads.**
+
+> **`enter_setup` was never at risk.** The canon flagged it as a must-not-break rack signal, but it is
+> published **by the frontend** over MQTT-websockets (`react/src/App.jsx` → `edgeathlete/rack/command`), not by
+> Django — so no backend MQTT change can affect it. Noted so a future phase doesn't re-audit it.
+
 > ⚠️ **Running-container gotcha (cost real time twice — 2026-07-24).** The Django image **bakes the source in
 > at build time; it is NOT bind-mounted.** So after `git pull` (or any host-side edit), the *running* container
 > still has the OLD code — `migrate` won't see a new migration and `test` won't see updated tests. Either
