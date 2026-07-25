@@ -8,9 +8,10 @@
 from datetime import timedelta
 
 from django.utils import timezone
+from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
 
-from .models import Athlete, Program, Session, Set, AthleteReferenceMax, Exercise, RackCheckIn
+from .models import Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise, RackCheckIn
 
 
 class ActiveSessionEndpointTests(APITestCase):
@@ -325,3 +326,108 @@ class ExerciseCatalogEndpointTests(APITestCase):
         self.assertIn("Aardvark Raise", names)
         self.assertIn("Zercher Carry", names)
         self.assertEqual(names, sorted(names))
+
+
+class RoomStateEndpointTests(APITestCase):
+    """GET /api/room-state/ — the derived live room picture (merge canon D8).
+
+    These pin the thing the merge actually changed: the room view is rebuilt
+    from RackCheckIn + Set/Rep instead of the dropped RackWorkoutState /
+    AthleteDayProgress tables. They also pin the wall-vs-coach privilege
+    boundary, since `?details=true` is what folds his old `wall-state/` and
+    `room-state/` into one route (R3).
+    """
+
+    def _room(self):
+        session = Session.objects.create(label="Live")
+        athlete = Athlete.objects.create(name="Jordan Lee")
+        session.athletes.add(athlete)
+        squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        return session, athlete, squat
+
+    def test_rack_occupancy_comes_from_the_checkin_log(self):
+        """The core D8 rebuild: nobody assigns a rack, so an athlete appears at
+        one purely because their newest check-in names it."""
+        session, athlete, _ = self._room()
+
+        # Before check-in the room knows of no occupied rack.
+        res = self.client.get("/api/room-state/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"]["active_racks"], 0)
+
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=3)
+
+        res = self.client.get("/api/room-state/")
+        rack = next(r for r in res.data["racks"] if r["rack_number"] == 3)
+        self.assertEqual(rack["athlete"]["name"], "Jordan Lee")
+        self.assertEqual(res.data["summary"]["active_racks"], 1)
+
+    def test_newest_checkin_moves_the_athlete(self):
+        """Check-ins are append-only and newest-wins, so moving racks is just a
+        newer row — the athlete must not appear at both."""
+        session, athlete, _ = self._room()
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=1)
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=2)
+
+        res = self.client.get("/api/room-state/")
+        occupied = {r["rack_number"] for r in res.data["racks"] if r["athlete"] is not None}
+        self.assertEqual(occupied, {2})
+
+    def test_status_and_color_derive_from_the_latest_set(self):
+        """Per-rack `status` is set lifecycle; `status_color` is the velocity zone
+        of the last rep. Two different concepts that share a palette (canon §5.6)."""
+        session, athlete, squat = self._room()
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=1)
+
+        # An in-progress set reads as active, with no colour yet.
+        live_set = Set.objects.create(session=session, athlete=athlete, exercise=squat, set_number=1)
+        res = self.client.get("/api/room-state/")
+        rack = next(r for r in res.data["racks"] if r["rack_number"] == 1)
+        self.assertEqual(rack["status"], "active")
+        self.assertEqual(rack["status_color"], "neutral")
+
+        # Finishing it flips to complete, and the last rep supplies the colour.
+        live_set.ended_at = timezone.now()
+        live_set.reps_completed = 1
+        live_set.save()
+        Rep.objects.create(set=live_set, rep_number=1, timestamp=timezone.now(),
+                           mean_velocity=0.7, peak_velocity=0.9, duration_ms=800,
+                           velocity_color="green")
+        res = self.client.get("/api/room-state/")
+        rack = next(r for r in res.data["racks"] if r["rack_number"] == 1)
+        self.assertEqual(rack["status"], "complete")
+        self.assertEqual(rack["status_color"], "green")
+
+    def test_wall_view_is_open_but_hides_ids_and_roster(self):
+        """The wall screen hangs in the gym with nobody logged in, so it gets
+        names and numbers only — no database ids, no participant roster."""
+        self._room()
+        res = self.client.get("/api/room-state/")
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("id", res.data["session"])
+        self.assertNotIn("participants", res.data)
+
+    def test_details_requires_a_coach_login(self):
+        """Asking for the detail level IS asking for coach data, so it must 401
+        rather than silently downgrading to the wall view."""
+        self._room()
+        self.assertEqual(self.client.get("/api/room-state/?details=true").status_code, 401)
+
+    def test_details_adds_ids_and_roster_for_a_coach(self):
+        session, athlete, _ = self._room()
+        coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=coach)
+
+        res = self.client.get("/api/room-state/?details=true")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["session"]["id"], session.id)
+        self.assertEqual([p["name"] for p in res.data["participants"]], ["Jordan Lee"])
+
+    def test_empty_room_still_answers(self):
+        """No session at all is a normal state (before the first session of the
+        day), not an error — the wall must render something."""
+        res = self.client.get("/api/room-state/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data["session"])
+        self.assertEqual(res.data["summary"]["completed_sets"], 0)
+        self.assertEqual(res.data["leaderboard"], [])

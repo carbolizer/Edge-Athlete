@@ -251,6 +251,75 @@ Called when a set STARTS (Phase 11 Step 3). The server returns the created `Set`
   row from that point on. Nothing about the batch-complete shape above changes
   for a makeup set.
 
+### `GET /api/room-state/` — the live room picture (wall: open · coach: `?details=true`)
+
+The coach dashboard and the gym wall screen both read this. **One route serves
+both**, switched by a query flag — they were two routes on the branch this merged
+from, backed by the same function one boolean apart:
+
+| Call | Who | Gets |
+|---|---|---|
+| `GET /api/room-state/` | the wall display (open — nobody logs into a wall screen) | names + numbers only |
+| `GET /api/room-state/?details=true` | the coach tablet (**401 without a coach login**) | adds database ids, the participant roster, and node health |
+
+Everything here is **derived per request** — there is no room-state table. Rack
+occupancy comes from the newest `RackCheckIn` per athlete; status/colour/leaderboard
+come from that athlete's `Set`/`Rep` rows. Nobody assigns an athlete to a rack in
+advance, so there is nothing to store.
+
+```jsonc
+{
+  "schema_version": 1,
+  "revision": 12,                    // newest MonitoringEvent id — compare against
+                                     // the MQTT invalidation to know if you're stale
+  "generated_at": "2026-07-25T06:10:53Z",
+  "session": { "id": 3, "label": "Thursday — Lower + Push", "started_at": "…" },
+                                     // `id` only with ?details=true; null if no live session
+  "summary": {
+    "participant_count": 4,
+    "athletes_with_sets": 2,
+    "completed_sets": 2,
+    "completed_reps": 4,
+    "room_avg_velocity": 0.68,
+    "active_racks": 1                // racks with somebody checked in right now
+  },
+  "racks": [{
+    "rack_number": 1,
+    "status": "complete",            // idle | active | complete | false set
+                                     //   ^ set LIFECYCLE, not a velocity judgement
+    "status_color": "green",         // green | yellow | red | neutral
+                                     //   ^ velocity zone of the LAST rep (different concept)
+    "athlete": { "id": 1, "name": "Jordan Lee" },   // null when nobody is checked in
+    "latest_set": {                                  // null when they haven't lifted yet
+      "id": 11, "exercise": "Back Squat", "set_number": 1, "weight_lbs": 205.0,
+      "reps_completed": 2, "avg_velocity": 0.68, "peak_velocity": 0.82,
+      "is_false_set": false,
+      "target_zone": { "velocity_min": 0.5, "velocity_max": 0.8 },
+      "reps": [{ "rep_number": 1, "mean_velocity": 0.7, "peak_velocity": 0.9,
+                 "velocity_color": "green" }]
+    },
+    "node": { "node_id": "rack_1", "battery_level": null,
+              "signal_strength": null, "is_stale": true }   // ?details=true only
+  }],
+  "movement": {                      // what the room as a whole is working on:
+    "id": 1,                         // the most common current movement. null if
+    "name": "Back Squat",            // nobody is lifting. `id` = details only.
+    "velocity_min": 0.5, "velocity_max": 0.8,
+    "participant_count": 1
+  },
+  "leaderboard": [{ "rank": 1, "athlete": { "id": 1, "name": "Jordan Lee" },
+                    "best_avg_velocity": 0.68 }],   // fastest on `movement`, capped at 20
+  "insights": [{ "type": "fastest_set_average", "label": "Fastest set average",
+                 "athlete_name": "Jordan Lee", "value": 0.68, "unit": "m/s" }],
+                                     // also: highest_peak_velocity, most_completed_reps
+  "truncated": { "racks": false, "leaderboard": false },   // hit a display cap
+  "participants": [{ "id": 3, "name": "Alex Kim" }]        // ?details=true only
+}
+```
+
+**No live session is not an error.** `session` is `null`, counts are `0`, lists are
+empty, HTTP is still 200 — the wall has to render something before the day starts.
+
 ---
 
 ## 4. Derived values — who computes what (read this)

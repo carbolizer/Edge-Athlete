@@ -39,6 +39,7 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
                           NodeSerializer, ExerciseSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
+from .services.room_state import room_state_snapshot
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -680,3 +681,44 @@ def analytics_athlete(request, athlete_id):
         "ended_at": s.ended_at.isoformat() if s.ended_at else None,
     } for s in sets]
     return Response({"athlete_id": int(athlete_id), "sets": trend})
+
+
+# ─────────────────────────── room state (derived) ───────────────────────────
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def room_state(request):
+    """The live picture of the room, for the wall display and the coach tablet.
+
+    ONE endpoint serves both audiences, chosen by `?details=true` (merge canon
+    R3 — his branch had this split across `wall-state/` and `room-state/`, two
+    routes backed by the identical function one boolean apart; folding them
+    leaves a single thing to document and maintain):
+
+      GET /api/room-state/               -> WALL view. Open, because the wall
+                                            screen is a shared display nobody
+                                            logs into. Names and numbers only:
+                                            no database ids, no roster.
+      GET /api/room-state/?details=true  -> COACH view. Requires a coach login
+                                            and adds ids, the participant
+                                            roster, and node health so the UI
+                                            can link through to records.
+
+    Everything is DERIVED per request from check-ins and set/rep rows — there is
+    no room-state table (canon D2/D3/D8). See services/room_state.py for how.
+    """
+    include_details = request.query_params.get("details", "").lower() in {"1", "true", "yes"}
+
+    # The detail level IS the privilege boundary: ids and the roster are coach
+    # data, so asking for them requires actually being a coach. Refusing here
+    # rather than silently downgrading means a coach UI with an expired token
+    # gets a clear 401 instead of mysteriously missing fields.
+    if include_details and not (request.user and request.user.is_authenticated):
+        return Response({"error": "coach login required for ?details=true"}, status=401)
+
+    response = Response(room_state_snapshot(include_details=include_details))
+    # Never cache: a stale room picture is worse than a slow one, and this is
+    # per-viewer data on a shared network.
+    response["Cache-Control"] = "private, no-store"
+    response["Pragma"] = "no-cache"
+    return response

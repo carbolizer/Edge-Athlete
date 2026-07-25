@@ -25,6 +25,13 @@ urlpatterns = [
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),
 
+    # live room picture (derived; no room-state table). ONE route for both the
+    # wall display and the coach tablet — `?details=true` switches to the
+    # coach-only detail level. Deliberately replaces his separate `wall-state/`
+    # (see the merge canon R3) and the per-rack `racks/{n}/state|assignment|
+    # athlete` routes, which are dropped with forward rack-assignment (D8).
+    path('room-state/', views.room_state, name='room_state'),
+
     # athletes
     path('athletes/', views.athletes_view, name='athletes'),
     path('athletes/<int:athlete_id>/', views.athlete_detail, name='athlete_detail'),
