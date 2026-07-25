@@ -114,13 +114,22 @@ as clean. **P1 IS ESSENTIALLY COMPLETE (verified 2026-07-24):**
 - `makemigrations --check --dry-run` → **"No changes detected"** (models ↔ migrations ↔ DB consistent).
 - Test suite: **20 tests, all green.** §2.1 frozen-file check: **clean**.
 
-**The only P1 gate item not yet re-verified is the fresh-DB run** (`docker compose down -v && up --build`
-applying `0001`→`0009` from scratch) — deferred because it wipes the local demo database. Do it when the demo
-data is expendable.
+- **Fresh-DB run verified** (`docker compose down -v && up --build`): `0001`→`0009` apply from scratch, and
+  `0009` re-seeds the catalog automatically (10 exercises confirmed on a cold DB).
+
+✅ **P0 and P1 are both CLOSED (2026-07-24).** Every P1 gate item passed: migrations clean from scratch,
+`makemigrations --check` clean, 20 tests green, frozen-file check clean, seed movements present, and the rack
+resolves real targets end-to-end (`/sessions/active/athlete/1/progress/` → Back Squat 5×3 @225lb, Bench 4×5
+@155lb).
 
 The `Session`→`TrainingSession` rename and `Program` retirement are deliberately still pending (§7 P6). Nothing
-else from Braydon's branch has been brought over. **P0 was verified green on 2026-07-24. Next action: the
-fresh-DB check to formally close P1, then P2 (realtime backbone).**
+else from Braydon's branch has been brought over yet. **➡️ NEXT ACTION: P2 — the realtime backbone (D5).**
+
+> **After any `down -v`, re-seed the demo fixture** (the catalog returns by itself, the fixture does not — §5.4):
+> ```bash
+> docker exec edgeathlete-django python manage.py seed_active_session
+> docker exec edgeathlete-django python manage.py ensure_demo_coach
+> ```
 
 > ⚠️ **Running-container gotcha (cost real time twice — 2026-07-24).** The Django image **bakes the source in
 > at build time; it is NOT bind-mounted.** So after `git pull` (or any host-side edit), the *running* container
