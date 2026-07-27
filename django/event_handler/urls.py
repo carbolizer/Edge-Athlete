@@ -13,6 +13,7 @@ must match first or they'd get swallowed.
 from django.urls import path
 
 from . import views
+from . import dev_views  # ⚠️ DEV-ONLY — delete with the dev/ route below
 
 urlpatterns = [
     # tablet: racks
@@ -66,6 +67,11 @@ urlpatterns = [
     # analytics
     path('analytics/session/<int:session_id>/', views.analytics_session, name='analytics_session'),
     path('analytics/athlete/<int:athlete_id>/', views.analytics_athlete, name='analytics_athlete'),
+
+    # ⚠️ TEMPORARY DEV-ONLY — delete this line and dev_views.py together.
+    # Puts the demo-data seeder behind a button instead of an SSH session.
+    # Refuses to run unless DEBUG. See dev_views.py for removal steps.
+    path('dev/seed-session/', dev_views.dev_seed_session, name='dev_seed_session'),
 
     # catch-alls LAST
     path('racks/<str:device_id>/', views.rack_assign, name='rack_assign'),
