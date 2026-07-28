@@ -216,3 +216,30 @@ def movements_for_athlete(athlete, session):
         })
 
     return movements
+
+
+def plans_by_athlete(session, athletes):
+    """Everyone's movements for the day, keyed by athlete id.
+
+    One place so the wall display, the coach tablet, and the rack can never
+    disagree about what somebody is supposed to be doing — before this existed
+    each read reached for the plan tables itself, and the room view was still
+    reading a table the rack had already stopped using.
+    """
+    return {athlete.id: movements_for_athlete(athlete, session) for athlete in athletes}
+
+
+def velocity_zones_by_athlete(session, athletes):
+    """{athlete_id: {exercise_id: {velocity_min, velocity_max}}}.
+
+    The dashboard colours a rep against the zone the athlete's own plan
+    prescribes, so this is that plan narrowed to just the two numbers.
+    """
+    return {
+        athlete_id: {
+            movement["exercise_id"]: {
+                "velocity_min": movement["velocity_zone_min"],
+                "velocity_max": movement["velocity_zone_max"],
+            } for movement in movements
+        } for athlete_id, movements in plans_by_athlete(session, athletes).items()
+    }

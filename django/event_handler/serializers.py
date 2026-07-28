@@ -9,7 +9,7 @@ receptionist handing back a tidy summary. One of these per kind of record.
 """
 from rest_framework import serializers
 
-from .models import (Set, Rep, RackScreen, Program, Athlete, Session, Node, Exercise,
+from .models import (Set, Rep, RackScreen, Athlete, Session, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise)
 
@@ -58,13 +58,6 @@ class RackScreenSerializer(serializers.ModelSerializer):
         read_only_fields = ["device_id", "last_seen"]
 
 
-class ProgramSerializer(serializers.ModelSerializer):
-    """An athlete's training plan for one exercise — the targets a set is judged
-    against, including the speed zone the tablet uses to color reps."""
-    class Meta:
-        model = Program
-        fields = ["id", "athlete", "exercise", "target_sets", "target_reps",
-                  "target_weight_lbs", "velocity_zone_min", "velocity_zone_max"]
 
 
 class AthleteSerializer(serializers.ModelSerializer):

@@ -8,16 +8,66 @@
 from datetime import timedelta
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import models
+from django.db.models import ProtectedError
 from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
 
-from .models import (Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise,
+from .models import (Athlete, Session, Set, Rep, AthleteReferenceMax, Exercise,
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
                      TrainingBlockExercise)
 from .services.plan_resolution import movements_for_athlete
+
+
+def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
+              zone_min=0.5, zone_max=0.8, record_max=True):
+    """Put an athlete on a group plan that resolves to exactly `weight_lbs`.
+
+    Plans prescribe a PERCENTAGE of the athlete's reference max now, so the way
+    to pin a known target in a test is to record `weight_lbs` as their max and
+    prescribe 100% of it. That keeps the arithmetic out of the way of whatever
+    the test is actually about, while still going through the real resolution
+    path rather than around it.
+
+    Reuses the athlete's existing group and program when they already have one,
+    so calling this twice gives them two movements on one plan rather than two
+    competing plans.
+    """
+    coach = User.objects.filter(username="plan-helper-coach").first() \
+        or User.objects.create_user(username="plan-helper-coach", password="pw")
+
+    group = athlete.training_groups.first()
+    if group is None:
+        group = TrainingGroup.objects.create(name=f"Group for {athlete.name}", coach=coach)
+        athlete.training_groups.add(group)
+
+    program = TrainingProgram.objects.filter(training_group=group).first()
+    if program is None:
+        program = TrainingProgram.objects.create(
+            training_group=group, name=f"Plan for {group.name}",
+            start_date=timezone.now().date())
+    workout = program.workouts.first() or TrainingProgramWorkout.objects.create(
+        training_program=program, name="Day 1", position=1)
+
+    # `record_max=False` for tests that manage their own reference maxes — this
+    # helper's max is written NOW, so it would supersede a deliberately back-dated
+    # one and quietly break the very thing such a test is checking.
+    if record_max:
+        AthleteReferenceMax.objects.create(
+            athlete=athlete, exercise=exercise, reference_weight_lbs=weight_lbs, rep_basis=1)
+
+    row = TrainingProgramExercise.objects.create(
+        training_program_workout=workout, exercise=exercise,
+        position=workout.exercises.count() + 1, sets=sets, reps=reps,
+        target_percent=100.0, velocity_zone_min=zone_min, velocity_zone_max=zone_max)
+
+    SessionParticipation.objects.get_or_create(
+        session=session, training_program=program,
+        defaults={"training_program_workout": workout})
+    return row
 
 
 class ActiveSessionEndpointTests(APITestCase):
@@ -27,10 +77,10 @@ class ActiveSessionEndpointTests(APITestCase):
         exercise, _ = Exercise.objects.get_or_create(name=name)
         return exercise
 
-    def _program(self, athlete, exercise, weight):
-        return Program.objects.create(
-            athlete=athlete, exercise=exercise, target_sets=5, target_reps=3,
-            target_weight_lbs=weight, velocity_zone_min=0.5, velocity_zone_max=0.8)
+    def _program(self, athlete, exercise, weight, session=None, record_max=True):
+        return give_plan(athlete, session or Session.objects.filter(
+            ended_at__isnull=True).order_by("-started_at", "-id").first(),
+            exercise, weight, record_max=record_max)
 
     def _dated_max(self, athlete, exercise, weight, days_ago):
         m = AthleteReferenceMax.objects.create(
@@ -76,7 +126,7 @@ class ActiveSessionEndpointTests(APITestCase):
         bench = self._exercise("Bench Press")  # in the catalog, but no max for this athlete
         athlete = Athlete.objects.create(name="Max Tester")
         session.athletes.add(athlete)
-        self._program(athlete, squat, 225.0)
+        self._program(athlete, squat, 225.0, record_max=False)
         self._dated_max(athlete, squat, 300.0, days_ago=40)   # old
         self._dated_max(athlete, squat, 315.0, days_ago=2)    # current
 
@@ -117,16 +167,16 @@ class ActiveSessionEndpointTests(APITestCase):
 class AthleteProgressEndpointTests(APITestCase):
     """GET /api/sessions/active/athlete/{id}/progress/ — the rack day-view. Pins:
     which sets count as completed, that false sets don't advance the number, the
-    Program.id movement order, the status/current-movement logic, and the guards."""
+    plan order, the status/current-movement logic, and the guards."""
 
     def _exercise(self, name):
         exercise, _ = Exercise.objects.get_or_create(name=name)
         return exercise
 
-    def _program(self, athlete, exercise, weight, sets=5):
-        return Program.objects.create(
-            athlete=athlete, exercise=exercise, target_sets=sets, target_reps=3,
-            target_weight_lbs=weight, velocity_zone_min=0.5, velocity_zone_max=0.8)
+    def _program(self, athlete, exercise, weight, sets=5, session=None):
+        return give_plan(athlete, session or Session.objects.filter(
+            ended_at__isnull=True).order_by("-started_at", "-id").first(),
+            exercise, weight, sets=sets)
 
     def _finished_set(self, session, athlete, exercise, n, false=False):
         return Set.objects.create(
@@ -747,9 +797,7 @@ class CoachWeightAdjustmentTests(APITestCase):
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
-        Program.objects.create(athlete=self.athlete, exercise=self.squat, target_sets=5,
-                               target_reps=3, target_weight_lbs=225,
-                               velocity_zone_min=0.5, velocity_zone_max=0.8)
+        give_plan(self.athlete, self.session, self.squat, 225)
 
     def _set(self, weight, **kwargs):
         return Set.objects.create(session=self.session, athlete=self.athlete,
@@ -1287,3 +1335,45 @@ class AthleteAssignmentTests(APITestCase):
         res = self.client.put(self._url(), {"workout_program_id": self.program.id},
                               format="json")
         self.assertIn(res.status_code, (401, 403))
+
+
+class SessionDeleteProtectionTests(APITestCase):
+    """Deleting a session must not be able to delete the lifting inside it.
+
+    This was a live data-loss path: `Set.session` cascaded, so removing a session
+    silently took every set and rep recorded during it, with nothing to undo it.
+    A training day is ended by setting `ended_at`, never by being deleted, so the
+    protection costs nothing real.
+    """
+
+    def setUp(self):
+        self.session = Session.objects.create(label="Thursday")
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+
+    def test_a_session_with_lifting_in_it_refuses_to_be_deleted(self):
+        a_set = Set.objects.create(session=self.session, athlete=self.athlete,
+                                   exercise=self.squat, set_number=1,
+                                   ended_at=timezone.now())
+        Rep.objects.create(set=a_set, rep_number=1, timestamp=timezone.now(),
+                           mean_velocity=0.7, peak_velocity=0.8, duration_ms=700,
+                           velocity_color="green")
+
+        with self.assertRaises(ProtectedError):
+            self.session.delete()
+
+        self.assertEqual(Set.objects.count(), 1)
+        self.assertEqual(Rep.objects.count(), 1)
+        self.assertEqual(Session.objects.count(), 1)
+
+    def test_an_empty_session_can_still_be_deleted(self):
+        """Nobody lifted, so there is nothing to protect — a mis-created session
+        should not be permanent."""
+        self.session.delete()
+        self.assertEqual(Session.objects.count(), 0)
+
+    def test_the_protection_is_in_the_applied_migration_not_just_the_model(self):
+        """A model that says PROTECT while the database still says CASCADE would
+        pass every test above and still lose data in production."""
+        field = Set._meta.get_field("session")
+        self.assertIs(field.remote_field.on_delete, models.PROTECT)

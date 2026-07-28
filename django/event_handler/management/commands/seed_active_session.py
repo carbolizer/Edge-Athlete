@@ -2,11 +2,18 @@
 # training session so the rack screen has real data to fetch on day one.
 #
 # It builds exactly what GET /api/sessions/active/ is meant to return: a session
-# that hasn't ended, a roster of athletes, a training plan (Program) per athlete,
-# a few already-finished sets so some athletes read as "has data" (and some
-# don't), and real recorded maxes (AthleteMax) — on purpose leaving one gap and
-# one older-then-newer pair so you can see the endpoint pick the current max and
-# expose the "no max yet" case the rack screen prompts for.
+# that hasn't ended, a roster of athletes, a plan they train, a few already-
+# finished sets so some athletes read as "has data" (and some don't), and real
+# recorded maxes — on purpose leaving one gap and one older-then-newer pair so
+# you can see the endpoint pick the current max and expose the "no max yet" case
+# the rack screen prompts for.
+#
+# The plan is built the way a coach builds one: a TrainingBlock (the reusable
+# template) is deployed as a TrainingProgram for a TrainingGroup, and that group
+# is scheduled into the session. Prescriptions are PERCENTAGES, so the pounds
+# each athlete sees come from their own reference max — which is why Taylor Fox's
+# missing bench max shows up as a real "no target" case rather than a made-up
+# number.
 #
 # Re-runnable: pass --reset to wipe just the rows this command creates (matched
 # by the fixed names below) and rebuild them cleanly.
@@ -16,19 +23,30 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from event_handler.models import (Athlete, Program, Session, Set, Rep, Node,
-                                   AthleteReferenceMax, Exercise)
+from django.contrib.auth.models import User
+
+from event_handler.models import (Athlete, AthleteReferenceMax, Exercise, Node, Rep,
+                                  Session, SessionParticipation, Set, TrainingBlock,
+                                  TrainingBlockExercise, TrainingBlockWorkout,
+                                  TrainingGroup, TrainingProgram)
+from event_handler.services.planning import instantiate_block
 
 SESSION_LABEL = "Thursday — Lower + Push"
 NODE_ID = "rack_1"
+GROUP_NAME = "Varsity"
+BLOCK_NAME = "Base Strength"
+WORKOUT_NAME = "Thursday — Lower + Push"
 
-# (name, back-squat target lbs, bench target lbs) — targets live on each
-# athlete's Program; the endpoint hands these back as resolved target weights.
-ATHLETES = [
-    {"name": "Jordan Lee",   "squat_target": 225.0, "bench_target": 155.0},
-    {"name": "Sam Rivera",   "squat_target": 275.0, "bench_target": 185.0},
-    {"name": "Alex Kim",     "squat_target": 185.0, "bench_target": 135.0},
-    {"name": "Taylor Fox",   "squat_target": 205.0, "bench_target": 145.0},
+ATHLETES = ["Jordan Lee", "Sam Rivera", "Alex Kim", "Taylor Fox"]
+
+# The prescription, written once for the whole group. 72% of a 315 squat is 227,
+# which rounds to 225 — the same bar the old per-athlete seed put in front of
+# Jordan, now arrived at the way the system actually works.
+PRESCRIPTION = [
+    {"exercise": "Back Squat",  "sets": 5, "reps": 3, "percent": 72.0,
+     "zone_min": 0.5, "zone_max": 0.8},
+    {"exercise": "Bench Press", "sets": 4, "reps": 5, "percent": 75.0,
+     "zone_min": 0.4, "zone_max": 0.7},
 ]
 
 SQUAT = "Back Squat"
@@ -44,14 +62,19 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
-        names = [a["name"] for a in ATHLETES]
+        names = list(ATHLETES)
 
         if options["reset"]:
             # Deleting the Session cascades its Sets/Reps; the rest we clear by
             # the fixed names/ids this seed owns, so real data is left alone.
+            # Sets are PROTECTed against a session delete now (that is the whole
+            # point of the change), so clear them explicitly before the session.
+            Set.objects.filter(session__label=SESSION_LABEL).delete()
             Session.objects.filter(label=SESSION_LABEL).delete()
             AthleteReferenceMax.objects.filter(athlete__name__in=names).delete()
-            Program.objects.filter(athlete__name__in=names).delete()
+            TrainingProgram.objects.filter(training_group__name=GROUP_NAME).delete()
+            TrainingBlock.objects.filter(name=BLOCK_NAME).delete()
+            TrainingGroup.objects.filter(name=GROUP_NAME).delete()
             Athlete.objects.filter(name__in=names).delete()
             Node.objects.filter(node_id=NODE_ID).delete()
             self.stdout.write("Reset: cleared previously seeded rows.")
@@ -65,25 +88,44 @@ class Command(BaseCommand):
         squat, _ = Exercise.objects.get_or_create(name=SQUAT)
         bench, _ = Exercise.objects.get_or_create(name=BENCH)
 
-        # Athletes + their per-exercise training plans.
-        athletes = {}
-        for spec in ATHLETES:
-            athlete, _ = Athlete.objects.get_or_create(name=spec["name"])
-            athletes[spec["name"]] = athlete
-            Program.objects.get_or_create(
-                athlete=athlete, exercise=squat,
-                defaults={"target_sets": 5, "target_reps": 3,
-                          "target_weight_lbs": spec["squat_target"],
-                          "velocity_zone_min": 0.5, "velocity_zone_max": 0.8})
-            Program.objects.get_or_create(
-                athlete=athlete, exercise=bench,
-                defaults={"target_sets": 4, "target_reps": 5,
-                          "target_weight_lbs": spec["bench_target"],
-                          "velocity_zone_min": 0.4, "velocity_zone_max": 0.7})
+        # A coach to own the group and the template.
+        coach = User.objects.filter(is_staff=True).first() or User.objects.first()
+        if coach is None:
+            coach = User.objects.create_user(username="coach", password="coach")
+
+        # Athletes, and the group they all train with.
+        athletes = {name: Athlete.objects.get_or_create(name=name)[0] for name in ATHLETES}
+        group, _ = TrainingGroup.objects.get_or_create(name=GROUP_NAME, coach=coach)
+        for athlete in athletes.values():
+            athlete.training_groups.add(group)
+
+        # The template, written once — then deployed for the group. Deploying
+        # copies the rows down, which is why editing the template later can't
+        # rewrite what this group already trained.
+        block, _ = TrainingBlock.objects.get_or_create(name=BLOCK_NAME, coach=coach)
+        if not block.workouts.exists():
+            workout = TrainingBlockWorkout.objects.create(
+                training_block=block, name=WORKOUT_NAME, position=1)
+            for position, row in enumerate(PRESCRIPTION, start=1):
+                TrainingBlockExercise.objects.create(
+                    training_block_workout=workout,
+                    exercise=Exercise.objects.get(name=row["exercise"]),
+                    position=position, sets=row["sets"], reps=row["reps"],
+                    target_percent=row["percent"],
+                    velocity_zone_min=row["zone_min"], velocity_zone_max=row["zone_max"])
+
+        program = instantiate_block(block, group, start_date=timezone.now().date())
 
         # The live session, roster = all four athletes.
         session = Session.objects.create(label=SESSION_LABEL)
         session.athletes.set(athletes.values())
+
+        # Put the group ON the session, pointed at the day's workout. Without
+        # this the session has a roster but nobody has anything to lift — the
+        # session is where the plan and the people actually meet.
+        SessionParticipation.objects.create(
+            session=session, training_program=program,
+            training_program_workout=program.workouts.order_by("position").first())
 
         # Give TWO of the four a finished set already, so has_data is non-trivial
         # (Jordan + Sam read as has_data=true; Alex + Taylor as false → their next
@@ -108,7 +150,8 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             f"Seeded active session '{session.label}' (id={session.id}) with "
-            f"{len(athletes)} athletes, programs, 2 completed sets, and maxes."))
+            f"{len(athletes)} athletes in '{GROUP_NAME}' training '{program.name}', "
+            f"2 completed sets, and maxes."))
 
     def _finish_a_set(self, session, node, athlete, exercise, set_number, weight_lbs):
         """Create one already-completed set with a couple of reps, so the athlete

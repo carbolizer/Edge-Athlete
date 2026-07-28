@@ -35,14 +35,14 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import (Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax,
+from .models import (Node, RackScreen, Athlete, Session, Set, Rep, AthleteReferenceMax,
                      Exercise, RackCheckIn, DailyReport, TrainingGroup, TrainingBlock,
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride)
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
-                          ProgramSerializer, AthleteSerializer, SessionSerializer,
+                          AthleteSerializer, SessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
                           TrainingProgramSerializer)
@@ -53,7 +53,7 @@ from .services.reports import (reports_for_athlete, report_list_item, report_det
                                athlete_report_detail)
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import (movements_for_athlete as plan_movements_for_athlete,
-                                       resolve_target_weight)
+                                       plans_by_athlete, resolve_target_weight)
 from .services.planning import instantiate_block
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 
@@ -226,19 +226,48 @@ def athlete_detail(request, athlete_id):
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def programs_view(request):
-    """GET: an athlete's training plans, ?athlete={id} to filter (open). POST:
-    create a plan (coach only)."""
+    """GET: an athlete's training plan for today, ?athlete={id} to filter (open).
+
+    SAME ADDRESS, DIFFERENT SOURCE. This used to read a per-athlete table where a
+    coach typed one weight per person. That table is gone: a plan now belongs to
+    a TrainingGroup and says a PERCENT, and the pounds are worked out per athlete
+    from their own reference max. Callers see the same fields either way, which
+    is the point — this is a diagnostic read, and it had no business breaking
+    over where the numbers come from.
+
+    `id` is null now. There is no longer a single row to point at: what comes
+    back is resolved from the athlete's group plan, not stored per athlete.
+    """
     if request.method == "GET":
-        plans = Program.objects.all()
         athlete_id = request.query_params.get("athlete")
-        if athlete_id is not None:
-            plans = plans.filter(athlete_id=athlete_id)
-        return Response(ProgramSerializer(plans, many=True).data)
-    if not _require_coach(request):
-        return Response({"detail": "coach login required"}, status=401)
-    form = ProgramSerializer(data=request.data)
-    form.is_valid(raise_exception=True)
-    return Response(ProgramSerializer(form.save()).data, status=201)
+        session = _active_session()
+        athletes = Athlete.objects.filter(id=athlete_id) if athlete_id else Athlete.objects.all()
+
+        plans = []
+        for athlete in athletes:
+            for movement in plan_movements_for_athlete(athlete, session):
+                plans.append({
+                    "id": None,
+                    "athlete": athlete.id,
+                    "exercise": movement["exercise_id"],
+                    "target_sets": movement["planned_sets"],
+                    "target_reps": movement["target_reps"],
+                    "target_weight_lbs": movement["target_weight_lbs"],
+                    "velocity_zone_min": movement["velocity_zone_min"],
+                    "velocity_zone_max": movement["velocity_zone_max"],
+                })
+        return Response(plans)
+
+    # Writing a plan one athlete at a time is the thing this merge removed. A
+    # 410 says the address is deliberately dead rather than broken, and points
+    # at what replaced it, so anyone still calling it learns why.
+    return Response({
+        "code": "endpoint_retired",
+        "detail": ("Per-athlete plans have been replaced by group plans. Build a "
+                   "template at POST /api/workout-programs/, deploy it with "
+                   "POST /api/training-programs/, and put athletes in the group "
+                   "with POST /api/training-groups/{id}/athletes/."),
+    }, status=410)
 
 
 # ─────────────────────────── exercises (catalog) ───────────────────────────
@@ -346,6 +375,10 @@ def sessions_active(request):
     athletes = list(session.athletes.order_by("name", "id"))
     athlete_ids = [a.id for a in athletes]
 
+    # Everyone's plan for today, resolved once — the same helper the wall display
+    # uses, so the two can't disagree about what somebody is meant to be lifting.
+    plans = plans_by_athlete(session, athletes)
+
     # has_data: this athlete already has a completed set in THIS session. Drives
     # Phase 11's is_makeup (a set logged for someone who missed the original run).
     # Coach weight adjustments excluded: they are finished set rows, so counting
@@ -369,24 +402,29 @@ def sessions_active(request):
             pairs[m.exercise_id] = m.reference_weight_lbs
 
     # Per-athlete resolved target weights, plus the session-level exercise list
-    # for the dropdown + velocity zones. Both come from the roster's Programs,
-    # keyed by the exercise's catalog id. session_exercises takes the first
-    # Program seen for each exercise as the representative zone/target-reps —
-    # minimal-path assumption that a movement's zone is shared across the room
-    # (true for our seed data).
+    # for the dropdown + velocity zones. Both now come from each athlete's GROUP
+    # plan (percent x their own reference max) instead of a per-athlete row, and
+    # the response shape is byte-for-byte what it was — the rack must not be able
+    # to tell that the source changed.
+    #
+    # session_exercises takes the first athlete seen to prescribe a movement as
+    # the representative zone/target-reps. Same assumption as before the swap:
+    # a movement's zone is shared across the room.
     targets_by_athlete = {}
     session_exercises = {}
-    for p in Program.objects.filter(athlete_id__in=athlete_ids).select_related("exercise"):
-        targets_by_athlete.setdefault(p.athlete_id, {})[p.exercise_id] = p.target_weight_lbs
-        if p.exercise_id not in session_exercises:
-            session_exercises[p.exercise_id] = {
-                "exercise_id": p.exercise_id,
-                "name": p.exercise.name,
-                "target_sets": p.target_sets,
-                "target_reps": p.target_reps,
-                "velocity_zone_min": p.velocity_zone_min,
-                "velocity_zone_max": p.velocity_zone_max,
-            }
+    for athlete in athletes:
+        for movement in plans[athlete.id]:
+            targets_by_athlete.setdefault(athlete.id, {})[movement["exercise_id"]] = \
+                movement["target_weight_lbs"]
+            if movement["exercise_id"] not in session_exercises:
+                session_exercises[movement["exercise_id"]] = {
+                    "exercise_id": movement["exercise_id"],
+                    "name": movement["name"],
+                    "target_sets": movement["planned_sets"],
+                    "target_reps": movement["target_reps"],
+                    "velocity_zone_min": movement["velocity_zone_min"],
+                    "velocity_zone_max": movement["velocity_zone_max"],
+                }
 
     roster = [{
         "athlete_id": a.id,
@@ -485,18 +523,12 @@ def athlete_progress(request, athlete_id):
     # We try the new way first and fall back to the old one, because both kinds of
     # data exist right now. The fallback disappears when the old table retires in
     # the rename phase — at which point this becomes a single call.
+    # One source now. The per-athlete fallback that sat here through the merge
+    # existed only so the rack kept working while both plan systems were alive;
+    # with the old table gone it had nothing left to read. An empty list is a
+    # legitimate answer (no group, group not training today, coach hasn't picked
+    # the workout) and the rack already handles it.
     planned = plan_movements_for_athlete(athlete, session)
-    if not planned:
-        planned = [{
-            "exercise_id": p.exercise_id,
-            "name": p.exercise.name,
-            "planned_sets": p.target_sets,
-            "target_reps": p.target_reps,
-            "target_weight_lbs": p.target_weight_lbs,
-            "velocity_zone_min": p.velocity_zone_min,
-            "velocity_zone_max": p.velocity_zone_max,
-        } for p in Program.objects.filter(athlete_id=athlete_id)
-                                  .select_related("exercise").order_by("id")]
 
     # Live progress is layered on identically regardless of which source the plan
     # came from — the tablet cannot tell the difference, and must not be able to.

@@ -37,8 +37,9 @@ from django.db.models import Count, Max, Sum
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-from event_handler.models import (MonitoringEvent, Node, Program, RackCheckIn,
+from event_handler.models import (MonitoringEvent, Node, RackCheckIn,
                                   RackScreen, Rep, Session, Set)
+from event_handler.services.plan_resolution import velocity_zones_by_athlete
 
 # Hard ceilings so one absurd gym (or a bad import) can never make this endpoint
 # return an unbounded payload to a tablet on a slow local network.
@@ -144,22 +145,19 @@ def _status_color(reps):
     return last if last in _REAL_COLORS else "neutral"
 
 
-def _target_zone_for(athlete_id, exercise_id):
+def _target_zone_for(zones, athlete_id, exercise_id):
     """The athlete's velocity target for this movement.
 
-    NOTE (merge phase): this still reads the legacy per-athlete Program table,
-    which is what the rack itself resolves targets from today. When P5 re-points
-    target resolution at TrainingProgramExercise (% x reference max), this
-    lookup moves with it — see canon §6.1. Kept deliberately in one small
-    function so that swap is a one-place change.
+    Reads from the SAME resolved plan the rack screen is working off, looked up
+    once per snapshot rather than per rack. It used to query the legacy
+    per-athlete plan table directly, which meant that after the rack moved to
+    percentage-of-max the wall display could colour a rep against a zone nobody
+    was actually training to.
     """
-    program = Program.objects.filter(athlete_id=athlete_id, exercise_id=exercise_id).first()
-    if program is None:
-        return None
-    return {"velocity_min": program.velocity_zone_min, "velocity_max": program.velocity_zone_max}
+    return zones.get(athlete_id, {}).get(exercise_id)
 
 
-def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by_rack):
+def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by_rack, zones):
     """One rack's tile on the dashboard."""
     status = _set_status(latest_set)
     body = {
@@ -178,7 +176,7 @@ def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by
         body["athlete"] = None
 
     if latest_set is not None:
-        zone = _target_zone_for(latest_set.athlete_id, latest_set.exercise_id)
+        zone = _target_zone_for(zones, latest_set.athlete_id, latest_set.exercise_id)
         body["latest_set"] = {
             **({"id": latest_set.id} if include_details else {}),
             "exercise": latest_set.exercise.name,
@@ -209,7 +207,7 @@ def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by
     return body
 
 
-def _selected_movement(latest_sets, include_details):
+def _selected_movement(latest_sets, include_details, zones):
     """What the room as a whole is working on: the most-common current movement.
 
     His version read this from the dropped AthleteDayProgress table. We derive it
@@ -232,7 +230,7 @@ def _selected_movement(latest_sets, include_details):
     zone = None
     for a_set in latest_sets:
         if a_set.exercise_id == exercise_id:
-            zone = _target_zone_for(a_set.athlete_id, exercise_id)
+            zone = _target_zone_for(zones, a_set.athlete_id, exercise_id)
             if zone:
                 break
 
@@ -318,6 +316,10 @@ def room_state_snapshot(include_details):
     latest_by_athlete = _latest_sets_by_athlete(
         session, [a.id for a in athlete_by_rack.values()])
 
+    # Every athlete's prescribed velocity zones, resolved once for the whole
+    # snapshot instead of once per rack tile.
+    zones = velocity_zones_by_athlete(session, list(athlete_by_rack.values()))
+
     # Reps for the visible sets, fetched in one query and grouped in memory
     # rather than one query per rack.
     reps_by_set = {}
@@ -340,9 +342,9 @@ def room_state_snapshot(include_details):
             shown_sets.append(latest_set)
         racks.append(_rack_body(rack_number, athlete, latest_set,
                                 reps_by_set.get(latest_set.id, []) if latest_set else [],
-                                include_details, nodes_by_rack))
+                                include_details, nodes_by_rack, zones))
 
-    exercise_id, movement = _selected_movement(shown_sets, include_details)
+    exercise_id, movement = _selected_movement(shown_sets, include_details, zones)
     leaderboard, leaderboard_truncated = _leaderboard(session, exercise_id, include_details)
 
     # Room totals over real finished work only.

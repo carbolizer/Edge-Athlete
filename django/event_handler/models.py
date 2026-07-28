@@ -11,10 +11,21 @@ models.py — the Edge Athlete database tables.
 ------------------------------------------------------
 Each class below is one table; each attribute is one column. This file is the
 whole data model for the base station: the hardware (Node), the tablet screens
-(RackScreen), the athlete training data (Session → Set → Rep), and — new,
-mid-merge — the Training* org/planning hierarchy that supersedes the legacy
-per-athlete Program table (see that block's comment for what it's for). Program
-still exists for now; it retires in the later Session→TrainingSession phase.
+(RackScreen), the athlete training data (Session → Set → Rep), and the Training*
+planning hierarchy.
+
+That hierarchy, biggest idea to smallest — this is CONCEPTUAL WEIGHT, not
+ownership and not the foreign-key direction (see the canon §4):
+
+    TrainingBlock  →  TrainingProgram  →  TrainingGroup  →  TrainingSession
+    the template      an instance of      the athletes      the event where
+    (timeless)        it, placed in       who train it      lifting is logged
+                      time                (many per         (a manifestation
+                                          athlete)           of the others)
+
+The legacy per-athlete `Program` table is GONE as of migration 0011. A plan now
+belongs to a TrainingGroup and stores a PERCENT; the pounds an athlete sees are
+resolved at read time from their own reference max (services/plan_resolution.py).
 
 Two things worth understanding before you read:
   • A RackScreen (the tablet at a rack) and a Node (the sensor on the bar) are
@@ -121,19 +132,11 @@ class Exercise(models.Model):
         return self.name
 
 
-class Program(models.Model):
-    """A prescribed training block for one athlete — the targets a set is judged
-    against (rep/weight goals and the velocity zone that reads as 'on target')."""
-    athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='programs')
-    exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='programs')
-    target_sets = models.IntegerField()
-    target_reps = models.IntegerField()
-    target_weight_lbs = models.FloatField()
-    velocity_zone_min = models.FloatField()
-    velocity_zone_max = models.FloatField()
-
-    def __str__(self):
-        return f"{self.exercise} for {self.athlete.name}"
+# The per-athlete `Program` table lived here until the group hierarchy replaced
+# it. A coach typed one weight per person per movement; now a plan belongs to a
+# TrainingGroup, stores a PERCENT, and the pounds are resolved per athlete from
+# their own reference max — so one plan serves a whole group and the weights
+# follow people as they get stronger. See TrainingBlock / TrainingProgram below.
 
 
 class TrainingGroup(models.Model):
@@ -364,7 +367,13 @@ class Set(models.Model):
     """One set an athlete performed. Created when the set starts; its summary
     fields (reps_completed, velocities, is_false_set) are filled in by the batch
     set-complete write when the set ends."""
-    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='sets')
+    # PROTECT, not CASCADE. A Set is the only permanent record that an athlete
+    # actually did something — deleting the session it happened in used to take
+    # every set and rep inside it with no warning and no way back. Now the delete
+    # is refused while any lifting exists, which turns a silent, unrecoverable
+    # loss into an error message. Ending a day is `ended_at`, not a delete; a
+    # session with real work in it is not supposed to be removable.
+    session = models.ForeignKey(Session, on_delete=models.PROTECT, related_name='sets')
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='sets')
     node = models.ForeignKey(Node, on_delete=models.SET_NULL, null=True, blank=True, related_name='sets')
     exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='sets')
