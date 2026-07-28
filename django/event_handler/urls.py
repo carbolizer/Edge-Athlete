@@ -50,6 +50,27 @@ urlpatterns = [
     path('sessions/active/status/', views.session_status, name='session_status'),
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
 
+    # planning — squads, reusable templates, and templates deployed for a squad.
+    # Route names follow what the coach front end already calls: its
+    # "workout-programs" are our reusable TrainingBlocks, and its "workouts" are
+    # the days inside one. We bend the URLs to the existing client rather than
+    # reshaping its code (canon §3.3).
+    path('training-groups/', views.training_groups_view, name='training_groups'),
+    path('training-groups/<int:group_id>/athletes/', views.training_group_athletes_view,
+         name='training_group_athletes'),
+    path('workout-programs/', views.workout_programs_view, name='workout_programs'),
+    path('workouts/', views.workouts_view, name='workouts'),
+    path('training-programs/', views.training_programs_view, name='training_programs'),
+
+    # which squads are training in a session — this is what makes one session
+    # shared between several squads on different plans.
+    path('sessions/<int:session_id>/participation/', views.session_participation_view,
+         name='session_participation'),
+
+    # the per-athlete exception to a squad's prescription (rare by design).
+    path('athletes/<int:athlete_id>/workout-exercises/<int:exercise_id>/override/',
+         views.athlete_exercise_override_view, name='athlete_exercise_override'),
+
     # reports — ONE family. "This athlete's reports" is the same list filtered
     # (?athlete={id}), not a parallel athletes/{id}/reports/... set of routes.
     path('reports/', views.reports_view, name='reports'),

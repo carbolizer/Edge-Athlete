@@ -35,11 +35,16 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from .models import (Node, RackScreen, Athlete, Program, Session, Set, Rep, AthleteReferenceMax,
-                     Exercise, RackCheckIn, DailyReport)
+                     Exercise, RackCheckIn, DailyReport, TrainingGroup, TrainingBlock,
+                     TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
+                     TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
+                     AthleteWorkoutExerciseOverride)
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, AthleteSerializer, SessionSerializer,
-                          NodeSerializer, ExerciseSerializer)
+                          NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
+                          TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
+                          TrainingProgramSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
@@ -47,6 +52,7 @@ from .services.reports import (reports_for_athlete, report_list_item, report_det
                                athlete_report_detail)
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import movements_for_athlete as plan_movements_for_athlete
+from .services.planning import instantiate_block
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -923,3 +929,265 @@ def report_pdf_view(request, report_id):
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["Cache-Control"] = "private, no-store"
     return response
+
+
+# ─────────────────────────── planning: squads, templates, plans ───────────────────────────
+#
+# Route names here match what the coach front end already calls, even where our
+# model names differ (its "workout-programs" are our reusable TrainingBlocks).
+# Bending the URLs to the existing client is deliberate — canon §3.3.
+
+@api_view(["GET", "POST"])
+@permission_classes([IsCoach])
+def training_groups_view(request):
+    """Coach-only: list or create squads.
+
+    A squad is a NAMED SUBSET of athletes who train the same plan — not the whole
+    roster. A gym runs several at once (a team squad, a position squad, a
+    rehab group), and an athlete can be in more than one.
+    """
+    if request.method == "GET":
+        return Response(TrainingGroupSerializer(
+            TrainingGroup.objects.all().order_by("name"), many=True).data)
+
+    form = TrainingGroupSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(TrainingGroupSerializer(form.save(coach=request.user)).data, status=201)
+
+
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([IsCoach])
+def training_group_athletes_view(request, group_id):
+    """Coach-only: who is in this squad.
+
+    POST adds, DELETE removes; both take {"athletes": [ids]}. Membership is
+    current-state only — taking someone out never rewrites what they already
+    trained, because history lives on the sets they actually did.
+    """
+    group = TrainingGroup.objects.filter(id=group_id).first()
+    if group is None:
+        return Response({"error": "training group not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(AthleteSerializer(group.athletes.order_by("name"), many=True).data)
+
+    ids = request.data.get("athletes")
+    if not isinstance(ids, list) or not ids:
+        return Response({"error": "athletes must be a non-empty list of ids"}, status=400)
+    athletes = Athlete.objects.filter(id__in=ids)
+    if athletes.count() != len(set(ids)):
+        return Response({"error": "one or more athletes not found"}, status=404)
+
+    if request.method == "POST":
+        group.athletes.add(*athletes)
+    else:
+        group.athletes.remove(*athletes)
+    return Response(AthleteSerializer(group.athletes.order_by("name"), many=True).data)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsCoach])
+def workout_programs_view(request):
+    """Coach-only: the reusable TEMPLATES a coach designs once and redeploys.
+
+    Called `workout-programs` because that is what the coach front end asks for;
+    internally these are TrainingBlocks. A template has no squad and no dates —
+    it is the recipe, not a serving of it.
+    """
+    if request.method == "GET":
+        return Response(TrainingBlockSerializer(
+            TrainingBlock.objects.prefetch_related("workouts__exercises").order_by("name"),
+            many=True).data)
+
+    form = TrainingBlockSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(TrainingBlockSerializer(form.save(coach=request.user)).data, status=201)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsCoach])
+def workouts_view(request):
+    """Coach-only: the individual days inside a template, and their movements.
+
+    POST accepts a whole day at once — its name, its position in the block, and
+    the movements in order — because a coach thinks in days, not in rows:
+
+        { "training_block": 1, "name": "Day 1 — Lower", "position": 1,
+          "exercises": [ {"exercise": 3, "sets": 5, "reps": 3, "target_percent": 80} ] }
+
+    Writing the day in one call also means a half-entered workout can't exist.
+    """
+    if request.method == "GET":
+        workouts = TrainingBlockWorkout.objects.prefetch_related("exercises")
+        block_id = request.query_params.get("training_block")
+        if block_id:
+            workouts = workouts.filter(training_block_id=block_id)
+        return Response(TrainingBlockWorkoutSerializer(workouts.order_by("position"), many=True).data)
+
+    block = TrainingBlock.objects.filter(id=request.data.get("training_block")).first()
+    if block is None:
+        return Response({"error": "training block not found"}, status=404)
+
+    rows = request.data.get("exercises") or []
+    with transaction.atomic():
+        workout = TrainingBlockWorkout.objects.create(
+            training_block=block,
+            name=request.data.get("name") or "Workout",
+            position=request.data.get("position") or (block.workouts.count() + 1),
+        )
+        for position, row in enumerate(rows, start=1):
+            if not Exercise.objects.filter(id=row.get("exercise")).exists():
+                raise ValueError(f"exercise {row.get('exercise')} not found")
+            TrainingBlockExercise.objects.create(
+                training_block_workout=workout,
+                exercise_id=row["exercise"],
+                position=row.get("position") or position,
+                sets=row.get("sets") or 1,
+                reps=row.get("reps") or 1,
+                target_percent=row.get("target_percent"),
+                velocity_zone_min=row.get("velocity_zone_min"),
+                velocity_zone_max=row.get("velocity_zone_max"),
+            )
+    return Response(TrainingBlockWorkoutSerializer(workout).data, status=201)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsCoach])
+def training_programs_view(request):
+    """Coach-only: a template DEPLOYED for a squad, starting on a date.
+
+    Two ways to create one, both first-class:
+      with "training_block"    — copy that template down for this squad
+      without "training_block" — a one-off plan authored directly for the squad,
+                                 no template involved. It can be promoted into a
+                                 template later without rebuilding anything.
+    """
+    if request.method == "GET":
+        programs = TrainingProgram.objects.select_related("training_group") \
+                                          .prefetch_related("workouts__exercises")
+        group_id = request.query_params.get("training_group")
+        if group_id:
+            programs = programs.filter(training_group_id=group_id)
+        return Response(TrainingProgramSerializer(programs.order_by("-start_date"), many=True).data)
+
+    group = TrainingGroup.objects.filter(id=request.data.get("training_group")).first()
+    if group is None:
+        return Response({"error": "training group not found"}, status=404)
+
+    block_id = request.data.get("training_block")
+    if block_id:
+        block = TrainingBlock.objects.filter(id=block_id).first()
+        if block is None:
+            return Response({"error": "training block not found"}, status=404)
+        program = instantiate_block(
+            block, group,
+            name=request.data.get("name"),
+            start_date=request.data.get("start_date"),
+            end_date=request.data.get("end_date"),
+        )
+        return Response(TrainingProgramSerializer(program).data, status=201)
+
+    form = TrainingProgramSerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(TrainingProgramSerializer(form.save()).data, status=201)
+
+
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([IsCoach])
+def session_participation_view(request, session_id):
+    """Coach-only: which squads are training in this session, and what they're doing.
+
+    This is what makes one session shared. Several squads can be in the gym at
+    the same time on different plans, and each athlete gets their own squad's
+    workout — which is exactly how an athlete in two squads ends up doing both.
+
+    POST body: { "training_program": 1, "training_program_workout": 4 }
+    The workout is the day being run. Until it is set, that squad has nothing
+    scheduled and its athletes see an empty list — a planning gap, not an error.
+    """
+    session = Session.objects.filter(id=session_id).first()
+    if session is None:
+        return Response({"error": "session not found"}, status=404)
+
+    def current():
+        return [{
+            "id": p.id,
+            "training_program": p.training_program_id,
+            "program_name": p.training_program.name,
+            "group_name": p.training_program.training_group.name,
+            "training_program_workout": p.training_program_workout_id,
+            "workout_name": p.training_program_workout.name if p.training_program_workout else None,
+        } for p in SessionParticipation.objects
+            .filter(session=session)
+            .select_related("training_program__training_group", "training_program_workout")]
+
+    if request.method == "GET":
+        return Response(current())
+
+    program = TrainingProgram.objects.filter(id=request.data.get("training_program")).first()
+    if program is None:
+        return Response({"error": "training program not found"}, status=404)
+
+    if request.method == "DELETE":
+        SessionParticipation.objects.filter(session=session, training_program=program).delete()
+        return Response(current())
+
+    workout_id = request.data.get("training_program_workout")
+    if workout_id and not TrainingProgramWorkout.objects.filter(
+            id=workout_id, training_program=program).exists():
+        return Response({"error": "workout does not belong to that program"}, status=400)
+
+    SessionParticipation.objects.update_or_create(
+        session=session, training_program=program,
+        defaults={"training_program_workout_id": workout_id},
+    )
+    return Response(current(), status=201)
+
+
+@api_view(["GET", "PUT", "DELETE"])
+@permission_classes([IsCoach])
+def athlete_exercise_override_view(request, athlete_id, exercise_id):
+    """Coach-only: an exception for one athlete on one prescribed movement.
+
+    For the outlier the squad percentage doesn't suit — someone coming back from
+    injury, or a lifter whose bench is far behind their squat. It overrides the
+    PERCENTAGE, never a fixed weight, so their number still tracks their own max
+    instead of freezing in place.
+
+    `exercise_id` here is the program-exercise row being overridden (the specific
+    line in that squad's plan), not the catalog movement.
+
+    Most athletes never need one of these. It is an escape hatch, not the path.
+    """
+    athlete = Athlete.objects.filter(id=athlete_id).first()
+    if athlete is None:
+        return Response({"error": "athlete not found"}, status=404)
+    row = TrainingProgramExercise.objects.filter(id=exercise_id).first()
+    if row is None:
+        return Response({"error": "program exercise not found"}, status=404)
+
+    if request.method == "DELETE":
+        AthleteWorkoutExerciseOverride.objects.filter(
+            athlete=athlete, training_program_exercise=row).delete()
+        return Response(status=204)
+
+    existing = AthleteWorkoutExerciseOverride.objects.filter(
+        athlete=athlete, training_program_exercise=row).first()
+
+    if request.method == "GET":
+        if existing is None:
+            return Response({"athlete": athlete_id, "training_program_exercise": exercise_id,
+                             "target_percent": None, "sets": None, "reps": None})
+        return Response({"athlete": athlete_id, "training_program_exercise": exercise_id,
+                         "target_percent": existing.target_percent,
+                         "sets": existing.sets, "reps": existing.reps})
+
+    fields = {k: request.data.get(k) for k in ("target_percent", "sets", "reps")}
+    if all(v is None for v in fields.values()):
+        return Response({"error": "set at least one of target_percent, sets, reps"}, status=400)
+
+    override, _ = AthleteWorkoutExerciseOverride.objects.update_or_create(
+        athlete=athlete, training_program_exercise=row, defaults=fields)
+    return Response({"athlete": athlete_id, "training_program_exercise": exercise_id,
+                     "target_percent": override.target_percent,
+                     "sets": override.sets, "reps": override.reps})

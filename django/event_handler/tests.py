@@ -14,7 +14,8 @@ from rest_framework.test import APITestCase
 from .models import (Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise,
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
-                     AthleteWorkoutExerciseOverride)
+                     AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
+                     TrainingBlockExercise)
 from .services.plan_resolution import movements_for_athlete
 
 
@@ -785,3 +786,147 @@ class CoachWeightAdjustmentTests(APITestCase):
         res = self.client.get("/api/sessions/active/status/")
         me = next(a for a in res.data["athletes"] if a["athlete_id"] == self.athlete.id)
         self.assertNotEqual(me["status"], "resting")
+
+
+class PlanningEndpointTests(APITestCase):
+    """Building a template and deploying it to a squad.
+
+    Walks the path a coach actually takes: make a squad, write a template once,
+    deploy it, schedule it — and check an athlete ends up with their own weights.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
+
+    def _template_with_a_day(self):
+        block = self.client.post("/api/workout-programs/", {"name": "Fall Strength"},
+                                 format="json").data
+        self.client.post("/api/workouts/", {
+            "training_block": block["id"], "name": "Day 1", "position": 1,
+            "exercises": [
+                {"exercise": self.squat.id, "sets": 5, "reps": 3, "target_percent": 80},
+                {"exercise": self.bench.id, "sets": 3, "reps": 5, "target_percent": 75},
+            ]}, format="json")
+        return block
+
+    def test_a_squad_is_a_subset_of_athletes_not_everyone(self):
+        alice = Athlete.objects.create(name="Alice")
+        Athlete.objects.create(name="Not in the squad")
+        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+                                 format="json").data
+        res = self.client.post(f"/api/training-groups/{squad['id']}/athletes/",
+                               {"athletes": [alice.id]}, format="json")
+        self.assertEqual([a["name"] for a in res.data], ["Alice"])
+
+    def test_deploying_a_template_copies_it_rather_than_pointing_at_it(self):
+        """The copy is what lets a coach edit next season's template without
+        rewriting what this squad already trained."""
+        block = self._template_with_a_day()
+        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+                                 format="json").data
+        program = self.client.post("/api/training-programs/", {
+            "training_group": squad["id"], "training_block": block["id"],
+            "start_date": "2026-07-27"}, format="json").data
+
+        self.assertEqual(len(program["workouts"]), 1)
+        self.assertEqual(len(program["workouts"][0]["exercises"]), 2)
+        # Editing the template afterwards must NOT reach into the deployed plan.
+        TrainingBlockExercise.objects.filter(exercise=self.squat).update(target_percent=99)
+        still = TrainingProgramExercise.objects.get(exercise=self.squat)
+        self.assertEqual(still.target_percent, 80)
+
+    def test_a_squad_can_have_a_one_off_plan_with_no_template(self):
+        """Not every plan is worth templating; a coach can write one directly and
+        promote it later."""
+        squad = self.client.post("/api/training-groups/", {"name": "Rehab"},
+                                 format="json").data
+        res = self.client.post("/api/training-programs/", {
+            "training_group": squad["id"], "name": "Ad hoc", "start_date": "2026-07-27"},
+            format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.data["training_block"])
+
+    def test_scheduling_a_squad_gives_its_athletes_their_own_weights(self):
+        """End to end: template -> squad -> today's session -> a real number."""
+        athlete = Athlete.objects.create(name="Jordan Lee")
+        AthleteReferenceMax.objects.create(athlete=athlete, exercise=self.squat,
+                                           reference_weight_lbs=315, rep_basis=1)
+        session = Session.objects.create(label="Thursday")
+        session.athletes.add(athlete)
+
+        block = self._template_with_a_day()
+        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+                                 format="json").data
+        self.client.post(f"/api/training-groups/{squad['id']}/athletes/",
+                         {"athletes": [athlete.id]}, format="json")
+        program = self.client.post("/api/training-programs/", {
+            "training_group": squad["id"], "training_block": block["id"],
+            "start_date": "2026-07-27"}, format="json").data
+
+        res = self.client.post(f"/api/sessions/{session.id}/participation/", {
+            "training_program": program["id"],
+            "training_program_workout": program["workouts"][0]["id"]}, format="json")
+        self.assertEqual(res.status_code, 201)
+
+        progress = self.client.get(
+            f"/api/sessions/active/athlete/{athlete.id}/progress/").data
+        squat_row = next(m for m in progress["movements"] if m["name"] == "Back Squat")
+        self.assertEqual(squat_row["target_weight_lbs"], 250.0)   # 315 x 80%, to the bar
+
+    def test_a_workout_cannot_be_scheduled_under_the_wrong_program(self):
+        """Guards against a coach's UI sending mismatched ids and silently
+        scheduling a squad onto another squad's day."""
+        session = Session.objects.create(label="Thursday")
+        block = self._template_with_a_day()
+        squad_a = self.client.post("/api/training-groups/", {"name": "A"}, format="json").data
+        squad_b = self.client.post("/api/training-groups/", {"name": "B"}, format="json").data
+        prog_a = self.client.post("/api/training-programs/", {
+            "training_group": squad_a["id"], "training_block": block["id"],
+            "start_date": "2026-07-27"}, format="json").data
+        prog_b = self.client.post("/api/training-programs/", {
+            "training_group": squad_b["id"], "training_block": block["id"],
+            "start_date": "2026-07-27"}, format="json").data
+
+        res = self.client.post(f"/api/sessions/{session.id}/participation/", {
+            "training_program": prog_a["id"],
+            "training_program_workout": prog_b["workouts"][0]["id"]}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_override_endpoint_round_trips_and_clears(self):
+        athlete = Athlete.objects.create(name="Jordan Lee")
+        block = self._template_with_a_day()
+        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+                                 format="json").data
+        program = self.client.post("/api/training-programs/", {
+            "training_group": squad["id"], "training_block": block["id"],
+            "start_date": "2026-07-27"}, format="json").data
+        row_id = program["workouts"][0]["exercises"][0]["id"]
+        url = f"/api/athletes/{athlete.id}/workout-exercises/{row_id}/override/"
+
+        self.assertIsNone(self.client.get(url).data["target_percent"])
+        self.assertEqual(self.client.put(url, {"target_percent": 60},
+                                         format="json").data["target_percent"], 60)
+        self.assertEqual(self.client.delete(url).status_code, 204)
+        self.assertIsNone(self.client.get(url).data["target_percent"])
+
+    def test_an_override_that_sets_nothing_is_rejected(self):
+        athlete = Athlete.objects.create(name="Jordan Lee")
+        block = self._template_with_a_day()
+        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+                                 format="json").data
+        program = self.client.post("/api/training-programs/", {
+            "training_group": squad["id"], "training_block": block["id"],
+            "start_date": "2026-07-27"}, format="json").data
+        row_id = program["workouts"][0]["exercises"][0]["id"]
+        res = self.client.put(f"/api/athletes/{athlete.id}/workout-exercises/{row_id}/override/",
+                              {}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_planning_requires_a_coach(self):
+        self.client.force_authenticate(user=None)
+        for url in ("/api/training-groups/", "/api/workout-programs/",
+                    "/api/workouts/", "/api/training-programs/"):
+            self.assertEqual(self.client.get(url).status_code, 401, url)
