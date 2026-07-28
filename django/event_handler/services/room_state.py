@@ -109,7 +109,8 @@ def _latest_sets_by_athlete(session, athlete_ids):
         return {}
     latest = {}
     for s in (Set.objects
-              .filter(session=session, athlete_id__in=athlete_ids)
+              .filter(session=session, athlete_id__in=athlete_ids,
+                      is_coach_adjustment=False)
               .select_related("exercise", "athlete")
               .order_by("-started_at", "-id")):
         latest.setdefault(s.athlete_id, s)

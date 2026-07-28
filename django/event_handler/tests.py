@@ -12,7 +12,10 @@ from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
 
 from .models import (Athlete, Program, Session, Set, Rep, AthleteReferenceMax, Exercise,
-                     RackCheckIn, DailyReport)
+                     RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
+                     TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
+                     AthleteWorkoutExerciseOverride)
+from .services.plan_resolution import movements_for_athlete
 
 
 class ActiveSessionEndpointTests(APITestCase):
@@ -597,3 +600,188 @@ class ReferenceMaxWriteTests(APITestCase):
             "entries": [{"athlete": 9999, "reference_weight_lbs": 315}]}, format="json").status_code, 404)
         self.assertEqual(self.client.post("/api/reference-maxes/", {
             "exercise": self.squat.id, "entries": []}, format="json").status_code, 400)
+
+
+class PlanResolutionTests(APITestCase):
+    """Working out what an athlete does today and what weight goes on the bar.
+
+    These pin the two worked examples written into the merge canon, so if the
+    arithmetic or the merge rules ever drift, a test says so rather than an
+    athlete quietly lifting the wrong weight.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.session = Session.objects.create(label="Thursday")
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.session.athletes.add(self.athlete)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
+
+    def _max(self, exercise, weight, rep_basis=1):
+        return AthleteReferenceMax.objects.create(
+            athlete=self.athlete, exercise=exercise,
+            reference_weight_lbs=weight, rep_basis=rep_basis)
+
+    def _group(self, name, extra_members=0):
+        group = TrainingGroup.objects.create(coach=self.coach, name=name)
+        self.athlete.training_groups.add(group)
+        for n in range(extra_members):
+            Athlete.objects.create(name=f"{name} member {n}").training_groups.add(group)
+        return group
+
+    def _program(self, group, rows, name="Plan"):
+        program = TrainingProgram.objects.create(
+            training_group=group, name=name, start_date=timezone.now().date())
+        workout = TrainingProgramWorkout.objects.create(
+            training_program=program, name="Day 1", position=1)
+        for position, (exercise, sets, reps, percent) in enumerate(rows, start=1):
+            TrainingProgramExercise.objects.create(
+                training_program_workout=workout, exercise=exercise, position=position,
+                sets=sets, reps=reps, target_percent=percent,
+                velocity_zone_min=0.5, velocity_zone_max=0.8)
+        SessionParticipation.objects.create(
+            session=self.session, training_program=program, training_program_workout=workout)
+        return program
+
+    def test_target_is_a_percentage_of_the_athletes_own_max(self):
+        """The canon's worked example: a 225x3 reference, prescribed at 80%,
+        must land on 200 lb — converted to a single, then rounded to the bar."""
+        self._max(self.squat, 225, rep_basis=3)
+        self._program(self._group("Squad"), [(self.squat, 5, 3, 80)])
+        movements = movements_for_athlete(self.athlete, self.session)
+        self.assertEqual(movements[0]["target_weight_lbs"], 200.0)
+
+    def test_no_max_on_file_gives_no_target_rather_than_a_guess(self):
+        """An athlete nobody has tested yet still gets their workout — the weight
+        is simply blank, and they key in what they're using. Never guess."""
+        self._program(self._group("Squad"), [(self.squat, 5, 3, 80)])
+        movements = movements_for_athlete(self.athlete, self.session)
+        self.assertEqual(len(movements), 1)
+        self.assertIsNone(movements[0]["target_weight_lbs"])
+
+    def test_two_squads_combine_and_the_lighter_prescription_wins(self):
+        """The canon's second worked example. Someone in the team squad AND a
+        position squad trains BOTH lists, the shared movement appears once at the
+        lighter load, and the bigger squad's work comes first."""
+        clean = Exercise.objects.get_or_create(name="Power Clean")[0]
+        sled = Exercise.objects.get_or_create(name="Deadlift")[0]
+        for exercise in (self.squat, self.bench, clean, sled):
+            self._max(exercise, 200)
+
+        team = self._group("Varsity Football", extra_members=6)
+        position = self._group("Receivers", extra_members=1)
+        self._program(team, [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75), (clean, 4, 2, 70)])
+        self._program(position, [(self.squat, 3, 5, 70), (sled, 3, 1, 60)])
+
+        movements = movements_for_athlete(self.athlete, self.session)
+        names = [m["name"] for m in movements]
+
+        self.assertEqual(len(movements), 4)                 # 5 rows, one shared
+        self.assertEqual(names.count("Back Squat"), 1)      # never duplicated
+        self.assertEqual(names[0], "Back Squat")            # bigger squad leads
+        squat_row = movements[0]
+        self.assertEqual((squat_row["planned_sets"], squat_row["target_reps"]), (3, 5))
+        self.assertEqual(squat_row["target_weight_lbs"], 140.0)   # 200 x 70%, not 80%
+
+    def test_an_athlete_in_no_squad_simply_has_nothing_planned(self):
+        self.assertEqual(movements_for_athlete(self.athlete, self.session), [])
+
+    def test_a_squad_not_training_today_contributes_nothing(self):
+        """Belonging to a squad isn't enough — that squad has to actually be in
+        this session, which is what lets one athlete carry several plans."""
+        group = TrainingGroup.objects.create(coach=self.coach, name="Off today")
+        self.athlete.training_groups.add(group)
+        TrainingProgram.objects.create(training_group=group, name="Other",
+                                       start_date=timezone.now().date())
+        self.assertEqual(movements_for_athlete(self.athlete, self.session), [])
+
+    def test_a_coach_override_replaces_only_what_it_sets(self):
+        """The exception for an athlete the percentage doesn't suit. It overrides
+        the PERCENTAGE, so their number still tracks their max."""
+        self._max(self.squat, 200)
+        program = self._program(self._group("Squad"), [(self.squat, 5, 3, 80)])
+        row = TrainingProgramExercise.objects.get()
+        AthleteWorkoutExerciseOverride.objects.create(
+            athlete=self.athlete, training_program_exercise=row, target_percent=60)
+
+        movement = movements_for_athlete(self.athlete, self.session)[0]
+        self.assertEqual(movement["target_weight_lbs"], 120.0)   # 60%, not 80%
+        self.assertEqual(movement["planned_sets"], 5)            # untouched
+        self.assertEqual(movement["target_reps"], 3)
+
+    def test_a_rack_only_offers_what_its_equipment_supports(self):
+        """A station told what it has won't offer a movement it can't run."""
+        for exercise in (self.squat, self.bench):
+            self._max(exercise, 200)
+        self._program(self._group("Squad"), [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75)])
+
+        node = Node.objects.create(node_id="rack_1", rack_number=1)
+        node.allowed_exercises.add(self.squat)          # this rack squats only
+        RackCheckIn.objects.create(session=self.session, athlete=self.athlete, rack_number=1)
+
+        names = [m["name"] for m in movements_for_athlete(self.athlete, self.session)]
+        self.assertEqual(names, ["Back Squat"])
+
+    def test_unknown_rack_shows_everything_rather_than_blocking(self):
+        """Fails open on purpose: if we can't tell where they are yet, they see
+        their whole workout instead of being stopped by a timing gap."""
+        for exercise in (self.squat, self.bench):
+            self._max(exercise, 200)
+        self._program(self._group("Squad"), [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75)])
+        self.assertEqual(len(movements_for_athlete(self.athlete, self.session)), 2)
+
+
+class CoachWeightAdjustmentTests(APITestCase):
+    """A coach changing the weight an athlete is working with (canon D15).
+
+    The subtle part: it has to be a finished set row to move the carried-forward
+    load, but it must not count as a lift. These pin that it moves the weight and
+    NOTHING else.
+    """
+
+    def setUp(self):
+        self.session = Session.objects.create(label="Thursday")
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.session.athletes.add(self.athlete)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        Program.objects.create(athlete=self.athlete, exercise=self.squat, target_sets=5,
+                               target_reps=3, target_weight_lbs=225,
+                               velocity_zone_min=0.5, velocity_zone_max=0.8)
+
+    def _set(self, weight, **kwargs):
+        return Set.objects.create(session=self.session, athlete=self.athlete,
+                                  exercise=self.squat, weight_lbs=weight,
+                                  ended_at=timezone.now(),
+                                  set_number=kwargs.pop("set_number", 1), **kwargs)
+
+    def test_adjustment_moves_the_working_weight_but_counts_as_no_sets(self):
+        self._set(225, reps_completed=3)                       # a real lift
+        self._set(185, set_number=2, is_coach_adjustment=True)  # coach drops the load
+
+        res = self.client.get(f"/api/sessions/active/athlete/{self.athlete.id}/progress/")
+        movement = res.data["movements"][0]
+        self.assertEqual(movement["last_weight_lbs"], 185.0)   # the weight moved
+        self.assertEqual(movement["completed_sets"], 1)        # still one real set
+        self.assertEqual(movement["false_sets"], 0)
+        self.assertEqual(movement["next_set_number"], 2)       # counter unaffected
+        self.assertEqual(movement["status"], "in_progress")
+
+    def test_adjustment_before_any_lifting_does_not_start_the_workout(self):
+        """Setting someone's weight before they begin must leave them looking
+        untouched, not half-finished."""
+        self._set(185, is_coach_adjustment=True)
+        res = self.client.get(f"/api/sessions/active/athlete/{self.athlete.id}/progress/")
+        movement = res.data["movements"][0]
+        self.assertEqual(movement["last_weight_lbs"], 185.0)
+        self.assertEqual(movement["completed_sets"], 0)
+        self.assertEqual(movement["status"], "not_started")
+        self.assertEqual(movement["next_set_number"], 1)
+
+    def test_an_adjusted_athlete_is_not_shown_as_resting(self):
+        """Otherwise the room shows them resting with a ticking timer having
+        lifted nothing."""
+        self._set(185, is_coach_adjustment=True)
+        res = self.client.get("/api/sessions/active/status/")
+        me = next(a for a in res.data["athletes"] if a["athlete_id"] == self.athlete.id)
+        self.assertNotEqual(me["status"], "resting")

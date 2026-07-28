@@ -46,6 +46,7 @@ from .services.session_completion import end_session
 from .services.reports import (reports_for_athlete, report_list_item, report_detail,
                                athlete_report_detail)
 from .services.report_pdf import render_report_pdf, PdfTooLarge
+from .services.plan_resolution import movements_for_athlete as plan_movements_for_athlete
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -338,8 +339,12 @@ def sessions_active(request):
 
     # has_data: this athlete already has a completed set in THIS session. Drives
     # Phase 11's is_makeup (a set logged for someone who missed the original run).
+    # Coach weight adjustments excluded: they are finished set rows, so counting
+    # them would mark an athlete as "already has data" and their genuine first set
+    # of the session would then be flagged as a retroactive makeup.
     athletes_with_data = set(
-        Set.objects.filter(session=session, ended_at__isnull=False)
+        Set.objects.filter(session=session, ended_at__isnull=False,
+                           is_coach_adjustment=False)
         .values_list("athlete_id", flat=True)
     )
 
@@ -445,35 +450,65 @@ def athlete_progress(request, athlete_id):
     for s in Set.objects.filter(
         session=session, athlete_id=athlete_id, ended_at__isnull=False
     ).order_by("started_at", "id"):
-        if s.is_false_set:
+        if s.is_coach_adjustment:
+            # A coach changing the weight an athlete is working with. It has to be
+            # a finished set row to move the carried-forward load at all, but it
+            # is NOT a lift: counting it would advance their set number and could
+            # mark a movement finished that they never actually did. So it moves
+            # the weight and nothing else.
+            if s.weight_lbs is not None:
+                last_weight_by_exercise[s.exercise_id] = s.weight_lbs
+        elif s.is_false_set:
             false_by_exercise[s.exercise_id] = false_by_exercise.get(s.exercise_id, 0) + 1
         else:
             completed_by_exercise[s.exercise_id] = completed_by_exercise.get(s.exercise_id, 0) + 1
             if s.weight_lbs is not None:
                 last_weight_by_exercise[s.exercise_id] = s.weight_lbs
 
+    # WHERE THE PLAN COMES FROM (mid-merge, two sources on purpose).
+    #
+    # The new way: the athlete's squad is training in this session, and the squad's
+    # plan says "5 sets of 3 at 80%" — their weight is worked out from their own
+    # current max. One plan, everyone gets their own numbers.
+    #
+    # The old way: a plan row per athlete with a weight typed into it.
+    #
+    # We try the new way first and fall back to the old one, because both kinds of
+    # data exist right now. The fallback disappears when the old table retires in
+    # the rename phase — at which point this becomes a single call.
+    planned = plan_movements_for_athlete(athlete, session)
+    if not planned:
+        planned = [{
+            "exercise_id": p.exercise_id,
+            "name": p.exercise.name,
+            "planned_sets": p.target_sets,
+            "target_reps": p.target_reps,
+            "target_weight_lbs": p.target_weight_lbs,
+            "velocity_zone_min": p.velocity_zone_min,
+            "velocity_zone_max": p.velocity_zone_max,
+        } for p in Program.objects.filter(athlete_id=athlete_id)
+                                  .select_related("exercise").order_by("id")]
+
+    # Live progress is layered on identically regardless of which source the plan
+    # came from — the tablet cannot tell the difference, and must not be able to.
     movements = []
     current_exercise_id = None  # suggested current = first movement not yet complete
-    for p in Program.objects.filter(athlete_id=athlete_id).select_related("exercise").order_by("id"):
-        completed = completed_by_exercise.get(p.exercise_id, 0)
-        false_count = false_by_exercise.get(p.exercise_id, 0)
-        if completed >= p.target_sets:
+    for item in planned:
+        exercise_id = item["exercise_id"]
+        completed = completed_by_exercise.get(exercise_id, 0)
+        false_count = false_by_exercise.get(exercise_id, 0)
+        planned_sets = item["planned_sets"]
+        if planned_sets is not None and completed >= planned_sets:
             status = "complete"
         elif completed > 0:
             status = "in_progress"
         else:
             status = "not_started"
         if current_exercise_id is None and status != "complete":
-            current_exercise_id = p.exercise_id
+            current_exercise_id = exercise_id
         movements.append({
-            "exercise_id": p.exercise_id,
-            "name": p.exercise.name,
-            "planned_sets": p.target_sets,
-            "target_reps": p.target_reps,
-            "target_weight_lbs": p.target_weight_lbs,
-            "last_weight_lbs": last_weight_by_exercise.get(p.exercise_id),
-            "velocity_zone_min": p.velocity_zone_min,
-            "velocity_zone_max": p.velocity_zone_max,
+            **item,
+            "last_weight_lbs": last_weight_by_exercise.get(exercise_id),
             "completed_sets": completed,
             "false_sets": false_count,
             "next_set_number": completed + 1,
@@ -514,10 +549,15 @@ def session_status(request):
     for s in Set.objects.filter(session=session, athlete_id__in=ids, ended_at__isnull=True):
         lifting.setdefault(s.athlete_id, s.started_at)
 
-    # most recent finished set (resting) per athlete
+    # most recent finished set (resting) per athlete.
+    # Coach weight adjustments are excluded: they're written as finished sets so
+    # they can move the working weight, but nobody lifted anything — counting one
+    # here would show the athlete resting, with a ticking rest timer, off a set
+    # that never happened.
     last_done = {}
     for s in Set.objects.filter(session=session, athlete_id__in=ids,
-                                ended_at__isnull=False).order_by("athlete_id", "-ended_at"):
+                                ended_at__isnull=False, is_coach_adjustment=False
+                                ).order_by("athlete_id", "-ended_at"):
         last_done.setdefault(s.athlete_id, s.ended_at)  # first == newest, thanks to ordering
 
     # newest check-in (which rack + when) per athlete
@@ -678,7 +718,10 @@ def _personal_records(finished_set):
 def analytics_session(request, session_id):
     """Coach-only: a quick summary of one session — how many sets and reps total,
     and each athlete's average velocity."""
-    sets = Set.objects.filter(session_id=session_id, is_false_set=False).select_related("athlete")
+    # Coach weight adjustments excluded everywhere in analytics: they are not
+    # performances, and averaging them in would drag every number sideways.
+    sets = Set.objects.filter(session_id=session_id, is_false_set=False,
+                              is_coach_adjustment=False).select_related("athlete")
     per_athlete = {}
     total_reps = 0
     for s in sets:
@@ -704,7 +747,8 @@ def analytics_session(request, session_id):
 @permission_classes([IsCoach])
 def analytics_athlete(request, athlete_id):
     """Coach-only: an athlete's velocity trend across their sets (oldest first)."""
-    sets = Set.objects.filter(athlete_id=athlete_id, is_false_set=False).select_related("exercise").order_by("started_at")
+    sets = Set.objects.filter(athlete_id=athlete_id, is_false_set=False,
+                              is_coach_adjustment=False).select_related("exercise").order_by("started_at")
     trend = [{
         "set_id": s.id, "exercise": s.exercise.name, "weight_lbs": s.weight_lbs,
         "avg_velocity": s.avg_velocity, "peak_velocity": s.peak_velocity,

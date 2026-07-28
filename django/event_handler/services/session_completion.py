@@ -28,34 +28,16 @@ from django.utils import timezone
 
 from ..models import (AthleteReferenceMax, DailyReport, MonitoringEvent,
                       RackCheckIn, Rep, Session, Set)
+from .lifting_math import one_rep_max
 
 REPORT_SCHEMA_VERSION = 1
 
-# An estimate needs enough of a real effort behind it to mean anything. A single
-# heavy single is a max attempt; a 30-rep set is a conditioning set whose
-# formula-estimated max is nonsense. This window keeps the estimate honest.
-MIN_REPS_FOR_ESTIMATE = 1
-MAX_REPS_FOR_ESTIMATE = 12
-
 
 def estimated_one_rep_max(weight_lbs, reps):
-    """Turn "lifted X for N reps" into an estimated 1-rep max, via Epley.
-
-    THE ONE PLACE THIS FORMULA LIVES (merge canon D11). Everything that needs to
-    move between a rep-basis and a 1-rep basis calls here, so swapping Epley for
-    Brzycki or a coach-tuned curve later is a one-line change in one file rather
-    than a hunt through call sites.
-
-        1RM = weight x (1 + reps/30)
-
-    Returns None when the inputs can't support an estimate, so callers can just
-    skip rather than special-case.
-    """
-    if weight_lbs is None or not weight_lbs or reps is None:
-        return None
-    if reps < MIN_REPS_FOR_ESTIMATE or reps > MAX_REPS_FOR_ESTIMATE:
-        return None
-    return weight_lbs * (1 + reps / 30)
+    """Kept as a named step for readability; the formula itself lives in
+    lifting_math so this and the target-weight calculation can never drift
+    apart (canon D11)."""
+    return one_rep_max(weight_lbs, reps)
 
 
 def _snapshot(session):
@@ -76,7 +58,9 @@ def _snapshot(session):
         racks_by_athlete.setdefault(checkin.athlete_id, set()).add(checkin.rack_number)
 
     sets_by_athlete = {}
-    all_sets = list(Set.objects.filter(session=session)
+    # Coach weight adjustments are left out of the permanent record: they are a
+    # dial being turned, not work anybody did.
+    all_sets = list(Set.objects.filter(session=session, is_coach_adjustment=False)
                     .select_related("exercise").order_by("started_at", "id"))
     reps_by_set = {}
     for rep in Rep.objects.filter(set__session=session).order_by("rep_number"):
