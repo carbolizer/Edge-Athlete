@@ -30,7 +30,8 @@ from datetime import timedelta
 from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
@@ -53,6 +54,7 @@ from .services.reports import (reports_for_athlete, report_list_item, report_det
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import movements_for_athlete as plan_movements_for_athlete
 from .services.planning import instantiate_block
+from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -1191,3 +1193,116 @@ def athlete_exercise_override_view(request, athlete_id, exercise_id):
     return Response({"athlete": athlete_id, "training_program_exercise": exercise_id,
                      "target_percent": override.target_percent,
                      "sets": override.sets, "reps": override.reps})
+
+
+# ─────────────────────────── CSV import (D16/D17) ───────────────────────────
+
+
+def _import_target(request):
+    """Work out where an upload is going, from the form fields sent with it.
+
+    Returns (target, kind, scope_group, error_response). A max sheet or roster
+    may name a squad so duplicate names can be told apart by who is actually in
+    it; a plan MUST name a template or a squad, because there is nowhere else to
+    put workouts.
+    """
+    block_id = request.data.get("training_block")
+    program_id = request.data.get("training_program")
+    group_id = request.data.get("training_group")
+
+    if block_id and program_id:
+        return None, None, None, Response(
+            {"code": "ambiguous_target",
+             "detail": "Send training_block or training_program, not both."}, status=400)
+
+    if block_id:
+        block = TrainingBlock.objects.filter(id=block_id).first()
+        if block is None:
+            return None, None, None, Response({"error": "training block not found"}, status=404)
+        return block, "block", None, None
+
+    if program_id:
+        program = TrainingProgram.objects.filter(id=program_id).select_related("training_group").first()
+        if program is None:
+            return None, None, None, Response({"error": "training program not found"}, status=404)
+        return program, "program", program.training_group, None
+
+    group = None
+    if group_id:
+        group = TrainingGroup.objects.filter(id=group_id).first()
+        if group is None:
+            return None, None, None, Response({"error": "training group not found"}, status=404)
+    return None, None, group, None
+
+
+def _import_response(sheet_type, payload, errors, skipped, *, created=None):
+    """One response shape for both preview and import.
+
+    `rows` is always present, even alongside errors — that is what lets the coach
+    screen show their own spreadsheet back with the bad cells marked instead of
+    just refusing the file (canon D17c).
+    """
+    body = {
+        "sheet_type": sheet_type,
+        "rows": payload,
+        "errors": errors,
+        "skipped": skipped,
+        "counts": {
+            "ready": len(payload) if sheet_type != "plan" else sum(
+                len(w["exercises"]) for w in payload),
+            "errors": len(errors),
+            "skipped": len(skipped),
+        },
+    }
+    if created is not None:
+        body["created"] = created
+    return Response(body, status=400 if errors else 200)
+
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+@parser_classes([MultiPartParser, FormParser])
+def workout_import_preview(request):
+    """Check an uploaded spreadsheet and write NOTHING.
+
+    Always the first half of the pair: the coach sees what we understood, fixes
+    anything marked wrong, and only then imports. See services/csv_import.py.
+    """
+    target, kind, scope_group, error = _import_target(request)
+    if error is not None:
+        return error
+
+    sheet_type, payload, errors, skipped = validate_upload(
+        request.FILES.get("file"), scope_group=scope_group)
+
+    if sheet_type == SHEET_PLAN and target is None and not errors:
+        errors = [{"row": None, "field": "training_block", "code": "target_required",
+                   "detail": "Choose which template or squad plan these workouts belong to."}]
+    return _import_response(sheet_type, payload, errors, skipped)
+
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+@parser_classes([MultiPartParser, FormParser])
+def workout_import(request):
+    """Re-check an uploaded spreadsheet and, if it is clean, save it in one step.
+
+    Re-checked rather than trusting the preview because the gym changes between
+    the two calls — an athlete could be renamed, or another coach could import
+    the same sheet first. Nothing is saved unless every row passes now.
+    """
+    target, kind, scope_group, error = _import_target(request)
+    if error is not None:
+        return error
+
+    sheet_type, payload, errors, skipped = validate_upload(
+        request.FILES.get("file"), scope_group=scope_group)
+
+    if sheet_type == SHEET_PLAN and target is None and not errors:
+        errors = [{"row": None, "field": "training_block", "code": "target_required",
+                   "detail": "Choose which template or squad plan these workouts belong to."}]
+    if errors:
+        return _import_response(sheet_type, payload, errors, skipped)
+
+    created = commit_upload(sheet_type, payload, target=target, kind=kind)
+    return _import_response(sheet_type, payload, errors, skipped, created=created)

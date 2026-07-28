@@ -62,6 +62,13 @@ urlpatterns = [
     path('workouts/', views.workouts_view, name='workouts'),
     path('training-programs/', views.training_programs_view, name='training_programs'),
 
+    # spreadsheet import. ONE pair of routes for all three kinds of sheet (roster,
+    # max sheet, workout plan) — which one you uploaded is worked out from its
+    # column names, so a coach never has to declare it (canon D16). Preview writes
+    # nothing; import re-checks and then saves in one all-or-nothing step.
+    path('workouts/imports/preview/', views.workout_import_preview, name='workout_import_preview'),
+    path('workouts/imports/', views.workout_import, name='workout_import'),
+
     # which squads are training in a session — this is what makes one session
     # shared between several squads on different plans.
     path('sessions/<int:session_id>/participation/', views.session_participation_view,

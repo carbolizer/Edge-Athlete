@@ -7,6 +7,7 @@
 # every exercise now resolves through the shared catalog.
 from datetime import timedelta
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
@@ -930,3 +931,274 @@ class PlanningEndpointTests(APITestCase):
         for url in ("/api/training-groups/", "/api/workout-programs/",
                     "/api/workouts/", "/api/training-programs/"):
             self.assertEqual(self.client.get(url).status_code, 401, url)
+
+
+class CsvImportTests(APITestCase):
+    """Importing a coach's spreadsheets (canon D16/D17).
+
+    These pin the behaviour that is easy to "helpfully" break later: that we
+    never invent a weight whose meaning the sheet didn't state, that one typo
+    doesn't throw away the whole file, and that nobody gets created silently.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
+
+    def _upload(self, text, url="/api/workouts/imports/preview/", **extra):
+        upload = SimpleUploadedFile("sheet.csv", text.encode("utf-8"), content_type="text/csv")
+        return self.client.post(url, {"file": upload, **extra}, format="multipart")
+
+    # ── which kind of sheet is this ──────────────────────────────────────────
+
+    def test_the_sheet_type_is_worked_out_from_the_column_names(self):
+        roster = self._upload("athlete_name\nJordan Lee\n")
+        maxes = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n")
+        plan = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
+                            "Day 1,Back Squat,1,5,3,80\n")
+        self.assertEqual(roster.data["sheet_type"], "roster")
+        self.assertEqual(maxes.data["sheet_type"], "reference_max")
+        self.assertEqual(plan.data["sheet_type"], "plan")
+
+    def test_an_unrecognisable_sheet_says_what_the_options_are(self):
+        res = self._upload("colour,size\nred,large\n")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["errors"][0]["code"], "unrecognized_sheet")
+
+    # ── the max sheet: never invent a number ─────────────────────────────────
+
+    def test_a_bare_max_needs_no_guessing(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
+                           url="/api/workouts/imports/")
+        self.assertEqual(res.status_code, 200)
+        record = AthleteReferenceMax.objects.get()
+        self.assertEqual(record.reference_weight_lbs, 315)
+        self.assertEqual(record.rep_basis, 1)
+
+    def test_a_weight_with_reps_is_stored_at_that_rep_basis_not_converted_early(self):
+        """225x5 is recorded honestly as 225 at 5 reps; the conversion to a single
+        happens in one place later, so the original fact stays visible."""
+        Athlete.objects.create(name="Jordan Lee")
+        self._upload("athlete_name,exercise,weight_lbs,reps\nJordan Lee,Back Squat,225,5\n",
+                     url="/api/workouts/imports/")
+        record = AthleteReferenceMax.objects.get()
+        self.assertEqual(record.reference_weight_lbs, 225)
+        self.assertEqual(record.rep_basis, 5)
+
+    def test_a_stated_percentage_is_back_solved_exactly(self):
+        Athlete.objects.create(name="Jordan Lee")
+        self._upload("athlete_name,exercise,weight_lbs,target_percent\n"
+                     "Jordan Lee,Back Squat,225,75\n", url="/api/workouts/imports/")
+        self.assertEqual(AthleteReferenceMax.objects.get().reference_weight_lbs, 300)
+
+    def test_a_weight_that_could_mean_anything_is_SKIPPED_not_guessed(self):
+        """The whole point of D16: a made-up max is newest-wins, so it would
+        outrank the athlete's real tested number and drag every other target
+        down with it. Missing is safe; wrong is not."""
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,weight_lbs\nJordan Lee,Back Squat,225\n",
+                           url="/api/workouts/imports/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(AthleteReferenceMax.objects.count(), 0)
+        self.assertEqual(res.data["skipped"][0]["code"], "weight_meaning_unknown")
+        self.assertIn("Jordan Lee", res.data["skipped"][0]["detail"])
+
+    def test_a_skipped_row_does_not_stop_the_good_rows(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,weight_lbs,reps\n"
+                           "Jordan Lee,Back Squat,225,5\n"
+                           "Jordan Lee,Bench Press,185,\n", url="/api/workouts/imports/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["created"], 1)
+        self.assertEqual(res.data["counts"]["skipped"], 1)
+
+    # ── typos are repairable, not fatal ──────────────────────────────────────
+
+    def test_a_misspelled_name_suggests_the_real_one_and_keeps_the_other_rows(self):
+        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(name="Sam Rivera")
+        res = self._upload("athlete_name,exercise,max_lbs\n"
+                           "Jordn Lee,Back Squat,315\n"
+                           "Sam Rivera,Back Squat,275\n")
+        self.assertEqual(res.status_code, 400)
+        problem = res.data["errors"][0]
+        self.assertEqual(problem["code"], "unknown_athlete")
+        self.assertEqual(problem["row"], 2)
+        self.assertIn("Jordan Lee", problem["suggestions"])
+        # D17c: the good row still comes back so the screen can render the sheet.
+        self.assertEqual([row["athlete_name"] for row in res.data["rows"]], ["Sam Rivera"])
+
+    def test_nothing_is_written_while_any_row_is_still_broken(self):
+        Athlete.objects.create(name="Sam Rivera")
+        res = self._upload("athlete_name,exercise,max_lbs\n"
+                           "Jordn Lee,Back Squat,315\n"
+                           "Sam Rivera,Back Squat,275\n", url="/api/workouts/imports/")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(AthleteReferenceMax.objects.count(), 0)
+
+    def test_a_misspelled_movement_suggests_the_catalog_entry(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n")
+        problem = res.data["errors"][0]
+        self.assertEqual(problem["code"], "unknown_exercise")
+        self.assertIn("Back Squat", problem["suggestions"])
+
+    def test_two_people_with_one_name_are_told_apart_by_the_squad(self):
+        """Squad-scoping is what collapses the ambiguity — two Jordan Lees in a
+        gym is believable, two in one squad is not."""
+        in_squad = Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(name="Jordan Lee")   # a different Jordan, elsewhere
+        squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        in_squad.training_groups.add(squad)
+
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
+                           url="/api/workouts/imports/", training_group=squad.id)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(AthleteReferenceMax.objects.get().athlete_id, in_squad.id)
+
+    def test_an_unscoped_duplicate_name_stops_and_asks(self):
+        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n")
+        problem = res.data["errors"][0]
+        self.assertEqual(problem["code"], "ambiguous_athlete")
+        self.assertEqual(len(problem["candidates"]), 2)
+
+    def test_surname_first_and_stray_spacing_still_match(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\n\"Lee,  Jordan\",back  squat,315\n",
+                           url="/api/workouts/imports/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(AthleteReferenceMax.objects.count(), 1)
+
+    # ── the roster sheet ─────────────────────────────────────────────────────
+
+    def test_a_roster_creates_people_and_can_drop_them_into_a_squad(self):
+        squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        res = self._upload("athlete_name,training_group\nJordan Lee,Varsity\nSam Rivera,Varsity\n",
+                           url="/api/workouts/imports/")
+        self.assertEqual(res.data["created"], 2)
+        self.assertEqual(squad.athletes.count(), 2)
+
+    def test_re_uploading_a_roster_adds_the_new_people_without_duplicating_the_old(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name\nJordan Lee\nSam Rivera\n",
+                           url="/api/workouts/imports/")
+        self.assertEqual(res.data["created"], 1)
+        self.assertEqual(Athlete.objects.filter(name="Jordan Lee").count(), 1)
+        self.assertEqual(res.data["skipped"][0]["code"], "already_on_roster")
+
+    def test_a_max_sheet_never_creates_a_missing_athlete(self):
+        """A typo turned into a new athlete would shadow the real person forever."""
+        res = self._upload("athlete_name,exercise,max_lbs\nNobody At All,Back Squat,315\n",
+                           url="/api/workouts/imports/")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(Athlete.objects.count(), 0)
+
+    # ── the plan sheet ───────────────────────────────────────────────────────
+
+    def _block(self):
+        return TrainingBlock.objects.create(coach=self.coach, name="Fall Strength")
+
+    def test_a_plan_imports_into_a_template_in_spreadsheet_order(self):
+        block = self._block()
+        res = self._upload(
+            "workout_name,exercise,position,sets,reps,target_percent\n"
+            "Day 1 - Lower,Back Squat,1,5,3,80\n"
+            "Day 2 - Upper,Bench Press,1,3,5,75\n"
+            "Day 1 - Lower,Bench Press,2,3,8,65\n",
+            url="/api/workouts/imports/", training_block=block.id)
+        self.assertEqual(res.status_code, 200)
+        days = list(TrainingBlockWorkout.objects.filter(training_block=block).order_by("position"))
+        self.assertEqual([d.name for d in days], ["Day 1 - Lower", "Day 2 - Upper"])
+        self.assertEqual(days[0].exercises.count(), 2)
+
+    def test_a_plan_imports_into_one_squads_program_too(self):
+        """D7: both levels. A one-off for one squad never becomes a template."""
+        squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        program = TrainingProgram.objects.create(training_group=squad, name="Spring",
+                                                 start_date=timezone.now().date())
+        res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
+                           "Day 1,Back Squat,1,5,3,80\n",
+                           url="/api/workouts/imports/", training_program=program.id)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(TrainingProgramWorkout.objects.filter(training_program=program).count(), 1)
+        self.assertEqual(TrainingBlockWorkout.objects.count(), 0)
+
+    def test_importing_again_appends_rather_than_colliding(self):
+        block = self._block()
+        sheet = ("workout_name,exercise,position,sets,reps,target_percent\n"
+                 "Day 1,Back Squat,1,5,3,80\n")
+        self._upload(sheet, url="/api/workouts/imports/", training_block=block.id)
+        res = self._upload(sheet.replace("Day 1", "Day 2"), url="/api/workouts/imports/",
+                           training_block=block.id)
+        self.assertEqual(res.status_code, 200)
+        positions = list(TrainingBlockWorkout.objects.filter(training_block=block)
+                         .order_by("position").values_list("position", flat=True))
+        self.assertEqual(positions, [1, 2])
+
+    def test_a_plan_with_nowhere_to_go_is_refused(self):
+        res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
+                           "Day 1,Back Squat,1,5,3,80\n")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["errors"][0]["code"], "target_required")
+
+    def test_an_absolute_weight_column_is_not_accepted_on_a_plan(self):
+        """D16 rule 1: a pounds column would bypass the reference-max machinery
+        every prescribed weight depends on."""
+        block = self._block()
+        res = self._upload("workout_name,exercise,position,sets,reps,default_weight_lbs\n"
+                           "Day 1,Back Squat,1,5,3,225\n",
+                           training_block=block.id)
+        self.assertEqual(res.status_code, 400)
+        codes = {e["code"] for e in res.data["errors"]}
+        self.assertIn("missing_headers", codes)
+        self.assertIn("unknown_headers", codes)
+
+    def test_a_percent_over_100_is_allowed_but_zero_is_not(self):
+        block = self._block()
+        ok = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
+                          "Day 1,Back Squat,1,5,3,105\n",
+                          training_block=block.id)
+        bad = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
+                           "Day 1,Back Squat,1,5,3,0\n",
+                           training_block=block.id)
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(bad.status_code, 400)
+
+    def test_a_gap_in_the_exercise_order_is_refused(self):
+        block = self._block()
+        res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
+                           "Day 1,Back Squat,1,5,3,80\n"
+                           "Day 1,Bench Press,3,3,5,75\n",
+                           training_block=block.id)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("non_contiguous_positions", {e["code"] for e in res.data["errors"]})
+
+    # ── the file itself ──────────────────────────────────────────────────────
+
+    def test_a_spreadsheet_saved_out_of_excel_still_reads(self):
+        """Excel writes an invisible marker at the start of the file; without
+        handling it the first column name silently stops matching."""
+        Athlete.objects.create(name="Jordan Lee")
+        upload = SimpleUploadedFile(
+            "sheet.csv", "﻿athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n".encode("utf-8"),
+            content_type="text/csv")
+        res = self.client.post("/api/workouts/imports/", {"file": upload}, format="multipart")
+        self.assertEqual(res.status_code, 200)
+
+    def test_preview_writes_nothing(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(AthleteReferenceMax.objects.count(), 0)
+        self.assertEqual(res.data["counts"]["ready"], 1)
+
+    def test_import_requires_a_coach(self):
+        self.client.force_authenticate(user=None)
+        res = self._upload("athlete_name\nJordan Lee\n", url="/api/workouts/imports/")
+        self.assertIn(res.status_code, (401, 403))
+        self.assertEqual(Athlete.objects.count(), 0)
