@@ -904,7 +904,7 @@ Every row here is called by a **surviving** coach screen, so every row is requir
 | `reports/` · `reports/{id}/` · `reports/{id}/pdf/` **(absorbs the athlete-scoped family — R6)** | `ReportsWorkspace.jsx`, `reportBrowsing.js` | `DailyReport`, `?athlete={id}` filter | P4 |
 | `workouts/` | `WorkoutCatalog.jsx`, `AthleteWorkoutPlanning.jsx`, `Dashboard.jsx` | `TrainingBlockWorkout` (+ its exercises) | P5 |
 | `workout-programs/` | `WorkoutCatalog.jsx`, `AthleteWorkoutPlanning.jsx`, `Dashboard.jsx` | `TrainingBlock` (the template) | P5 |
-| `workouts/imports/preview/` · `workouts/imports/` | `WorkoutCatalog.jsx` | CSV import at block **or** program level (D7) | P5 |
+| `workouts/imports/preview/` · `workouts/imports/` | `WorkoutCatalog.jsx` | CSV import, **sheet-type detected** (D16): roster / reference-max / plan. Plan level chosen by `training_block=N` **or** `training_program=N` (D7); **target required on preview too**, since conflict and squad-scoped name resolution both need it. Preview never writes; import revalidates and writes atomically. Errors carry `suggestions`, and **preview returns errored rows** (D17c) | P5 |
 | `athletes/{id}/workout-assignment/` | `AthleteWorkoutPlanning.jsx` | group-level `TrainingProgram` | P5 |
 | `athletes/{id}/workout-exercises/{id}/override/` | `AthleteWorkoutPlanning.jsx` | `AthleteWorkoutExerciseOverride` | P5 |
 
@@ -980,9 +980,9 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 | **P2 — Realtime backbone (D5)** | Bring his `realtime/` + `services/` + the `MonitoringEvent` publisher. Fold our rack `broadcast/publisher` into it **without changing any rack topic or payload**. Drop our `notification_flow/` ntfy/motion cruft. Webhooks untouched. | Every existing rack topic still fires identically (incl. the `enter_setup` "all racks → pairing mode" signal); `MonitoringEvent` rows get `published_at` set; tests green. |
 | **P3 — Derived reads** | `services/` **`room-state/`** (§6.4, absorbing `wall-state/` via `?details=`), day-progress (D3), `auth/refresh/`. **Build no per-rack state route** — §7.4. | Endpoints return the shapes his consumers expect (§6.4); his `dashboardView.test.js` / `roomMonitor.test.js` pass; documented in SPEC + MESSAGE_CONTRACT. |
 | **P4 — Reports + finalization** | Adopt `DailyReport` + `reports/` family + PDF (**one family, `?athlete=` filter** — R6). Add the completion service to **our existing `sessions/{id}/` PATCH** (R2), firing report generation + ref-max recalc (D10; estimation method still deferred). Generates migration **`0010_daily_report`** (§5.5). **No `notes` route** (R1) and **no `sessions/{id}/end/` route** (R2). | Ending a session via `PATCH /api/sessions/{id}/` generates exactly one `DailyReport`; a new `AthleteReferenceMax` row appears with `source=estimated`; `PATCH /api/athletes/{id}/ {"notes":…}` round-trips. |
-| **P5 — Planning + the `% × max` swap** ⚠️ | `TrainingBlock`/`TrainingProgram` CRUD; CSV import at both levels (D7); the override endpoint; **the coach weight adjustment (D15) + its exclusion list across all reads in §6.5**; **re-point `athlete_progress` and `programs/` to §6.1/§6.2.** | **§6.3 key-diff is empty**; the §6.1 worked example reproduces exactly (225×3 @80% → 200 lb); **the §6.2 multi-group worked example reproduces exactly (5 movements, Back Squat once at 3×5 @70%, team lift first)**; an athlete with no reference max gets `null` and the rack still works; an athlete in two groups never sees a duplicated `exercise_id`; **a coach weight adjustment (D15) changes `last_weight_lbs` for an athlete's subsequent sets WITHOUT changing `next_set_number`, `completed_sets`, `false_sets`, or `status`, and the adjusted athlete does not appear as "resting" in `session_status`**; rack screen visually unchanged. |
+| **P5 — Planning + the `% × max` swap** ⚠️ | `TrainingBlock`/`TrainingProgram` CRUD; **CSV import — sheet-type detection (D16) + all three importers, built max-sheet FIRST** (it is both the cheapest — append-only, no positions, no conflicts — and the highest-value, since without maxes every target resolves to `null`); **the D17 repair-loop backend in full: resolution ladder, `suggestions`, preview-returns-errored-rows, name→id map**; the override endpoint; **the coach weight adjustment (D15) + its exclusion list across all reads in §6.5**; **re-point `athlete_progress` and `programs/` to §6.1/§6.2.** | **§6.3 key-diff is empty**; the §6.1 worked example reproduces exactly (225×3 @80% → 200 lb); **the §6.2 multi-group worked example reproduces exactly (5 movements, Back Squat once at 3×5 @70%, team lift first)**; an athlete with no reference max gets `null` and the rack still works; an athlete in two groups never sees a duplicated `exercise_id`; **a coach weight adjustment (D15) changes `last_weight_lbs` for an athlete's subsequent sets WITHOUT changing `next_set_number`, `completed_sets`, `false_sets`, or `status`, and the adjusted athlete does not appear as "resting" in `session_status`**; rack screen visually unchanged; **a max sheet with one misspelled athlete previews with a `suggestions` array and the other rows still parsed (D17), imports nothing until repaired, and a bare weight with no reps and no percent is reported skipped rather than converted (D16 rule 3)**. |
 | **P6 — Rename + retirement** ⚠️ *(highest blast radius — do last)* | `Session`→`TrainingSession` across views/serializers/tests; group link fully on `SessionParticipation`; retire `Program`; **`Set.session` → `on_delete=PROTECT`.** Generates migration **`0011_*`** (§5.5; Django may split into 2–3). | `/sessions/*` shapes unchanged; **deleting a session cannot delete `Set`/`Rep` rows (test this explicitly — verify `Set.session` is actually PROTECT in the applied migration)**; full suite green. |
-| **P7 — Coach frontend + `App.jsx` seam** | `git checkout braydons-dev-branch -- <his coach files>` (§0.4); wire each to our APIs (§7); drop the panels whose backends died; hand-merge `App.jsx` so **our** role splash + rack route survive alongside **his** coach/dashboard/reports routes. | His coach pages load and function against our APIs; role splash + rack route intact; §2.1 check clean. |
+| **P7 — Coach frontend + `App.jsx` seam** | `git checkout braydons-dev-branch -- <his coach files>` (§0.4); wire each to our APIs (§7); drop the panels whose backends died; hand-merge `App.jsx` so **our** role splash + rack route survive alongside **his** coach/dashboard/reports routes. **Plus the D17 repair grid**: render preview rows into his existing builder table, mark errored cells, offer `suggestions`, and apply a correction to every row sharing that spelling. Pure UI — **depends on D17(c)/(d) shipping in P5**, so nothing here needs a backend change. Rename `default_weight_lbs` → `target_percent` in `workoutCatalog.js` + `WorkoutCatalog.jsx` (D16 rule 1). | His coach pages load and function against our APIs; role splash + rack route intact; **a CSV with one misspelled name is repairable in-app without re-uploading, and the fix applies to every row sharing that spelling**; §2.1 check clean. |
 | **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
 
 **Config union (hand-merge, alongside whichever phase needs it):** `package.json` + lockfile, Dockerfiles,
@@ -1009,7 +1009,8 @@ next movement. Nothing in that flow looks or behaves differently than on `Sprint
 - **D6 — `TrainingProgram.training_block` is NULLABLE** → one-off programs are a permanent first-class path;
   promotion to a template is just pointing the FK at a new block row.
 - **D7 — CSV import survives at BOTH block and program level.** Block-level = reusable template;
-  program-level = immediate one-off. Only the old single fixed target shape retired.
+  program-level = immediate one-off. Only the old single fixed target shape retired. ⚠️ **The single-contract
+  framing here is SUPERSEDED by D16** (sheet-type detection); the both-levels requirement stands unchanged.
 - **D8 — Drop `RackWorkoutState`; rebuild room-state** from `RackCheckIn` + derived progress (§6.4). The
   forward rack-assignment concept dies entirely.
 - **D9 — `Node.allowed_exercises`** — a static hardware fact, empty = unrestricted. **Filtered into the
@@ -1059,6 +1060,75 @@ next movement. Nothing in that flow looks or behaves differently than on `Sprint
   first real set is mis-flagged `is_makeup` — **caught in this audit, not in the original request**), and P4
   `DailyReport` generation. Default for any new `Set` read = EXCLUDE. **Not a §2.2 break:** optional request
   field, default False, response shape unchanged, no frozen file touched. *(Decided 2026-07-23.)*
+- **D16 — CSV import is SHEET-TYPE DETECTED, not one fixed contract.** A coach's spreadsheets are not all the
+  same thing, so the importer identifies which of three shapes a file is by **the column headers present**,
+  then routes it. This **supersedes D7's single-contract framing** while keeping its requirement (plan import
+  works at block *and* program level).
+
+  | sheet type | detected by | writes to | unknown names |
+  |---|---|---|---|
+  | **roster** | `athlete_name` + no `exercise` | `Athlete` | **creating is the point** |
+  | **reference max** | `athlete_name` + `exercise` + a weight column | `AthleteReferenceMax` | resolve, never auto-create |
+  | **plan** | `workout_name` + `exercise` + `target_percent` | `TrainingBlock*` **or** `TrainingProgram*` (D7) | resolve, or explicit `is_stub` |
+
+  Three rules bind all three shapes:
+
+  1. **`target_percent` REPLACES his `default_weight_lbs` column.** A pounds column is a second, contradictory
+     way to prescribe that bypasses the reference-max machinery entirely, and §6.1/`TrainingBlockExercise`
+     already say the plan stores percent and *"never an absolute weight."* Accept **1–150** (over-100 is real:
+     overload eccentrics); reject 0 and negative. **This is a deliberate break in his CSV contract** — the only
+     one — and it is why his sample files need one header renamed.
+  2. **A weight is only converted when its meaning is EXACT.** `AthleteReferenceMax.rep_basis` +
+     `lifting_math.normalize_to_single()` already handle "225x5" honestly, so three of four cases need no
+     guess at all: a bare max (`rep_basis=1`), rep-qualified work (`rep_basis=5`), and a stated percent
+     (exact back-solve).
+  3. **The fourth case — a bare weight with no reps and no percent — IS SKIPPED, never inferred.** Assuming a
+     percentage does not stay local to its row: `AthleteReferenceMax` is newest-wins, so a fabricated row
+     **outranks the athlete's real tested max** and skews every *other* movement's target for them, silently,
+     as a side effect of an upload. A *missing* max is by contrast an already-tested state (P5 exit criteria:
+     no reference max → `null` target, rack still works). Skipping trades a novel failure for a known-safe one.
+     Both preview and import report who was skipped and for what movement. *(Decided 2026-07-27.)*
+
+- **D17 — Import errors are REPAIRED IN PREVIEW, not rejected.** Hard-failing a 200-row file over one typo is
+  the wrong behavior, and the mechanism to avoid it is already built: preview exists, and every error already
+  carries `{row, field, code, detail}` which his `flattenApiErrors` walks. Four additions make it a repair loop.
+
+  **(a) Name resolution ladder** — cheapest and most certain first. `athlete_name` and `exercise` both use it:
+
+  | # | rule | outcome |
+  |---|---|---|
+  | 1 | `nfc_tag_id` column present and matches | exact, zero ambiguity |
+  | 2 | matches exactly one athlete **in the target squad** | resolved |
+  | 3 | matches exactly one gym-wide | resolved |
+  | 4 | matches several | `ambiguous_athlete` → candidates offered |
+  | 5 | matches none | `unknown_athlete` → suggestions + "create new" |
+
+  **Squad-scoping (step 2) is what collapses the ambiguity.** Two "Jordan Lee"s in a building is plausible; two
+  in one 30-person squad is not. Same trick as scoping workout-name uniqueness to the parent. Normalize before
+  matching — casefold, strip, collapse internal whitespace, flip a single `Lee, Jordan` → `Jordan Lee` — which
+  covers essentially all real spreadsheet drift. **No new column on `Athlete`**: a few hundred rows resolve in
+  memory (derived-over-stored, §3).
+
+  **(b) Errors carry `suggestions`.** `difflib.get_close_matches` against the catalog/roster. Stdlib, no
+  dependency. Any error with a `suggestions` array gets identical UI treatment — which is what makes this one
+  handler rather than three features.
+
+  **(c) Preview returns parsed rows EVEN WHEN THEY HAVE ERRORS.** His `preview_workout` returns only valid
+  workouts today, so a repair grid would have nothing to render. **This one change is what unblocks P7's UI**;
+  without it the frontend work is impossible.
+
+  **(d) The repair submits a name→id MAP, not corrected strings.** Resolve "Jordn Lee" once and all 14 of their
+  rows resolve. The map is what carries typo fixes, ambiguity picks, and create-new decisions uniformly.
+
+  **Auto-creation is never silent.** A typo'd ghost athlete sits in the roster forever shadowing the real one,
+  and a typo'd movement is one no rack's `allowed_exercises` covers (D9). So creation happens only on a roster
+  sheet, where it is the point, or by explicit coach action — for exercises that means `Exercise.is_stub`,
+  which **already exists for exactly this** ("a row auto-created from an unrecognized import that a coach
+  hasn't confirmed yet"). It is reached deliberately from preview, not automatically.
+
+  **Split across phases on purpose: every backend piece P7 needs ships in P5**, so the frontend work is pure
+  UI with no backend contract left to design. *(Decided 2026-07-27.)*
+
 - **NEW — reference-max write endpoint** (§7.2) — neither branch had one, yet §6.1 needs it; add a bulk
   (list-of-athlete-ids) POST creating `AthleteReferenceMax` rows. No new schema. The prescription lever;
   separate from D15.
