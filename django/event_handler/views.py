@@ -52,7 +52,8 @@ from .services.session_completion import end_session
 from .services.reports import (reports_for_athlete, report_list_item, report_detail,
                                athlete_report_detail)
 from .services.report_pdf import render_report_pdf, PdfTooLarge
-from .services.plan_resolution import movements_for_athlete as plan_movements_for_athlete
+from .services.plan_resolution import (movements_for_athlete as plan_movements_for_athlete,
+                                       resolve_target_weight)
 from .services.planning import instantiate_block
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 
@@ -1306,3 +1307,100 @@ def workout_import(request):
 
     created = commit_upload(sheet_type, payload, target=target, kind=kind)
     return _import_response(sheet_type, payload, errors, skipped, created=created)
+
+
+@api_view(["GET", "PUT", "DELETE"])
+@permission_classes([IsCoach])
+def athlete_workout_assignment(request, athlete_id):
+    """What this athlete is training, and which squad decides it.
+
+    HIS PAGE ASKS A QUESTION OUR MODEL ANSWERS DIFFERENTLY. His planning screen
+    was built where a program is pinned onto one athlete. Here a program belongs
+    to a SQUAD, and an athlete trains it by being in that squad (D12) — which is
+    what lets one plan serve thirty people and one athlete carry two plans at
+    once (D13). So the route keeps its name and its shape, and the meaning
+    underneath is squad membership:
+
+        GET     -> every program that currently applies to them, and via which squad
+        PUT     -> put them in the squad that runs this program
+        DELETE  -> take them out of the squads currently prescribing to them
+
+    Writes therefore have a WIDER effect than the wording suggests, and the
+    response says so plainly (`groups_changed`) rather than letting a coach
+    discover it later. Both directions are reversible, and neither touches
+    history — past sessions and sets stay attached to whatever they ran under.
+    """
+    athlete = Athlete.objects.filter(id=athlete_id).first()
+    if athlete is None:
+        return Response({"code": "athlete_not_found", "detail": "Athlete not found."}, status=404)
+
+    if request.method == "PUT":
+        program_id = request.data.get("workout_program_id") or request.data.get("training_program")
+        program = (TrainingProgram.objects.select_related("training_group")
+                   .filter(id=program_id).first())
+        if program is None:
+            return Response({"code": "training_program_not_found",
+                             "detail": "Training program not found."}, status=404)
+        athlete.training_groups.add(program.training_group)
+        return Response(_assignment_body(athlete, groups_changed=[{
+            "id": program.training_group_id, "name": program.training_group.name,
+            "action": "added"}]))
+
+    if request.method == "DELETE":
+        removed = [{"id": group.id, "name": group.name, "action": "removed"}
+                   for group in _groups_prescribing_to(athlete)]
+        athlete.training_groups.remove(*[g["id"] for g in removed])
+        return Response(_assignment_body(athlete, groups_changed=removed))
+
+    return Response(_assignment_body(athlete))
+
+
+def _groups_prescribing_to(athlete):
+    """The squads this athlete is in that actually have a plan attached.
+
+    A squad with no program isn't prescribing anything, so removing someone from
+    it would be busywork that also loses roster information the coach set up on
+    purpose.
+    """
+    return list(athlete.training_groups.filter(programs__isnull=False).distinct())
+
+
+def _assignment_body(athlete, groups_changed=None):
+    """One athlete's plans, grouped by the squad each comes from."""
+    programs = (TrainingProgram.objects
+                .filter(training_group__athletes=athlete)
+                .select_related("training_group", "training_block")
+                .prefetch_related("workouts__exercises__exercise")
+                .distinct().order_by("start_date", "id"))
+
+    body = {
+        "athlete": {"id": athlete.id, "name": athlete.name},
+        "assignment": [{
+            "training_program": {"id": program.id, "name": program.name,
+                                 "start_date": program.start_date,
+                                 "end_date": program.end_date},
+            "training_group": {"id": program.training_group_id,
+                               "name": program.training_group.name},
+            "from_template": ({"id": program.training_block_id,
+                               "name": program.training_block.name}
+                              if program.training_block_id else None),
+            "workouts": [{
+                "id": workout.id, "name": workout.name, "position": workout.position,
+                "exercises": [{
+                    "id": row.id,
+                    "exercise": {"id": row.exercise_id, "name": row.exercise.name},
+                    "position": row.position, "sets": row.sets, "reps": row.reps,
+                    "target_percent": row.target_percent,
+                    # The pounds this becomes for THIS athlete, since a percent on
+                    # its own tells a coach nothing about what goes on the bar.
+                    "target_weight_lbs": resolve_target_weight(
+                        athlete.id, row.exercise_id, row.target_percent),
+                    "velocity_zone_min": row.velocity_zone_min,
+                    "velocity_zone_max": row.velocity_zone_max,
+                } for row in workout.exercises.all()],
+            } for workout in program.workouts.all()],
+        } for program in programs],
+    }
+    if groups_changed is not None:
+        body["groups_changed"] = groups_changed
+    return body

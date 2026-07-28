@@ -1202,3 +1202,88 @@ class CsvImportTests(APITestCase):
         res = self._upload("athlete_name\nJordan Lee\n", url="/api/workouts/imports/")
         self.assertIn(res.status_code, (401, 403))
         self.assertEqual(Athlete.objects.count(), 0)
+
+
+class AthleteAssignmentTests(APITestCase):
+    """What one athlete is training (`athletes/{id}/workout-assignment/`).
+
+    His page was built where a program pins onto one athlete; here it belongs to
+    a squad and the athlete trains it by membership. These pin that the route
+    still answers his question, and that a write says what it really did.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        self.program = TrainingProgram.objects.create(
+            training_group=self.squad, name="Fall", start_date=timezone.now().date())
+        workout = TrainingProgramWorkout.objects.create(
+            training_program=self.program, name="Day 1", position=1)
+        TrainingProgramExercise.objects.create(
+            training_program_workout=workout, exercise=self.squat, position=1,
+            sets=5, reps=3, target_percent=80)
+
+    def _url(self):
+        return f"/api/athletes/{self.athlete.id}/workout-assignment/"
+
+    def test_an_athlete_in_no_squad_has_no_plan(self):
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["assignment"], [])
+
+    def test_assigning_a_program_puts_them_in_its_squad_and_says_so(self):
+        res = self.client.put(self._url(), {"workout_program_id": self.program.id},
+                              format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["groups_changed"],
+                         [{"id": self.squad.id, "name": "Varsity", "action": "added"}])
+        self.assertIn(self.squad, self.athlete.training_groups.all())
+
+    def test_the_plan_comes_back_with_real_pounds_not_just_a_percent(self):
+        """A percent on its own tells a coach nothing about what goes on the bar."""
+        AthleteReferenceMax.objects.create(athlete=self.athlete, exercise=self.squat,
+                                           reference_weight_lbs=315, rep_basis=1)
+        self.athlete.training_groups.add(self.squad)
+        row = self.client.get(self._url()).data["assignment"][0]["workouts"][0]["exercises"][0]
+        self.assertEqual(row["target_percent"], 80)
+        self.assertEqual(row["target_weight_lbs"], 250.0)   # 315 x 80% = 252 -> 250
+
+    def test_an_athlete_with_no_max_still_reads_without_error(self):
+        self.athlete.training_groups.add(self.squad)
+        row = self.client.get(self._url()).data["assignment"][0]["workouts"][0]["exercises"][0]
+        self.assertIsNone(row["target_weight_lbs"])
+
+    def test_two_squads_both_show_up_with_the_squad_that_owns_each(self):
+        """D13: an athlete can carry more than one plan, and a coach needs to see
+        which squad each one comes from."""
+        speed = TrainingGroup.objects.create(name="Speed", coach=self.coach)
+        TrainingProgram.objects.create(training_group=speed, name="Sprint",
+                                       start_date=timezone.now().date())
+        self.athlete.training_groups.add(self.squad, speed)
+        assignment = self.client.get(self._url()).data["assignment"]
+        self.assertEqual({a["training_group"]["name"] for a in assignment},
+                         {"Varsity", "Speed"})
+
+    def test_removing_the_assignment_takes_them_out_of_the_prescribing_squads_only(self):
+        """A squad with no plan attached is roster information a coach set up on
+        purpose — clearing an assignment shouldn't quietly discard it."""
+        empty = TrainingGroup.objects.create(name="Freshmen", coach=self.coach)
+        self.athlete.training_groups.add(self.squad, empty)
+        res = self.client.delete(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([g["name"] for g in res.data["groups_changed"]], ["Varsity"])
+        self.assertEqual([g.name for g in self.athlete.training_groups.all()], ["Freshmen"])
+
+    def test_unknown_athlete_and_unknown_program_are_404(self):
+        self.assertEqual(self.client.get("/api/athletes/999999/workout-assignment/").status_code, 404)
+        res = self.client.put(self._url(), {"workout_program_id": 999999}, format="json")
+        self.assertEqual(res.status_code, 404)
+
+    def test_assignment_requires_a_coach(self):
+        self.client.force_authenticate(user=None)
+        res = self.client.put(self._url(), {"workout_program_id": self.program.id},
+                              format="json")
+        self.assertIn(res.status_code, (401, 403))

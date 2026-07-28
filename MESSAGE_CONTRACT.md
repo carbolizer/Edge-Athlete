@@ -379,6 +379,162 @@ are never rewritten.
 
 ---
 
+## 3b. REST — planning (coach only)
+
+The hierarchy these serve: a **squad** (`TrainingGroup`) trains a **plan**
+(`TrainingProgram`), which is usually a copy of a reusable **template**
+(`TrainingBlock`). Plans store a **percent**, never pounds — the weight is worked
+out per athlete from their reference max at read time (§4).
+
+> **Route names lag the model names.** `workout-programs/` is the template and
+> `workouts/` is a day inside one, because these URLs were bent to fit the coach
+> client that already existed rather than reshaping its code. Scheduled for
+> renaming in P9; see the merge canon's drift table.
+
+### `GET|POST /api/training-groups/` — squads (coach)
+
+A squad is a *subset* of the gym that trains together, not everyone on file.
+
+```jsonc
+{ "id": 4, "name": "Varsity Football", "athlete_count": 12 }
+```
+
+### `POST /api/training-groups/{id}/athletes/` — set a squad's members (coach)
+
+```jsonc
+{ "athletes": [3, 4, 7] }        // → the squad's full member list
+```
+
+Membership is **current-state only**. Adding or removing never rewrites history:
+past sessions and sets stay attached to whatever they ran under.
+
+### `GET|POST /api/workout-programs/` — reusable templates (coach)
+
+```jsonc
+{ "id": 1, "name": "Fall Strength", "duration_weeks": 8,
+  "cadence_days_of_week": "Mon,Wed,Fri" }
+```
+
+### `GET|POST /api/workouts/` — one day inside a template (coach)
+
+```jsonc
+{ "training_block": 1, "name": "Day 1 — Lower", "position": 1,
+  "exercises": [
+    { "exercise": 1, "sets": 5, "reps": 3, "target_percent": 80,
+      "velocity_zone_min": 0.5, "velocity_zone_max": 0.8 },
+    { "exercise": 2, "sets": 3, "reps": 5, "target_percent": 75 } ] }
+```
+
+`position` orders the day and must run 1, 2, 3… with no gaps.
+
+### `GET|POST /api/training-programs/` — deploy a template for a squad (coach)
+
+```jsonc
+{ "training_group": 4, "training_block": 1,
+  "name": "Fall Strength — Varsity", "start_date": "2026-08-01" }
+```
+
+Deploying **copies** the template's rows down rather than pointing at them, so
+editing the template next season cannot rewrite what this squad already trained.
+`training_block` may be **null** — a one-off plan is a permanent first-class path,
+not a shim (D6).
+
+### `POST /api/sessions/{id}/participation/` — which squads train today (coach)
+
+```jsonc
+{ "training_group": 4, "training_program": 3 }
+```
+
+This is what lets one session hold several squads on different plans.
+
+### `GET|PUT|DELETE /api/athletes/{id}/workout-assignment/` — one athlete's plan (coach)
+
+**Reads as "this athlete's program"; underneath it is squad membership**, because
+a plan belongs to a squad (D12/D13). `PUT { "workout_program_id": 3 }` puts them
+in that program's squad; `DELETE` takes them out of the squads currently
+prescribing to them, leaving plan-less squads alone.
+
+```jsonc
+{ "athlete": { "id": 1, "name": "Jordan Lee" },
+  "assignment": [
+    { "training_program": { "id": 3, "name": "Fall Strength — Varsity",
+                            "start_date": "2026-08-01", "end_date": null },
+      "training_group":   { "id": 4, "name": "Varsity Football" },
+      "from_template":    { "id": 1, "name": "Fall Strength" },
+      "workouts": [
+        { "id": 9, "name": "Day 1 — Lower", "position": 1,
+          "exercises": [
+            { "id": 21, "exercise": { "id": 1, "name": "Back Squat" },
+              "position": 1, "sets": 5, "reps": 3,
+              "target_percent": 80,
+              "target_weight_lbs": 250.0,      // resolved for THIS athlete; null with no max
+              "velocity_zone_min": 0.5, "velocity_zone_max": 0.8 } ] } ] } ],
+  "groups_changed": [ { "id": 4, "name": "Varsity Football", "action": "added" } ] }
+```
+
+`groups_changed` appears on writes only, and says what actually moved — a write
+here has a **wider effect than the route name suggests**.
+
+### `GET|PUT|DELETE /api/athletes/{id}/workout-exercises/{id}/override/` — one athlete's exception (coach)
+
+Rare by design: everyone in a squad trains the squad's plan unless a row like
+this says otherwise.
+
+```jsonc
+{ "target_percent": 70, "sets": 3, "reps": 5 }   // any subset; omitted = inherit
+```
+
+---
+
+## 3c. REST — spreadsheet import (coach only)
+
+### `POST /api/workouts/imports/preview/` · `POST /api/workouts/imports/`
+
+`multipart/form-data`. **Preview writes nothing**; import re-checks and then saves
+all-or-nothing. Which of three sheets was uploaded is detected from the **column
+names** (D16) — the client never declares it.
+
+| Sheet | Detected by | Required columns |
+|---|---|---|
+| `roster` | `athlete_name`, no `exercise` | `athlete_name` |
+| `reference_max` | `athlete_name` + `exercise` | + `max_lbs` **or** `weight_lbs` |
+| `plan` | `workout_name` | `workout_name`, `exercise`, `position`, `sets`, `reps`, `target_percent` |
+
+**Form fields:** `file` (required); `training_block` **or** `training_program`
+(**required for a plan** — nowhere else to put workouts); `training_group`
+(optional on roster/max sheets, and the thing that tells two same-named athletes
+apart).
+
+**There is no absolute-weight column on a plan.** `target_percent` (1–150)
+replaces the old `default_weight_lbs`; a pounds column would bypass the
+reference-max machinery every prescribed weight depends on.
+
+```jsonc
+{ "sheet_type": "reference_max",
+  "rows": [ { "row": 2, "athlete_id": 1, "athlete_name": "Jordan Lee",
+              "exercise_id": 1, "exercise": "Back Squat",
+              "reference_weight_lbs": 360.0, "rep_basis": 4 } ],
+  "errors": [ { "row": 3, "field": "athlete_name", "code": "unknown_athlete",
+                "detail": "No athlete named 'Jordn Lee'.",
+                "value": "Jordn Lee", "suggestions": ["Jordan Lee"] } ],
+  "skipped": [ { "row": 4, "athlete_name": "Sam Rivera", "exercise": "Back Squat",
+                 "code": "weight_meaning_unknown", "detail": "Skipped: …" } ],
+  "counts": { "ready": 1, "errors": 1, "skipped": 1 },
+  "created": 1 }                                  // import only, and only when clean
+```
+
+**`rows` is present even when `errors` is non-empty** (D17) — that is what lets the
+coach screen show the sheet back with the bad cells marked instead of refusing the
+file. Status is `400` whenever `errors` is non-empty, `200` otherwise.
+
+**`skipped` is not an error.** A weight whose meaning the sheet never states is
+left out and reported rather than guessed: a fabricated max is newest-wins, so it
+would outrank the athlete's real tested number and drag every other target down
+with it. Ambiguous names (`ambiguous_athlete`) carry `candidates` instead of
+`suggestions`.
+
+---
+
 ## 4. Derived values — who computes what (read this)
 
 These fields are *not* sent raw by the hardware; something computes them. Getting

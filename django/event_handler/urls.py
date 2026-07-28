@@ -74,6 +74,12 @@ urlpatterns = [
     path('sessions/<int:session_id>/participation/', views.session_participation_view,
          name='session_participation'),
 
+    # what one athlete is training. Reads as "this athlete's program"; underneath
+    # it is squad membership, because a plan belongs to a squad (D12/D13). Writes
+    # say which squads they moved.
+    path('athletes/<int:athlete_id>/workout-assignment/', views.athlete_workout_assignment,
+         name='athlete_workout_assignment'),
+
     # the per-athlete exception to a squad's prescription (rare by design).
     path('athletes/<int:athlete_id>/workout-exercises/<int:exercise_id>/override/',
          views.athlete_exercise_override_view, name='athlete_exercise_override'),

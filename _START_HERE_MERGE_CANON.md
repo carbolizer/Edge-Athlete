@@ -984,6 +984,30 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 | **P6 — Rename + retirement** ⚠️ *(highest blast radius — do last)* | `Session`→`TrainingSession` across views/serializers/tests; group link fully on `SessionParticipation`; retire `Program`; **`Set.session` → `on_delete=PROTECT`.** Generates migration **`0011_*`** (§5.5; Django may split into 2–3). | `/sessions/*` shapes unchanged; **deleting a session cannot delete `Set`/`Rep` rows (test this explicitly — verify `Set.session` is actually PROTECT in the applied migration)**; full suite green. |
 | **P7 — Coach frontend + `App.jsx` seam** | `git checkout braydons-dev-branch -- <his coach files>` (§0.4); wire each to our APIs (§7); drop the panels whose backends died; hand-merge `App.jsx` so **our** role splash + rack route survive alongside **his** coach/dashboard/reports routes. **Plus the D17 repair grid**: render preview rows into his existing builder table, mark errored cells, offer `suggestions`, and apply a correction to every row sharing that spelling. Pure UI — **depends on D17(c)/(d) shipping in P5**, so nothing here needs a backend change. Rename `default_weight_lbs` → `target_percent` in `workoutCatalog.js` + `WorkoutCatalog.jsx` (D16 rule 1). | His coach pages load and function against our APIs; role splash + rack route intact; **a CSV with one misspelled name is repairable in-app without re-uploading, and the fix applies to every row sharing that spelling**; §2.1 check clean. |
 | **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
+| **P9 — Naming alignment** *(last, deliberately)* | Route and view names still speak his old vocabulary, because §3.3 said bend the URL to the existing client rather than reshape its code. That was right during the merge and wrong to keep afterwards: a route named for a table that no longer exists is a trap for the next person. Rename routes, view functions, and serializers to match the model names — see the drift table below. | Every route name matches the model it serves; `SPEC.md` + `MESSAGE_CONTRACT.md` regenerated; frontend call sites updated in the same commit; full test pass. |
+
+**Why P9 is last.** Renaming is the one change that touches his frontend and our
+backend at the same time while changing no behavior. Doing it before P7 means
+hand-merging `App.jsx` against a moving target; doing it after P8 means the merge
+is already proven green, so any test that breaks during the rename is the rename's
+fault and nothing else's. **Known drift, recorded now so it isn't rediscovered:**
+
+| Route today | Actually serves | Should say |
+|---|---|---|
+| `workout-programs/` | `TrainingBlock` — the reusable template | `training-blocks/` |
+| `workouts/` | `TrainingBlockWorkout` — one day inside a template | `training-blocks/{id}/workouts/` |
+| `workouts/imports/…` | all three sheet types, not just workouts (D16) | `imports/…` |
+| `athletes/{id}/workout-exercises/{id}/override/` | `TrainingProgramExercise` | `…/program-exercises/{id}/override/` |
+| `athletes/{id}/workout-assignment/` | the squad's `TrainingProgram` | `athletes/{id}/program/` |
+| `programs/` | legacy `Program` — **dies in P6**, so this one resolves itself | *(gone)* |
+| `Session` (model) | a training day | `TrainingSession` — **already scheduled in P6** |
+
+**Prose vocabulary drifts too, and it counts.** "Squad" reads well but is not the
+name of anything — the model is **`TrainingGroup`**, and that is the word to use in
+docstrings, comments, API docs, and coach-facing text. Same for "template" vs
+**`TrainingBlock`** and "plan" vs **`TrainingProgram`**: use the plain word only
+when introducing the concept to a coach, never as the identifier. P9 sweeps the
+prose alongside the identifiers, `IMPORTING_YOUR_SPREADSHEETS.md` included.
 
 **Config union (hand-merge, alongside whichever phase needs it):** `package.json` + lockfile, Dockerfiles,
 `docker-compose.yml`, `nginx`, `mosquitto`, `setup.sh` — take the **superset that boots both** stacks.
