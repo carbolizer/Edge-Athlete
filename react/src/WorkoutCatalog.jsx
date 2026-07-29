@@ -30,7 +30,7 @@
 // don't exist. See P10 in the merge canon.
 
 import { useEffect, useState } from "react";
-import { buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
+import { applyCorrection, buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 const WORKOUTS_URL = "/api/workouts/";
 const CSV_PREVIEW_URL = "/api/workouts/imports/preview/";
@@ -41,6 +41,52 @@ const WORKOUT_PROGRAMS_URL = "/api/workout-programs/";
 const EXERCISES_URL = "/api/exercises/";
 const TRAINING_GROUPS_URL = "/api/training-groups/";
 const DEPLOY_URL = "/api/training-programs/";
+const ATHLETES_URL = "/api/athletes/";
+
+// One unmatched name, and the answer to "who did you mean?".
+//
+// The choices are ordered closest-match-first, but the full list is always
+// underneath: the suggestion algorithm can miss, and a coach who knows the
+// answer shouldn't be blocked because it did. Picking here fixes EVERY row
+// spelled that way, which is what makes this better than editing the file.
+function RepairRow({ error, records, value, onPick, disabled }) {
+  const kind = correctionKind(error.code);
+  const choices = repairChoices(error, records);
+  const label = { athlete: "athlete", exercise: "movement", training_group: "group" }[kind] || "record";
+  return (
+    <fieldset className="workout-repair-row">
+      <legend>{error.row ? `Row ${error.row}` : "Sheet"} · <b>{error.value}</b></legend>
+      <p className="monitor-empty">{error.detail}</p>
+      <label>Which {label} is this?
+        <select value={value ?? ""} onChange={(event) => onPick(kind, error.value, event.target.value)} disabled={disabled}>
+          <option value="">Not matched yet</option>
+          {choices.map((choice) => (
+            <option value={choice.id} key={choice.id}>{choice.suggested ? `${choice.name}  (closest match)` : choice.name}</option>
+          ))}
+        </select>
+      </label>
+    </fieldset>
+  );
+}
+
+// The coach's own sheet, read back to them the way we understood it. Each of
+// the three sheet types has its own shape, so each gets its own columns rather
+// than a lowest-common-denominator table that suits none of them.
+function PreviewRows({ sheetType, rows }) {
+  if (sheetType === "plan") {
+    return <>{rows.map((workout, index) => (
+      <article key={workout.name || index}><strong>{workout.name}</strong><ol>{(workout.exercises || []).map((exercise, exerciseIndex) => <ExerciseSummary exercise={exercise} key={`${exercise.position}-${exercise.exercise}-${exerciseIndex}`} />)}</ol></article>
+    ))}</>;
+  }
+  if (sheetType === "reference_max") {
+    return <ol className="workout-preview-rows">{rows.map((row, index) => (
+      <li key={index}><b>{row.athlete_name || row.athlete}</b><span>{row.exercise_name || row.exercise} · {row.max_lbs ?? row.weight_lbs} lbs{row.reps ? ` × ${row.reps}` : ""}</span></li>
+    ))}</ol>;
+  }
+  return <ol className="workout-preview-rows">{rows.map((row, index) => (
+    <li key={index}><b>{row.athlete_name || row.name}</b>{row.training_group ? <span>{row.training_group}</span> : null}</li>
+  ))}</ol>;
+}
 
 function ErrorList({ errors, title = "Please correct the following:" }) {
   if (!errors.length) return null;
@@ -77,6 +123,11 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [csvErrors, setCsvErrors] = useState([]);
   const [csvStatus, setCsvStatus] = useState("");
   const [csvBusy, setCsvBusy] = useState("");
+  // The coach's answers to "who did you mean?", kept across re-checks so a fix
+  // made on the first pass is still applied on the second.
+  const [corrections, setCorrections] = useState({});
+  const [rawErrors, setRawErrors] = useState([]);
+  const [athletes, setAthletes] = useState([]);
   // the movement catalog and the squads, for the pickers
   const [movements, setMovements] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -178,6 +229,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       .then((r) => (r.ok ? r.json() : []))
       .then((body) => setGroups(Array.isArray(body) ? body : body.results || []))
       .catch(() => setGroups([]));
+    // Needed by the repair grid: the server's suggestions come back as names,
+    // and a correction has to name an id.
+    fetch(ATHLETES_URL, { headers })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((body) => setAthletes(Array.isArray(body) ? body : body.results || []))
+      .catch(() => setAthletes([]));
   }, [accessToken]);
 
   function updateExercise(index, field, value) {
@@ -219,6 +276,10 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     setPreview(null);
     setCsvErrors([]);
     setCsvStatus("");
+    // A different file means the old answers are about names that may not even
+    // appear in it.
+    setCorrections({});
+    setRawErrors([]);
   }
 
   async function submitCsv(action) {
@@ -228,26 +289,57 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     setCsvStatus("");
     const form = new FormData();
     form.append("file", file);
+    // The server re-reads the file from scratch every time and never trusts a
+    // previous preview, so the coach's answers have to travel with it or they
+    // are forgotten and the same errors come back.
+    if (countCorrections(corrections)) form.append("corrections", JSON.stringify(corrections));
+    // A plan needs to know which block it belongs to; the other sheet types use
+    // it, when given, only to tell two same-named athletes apart.
+    if (workoutBlockId) form.append("training_block", workoutBlockId);
     try {
       const response = await fetch(action === "preview" ? CSV_PREVIEW_URL : CSV_IMPORT_URL, {
         method: "POST",
         headers,
         body: form,
       });
-      const body = await parseResponse(response, action === "preview" ? "The CSV could not be previewed." : "The CSV could not be imported.");
-      if (body === null) return;
+      if (response.status === 401 || response.status === 403) { onLogout(); return; }
+      const body = await response.json().catch(() => ({}));
+
+      // A sheet with problems comes back as 400 WITH the rows and the errors
+      // both present — that is the whole repair loop, so it must not be treated
+      // as a plain failure and thrown away (canon D17c).
+      const repairable = Array.isArray(body.errors) && Array.isArray(body.rows);
+      if (!response.ok && !repairable) {
+        throw flattenApiErrors(body, action === "preview" ? "The CSV could not be previewed." : "The CSV could not be imported.");
+      }
+
+      setRawErrors(body.errors || []);
+      setCsvErrors(body.errors?.length ? flattenApiErrors({ errors: body.errors }, "The CSV contains errors.") : []);
+
+      if (body.errors?.length) {
+        setPreview(body);
+        const repairs = repairableErrors(body.errors).length;
+        setCsvStatus(repairs
+          ? `Nothing was imported. ${repairs} name${repairs === 1 ? "" : "s"} need${repairs === 1 ? "s" : ""} to be matched below — fix them here and import again without editing the file.`
+          : "Nothing was imported. Correct the errors listed below.");
+        return;
+      }
+
       if (action === "preview") {
         setPreview(body);
-        setCsvErrors(body.errors ? flattenApiErrors({ errors: body.errors }, "The CSV contains errors.") : []);
-        setCsvStatus(body.errors?.length ? "Preview complete. No workouts were imported." : "Preview complete. Review the normalized workouts before importing.");
-      } else {
-        const count = body.count;
-        setCsvStatus(`${count ?? "CSV"} workout${count === 1 ? "" : "s"} imported.`);
-        setFile(null);
-        setPreview(null);
-        setFileInputKey((key) => key + 1);
-        await loadWorkouts(catalogUrl);
+        setCsvStatus(`Preview complete. ${body.counts?.ready ?? 0} row${body.counts?.ready === 1 ? "" : "s"} ready${body.counts?.skipped ? `, ${body.counts.skipped} skipped` : ""}. Nothing has been saved yet.`);
+        return;
       }
+
+      const count = body.created ?? body.counts?.ready;
+      setCsvStatus(`${count ?? "CSV"} row${count === 1 ? "" : "s"} imported.`);
+      setFile(null);
+      setPreview(null);
+      setCorrections({});
+      setRawErrors([]);
+      setFileInputKey((key) => key + 1);
+      await loadWorkouts(catalogUrl);
+      await loadPrograms(programUrl);
     } catch (errors) {
       setCsvErrors(Array.isArray(errors) ? errors : [{ detail: `The CSV could not be ${action === "preview" ? "previewed" : "imported"}.` }]);
       if (action === "preview") setPreview(null);
@@ -311,8 +403,18 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     }
   }
 
-  const previewWorkouts = preview?.workouts || preview?.results || [];
-  const previewValid = preview && csvErrors.length === 0;
+  function pickCorrection(kind, value, recordId) {
+    setCorrections((current) => applyCorrection(current, kind, value, recordId));
+  }
+
+  // Two kinds of problem, and they need different treatment. A name we couldn't
+  // match is a question the coach can answer right here; a missing column or an
+  // unreadable file is not, and pretending otherwise wastes their time.
+  const repairs = repairableErrors(rawErrors);
+  const otherErrors = repairs.length ? csvErrors.filter((error) => !correctionKind(error.code)) : csvErrors;
+  const repairedCount = repairs.filter((error) => corrections[correctionKind(error.code)]?.[error.value] !== undefined).length;
+  const allRepaired = repairs.length > 0 && repairedCount === repairs.length;
+  const previewRows = preview?.rows || [];
 
   return <div className="workout-catalog context-tab-content">
     <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Create ordered workouts manually or validate a CSV before an atomic import.</p></div><b>{workoutCount} workout{workoutCount === 1 ? "" : "s"}</b></header>
@@ -339,13 +441,40 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
         </form>
       </section>
 
-      <section className="workout-panel workout-csv"><header><span>CSV import</span><h3>Preview before import</h3><p>Accepted files use the eight-column workout CSV contract.</p></header>
+      <section className="workout-panel workout-csv"><header><span>Spreadsheet import</span><h3>Preview before import</h3><p>Upload a roster, a max sheet, or a plan — we work out which from its columns. Nothing is saved until you import.</p></header>
         <label className="workout-file">CSV file<input key={fileInputKey} type="file" accept=".csv,text/csv" onChange={chooseFile} disabled={Boolean(csvBusy)} /></label>
         {file && <p className="workout-file-name">Selected: <b>{file.name}</b> · {(file.size / 1024).toFixed(1)} KB</p>}
-        <div className="workout-form-actions"><button type="button" className="workout-secondary" onClick={() => submitCsv("preview")} disabled={!file || Boolean(csvBusy)}>{csvBusy === "preview" ? "Previewing..." : "Preview CSV"}</button><button type="button" onClick={() => submitCsv("import")} disabled={!file || !previewValid || Boolean(csvBusy)}>{csvBusy === "import" ? "Importing..." : "Import workouts"}</button></div>
-        <ErrorList errors={csvErrors} title="CSV validation errors:" />
+        <div className="workout-form-actions"><button type="button" className="workout-secondary" onClick={() => submitCsv("preview")} disabled={!file || Boolean(csvBusy)}>{csvBusy === "preview" ? "Checking..." : (repairs.length ? "Re-check with fixes" : "Check file")}</button><button type="button" onClick={() => submitCsv("import")} disabled={!file || Boolean(csvBusy) || (repairs.length > 0 && !allRepaired)}>{csvBusy === "import" ? "Importing..." : "Import"}</button></div>
         {csvStatus && <p className="workout-status" role="status">{csvStatus}</p>}
-        {preview && <div className="workout-preview"><h4>Normalized preview</h4>{previewWorkouts.length === 0 ? <p className="monitor-empty">No valid workouts to preview.</p> : previewWorkouts.map((workout, index) => <article key={workout.name || index}><strong>{workout.name}</strong><ol>{(workout.exercises || []).map((exercise) => <ExerciseSummary exercise={exercise} key={`${exercise.position}-${exercise.exercise}`} />)}</ol></article>)}</div>}
+
+        {/* THE REPAIR GRID (canon D17). A name we couldn't match is a question,
+            not a rejection — the coach answers it here and imports the same
+            file. Their answers travel with it, so nothing needs re-uploading. */}
+        {repairs.length > 0 && <div className="workout-preview">
+          <h4>Match these names</h4>
+          <p className="monitor-empty">Each fix applies to every row spelled the same way.</p>
+          {repairs.map((error, index) => {
+            const kind = correctionKind(error.code);
+            const records = kind === "athlete" ? athletes : kind === "exercise" ? movements : groups;
+            return <RepairRow
+              key={`${error.row ?? "sheet"}-${error.value}-${index}`}
+              error={error}
+              records={records}
+              value={corrections[kind]?.[error.value]}
+              onPick={pickCorrection}
+              disabled={Boolean(csvBusy)}
+            />;
+          })}
+          <p className="workout-status" role="status">{repairedCount} of {repairs.length} matched{allRepaired ? " — import when ready." : "."}</p>
+        </div>}
+
+        {/* Anything a coach can't fix by pointing at a record: a missing column,
+            an unreadable file, a number whose meaning the sheet never stated. */}
+        <ErrorList errors={otherErrors} title="Still to fix in the file:" />
+
+        {preview && <div className="workout-preview"><h4>What we understood</h4>{previewRows.length === 0 ? <p className="monitor-empty">No rows could be read from this file.</p> : <PreviewRows sheetType={preview.sheet_type} rows={previewRows} />}
+          {preview.skipped?.length > 0 && <div className="context-notice"><strong>{preview.skipped.length} row{preview.skipped.length === 1 ? "" : "s"} skipped.</strong> A weight is only used when the sheet says plainly what it means — a bare number could be a one-rep max, a set of five, or a percentage, and guessing wrong would quietly become that athlete's official max.</div>}
+        </div>}
       </section>
     </div>
 

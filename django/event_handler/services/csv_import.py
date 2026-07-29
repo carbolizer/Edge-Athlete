@@ -117,9 +117,14 @@ class NameResolver:
     narrows real ambiguity: two "Jordan Lee"s in a building is believable, two in
     the same thirty-person squad is not. Only when both of those are inconclusive
     do we stop and ask the coach.
+
+    A COACH'S ANSWER OUTRANKS ALL OF IT
+    Once the coach has told us who "Jordn Reyes" is, that answer is used for
+    EVERY row spelled that way — which is the whole point of fixing it on screen
+    instead of editing the file and uploading again. See `corrections`.
     """
 
-    def __init__(self, records, scope_ids=None):
+    def __init__(self, records, scope_ids=None, corrections=None):
         # records: iterable of (id, display_name)
         self.display_by_id = {}
         self.ids_by_name = {}
@@ -127,6 +132,10 @@ class NameResolver:
             self.display_by_id[record_id] = display
             self.ids_by_name.setdefault(normalize_name(display), []).append(record_id)
         self.scope_ids = set(scope_ids or ())
+        # {misspelling -> id}, keyed the same way names are, so the coach's fix
+        # matches every row with that spelling regardless of case or spacing.
+        self.corrections = {normalize_name(text): record_id
+                            for text, record_id in (corrections or {}).items()}
 
     def _candidates(self, raw):
         """Every record this text could mean, trying the surname-first spelling too."""
@@ -144,6 +153,15 @@ class NameResolver:
 
     def resolve(self, raw):
         """Return (record_id, problem_code). Exactly one of the two is set."""
+        # The coach's own answer comes first — it is the only source here that
+        # is a decision rather than a guess. An id we don't recognise is ignored
+        # rather than trusted, so a stale or hand-edited correction falls back to
+        # normal matching and re-reports the problem instead of silently writing
+        # to whatever row that number happens to be.
+        corrected = self.corrections.get(normalize_name(raw))
+        if corrected is not None and corrected in self.display_by_id:
+            return corrected, None
+
         candidates = self._candidates(raw)
         if not candidates:
             return None, "unknown"
@@ -160,15 +178,25 @@ class NameResolver:
         return [{"id": c, "name": self.display_by_id[c]} for c in self._candidates(raw)]
 
 
-def _athlete_resolver(scope_group=None):
+# Corrections arrive grouped by what they name, because the same text can mean
+# two different things — "Jordan" could be an athlete a coach is fixing and, in
+# another gym's sheet, nothing at all. Keying by kind keeps one fix from leaking
+# into a lookup it was never meant for.
+def _for(corrections, kind):
+    return (corrections or {}).get(kind)
+
+
+def _athlete_resolver(scope_group=None, corrections=None):
     scope_ids = ()
     if scope_group is not None:
         scope_ids = list(scope_group.athletes.values_list("id", flat=True))
-    return NameResolver(Athlete.objects.values_list("id", "name"), scope_ids=scope_ids)
+    return NameResolver(Athlete.objects.values_list("id", "name"), scope_ids=scope_ids,
+                        corrections=_for(corrections, "athlete"))
 
 
-def _exercise_resolver():
-    return NameResolver(Exercise.objects.values_list("id", "name"))
+def _exercise_resolver(corrections=None):
+    return NameResolver(Exercise.objects.values_list("id", "name"),
+                        corrections=_for(corrections, "exercise"))
 
 
 def _resolve_into(resolver, raw, row_number, field, errors, kind):
@@ -250,7 +278,7 @@ def weight_column_label(raw):
     return str(value).strip() if value is not None else ""
 
 
-def validate_reference_max_rows(rows, headers, *, scope_group=None):
+def validate_reference_max_rows(rows, headers, *, scope_group=None, corrections=None):
     """Check a max sheet. Returns (entries, errors, skipped)."""
     errors = []
     skipped = []
@@ -265,8 +293,8 @@ def validate_reference_max_rows(rows, headers, *, scope_group=None):
     if errors:
         return [], errors, skipped
 
-    athletes = _athlete_resolver(scope_group)
-    exercises = _exercise_resolver()
+    athletes = _athlete_resolver(scope_group, corrections)
+    exercises = _exercise_resolver(corrections)
 
     entries = []
     for row_number, raw in rows:
@@ -312,7 +340,7 @@ def create_reference_maxes(entries):
 # ───────────────────────────── the roster sheet ─────────────────────────────
 
 
-def validate_roster_rows(rows, headers, *, scope_group=None):
+def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
     """Check a roster. Returns (entries, errors, skipped).
 
     Someone already on the roster is SKIPPED, not an error: re-uploading last
@@ -326,8 +354,9 @@ def validate_roster_rows(rows, headers, *, scope_group=None):
     if errors:
         return [], errors, skipped
 
-    existing = _athlete_resolver()
-    groups = NameResolver(TrainingGroup.objects.values_list("id", "name"))
+    existing = _athlete_resolver(corrections=corrections)
+    groups = NameResolver(TrainingGroup.objects.values_list("id", "name"),
+                          corrections=_for(corrections, "training_group"))
     taken_tags = set(Athlete.objects.exclude(nfc_tag_id=None).values_list("nfc_tag_id", flat=True))
 
     entries = []
@@ -398,7 +427,7 @@ def create_athletes(entries):
 # ───────────────────────────── the plan sheet ─────────────────────────────
 
 
-def validate_plan_rows(rows, headers):
+def validate_plan_rows(rows, headers, *, corrections=None):
     """Check a workout plan. Returns (workouts, errors, skipped).
 
     Rows are grouped into workouts by 'workout_name'. The ORDER of the workouts
@@ -412,7 +441,7 @@ def validate_plan_rows(rows, headers):
     if errors:
         return [], errors, []
 
-    exercises = _exercise_resolver()
+    exercises = _exercise_resolver(corrections)
     grouped = {}
 
     for row_number, raw in rows:
@@ -565,12 +594,22 @@ VALIDATORS = {
 }
 
 
-def validate_upload(uploaded_file, *, scope_group=None):
+def validate_upload(uploaded_file, *, scope_group=None, corrections=None):
     """Read a file and check it, writing nothing.
 
     Returns (sheet_type, payload, errors, skipped). `payload` comes back even
     when there are errors, so the screen can show the coach their own rows with
     the bad cells marked instead of an empty page and a refusal.
+
+    `corrections` is how a coach's on-screen fix survives the round trip. The
+    file is deliberately re-read from scratch every time — we never trust a
+    previous preview — so without this the app would forget the answer it just
+    asked for and report the same problem again. Shape:
+
+        {"athlete": {"Jordn Reyes": 42}, "exercise": {"Bnch Press": 7}}
+
+    A correction applies to EVERY row with that spelling, which is why a sheet
+    with one name misspelled forty times is one fix and not forty.
     """
     headers, rows, errors = read_csv(uploaded_file)
     if errors:
@@ -582,9 +621,10 @@ def validate_upload(uploaded_file, *, scope_group=None):
 
     validator = VALIDATORS[sheet_type]
     if sheet_type == SHEET_PLAN:
-        payload, errors, skipped = validator(rows, headers)
+        payload, errors, skipped = validator(rows, headers, corrections=corrections)
     else:
-        payload, errors, skipped = validator(rows, headers, scope_group=scope_group)
+        payload, errors, skipped = validator(rows, headers, scope_group=scope_group,
+                                             corrections=corrections)
     return sheet_type, payload, errors, skipped
 
 

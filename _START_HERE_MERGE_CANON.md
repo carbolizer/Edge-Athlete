@@ -1085,6 +1085,24 @@ copied down for a group with real dates attached, editable afterwards without to
 **This is the second time this hierarchy was restated from memory and got it wrong — read §4.1 before
 describing it, every time.**
 
+⚠️ **D17(d) did NOT ship in P5 — built in P7 step 5 instead (2026-07-28).** The P7 row says the repair grid is
+"pure UI ... nothing here needs a backend change", on the stated assumption that D17(c) **and (d)** both landed
+in P5. Only (a) the resolution ladder, (b) `suggestions`, and (c) rows-alongside-errors did. There was no way
+to submit a correction: `validate_upload()` took no such argument and the string "correction" appeared nowhere
+in the Django tree. Since both endpoints deliberately **re-read the file from scratch and never trust a previous
+preview**, a UI-only repair would have been theatre — it would look like it worked and then fail on submit,
+and the P7 exit criterion ("repairable in-app without re-uploading") would have been unreachable.
+
+Built as ~40 lines: `corrections` threaded through `validate_upload` → the three validators → `NameResolver`,
+which consults it before its own matching. Grouped by kind (`athlete` / `exercise` / `training_group`) so one
+answer can't satisfy a different lookup; normalized like every other name so one fix repairs every row with
+that spelling; an unknown id is **ignored rather than trusted**, falling back to normal matching. Malformed
+JSON is a 400 rather than a silent drop. 6 tests. Documented in `MESSAGE_CONTRACT.md` §3c.
+
+**Lesson for the remaining phases:** the canon asserted a dependency had shipped, and the plan was built on that
+assertion without checking. **Verify a phase's stated dependencies exist before planning around them** — the
+check was two greps.
+
 **D10 is resolved (2026-07-28).** The open worry was that one freak set could set an athlete's reference max.
 It cannot: `Set.is_false_set` already gates what counts toward the recalc, so a mis-tracked rep is excluded
 before estimation ever runs. No estimation-method change needed.

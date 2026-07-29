@@ -97,6 +97,65 @@ export function errorLabel(error) {
   return `${location ? `${location}: ` : ""}${error.detail}`;
 }
 
+// ─────────────────────── the CSV repair loop (canon D17) ───────────────────────
+//
+// A misspelled name doesn't reject the file. The server hands back every row it
+// understood PLUS an error per row it didn't, each carrying the text it choked
+// on and the closest matches it knows. The coach picks the right one on screen
+// and the same file is sent again with their answers attached — no editing the
+// spreadsheet, no re-uploading.
+//
+// Corrections are grouped by what they name, because the server keys them that
+// way: an answer about an athlete must never satisfy a movement lookup.
+
+// Which lookup an error belongs to, from its code (unknown_athlete,
+// ambiguous_exercise, ...). Anything else isn't a naming problem and can't be
+// repaired by pointing at a record.
+export function correctionKind(code) {
+  if (!code) return null;
+  const match = /^(?:unknown|ambiguous)_(athlete|exercise|training_group)$/.exec(code);
+  return match ? match[1] : null;
+}
+
+// The errors a coach can actually fix here, paired with the raw text to fix.
+// Errors without a `value` (a missing column, an unreadable file) are real but
+// belong in the plain error list — there is nothing to point at.
+export function repairableErrors(errors) {
+  return (errors || []).filter((error) => correctionKind(error.code) && error.value);
+}
+
+// Every record the coach could mean, closest matches first so the likely answer
+// is at the top, but never ONLY the guesses — difflib can miss, and a coach who
+// knows the right answer shouldn't be stuck because the algorithm didn't.
+export function repairChoices(error, records) {
+  const suggested = error.suggestions || [];
+  const byName = new Map((records || []).map((record) => [record.name, record]));
+  const candidates = (error.candidates || []).map((candidate) => ({ id: candidate.id, name: candidate.name, suggested: true }));
+  const fromSuggestions = suggested
+    .map((name) => byName.get(name))
+    .filter(Boolean)
+    .map((record) => ({ id: record.id, name: record.name, suggested: true }));
+  const top = candidates.length ? candidates : fromSuggestions;
+  const topIds = new Set(top.map((choice) => choice.id));
+  const rest = (records || [])
+    .filter((record) => !topIds.has(record.id))
+    .map((record) => ({ id: record.id, name: record.name, suggested: false }));
+  return [...top, ...rest];
+}
+
+// Fold one answer into the map the import endpoint expects.
+export function applyCorrection(corrections, kind, value, recordId) {
+  const next = { ...corrections, [kind]: { ...(corrections[kind] || {}) } };
+  if (recordId === "" || recordId === null || recordId === undefined) delete next[kind][value];
+  else next[kind][value] = Number(recordId);
+  if (!Object.keys(next[kind]).length) delete next[kind];
+  return next;
+}
+
+export function countCorrections(corrections) {
+  return Object.values(corrections || {}).reduce((total, group) => total + Object.keys(group).length, 0);
+}
+
 export function sameOriginPath(value, origin) {
   if (!value) return null;
   try {

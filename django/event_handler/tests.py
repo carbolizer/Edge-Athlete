@@ -5,6 +5,7 @@
 # relies on: which session counts as active, who reads as already having data,
 # that an athlete's CURRENT reference max (and only that) comes back, and that
 # every exercise now resolves through the shared catalog.
+import json
 from datetime import timedelta
 
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -1086,6 +1087,74 @@ class CsvImportTests(APITestCase):
                            "Sam Rivera,Back Squat,275\n", url="/api/workouts/imports/")
         self.assertEqual(res.status_code, 400)
         self.assertEqual(AthleteReferenceMax.objects.count(), 0)
+
+    # ── D17(d): the coach's fix survives the round trip ──────────────────────
+
+    def test_a_correction_imports_the_row_without_re_uploading(self):
+        """The point of the whole repair loop: answer "who did you mean?" once,
+        send the SAME file back, and it goes in."""
+        jordan = Athlete.objects.create(name="Jordan Lee")
+        sheet = ("athlete_name,exercise,max_lbs\n"
+                 "Jordn Lee,Back Squat,315\n")
+
+        self.assertEqual(self._upload(sheet, url="/api/workouts/imports/").status_code, 400)
+        self.assertEqual(AthleteReferenceMax.objects.count(), 0)
+
+        res = self._upload(sheet, url="/api/workouts/imports/",
+                           corrections=json.dumps({"athlete": {"Jordn Lee": jordan.id}}))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(AthleteReferenceMax.objects.get().athlete_id, jordan.id)
+
+    def test_one_correction_repairs_every_row_with_that_spelling(self):
+        """A name misspelled forty times is one fix, not forty — that is what
+        makes repairing on screen better than editing the file."""
+        jordan = Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\n"
+                           "Jordn Lee,Back Squat,315\n"
+                           "jordn lee,Bench Press,225\n",
+                           url="/api/workouts/imports/",
+                           corrections=json.dumps({"athlete": {"Jordn Lee": jordan.id}}))
+        self.assertEqual(res.status_code, 200)
+        # Both rows landed, including the one spelled with different casing.
+        self.assertEqual(AthleteReferenceMax.objects.filter(athlete=jordan).count(), 2)
+
+    def test_a_correction_naming_a_record_that_does_not_exist_is_ignored(self):
+        """A stale or hand-edited correction must not write to whatever row that
+        id happens to be. It falls back to normal matching and re-reports."""
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordn Lee,Back Squat,315\n",
+                           url="/api/workouts/imports/",
+                           corrections=json.dumps({"athlete": {"Jordn Lee": 999999}}))
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["errors"][0]["code"], "unknown_athlete")
+        self.assertEqual(AthleteReferenceMax.objects.count(), 0)
+
+    def test_corrections_are_scoped_to_what_they_name(self):
+        """An athlete correction must not satisfy a movement lookup, even when
+        the misspelling is identical."""
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n",
+                           url="/api/workouts/imports/",
+                           corrections=json.dumps({"athlete": {"Bakc Squat": self.squat.id}}))
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["errors"][0]["code"], "unknown_exercise")
+
+    def test_malformed_corrections_are_reported_rather_than_dropped(self):
+        """Silently ignoring them would re-raise the errors the coach just fixed
+        and look like their fix didn't take."""
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
+                           url="/api/workouts/imports/", corrections="{not json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["code"], "invalid_corrections")
+
+    def test_a_correction_also_repairs_a_misspelled_movement(self):
+        Athlete.objects.create(name="Jordan Lee")
+        res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n",
+                           url="/api/workouts/imports/",
+                           corrections=json.dumps({"exercise": {"Bakc Squat": self.squat.id}}))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(AthleteReferenceMax.objects.get().exercise_id, self.squat.id)
 
     def test_a_misspelled_movement_suggests_the_catalog_entry(self):
         Athlete.objects.create(name="Jordan Lee")

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, errorLabel, flattenApiErrors, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
+import { applyCorrection, buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
   // A workout is one DAY inside a block, so the block id travels with it — a day
@@ -63,6 +63,72 @@ describe("sameOriginPath", () => {
     expect(sameOriginPath("https://user:pass@edge-athlete.local/api/workouts/?page=2", origin)).toBeNull();
     expect(sameOriginPath("http://[invalid", origin)).toBeNull();
     expect(sameOriginPath(null, origin)).toBeNull();
+  });
+});
+
+describe("the CSV repair loop", () => {
+  const athletes = [
+    { id: 1, name: "Jordan Lee" },
+    { id: 2, name: "Sam Rivera" },
+    { id: 3, name: "Alex Chen" },
+  ];
+  const unknownName = {
+    row: 2, field: "athlete_name", code: "unknown_athlete",
+    detail: "No athlete named 'Jordn Lee'.", value: "Jordn Lee",
+    suggestions: ["Jordan Lee"],
+  };
+
+  it("treats only naming problems as repairable", () => {
+    expect(correctionKind("unknown_athlete")).toBe("athlete");
+    expect(correctionKind("ambiguous_exercise")).toBe("exercise");
+    expect(correctionKind("unknown_training_group")).toBe("training_group");
+    // A bare weight and a missing column cannot be fixed by pointing at a
+    // record, so they belong in the plain error list.
+    expect(correctionKind("weight_meaning_unknown")).toBeNull();
+    expect(correctionKind("missing_column")).toBeNull();
+  });
+
+  it("ignores naming errors that carry no text to match", () => {
+    expect(repairableErrors([{ code: "unknown_athlete" }])).toEqual([]);
+    expect(repairableErrors([unknownName])).toHaveLength(1);
+  });
+
+  // The suggestion algorithm can miss. Offering only its guesses would leave a
+  // coach who knows the answer with no way to give it.
+  it("puts the closest match first but still offers everyone", () => {
+    const choices = repairChoices(unknownName, athletes);
+    expect(choices[0]).toEqual({ id: 1, name: "Jordan Lee", suggested: true });
+    expect(choices).toHaveLength(3);
+    expect(choices.slice(1).every((choice) => choice.suggested === false)).toBe(true);
+  });
+
+  // A duplicated name is a different question: not "who is this?" but "which of
+  // these two?", and the server names both.
+  it("offers the named candidates when a name is ambiguous", () => {
+    const ambiguous = {
+      row: 5, code: "ambiguous_athlete", value: "Jordan Lee",
+      candidates: [{ id: 1, name: "Jordan Lee" }, { id: 9, name: "Jordan Lee" }],
+    };
+    const choices = repairChoices(ambiguous, athletes);
+    expect(choices.filter((choice) => choice.suggested).map((choice) => choice.id)).toEqual([1, 9]);
+  });
+
+  it("builds the map the import endpoint expects, keyed by kind", () => {
+    let corrections = applyCorrection({}, "athlete", "Jordn Lee", "1");
+    corrections = applyCorrection(corrections, "exercise", "Bakc Squat", 7);
+    expect(corrections).toEqual({
+      athlete: { "Jordn Lee": 1 },
+      exercise: { "Bakc Squat": 7 },
+    });
+    expect(countCorrections(corrections)).toBe(2);
+  });
+
+  // Un-picking has to actually remove the answer, not store an empty one — the
+  // server would treat a blank id as a correction to nothing.
+  it("removes an answer when the coach clears it, and prunes the empty kind", () => {
+    const corrections = applyCorrection({ athlete: { "Jordn Lee": 1 } }, "athlete", "Jordn Lee", "");
+    expect(corrections).toEqual({});
+    expect(countCorrections(corrections)).toBe(0);
   });
 });
 

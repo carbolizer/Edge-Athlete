@@ -503,7 +503,7 @@ names** (D16) — the client never declares it.
 **Form fields:** `file` (required); `training_block` **or** `training_program`
 (**required for a plan** — nowhere else to put workouts); `training_group`
 (optional on roster/max sheets, and the thing that tells two same-named athletes
-apart).
+apart); `corrections` (optional — see below).
 
 **There is no absolute-weight column on a plan.** `target_percent` (1–150)
 replaces the old `default_weight_lbs`; a pounds column would bypass the
@@ -532,6 +532,34 @@ left out and reported rather than guessed: a fabricated max is newest-wins, so i
 would outrank the athlete's real tested number and drag every other target down
 with it. Ambiguous names (`ambiguous_athlete`) carry `candidates` instead of
 `suggestions`.
+
+#### `corrections` — answering "who did you mean?" (D17d)
+
+A JSON string sent alongside the **same file**, so a misspelling is fixed on
+screen rather than by editing the spreadsheet and uploading again:
+
+```jsonc
+{ "athlete":        { "Jordn Lee": 42 },      // the raw text -> the record id
+  "exercise":       { "Bakc Squat": 7 },
+  "training_group": { "Varsty": 3 } }
+```
+
+- **Grouped by kind on purpose.** An answer about an athlete must never satisfy a
+  movement lookup, even when the misspelling is identical.
+- **Matched the same way names are** (case- and spacing-insensitive), so one
+  answer repairs *every* row spelled that way — a name mistyped forty times is one
+  fix, not forty.
+- **An id that doesn't exist is ignored**, not trusted: the row falls back to
+  normal matching and re-reports its error. A stale or hand-edited correction can
+  never write to whatever row that number happens to be.
+- **Malformed JSON is a `400` `invalid_corrections`**, never silently dropped —
+  ignoring it would re-raise the errors the coach just fixed and look like their
+  fix didn't take.
+
+Corrections are needed because **both endpoints re-read the file from scratch and
+never trust a previous preview** (the gym changes between the two calls — someone
+gets renamed, another coach imports first). Without them the app would forget the
+answer it just asked for.
 
 ---
 

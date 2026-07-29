@@ -25,6 +25,7 @@ Grouped by who uses them:
 
 Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 """
+import json
 from datetime import timedelta
 
 from django.db import transaction
@@ -1268,6 +1269,30 @@ def _import_target(request):
     return None, None, group, None
 
 
+def _import_corrections(request):
+    """The coach's answers to "who did you mean?", sent back with the file.
+
+    Returns (corrections, error_response). Arrives as a JSON string because the
+    upload is multipart form data, not a JSON body. A malformed value is
+    reported rather than ignored — silently dropping corrections would re-raise
+    the errors the coach just fixed, and look like their fix didn't take.
+    """
+    raw = request.data.get("corrections")
+    if not raw:
+        return None, None
+    if isinstance(raw, dict):
+        return raw, None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None, Response({"code": "invalid_corrections",
+                               "detail": "Corrections must be valid JSON."}, status=400)
+    if not isinstance(parsed, dict):
+        return None, Response({"code": "invalid_corrections",
+                               "detail": "Corrections must be an object keyed by kind."}, status=400)
+    return parsed, None
+
+
 def _import_response(sheet_type, payload, errors, skipped, *, created=None):
     """One response shape for both preview and import.
 
@@ -1304,9 +1329,12 @@ def workout_import_preview(request):
     target, kind, scope_group, error = _import_target(request)
     if error is not None:
         return error
+    corrections, error = _import_corrections(request)
+    if error is not None:
+        return error
 
     sheet_type, payload, errors, skipped = validate_upload(
-        request.FILES.get("file"), scope_group=scope_group)
+        request.FILES.get("file"), scope_group=scope_group, corrections=corrections)
 
     if sheet_type == SHEET_PLAN and target is None and not errors:
         errors = [{"row": None, "field": "training_block", "code": "target_required",
@@ -1327,9 +1355,12 @@ def workout_import(request):
     target, kind, scope_group, error = _import_target(request)
     if error is not None:
         return error
+    corrections, error = _import_corrections(request)
+    if error is not None:
+        return error
 
     sheet_type, payload, errors, skipped = validate_upload(
-        request.FILES.get("file"), scope_group=scope_group)
+        request.FILES.get("file"), scope_group=scope_group, corrections=corrections)
 
     if sheet_type == SHEET_PLAN and target is None and not errors:
         errors = [{"row": None, "field": "training_block", "code": "target_required",
