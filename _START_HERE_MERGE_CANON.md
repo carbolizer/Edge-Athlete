@@ -973,6 +973,24 @@ in `SPEC.md` + `MESSAGE_CONTRACT.md`. A route that isn't documented isn't done.
 **Stop at every gate and verify before starting the next phase. Do not run phases ahead.**
 Every gate implicitly includes: **backend tests green + §2.1 frozen-file check prints nothing.**
 
+> ### ⚠️ SEQUENCING CHANGED 2026-07-29 — read this before trusting the P8 row
+>
+> The original plan shipped at P8: verify, then fast-forward `SprintBranch`, with P9+ landing afterwards.
+> **The decision now is to complete P7 → P13 first, and ship once.** So:
+>
+> - **P8 keeps its verification duties but NO LONGER fast-forwards `SprintBranch`.** It is the "everything
+>   green on a fresh database" gate, not the ship gate.
+> - **The fast-forward moves to the END, after P13.** `SprintBranch` therefore stays behind for longer —
+>   accept that deliberately, and do not let anyone "just merge it early" to unblock themselves.
+> - **P9's rationale survives unchanged.** It was placed after P8 so the rename lands on a tree already proven
+>   green; that is still true. It simply is no longer the first thing after a ship.
+> - **D18 and D19 now get FIXED before ship** (P12, P13) rather than shipping as known issues. The P8 row's
+>   "ships with D18 unfixed" note is therefore obsolete — it applied to the old ordering.
+>
+> **After P13 and the ship prep**, the next work is not code: it is a sprint-planning pass that turns
+> everything on this branch into user stories for the team, plus **new** stories — chief among them a
+> **coach-tablet UX wireframe document** (see §8.2).
+
 | Phase | Scope | Exit gate |
 |---|---|---|
 | **P0 — Cold-build smoke test** *(first)* | Prove the checked-out tree builds and runs from a clean clone **before changing anything**: `git fetch --all` (so `braydons-dev-branch`/`main` are present for later `git show`/`checkout`); `cp -f .env.example .env` (overwrites — `.env.example` is the source of truth, §0.5); `docker compose up --build`. | All containers reach healthy; `http://localhost/` loads; the **rack screen runs its full loop** (§8 definition); existing tests pass (`docker exec edgeathlete-django python manage.py test event_handler`). ⚠️ `makemigrations --check` is **clean** now that `0008` is committed (an earlier draft of this note warned it would show `Training*` as **pending** — that was written before `0008` existed). If it *does* report pending changes, something drifted from `models.py` — reconcile before starting P1. If the build itself fails, **stop and escalate** — do not start P1 on a tree that doesn't boot. |
@@ -997,6 +1015,27 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 | **P11 — Multi-coach: ownership, filtering, and block categories** *(after the merge is shipped)* | Today "coach" means nothing but "logged in" — see the audit below. Give a coach a working relationship to their athletes without walling off the shared catalog: a coach-scoped filter on the block catalog, a category on `TrainingBlock`, and real ownership of `TrainingGroup`. | A coach can see only their own blocks by default and still search the whole department's; blocks carry a category; a group has one or more coaches with roles; every write endpoint enforces it; full test pass; `SPEC.md` + `MESSAGE_CONTRACT.md` updated. |
 
 | **P12 — One open session at a time (D18)** | Nothing stops several sessions being open at once, and "the active session" is simply the most recent one with no `ended_at`. Add the guard, and say which day ended. | `POST /api/sessions/` refuses (409) while another session is open, naming it; ending a day tells the coach which day ended and that its report was generated; a test proves two open sessions cannot be created. |
+
+| **P13 — The athlete analytics read (D19)** | His `athlete` and `history` tabs were built on an analytics endpoint we never wrote. Widen `analytics/athlete/{id}/` to return the athlete, a summary, per-exercise aggregates, and per-set reps. | The athlete and history tabs load for a real athlete; the rep-by-rep comparison works; a coach with no completed sets sees an empty state rather than an error; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
+
+**⚠️ D19 — the analytics shape gap (found in the browser, 2026-07-29).** Selecting an athlete threw
+`Cannot read properties of undefined (reading 'id')`: his code reads `context.athlete.id`, and
+`analytics/athlete/{id}/` returns only `{athlete_id, sets:[…]}` — a flat velocity trend. The three athlete
+tabs want considerably more:
+
+| His screen reads | We return today |
+|---|---|
+| `context.athlete.name` / `.created_at` | `athlete_id` only |
+| `context.summary.completed_sets` / `completed_reps` / `best_average` | — |
+| `context.exercise_summaries[]` | — |
+| per-set **reps** (the rep-by-rep comparison) | — |
+| `context.truncated` | — |
+
+**Deriving it on the client is not enough.** `completed_sets` and `best_average` fall out of the trend we
+already send, and the athlete object now comes from `athletes/{id}/` — but `completed_reps` and the
+rep-by-rep comparison are **impossible without rep data**, and that is the part of the history tab worth
+having. The data all exists in `Set` and `Rep`; nobody ever wrote the read. So this is a real endpoint, not a
+frontend patch — deliberately its own phase rather than a fourth unplanned backend addition inside P7.
 
 **⚠️ D18 — the stacked-session trap (found in the browser, 2026-07-29).** Pressing "End training day" appeared
 to do nothing: the panel swapped straight back to another active day and the same button. It was working every
@@ -1189,6 +1228,28 @@ check was two greps.
 **D10 is resolved (2026-07-28).** The open worry was that one freak set could set an athlete's reference max.
 It cannot: `Set.is_false_set` already gates what counts toward the recalc, so a mis-tracked rep is excluded
 before estimation ever runs. No estimation-method change needed.
+
+### 8.2 After the ship — sprint planning and the coach-tablet wireframe
+
+Once P13 is done and the branch is ready to ship, the next deliverable is **not code**:
+
+1. **User stories for the team's next sprint**, in the format of `Edge Athlete/BRAYDON MERGE/SPRINT_3_STORIES.md`
+   (Owner · Story · Tasks · Points · Hours · Status · Phase Reference · burndown columns). Cover the work
+   actually done on this branch, and add genuinely new stories on top so there is real work to pick up.
+   ⚠️ The point is to **share credit and give teammates something to own** — the branch has absorbed a lot of
+   work that would otherwise be invisible on a board.
+
+2. **A coach-tablet UX wireframe document.** The problem, in the user's words: *"right now everything jumps
+   out at you at once and it's not intuitive."* The current coach page stacks a topbar, a five-cell summary
+   strip, a training-day panel, seven tabs, and a rack list before a coach sees anything they came for.
+   Goals: **abstract most information away by default** and **keep what matters above the fold**. This is a
+   design document to hand to teammates as buildable work, not something to implement first.
+
+   Grounding already observed in the browser and worth carrying into it: the summary strip shows five numbers
+   of roughly equal weight with no hierarchy; the tab row mixes per-athlete views (`athlete`, `history`,
+   `programs`, `notes`) with room-level ones (`room`, `workouts`, `reports`) without saying so; the athlete
+   picker is a bare roster dropdown with no grouping; and the catalog puts three separate build steps on one
+   scrolling page.
 
 **Config union (hand-merge, alongside whichever phase needs it):** `package.json` + lockfile, Dockerfiles,
 `docker-compose.yml`, `nginx`, `mosquitto`, `setup.sh` — take the **superset that boots both** stacks.
