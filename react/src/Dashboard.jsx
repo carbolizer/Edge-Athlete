@@ -209,7 +209,11 @@ function CoachLogin({ onLogin, error, busy }) {
   return (
     <main className="monitor coach-login-screen">
       <section className="coach-login-card">
-        <div className="monitor-brand"><b>EA</b><span>Edge Athlete</span></div>
+        {/* The coach app's own icon, matching the workspace topbar and the icon
+            this device installs to a home screen — the "EA" lettermark it
+            replaced belonged to no particular app. Larger here than in the
+            topbar because it is the only mark on the screen. */}
+        <div className="monitor-brand"><img src="/icon-coach-192.png" alt="" width="52" height="52" /><span>Edge Athlete</span></div>
         <p className="coach-eyebrow">Coach workspace</p>
         <h1>See the whole room.<br />Coach the next rep.</h1>
         <p>Live saved performance, rack comparisons, and hardware health in one focused view.</p>

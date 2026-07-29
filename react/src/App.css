@@ -9,6 +9,10 @@
 .monitor button,.monitor input,.monitor select { font:inherit; }
 .monitor-brand { align-items:center; display:flex; gap:12px; }
 .monitor-brand>b { align-items:center; background:var(--lime); color:#0a1106; display:flex; font-size:14px; height:38px; justify-content:center; letter-spacing:-.05em; width:38px; }
+/* The app icon, where a device has one. Kept square and never stretched, so a
+   replaced icon of a different aspect ratio degrades by letterboxing rather
+   than by distorting the artwork. */
+.monitor-brand>img { border-radius:8px; flex:none; height:38px; object-fit:contain; width:38px; }
 .monitor-brand>span { font-size:14px; font-weight:850; letter-spacing:.08em; text-transform:uppercase; }
 .monitor-connection { align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:999px; display:flex; font-size:10px; font-weight:850; gap:8px; letter-spacing:.08em; padding:8px 12px; text-transform:uppercase; }
 .monitor-connection i { background:var(--muted); border-radius:50%; height:8px; width:8px; }
@@ -72,6 +76,8 @@
 /* Coach login */
 .coach-login-screen { display:grid; grid-template-columns:minmax(480px,.9fr) 1.1fr; }
 .coach-login-card { display:flex; flex-direction:column; justify-content:center; max-width:650px; padding:clamp(42px,7vw,110px); }
+/* Bigger than the topbar's copy: on the sign-in screen it is the only mark. */
+.coach-login-card .monitor-brand>img { height:52px; width:52px; }
 .coach-eyebrow { color:var(--lime)!important; font-size:10px!important; font-weight:900; letter-spacing:.14em; margin:70px 0 14px!important; text-transform:uppercase; }
 .coach-login-card h1 { font-size:clamp(42px,5vw,76px); letter-spacing:-.065em; line-height:.94; margin:0; }
 .coach-login-card>p { color:var(--muted); font-size:15px; line-height:1.55; max-width:46ch; }
