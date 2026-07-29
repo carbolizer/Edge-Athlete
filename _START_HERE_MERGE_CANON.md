@@ -1031,6 +1031,14 @@ tabs want considerably more:
 | per-set **reps** (the rep-by-rep comparison) | — |
 | `context.truncated` | — |
 
+**Scope correction (2026-07-29):** the failed fetch nulled `context`, and `context` gates **all four**
+per-athlete tabs — so `programs` and `notes` were dead too, not just `athlete` and `history`. P7 fixed the
+context assembly (`c.athlete_id`, with the athlete object coming from `athletes/{id}/`), which **unblocked
+`programs` and `notes` with no backend change**. P13's remaining scope is therefore only the two tabs that
+genuinely need data we do not send: `athlete` (summary + per-movement aggregates) and `history` (session
+labels + rep counts + per-rep detail). Both now show an honest "isn't available yet" panel rather than
+crashing or — worse — rendering "0 reps" for an athlete who lifted.
+
 **Deriving it on the client is not enough.** `completed_sets` and `best_average` fall out of the trend we
 already send, and the athlete object now comes from `athletes/{id}/` — but `completed_reps` and the
 rep-by-rep comparison are **impossible without rep data**, and that is the part of the history tab worth

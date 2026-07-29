@@ -303,8 +303,22 @@ function CoachHardware({ rack }) {
   );
 }
 
+// ⚠️ These two tabs need more than /api/analytics/athlete/{id}/ currently
+// returns. It sends a flat velocity trend; they were built against a payload
+// with a summary block, per-movement aggregates, and the individual reps behind
+// each set. The data exists in Set and Rep — the read was never written.
+//
+// Saying so is better than the alternatives: crashing took the whole coach view
+// down with it, and rendering anyway would show "0 reps" for an athlete who
+// lifted, which is worse than admitting the number isn't here.
+function AnalyticsMissing({ what }) {
+  return <StatePanel title={`${what} isn't available yet`}
+    body="This view needs a fuller performance history than the base station currently reports. The training data is all recorded — it just isn't being read back yet." />;
+}
+
 function AthleteSummaryTab({ context }) {
   if (!context) return <StatePanel title="Choose an athlete" body="Select an athlete to load their saved performance context." />;
+  if (!context.summary || !context.exercise_summaries) return <AnalyticsMissing what="The performance summary" />;
   return <div className="context-tab-content">
     <section className="context-athlete-hero"><div><span>Athlete overview</span><h2>{context.athlete.name}</h2><p>History since {new Date(context.athlete.created_at).toLocaleDateString()}</p></div><div className="context-summary-grid">
       <div><span>Completed sets</span><strong>{context.summary.completed_sets}</strong></div><div><span>Total reps</span><strong>{context.summary.completed_reps}</strong></div><div><span>Best set avg</span><strong>{velocity(context.summary.best_average)} <small>m/s</small></strong></div><div><span>Highest peak</span><strong>{velocity(context.summary.highest_peak)} <small>m/s</small></strong></div><div><span>Heaviest load</span><strong>{context.summary.heaviest_weight ?? "--"} <small>lbs</small></strong></div>
@@ -360,6 +374,11 @@ function HistorySetCard({ workoutSet, expanded, onToggle }) {
 function HistoryTab({ context }) {
   const [expandedSetId, setExpandedSetId] = useState(null);
   if (!context) return <StatePanel title="Choose an athlete" body="Select an athlete to review their set history." />;
+  // The trend we get back carries no session and no rep counts, so this would
+  // render every day as "Unlabeled workout · 0 reps" — confidently wrong.
+  if (!context.sets?.some((s) => s.session || s.reps_completed != null)) {
+    return <AnalyticsMissing what="Set history" />;
+  }
   const days = groupHistorySets(context.sets);
   return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>Open any set for a rep-by-rep velocity comparison.</p></header>
     {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}
@@ -420,7 +439,7 @@ function CoachView({ monitor, accessToken, onLogout }) {
   const [selectedRackNumber,setSelectedRackNumber]=useState(null),[activeTab,setActiveTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
   useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
-  useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/programs/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete.id===selectedAthleteId&&n.id===selectedAthleteId){setContext(c);setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
+  useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/programs/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
   const dirty=note&&draft!==note.text;
   const chooseAthlete=id=>{if(dirty&&!window.confirm("Discard the unsaved note draft?"))return;setSelectedAthleteId(id?Number(id):null);};

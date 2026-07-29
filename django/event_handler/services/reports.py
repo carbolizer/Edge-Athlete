@@ -31,7 +31,31 @@ class UnsupportedReportSchema(Exception):
 
 
 class AthleteNotInReport(Exception):
+    """Asked for one athlete's copy of a day they did not train.
+
+    Not an error condition in the system — a perfectly reasonable question with
+    the answer "no". The views turn this into a 404; it must never reach the
+    client as a 500.
+    """
     pass
+
+
+def _matching_athlete(athletes, athlete_id):
+    """Find one athlete inside a frozen snapshot.
+
+    ⚠️ The id ALWAYS arrives from a query string, so it is text, while the ids
+    stored in the snapshot are numbers. Comparing them directly is always false
+    — which made every athlete-scoped report look like the athlete had never
+    trained, for every athlete, on every day.
+    """
+    try:
+        wanted = int(athlete_id)
+    except (TypeError, ValueError):
+        raise AthleteNotInReport
+    for item in athletes:
+        if _object(_object(item).get("athlete")).get("id") == wanted:
+            return item
+    raise AthleteNotInReport
 
 
 def reports_for_athlete(athlete_id):
@@ -281,10 +305,7 @@ def report_detail(report):
 
 def athlete_report_list_item(report, athlete_id):
     metadata, athletes, _exclusions = _report_parts(report)
-    matching = [item for item in athletes if item["athlete"]["id"] == athlete_id]
-    if not matching:
-        raise AthleteNotInReport
-    athlete = matching[0]
+    athlete = _matching_athlete(athletes, athlete_id)
     return {
         **metadata,
         "summary": _summary([athlete]),
@@ -294,8 +315,5 @@ def athlete_report_list_item(report, athlete_id):
 
 def athlete_report_detail(report, athlete_id):
     metadata, athletes, _exclusions = _report_parts(report)
-    matching = [item for item in athletes if item["athlete"]["id"] == athlete_id]
-    if not matching:
-        raise AthleteNotInReport
-    athlete = matching[0]
+    athlete = _matching_athlete(athletes, athlete_id)
     return {**metadata, "summary": _summary([athlete]), "athlete": athlete}

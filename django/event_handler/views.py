@@ -50,8 +50,8 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
-from .services.reports import (reports_for_athlete, report_list_item, report_detail,
-                               athlete_report_detail)
+from .services.reports import (AthleteNotInReport, reports_for_athlete, report_list_item,
+                               report_detail, athlete_report_detail)
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import (movements_for_athlete as plan_movements_for_athlete,
                                        plans_by_athlete, resolve_target_weight)
@@ -886,7 +886,14 @@ def report_detail_view(request, report_id):
         return Response({"error": "report not found"}, status=404)
     athlete_id = request.query_params.get("athlete")
     if athlete_id:
-        return Response(athlete_report_detail(report, athlete_id))
+        try:
+            return Response(athlete_report_detail(report, athlete_id))
+        except AthleteNotInReport:
+            # A fair question with the answer "no" — they did not train that
+            # day. Never a 500.
+            return Response({"code": "athlete_not_in_report",
+                             "detail": "That athlete has no record in this report."},
+                            status=404)
     return Response(report_detail(report))
 
 
@@ -962,7 +969,11 @@ def report_pdf_view(request, report_id):
         return Response({"error": "report not found"}, status=404)
 
     athlete_id = request.query_params.get("athlete")
-    detail = athlete_report_detail(report, athlete_id) if athlete_id else report_detail(report)
+    try:
+        detail = athlete_report_detail(report, athlete_id) if athlete_id else report_detail(report)
+    except AthleteNotInReport:
+        return Response({"code": "athlete_not_in_report",
+                         "detail": "That athlete has no record in this report."}, status=404)
 
     try:
         pdf_bytes = render_report_pdf(detail)

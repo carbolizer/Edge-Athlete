@@ -660,6 +660,40 @@ class ReportsEndpointTests(APITestCase):
     def test_missing_report_is_404(self):
         self.assertEqual(self.client.get("/api/reports/9999/").status_code, 404)
 
+    # ── the athlete-scoped lens (R6) ─────────────────────────────────────────
+    #
+    # These existed as a route and a list filter, but NOTHING ever asked for one
+    # athlete's copy of a specific report. It could never have worked: the id
+    # arrives from the query string as text and was compared against the numeric
+    # id stored in the snapshot, so every athlete looked absent from every day —
+    # and "absent" raised an exception nobody caught, so it surfaced as a 500.
+
+    def test_one_athletes_copy_of_a_day_resolves(self):
+        report = DailyReport.objects.get()
+        res = self.client.get(f"/api/reports/{report.id}/?athlete={self.athlete.id}")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["athlete"]["athlete"]["id"], self.athlete.id)
+
+    def test_an_athlete_who_did_not_train_that_day_is_404_not_500(self):
+        report = DailyReport.objects.get()
+        other = Athlete.objects.create(name="Sam Rivera")
+        res = self.client.get(f"/api/reports/{report.id}/?athlete={other.id}")
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.data["code"], "athlete_not_in_report")
+
+    def test_a_nonsense_athlete_id_is_404_not_500(self):
+        report = DailyReport.objects.get()
+        self.assertEqual(
+            self.client.get(f"/api/reports/{report.id}/?athlete=banana").status_code, 404)
+
+    def test_the_pdf_takes_the_same_lens(self):
+        report = DailyReport.objects.get()
+        ok = self.client.get(f"/api/reports/{report.id}/pdf/?athlete={self.athlete.id}")
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok["Content-Type"], "application/pdf")
+        missing = self.client.get(f"/api/reports/{report.id}/pdf/?athlete=9999")
+        self.assertEqual(missing.status_code, 404)
+
 
 class ReferenceMaxWriteTests(APITestCase):
     """POST /api/reference-maxes/ — the prescription lever."""
