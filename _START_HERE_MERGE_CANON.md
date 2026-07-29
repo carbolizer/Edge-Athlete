@@ -989,7 +989,7 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 > exists to avoid. The retirement and the delete fix are behavioural and had to
 > happen before P7 wires his frontend up; the rename did not.
 | **P7 — Coach frontend + `App.jsx` seam** | `git checkout braydons-dev-branch -- <his coach files>` (§0.4); wire each to our APIs (§7); drop the panels whose backends died; hand-merge `App.jsx` so **our** role splash + rack route survive alongside **his** coach/dashboard/reports routes. **Plus the D17 repair grid**: render preview rows into his existing builder table, mark errored cells, offer `suggestions`, and apply a correction to every row sharing that spelling. Pure UI — **depends on D17(c)/(d) shipping in P5**, so nothing here needs a backend change. Rename `default_weight_lbs` → `target_percent` in `workoutCatalog.js` + `WorkoutCatalog.jsx` (D16 rule 1). | His coach pages load and function against our APIs; role splash + rack route intact; **a CSV with one misspelled name is repairable in-app without re-uploading, and the fix applies to every row sharing that spelling**; §2.1 check clean. |
-| **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
+| **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. **Plus: decide `rackState.js`** — P7 kept it orphaned on purpose (§8.1); either a wired screen now needs it, or it and its test get deleted here. Do not ship 280 lines of dead tested code. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
 | **P9 — Naming alignment** *(last, deliberately)* | Route and view names still speak his old vocabulary, because §3.3 said bend the URL to the existing client rather than reshape its code. That was right during the merge and wrong to keep afterwards: a route named for a table that no longer exists is a trap for the next person. Rename routes, view functions, and serializers to match the model names — see the drift table below. | Every route name matches the model it serves; `SPEC.md` + `MESSAGE_CONTRACT.md` regenerated; frontend call sites updated in the same commit; full test pass. |
 
 **Why P9 is last.** Renaming is the one change that touches his frontend and our
@@ -1014,6 +1014,48 @@ docstrings, comments, API docs, and coach-facing text. Same for "template" vs
 **`TrainingBlock`** and "plan" vs **`TrainingProgram`**: use the plain word only
 when introducing the concept to a coach, never as the identifier. P9 sweeps the
 prose alongside the identifiers, `IMPORTING_YOUR_SPREADSHEETS.md` included.
+
+### 8.1 P7 working notes — decisions and debts taken during the hand-merge
+
+P7 runs in six steps: (1) land his files unwired, (2) fold the §7.3 routes, (3) delete the §7.4/D8 panels,
+(4) wire planning + catalog, (5) build the D17 repair grid, (6) auth + `is_coach_adjustment` + the gate.
+
+**Decisions made in step 1 (2026-07-28):**
+- **`/coach` is the coach's landing route**, rendering his `Dashboard mode="coach"`; `/dashboard` renders
+  `mode="wall"`. The role picker now sends the coach role to `/coach`, not `/coach/setup`. Our `CoachTablet`
+  keeps `/coach/setup` and hangs off a button on the coach page — that is §7.6 as written.
+- **His files stay at `react/src/` root.** Moving them under `coach/` during a hand-merge makes every diff
+  against his branch noisy for zero behaviour gain. Relocation is P9's kind of work, not P7's.
+- **`package.json` gained back `vitest` + `"test": "vitest run"`** — ours had dropped both, so his 8 test
+  files had no runner. This is the §8 "config union" rule applied.
+
+**Debts opened, each with the step that pays it:**
+- ⚠️ **`StubRole` was deleted, and its "Change device role" button with it.** That was the only way off a
+  configured wall display without hand-clearing `localStorage`. His `Dashboard` has no equivalent.
+  **Owed: step 3**, while that file is already open.
+- ⚠️ **His notes editor loses optimistic concurrency.** He wrote `PUT athletes/{id}/notes/` with
+  `expected_version` and a 409 → conflict banner. Our fold (§7.3) is `PATCH athletes/{id}/` on a plain
+  `Athlete.notes` field, which has no version to compare. **Step 2 drops the version path and the conflict
+  UI; notes become last-write-wins.** This is a real capability loss, not just a URL swap — recorded here so
+  it is a choice we made rather than something that quietly vanished.
+
+**Step 3 (2026-07-28):** `LegacyRackSelectionControls` deleted — 184 lines, already dead on his branch
+(defined, never rendered; `RackSelectionControls` was rendered in its place). Its call site was passing seven
+props to a one-prop component. The "Change device role" debt from step 1 is paid: the control is on both the
+wall header and the coach topbar, matching the existing `RackSetup`/`CoachTablet` pattern.
+
+⚠️ **`rackState.js` + `rackState.test.js` (280 lines) are ORPHANED but deliberately KEPT until P8**
+*(decided 2026-07-28)*. Nothing imports them except their own test — they served his dropped `RackScreen.jsx`,
+and our frozen rack screen has its own `rack/velocity.js` + `db/repBuffer.js`. §7.4 logic says delete; we are
+holding them as insurance in case a wired coach screen turns out to need a helper from inside. **P8 must make
+the call and not let them drift into `main` unexamined.** Every other logic module he shipped has a live
+consumer — verified, not assumed: `athletePlanning`→`AthleteWorkoutPlanning`, `historyView`+`dashboardView`→
+`Dashboard`, `trainingDay`→`TrainingDayPanel`+`ReportsWorkspace`, `roomMonitor`→`useLiveRoomState`,
+`workoutCatalog`→4 files, `reportBrowsing`→`ReportsWorkspace`.
+
+**D10 is resolved (2026-07-28).** The open worry was that one freak set could set an athlete's reference max.
+It cannot: `Set.is_false_set` already gates what counts toward the recalc, so a mis-tracked rep is excluded
+before estimation ever runs. No estimation-method change needed.
 
 **Config union (hand-merge, alongside whichever phase needs it):** `package.json` + lockfile, Dockerfiles,
 `docker-compose.yml`, `nginx`, `mosquitto`, `setup.sh` — take the **superset that boots both** stacks.

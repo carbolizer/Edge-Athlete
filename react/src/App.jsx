@@ -4,9 +4,9 @@
 //   /                → role picker (only if this device has no role yet)
 //   /rack/setup      → rack registration + "waiting for a rack" screen (see rack/RackSetup)
 //   /rack/:n         → the live rack screen for rack n
+//   /coach           → the coach's main screen (live room, athletes, planning, reports)
 //   /coach/setup     → coach admin Room Layout (JWT gate + dropdown assign)
-//   /coach           → (reserved) live coach view — Braydon's screen, not yet integrated
-//   /dashboard       → base-station display (stub until a later phase)
+//   /dashboard       → base-station wall display
 //   /connection-test → the API/architecture demo kept from the scaffold
 //
 // localStorage still remembers this device's identity (its role, its generated
@@ -20,6 +20,7 @@ import ConnectionTest from './ConnectionTest.jsx'
 import RackScreen from './rack/RackScreen.jsx'
 import RackSetup from './rack/RackSetup.jsx'
 import CoachTablet from './coach/CoachTablet.jsx'
+import Dashboard from './Dashboard.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
@@ -49,8 +50,8 @@ function Picker() {
       const n = localStorage.getItem('rack_number')
       navigate(n != null ? `/rack/${n}` : '/rack/setup')
     } else if (role === 'coach') {
-      // admin lives at /coach/setup; /coach is reserved for the live coach view
-      navigate('/coach/setup')
+      // /coach is the coach's home; the Room Layout admin hangs off a button there.
+      navigate('/coach')
     } else {
       navigate(`/${role}`)
     }
@@ -114,24 +115,6 @@ function RackLive({ rackNumber }) {
   return <RackScreen rackNumber={rackNumber} session={session} />
 }
 
-// ─────────────────────────── /dashboard — stub ───────────────────────────
-
-function StubRole({ role }) {
-  return (
-    <Centered>
-      <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.02em', marginBottom: 8 }}>
-        {role === 'dashboard' ? 'Base Station Display' : 'Coach Admin'}
-      </div>
-      <div style={{ fontSize: 14, color: T.muted }}>Coming in a later phase.</div>
-      <button onClick={() => { localStorage.removeItem('device_role'); navigate('/') }}
-        style={{ marginTop: 24, padding: '10px 16px', borderRadius: 8, border: `1px solid ${T.line}`,
-          background: T.panel, color: T.ink, cursor: 'pointer', fontFamily: 'inherit' }}>
-        Change device role
-      </button>
-    </Centered>
-  )
-}
-
 // ─────────────────────────── remote command listener ───────────────────────────
 
 // Mounted for the whole life of a rack device (across every route), so a coach can
@@ -162,10 +145,11 @@ function route(pathname) {
   if (pathname === '/connection-test') return <ConnectionTest />
   if (pathname === '/rack/setup') return <RackSetup />
   if (pathname === '/coach/setup') return <CoachTablet />
-  // /coach is reserved for Braydon's live coach view (not yet integrated); until
-  // then, send it to the admin so the coach role still has a home.
-  if (pathname === '/coach') return <Redirect to="/coach/setup" />
-  if (pathname === '/dashboard') return <StubRole role="dashboard" />
+  // Two faces of one screen: the coach view is the working tool (login, athletes,
+  // planning, reports); the wall view is the read-only room display. Same file,
+  // same live room feed, different `mode`.
+  if (pathname === '/coach') return <Dashboard mode="coach" />
+  if (pathname === '/dashboard') return <Dashboard mode="wall" />
 
   if (pathname.startsWith('/rack/')) {
     const rest = pathname.slice('/rack/'.length)
