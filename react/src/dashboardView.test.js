@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coachRackView, wallDisplayState, wallMovementView } from "./dashboardView.js";
+import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } from "./dashboardView.js";
 
 describe("wall snapshot availability", () => {
   const populated = {
@@ -50,6 +50,40 @@ describe("wall movement presentation", () => {
     });
     expect(view).toMatchObject({ waiting: false, name: "Back squat", rows: leaderboard });
     expect(view.detail).toContain("2 active athletes");
+  });
+});
+
+describe("measuredInsights", () => {
+  const zone = { min: 0.5, max: 0.8 };
+  const set = (means, target_zone = zone) => ({
+    target_zone,
+    reps: means.map((mean_velocity, i) => ({ rep_number: i + 1, mean_velocity, duration_ms: 900 })),
+  });
+
+  it("reads fatigue as the drop from the first rep to the last", () => {
+    const i = measuredInsights(set([1.0, 0.9, 0.8]));
+    expect(i.velocity_loss_percent).toBeCloseTo(20, 5);
+    expect(i.rep_velocity_range).toBeCloseTo(0.2, 5);
+    expect(i.mean_rep_duration_ms).toBe(900);
+  });
+
+  it("counts reps against the target zone", () => {
+    const i = measuredInsights(set([0.4, 0.6, 0.75, 0.95]));
+    expect([i.reps_below_zone, i.reps_in_zone, i.reps_above_zone]).toEqual([1, 2, 1]);
+  });
+
+  // The previous set is not in this payload. A fabricated "you're 8% down" is
+  // exactly the kind of number a coach would act on, so it stays null.
+  it("never invents a comparison against the previous set", () => {
+    expect(measuredInsights(set([1.0, 0.9])).avg_velocity_change_percent).toBeNull();
+  });
+
+  it("survives a set with no reps, and one with no velocity zone", () => {
+    expect(measuredInsights({ reps: [] }).velocity_loss_percent).toBeNull();
+    expect(measuredInsights(undefined).reps_in_zone).toBe(0);
+    const noZone = measuredInsights(set([0.6, 0.7], null));
+    expect(noZone.reps_in_zone).toBe(0);
+    expect(noZone.rep_velocity_range).toBeCloseTo(0.1, 5);
   });
 });
 

@@ -34,7 +34,7 @@ import AthleteWorkoutPlanning from "./AthleteWorkoutPlanning.jsx";
 import TrainingDayPanel from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import { sameOriginPath } from "./workoutCatalog.js";
-import { coachRackView, wallDisplayState, wallMovementView } from "./dashboardView.js";
+import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } from "./dashboardView.js";
 
 function velocity(value) {
   return value === null || value === undefined ? "--" : Number(value).toFixed(2);
@@ -258,7 +258,8 @@ function RepChart({ workoutSet }) {
 }
 
 function MeasuredInsights({ workoutSet }) {
-  const insight = workoutSet.measured_insights;
+  // Derived from the reps in this set — the server sends no insights block.
+  const insight = measuredInsights(workoutSet);
   const change = insight.avg_velocity_change_percent;
   return (
     <section className="coach-panel coach-measured-panel">
