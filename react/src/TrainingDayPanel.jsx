@@ -63,6 +63,33 @@ export function GeneratedReport({ report }) {
   }) : <p className="monitor-empty">No athlete snapshots were generated.</p>}</div></section>;
 }
 
+// "That day is still open." Shown when starting a day comes back 409.
+//
+// Its own component so it can be render-tested — it only ever appears in
+// response to a server conflict, which no prop can reproduce from outside, and
+// it is the piece a coach meets in the least patient moment of their day.
+//
+// It resolves the problem HERE rather than sending the coach to the active-day
+// panel, because the two actions are one intention: the label and roster they
+// just typed are still what they want.
+export function ConflictPrompt({ conflict, endedAt, onEndedAtChange, newDayLabel, onCancel, onConfirm, busy }) {
+  const openedAt = conflict.started_at ? ` It opened ${reportValue(conflict.started_at)}.` : "";
+  return <div className="training-day-conflict" role="alertdialog" aria-label="A training day is already open">
+    <strong>“{conflict.label}” is still open.</strong>
+    <p>Only one training day can run at a time. End that one and this day starts straight after — your label and roster are kept.{openedAt}</p>
+    <label className="training-day-end-time">End “{conflict.label}” at
+      <select value={endedAt} onChange={(event) => onEndedAtChange(event.target.value)} disabled={Boolean(busy)}>
+        {endTimeChoices(conflict.started_at).map((choice) => <option key={choice.value || "now"} value={choice.value}>{choice.label}</option>)}
+      </select>
+      <small>{endedAt ? "Its report will record this time." : "Ends it as of right now."}</small>
+    </label>
+    <div className="training-day-conflict-actions">
+      <button type="button" className="workout-secondary" onClick={onCancel} disabled={Boolean(busy)}>Cancel</button>
+      <button type="button" onClick={onConfirm} disabled={Boolean(busy)}>{busy === "resolve" ? "Ending and starting..." : `End it and start “${newDayLabel.trim() || "my day"}”`}</button>
+    </div>
+  </div>;
+}
+
 export default function TrainingDayPanel({ roomState, athletes, accessToken, onLogout, refresh }) {
   const [label, setLabel] = useState("");
   const [selectedAthleteIds, setSelectedAthleteIds] = useState([]);
@@ -73,6 +100,10 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
   // A corrected end time, only ever typed for a day that outlived a reboot.
   // Empty means "end it now", which is the normal case.
   const [endedAtOverride, setEndedAtOverride] = useState("");
+  // The day that blocked this one, when a start hits 409. Held rather than just
+  // reported, so it can be resolved without retyping the form.
+  const [conflict, setConflict] = useState(null);
+  const [conflictEndedAt, setConflictEndedAt] = useState("");
   const [generatedReport, setGeneratedReport] = useState(null);
   const session = roomState.session;
   const staleDay = Boolean(session?.opened_on_a_previous_day);
@@ -96,25 +127,42 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
     return body;
   }
 
+  // Actually create the day. Split out from the submit handler so the conflict
+  // prompt can reuse it after closing the day that was in the way, instead of
+  // duplicating the request or asking the coach to fill the form in again.
+  async function postNewDay() {
+    const response = await fetch("/api/sessions/", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(buildTrainingDayPayload(label, selectedAthleteIds)) });
+
+    // 409 means a day is already open. Rather than only reporting it, hold the
+    // details so the coach can resolve it in place — see the conflict prompt.
+    // Reaching this usually means another tablet opened a day, or the base
+    // station restarted with yesterday's still running.
+    if (response.status === 409) {
+      const body = await response.json().catch(() => ({}));
+      return { conflict: body.open_session || {}, detail: body.detail };
+    }
+
+    const body = await parseResponse(response, "Training day could not be started.");
+    return { body };
+  }
+
   async function startDay(event) {
     event.preventDefault();
     setBusy("start");
     setError("");
     setStatus("");
+    setConflict(null);
     try {
-      const response = await fetch("/api/sessions/", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(buildTrainingDayPayload(label, selectedAthleteIds)) });
-      // 409 means a day is already open. Reaching it usually means this tablet's
-      // view is stale — the start form is only shown when we believe nothing is
-      // running — so refresh rather than just complaining, or the coach is left
-      // staring at a form for a day that already exists.
-      if (response.status === 409) {
-        const conflict = await response.json().catch(() => ({}));
-        setError(conflict.detail || "A training day is already open.");
-        await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
+      const { conflict, detail, body } = await postNewDay();
+      if (conflict) {
+        // Keep the label and roster exactly as typed — the coach still wants
+        // this day, they just have to close the previous one first.
+        setConflict(conflict);
+        setConflictEndedAt("");
+        setError(detail || "A training day is already open.");
         return;
       }
-      const body = await parseResponse(response, "Training day could not be started.");
-      if (body === null) return;
+      if (body === null || body === undefined) return;
       setLabel("");
       setSelectedAthleteIds([]);
       setGeneratedReport(null);
@@ -122,6 +170,49 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
     } catch (startError) {
       setError(startError.message || "Training day could not be started.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // "End the day that's in the way, then start mine." Two requests, deliberately
+  // in this order and deliberately not wrapped into one endpoint: ending a day
+  // freezes an immutable report and recalculates reference maxes, so it is not
+  // something to do as a side effect of a create call. If the end fails we stop
+  // and say so — starting the new day anyway would leave two open at once, which
+  // is the exact thing the guard exists to prevent.
+  async function endConflictAndStart() {
+    setBusy("resolve");
+    setError("");
+    setStatus("");
+    try {
+      const ending = await fetch(`/api/sessions/${conflict.id}/`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(buildEndDayPayload(conflictEndedAt)),
+      });
+      const ended = await parseResponse(ending, `'${conflict.label}' could not be ended.`);
+      if (ended === null) return;
+
+      const { conflict: stillBlocked, detail, body } = await postNewDay();
+      if (stillBlocked) {
+        // Somebody else opened one in the gap between our two calls.
+        setConflict(stillBlocked);
+        setConflictEndedAt("");
+        setError(detail || "Another training day was opened in the meantime.");
+        return;
+      }
+      if (body === null || body === undefined) return;
+
+      setConflict(null);
+      setConflictEndedAt("");
+      setLabel("");
+      setSelectedAthleteIds([]);
+      setGeneratedReport(null);
+      setStatus(`${endedDayMessage(ended)} “${body.label}” is now open.`);
+      await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
+    } catch (resolveError) {
+      setError(resolveError.message || "The previous day could not be ended.");
     } finally {
       setBusy("");
     }
@@ -170,7 +261,7 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
 
   return <section className="training-day-shell" aria-label="Training day controls">
     {generatedReport && <GeneratedReport report={generatedReport} />}
-    {!session ? <form className="training-day-start" onSubmit={startDay}><header><div><span>Training day</span><h3>Open the room</h3><p>Name today’s training and select every participating athlete.</p></div><b>Not active</b></header><label>Training day label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength="255" required disabled={Boolean(busy)} /></label><fieldset><legend>Athletes</legend><div>{athletes.map((athlete) => <label key={athlete.id}><input type="checkbox" checked={selectedAthleteIds.includes(athlete.id)} onChange={() => toggleAthlete(athlete.id)} disabled={Boolean(busy)} /><span>{athlete.name}</span></label>)}</div></fieldset><button type="submit" disabled={!selectedAthleteIds.length || Boolean(busy)}>{busy === "start" ? "Starting..." : "Start training day"}</button></form>
+    {!session ? <form className="training-day-start" onSubmit={startDay}><header><div><span>Training day</span><h3>Open the room</h3><p>Name today’s training and select every participating athlete.</p></div><b>Not active</b></header><label>Training day label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength="255" required disabled={Boolean(busy)} /></label><fieldset><legend>Athletes</legend><div>{athletes.map((athlete) => <label key={athlete.id}><input type="checkbox" checked={selectedAthleteIds.includes(athlete.id)} onChange={() => toggleAthlete(athlete.id)} disabled={Boolean(busy)} /><span>{athlete.name}</span></label>)}</div></fieldset><button type="submit" disabled={!selectedAthleteIds.length || Boolean(busy)}>{busy === "start" ? "Starting..." : "Start training day"}</button>{conflict && <ConflictPrompt conflict={conflict} endedAt={conflictEndedAt} onEndedAtChange={setConflictEndedAt} newDayLabel={label} busy={busy} onCancel={() => { setConflict(null); setConflictEndedAt(""); setError(""); }} onConfirm={endConflictAndStart} />}</form>
       : (session.is_simulated || session.simulated || roomState.meta?.session_is_simulated) ? <div className="training-day-active simulation"><div><span>Simulation active</span><h3>{session.label}</h3><p>The simulator owns this training day. Stop or restart it with the simulation controls rather than generating a real report here.</p></div><b>Simulation</b></div>
       : <div className={staleDay ? "training-day-active is-stale" : "training-day-active"}><div><span>{staleDay ? "Still open from an earlier day" : "Active training day"}</span><h3>{session.label}</h3><p>{roomState.participants?.length || 0} athletes · started {reportValue(session.started_at)}</p>{staleDay && <p className="training-day-stale-note">This day has been open since before today — most likely the base station restarted before anyone ended it. <b>Nothing was lost;</b> every set is saved. End it below, and set the time the room actually emptied so the report reads true.</p>}</div>{confirmEnd ? <div className="training-day-confirm" role="group" aria-label="Confirm end training day"><strong>End this training day and finalize its report?</strong><label className="training-day-end-time">Ended at <select value={endedAtOverride} onChange={(event) => setEndedAtOverride(event.target.value)} disabled={Boolean(busy)}>{endTimeChoices(session.started_at).map((choice) => <option key={choice.value || "now"} value={choice.value}>{choice.label}</option>)}</select><small>{endedAtOverride ? "The report will record this time." : "Ends the day as of right now."}</small></label><button className="workout-secondary" onClick={() => { setConfirmEnd(false); setEndedAtOverride(""); }} disabled={Boolean(busy)}>Cancel</button><button onClick={endDay} disabled={Boolean(busy)}>{busy === "end" ? "Ending..." : "Confirm end"}</button></div> : <button onClick={() => setConfirmEnd(true)} disabled={Boolean(busy)}>End training day</button>}</div>}
     {status && <p className="training-day-status" role="status">{status}</p>}{error && <p className="training-day-error" role="alert">{error}</p>}
