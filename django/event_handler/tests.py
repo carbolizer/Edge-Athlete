@@ -1710,6 +1710,96 @@ class OneOpenSessionTests(APITestCase):
         self.assertEqual(res.data["ended"]["still_open"]["label"], "Stray")
         self.assertEqual(res.data["ended"]["still_open"]["id"], first.id)
 
+    def _day_that_survived_a_reboot(self):
+        """A day still open from yesterday — what a coach finds after a power cut.
+        started_at is auto_now_add, so it has to be backdated with an UPDATE."""
+        session = TrainingSession.objects.create(label="Yesterday's day")
+        session.athletes.add(self.athlete)
+        TrainingSession.objects.filter(id=session.id).update(
+            started_at=timezone.now() - timedelta(days=1))
+        session.refresh_from_db()
+        return session
+
+    # ── surviving a power cut ────────────────────────────────────────────────
+
+    def test_a_day_can_be_ended_at_a_corrected_time(self):
+        """The power-cut case. The base station comes back with the day still
+        open, and the honest end time is when the room emptied — not whenever
+        someone next managed to log in."""
+        session = self._day_that_survived_a_reboot()
+        # The room emptied two hours after it opened — yesterday evening.
+        real_end = session.started_at + timedelta(hours=2)
+
+        res = self.client.patch(f"/api/sessions/{session.id}/",
+                                {"ended_at": real_end.isoformat()}, format="json")
+        self.assertEqual(res.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.ended_at, real_end)
+
+    def test_the_corrected_time_is_what_the_report_records(self):
+        """A DailyReport is immutable, so a wrong time here is permanent."""
+        session = self._day_that_survived_a_reboot()
+        real_end = session.started_at + timedelta(hours=2)
+
+        self.client.patch(f"/api/sessions/{session.id}/",
+                          {"ended_at": real_end.isoformat()}, format="json")
+        report = DailyReport.objects.get(session=session)
+        self.assertEqual(report.snapshot["session"]["ended_at"], real_end.isoformat())
+
+    def test_a_day_cannot_end_before_it_started(self):
+        """This was silently accepted before: a day that ended in 2020 having
+        started in 2026, frozen into a report nothing can correct."""
+        opened = self.client.post("/api/sessions/",
+                                  {"label": "Monday", "athletes": [self.athlete.id]},
+                                  format="json")
+        session = TrainingSession.objects.get(id=opened.data["id"])
+
+        res = self.client.patch(f"/api/sessions/{session.id}/",
+                                {"ended_at": "2020-01-01T00:00:00Z"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        session.refresh_from_db()
+        self.assertIsNone(session.ended_at)
+        self.assertFalse(DailyReport.objects.filter(session=session).exists())
+
+    def test_a_day_cannot_end_in_the_future(self):
+        opened = self.client.post("/api/sessions/",
+                                  {"label": "Monday", "athletes": [self.athlete.id]},
+                                  format="json")
+        future = (timezone.now() + timedelta(days=1)).isoformat()
+
+        res = self.client.patch(f"/api/sessions/{opened.data['id']}/",
+                                {"ended_at": future}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_slightly_fast_tablet_clock_is_tolerated(self):
+        """A tablet a few seconds ahead of the base station is sending a correct
+        'now'. Refusing it would be pedantry the coach cannot act on."""
+        opened = self.client.post("/api/sessions/",
+                                  {"label": "Monday", "athletes": [self.athlete.id]},
+                                  format="json")
+        barely_ahead = (timezone.now() + timedelta(seconds=30)).isoformat()
+
+        res = self.client.patch(f"/api/sessions/{opened.data['id']}/",
+                                {"ended_at": barely_ahead}, format="json")
+        self.assertEqual(res.status_code, 200)
+
+    def test_a_day_open_since_yesterday_is_flagged_as_stale(self):
+        """So a coach booting the base station back up NOTICES, instead of being
+        shown a day from yesterday labelled simply 'active'."""
+        session = TrainingSession.objects.create(label="Yesterday's day")
+        TrainingSession.objects.filter(id=session.id).update(
+            started_at=timezone.now() - timedelta(days=1))
+
+        res = self.client.get("/api/room-state/")
+        self.assertTrue(res.data["session"]["opened_on_a_previous_day"])
+
+    def test_todays_day_is_not_flagged(self):
+        self.client.post("/api/sessions/",
+                         {"label": "Monday", "athletes": [self.athlete.id]},
+                         format="json")
+        res = self.client.get("/api/room-state/")
+        self.assertFalse(res.data["session"]["opened_on_a_previous_day"])
+
     # ── the one definition of "active" ───────────────────────────────────────
 
     def test_every_endpoint_resolves_the_same_active_session(self):

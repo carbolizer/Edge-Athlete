@@ -52,9 +52,11 @@ NODE_STALE_AFTER = timedelta(seconds=15)
 _REAL_COLORS = {"green", "yellow", "red"}
 
 
-def _active_session():
-    """The one live session — newest session that has not been ended."""
-    return TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+# The wall display and the coach tablet MUST resolve the live day the same way
+# the rack tablets do. This module used to keep its own private copy of that
+# query, which is how four copies of one rule came to exist. See
+# services/active_session.py.
+from .active_session import active_session as _active_session  # noqa: E402
 
 
 def _current_athlete_by_rack(session):
@@ -363,6 +365,16 @@ def room_state_snapshot(include_details):
             **({"id": session.id} if include_details else {}),
             "label": session.label,
             "started_at": session.started_at,
+            # Has this day been open since before today? A base station that lost
+            # power comes back with the day still running — nothing is lost, the
+            # database is crash-safe, but nobody ended it. Without saying so the
+            # panel presents a stale day as simply "active", and athletes can
+            # check into yesterday. The coach decides what to do; our job is to
+            # make sure they notice.
+            "opened_on_a_previous_day": (
+                timezone.localtime(session.started_at).date()
+                < timezone.localdate()
+            ),
         } if session else None,
         "summary": {
             "participant_count": session.athletes.count() if session else 0,

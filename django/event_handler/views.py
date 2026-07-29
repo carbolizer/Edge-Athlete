@@ -53,6 +53,7 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           TrainingBlockExerciseSerializer, TrainingProgramSerializer,
                           BlockCategorySerializer, TrainingGroupCoachSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
+from .services.active_session import active_session, open_sessions
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
 from .services.reports import (AthleteNotInReport, reports_for_athlete, report_list_item,
@@ -118,37 +119,12 @@ def rack_assign(request, device_id):
     return Response(RackScreenSerializer(screen).data)
 
 
-def _open_sessions():
-    """Every session that has not been ended, newest first.
-
-    Tie-break: newest `started_at`, then highest id, so same-instant creates
-    resolve deterministically rather than by whatever order the database felt
-    like returning.
-
-    There should normally be at most ONE — `sessions_view` refuses to open a
-    second (P12). This returns a queryset anyway because the guard needs to name
-    what is already open, and because a database that predates the guard can
-    still hold several.
-    """
-    return TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id")
-
-
-def _active_session():
-    """The current session, or None.
-
-    ⚠️ THE SINGLE DEFINITION OF "ACTIVE". Every endpoint — coach, rack, and wall
-    — must come through here, so they cannot disagree about which session
-    athletes are checking into. Until P12 this same query was also written out by
-    hand in `sessions_active` and `athlete_progress`; three copies of one rule is
-    three places to forget when the rule changes, and P14 is going to change it
-    (a session will have to be STARTED, not merely created, to count as active).
-
-    "Most recent unended session" is last-one-wins, which is why a stray second
-    open session used to silently capture check-ins (canon D18). P12 stops a
-    second one being opened; this helper still tolerates one existing, because
-    old data can.
-    """
-    return _open_sessions().first()
+# "Which training day is live?" lives in services/active_session.py, NOT here —
+# the rack endpoints, the wall display's room_state, and this module all have to
+# give the same answer, and they used to each carry their own copy of the query.
+# See that file for why, and for what P14 changes.
+_open_sessions = open_sessions
+_active_session = active_session
 
 
 @api_view(["POST"])

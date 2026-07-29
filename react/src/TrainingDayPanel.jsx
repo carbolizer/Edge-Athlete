@@ -31,7 +31,7 @@
 // limit is about what the screen can hold.
 
 import { useState } from "react";
-import { budgetReportRendering, buildTrainingDayPayload, endedDayMessage, orderedReportExercises, orderedReportPrescriptions, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
+import { budgetReportRendering, buildEndDayPayload, buildTrainingDayPayload, endedDayMessage, endTimeChoices, orderedReportExercises, orderedReportPrescriptions, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
 
 function ReportRep({ rep }) {
   return <li><span>Rep {rep.rep_number ?? rep.number ?? "--"}</span><b>{reportValue(rep.mean_velocity, " m/s mean")}</b><b>{reportValue(rep.peak_velocity, " m/s peak")}</b><b>{reportValue(rep.duration_ms, " ms")}</b></li>;
@@ -70,8 +70,12 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [confirmEnd, setConfirmEnd] = useState(false);
+  // A corrected end time, only ever typed for a day that outlived a reboot.
+  // Empty means "end it now", which is the normal case.
+  const [endedAtOverride, setEndedAtOverride] = useState("");
   const [generatedReport, setGeneratedReport] = useState(null);
   const session = roomState.session;
+  const staleDay = Boolean(session?.opened_on_a_previous_day);
   const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
 
   function toggleAthlete(id) {
@@ -134,7 +138,11 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
       const response = await fetch(`/api/sessions/${session.id}/`, {
         method: "PATCH",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        // An empty body means "end it now", which is right almost always. A
+        // corrected time is for the power-cut case: the base station comes back
+        // with the day still open, and the honest end time is when the room
+        // actually emptied — not when someone next managed to log in.
+        body: JSON.stringify(buildEndDayPayload(endedAtOverride)),
       });
       const body = await parseResponse(response, "Training day could not be ended.");
       if (body === null) return;
@@ -150,6 +158,7 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
       }
       setGeneratedReport(report);
       setConfirmEnd(false);
+      setEndedAtOverride("");
       setStatus(endedDayMessage(body));
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
     } catch (endError) {
@@ -163,7 +172,7 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
     {generatedReport && <GeneratedReport report={generatedReport} />}
     {!session ? <form className="training-day-start" onSubmit={startDay}><header><div><span>Training day</span><h3>Open the room</h3><p>Name today’s training and select every participating athlete.</p></div><b>Not active</b></header><label>Training day label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength="255" required disabled={Boolean(busy)} /></label><fieldset><legend>Athletes</legend><div>{athletes.map((athlete) => <label key={athlete.id}><input type="checkbox" checked={selectedAthleteIds.includes(athlete.id)} onChange={() => toggleAthlete(athlete.id)} disabled={Boolean(busy)} /><span>{athlete.name}</span></label>)}</div></fieldset><button type="submit" disabled={!selectedAthleteIds.length || Boolean(busy)}>{busy === "start" ? "Starting..." : "Start training day"}</button></form>
       : (session.is_simulated || session.simulated || roomState.meta?.session_is_simulated) ? <div className="training-day-active simulation"><div><span>Simulation active</span><h3>{session.label}</h3><p>The simulator owns this training day. Stop or restart it with the simulation controls rather than generating a real report here.</p></div><b>Simulation</b></div>
-      : <div className="training-day-active"><div><span>Active training day</span><h3>{session.label}</h3><p>{roomState.participants?.length || 0} athletes · started {reportValue(session.started_at)}</p></div>{confirmEnd ? <div className="training-day-confirm" role="group" aria-label="Confirm end training day"><strong>End this training day and finalize its report?</strong><button className="workout-secondary" onClick={() => setConfirmEnd(false)} disabled={Boolean(busy)}>Cancel</button><button onClick={endDay} disabled={Boolean(busy)}>{busy === "end" ? "Ending..." : "Confirm end"}</button></div> : <button onClick={() => setConfirmEnd(true)} disabled={Boolean(busy)}>End training day</button>}</div>}
+      : <div className={staleDay ? "training-day-active is-stale" : "training-day-active"}><div><span>{staleDay ? "Still open from an earlier day" : "Active training day"}</span><h3>{session.label}</h3><p>{roomState.participants?.length || 0} athletes · started {reportValue(session.started_at)}</p>{staleDay && <p className="training-day-stale-note">This day has been open since before today — most likely the base station restarted before anyone ended it. <b>Nothing was lost;</b> every set is saved. End it below, and set the time the room actually emptied so the report reads true.</p>}</div>{confirmEnd ? <div className="training-day-confirm" role="group" aria-label="Confirm end training day"><strong>End this training day and finalize its report?</strong><label className="training-day-end-time">Ended at <select value={endedAtOverride} onChange={(event) => setEndedAtOverride(event.target.value)} disabled={Boolean(busy)}>{endTimeChoices(session.started_at).map((choice) => <option key={choice.value || "now"} value={choice.value}>{choice.label}</option>)}</select><small>{endedAtOverride ? "The report will record this time." : "Ends the day as of right now."}</small></label><button className="workout-secondary" onClick={() => { setConfirmEnd(false); setEndedAtOverride(""); }} disabled={Boolean(busy)}>Cancel</button><button onClick={endDay} disabled={Boolean(busy)}>{busy === "end" ? "Ending..." : "Confirm end"}</button></div> : <button onClick={() => setConfirmEnd(true)} disabled={Boolean(busy)}>End training day</button>}</div>}
     {status && <p className="training-day-status" role="status">{status}</p>}{error && <p className="training-day-error" role="alert">{error}</p>}
   </section>;
 }

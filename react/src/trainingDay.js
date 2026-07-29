@@ -103,3 +103,76 @@ export function endedDayMessage(body) {
 
   return `${label} ended. ${report}${stillOpen}`;
 }
+
+// ── choosing when a day ended ────────────────────────────────────────────────
+//
+// Normally nobody chooses: you press End and it ends now. This exists for the
+// power-cut case — the base station restarts with the day still open, and the
+// honest end time is when the room actually emptied, not when someone next
+// managed to log in.
+//
+// It is a DROPDOWN of computed options rather than a free-text time, because
+// every impossible answer should be unreachable instead of merely rejected. A
+// day cannot end before it started, and it cannot end in the future; if those
+// times are never on the menu, nobody has to be told off for picking one. The
+// server validates too — it has to, since it is also the API's contract — but a
+// coach on a tablet should never meet that error.
+
+const HOUR_MS = 60 * 60 * 1000;
+
+function atTopOfHour(date) {
+  const hour = new Date(date);
+  hour.setMinutes(0, 0, 0);
+  return hour;
+}
+
+function clockLabel(date) {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function dayLabel(date, now) {
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return clockLabel(date);
+  const yesterday = new Date(now.getTime() - 24 * HOUR_MS);
+  const prefix = date.toDateString() === yesterday.toDateString()
+    ? "Yesterday"
+    : date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return `${prefix}, ${clockLabel(date)}`;
+}
+
+// Options are always: "now", then each top-of-hour going backwards, stopping at
+// the hour the session started. The start itself is offered last so a day opened
+// by mistake can be closed to zero length rather than left running.
+export function endTimeChoices(startedAt, now = new Date(), limit = 24) {
+  const start = new Date(startedAt);
+  const end = new Date(now);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return [{ value: "", label: "Now" }];
+  }
+
+  const choices = [{ value: "", label: "Now" }];
+  let mark = atTopOfHour(end);
+  while (choices.length <= limit) {
+    // Strictly inside (start, now) — the endpoints are covered by "Now" and by
+    // the explicit start option below, so an hour mark equal to either would be
+    // a duplicate rather than a new choice.
+    if (mark <= start) break;
+    if (mark < end) {
+      choices.push({ value: mark.toISOString(), label: dayLabel(mark, end) });
+    }
+    mark = new Date(mark.getTime() - HOUR_MS);
+  }
+
+  choices.push({
+    value: start.toISOString(),
+    label: `When it started (${dayLabel(start, end)}) — zero-length day`,
+  });
+  return choices;
+}
+
+// The PATCH body. An empty choice means "end it now", which is the shorthand the
+// endpoint has always understood, so we send nothing rather than a timestamp we
+// computed ourselves — the base station's clock is the one that should decide.
+export function buildEndDayPayload(endedAtChoice) {
+  return endedAtChoice ? { ended_at: endedAtChoice } : {};
+}

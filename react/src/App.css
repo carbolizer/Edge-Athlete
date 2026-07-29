@@ -396,6 +396,15 @@
 .new-category-form label { display:flex; flex:1; flex-direction:column; gap:5px; }
 .new-category-form button { min-height:42px; padding:9px 15px; }
 
+/* A day still open from before today — the base station restarted and nobody
+   ended it. Amber, not red: nothing is broken and nothing was lost. */
+.training-day-active.is-stale { border-color:var(--amber,#e0a33e); }
+.training-day-stale-note { color:var(--amber,#e0a33e); font-size:11px; line-height:1.5; margin-top:8px; max-width:62ch; }
+.training-day-stale-note b { color:var(--ink); }
+.training-day-end-time { display:flex; flex-direction:column; gap:4px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.training-day-end-time select { background:var(--panel,#0d1410); border:1px solid var(--line); color:var(--ink); font-size:12px; min-height:38px; padding:7px 9px; text-transform:none; letter-spacing:0; }
+.training-day-end-time small { color:var(--muted); font-size:10px; letter-spacing:0; text-transform:none; }
+
 /* Report browsing */
 .reports-workspace { display:grid; gap:14px; }
 .reports-heading { align-items:end; background:linear-gradient(110deg,#18241e,#10171b 68%); border:1px solid #2b4034; display:flex; gap:20px; justify-content:space-between; padding:24px 28px; }

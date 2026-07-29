@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetReportRendering, buildTrainingDayPayload, endedDayMessage, orderedReportExercises, orderedReportPrescriptions, qualifyingReportSets, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
+import { budgetReportRendering, buildEndDayPayload, buildTrainingDayPayload, endedDayMessage, endTimeChoices, orderedReportExercises, orderedReportPrescriptions, qualifyingReportSets, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
 
 describe("training day payloads", () => {
   it("trims the label and deduplicates numeric athlete IDs", () => {
@@ -86,5 +86,71 @@ describe("endedDayMessage", () => {
 
   it("falls back to a plain sentence for an older response with no `ended` block", () => {
     expect(endedDayMessage({})).toBe("Training day ended and report generated.");
+  });
+});
+
+describe("endTimeChoices", () => {
+  // The whole point of a computed dropdown: an impossible time is UNREACHABLE,
+  // not merely rejected. A coach on a tablet should never meet the server's
+  // validation error, because the bad options were never on the menu.
+  const start = new Date("2026-07-29T14:20:00Z");
+  const now = new Date("2026-07-29T18:05:00Z");
+
+  it("always offers 'Now' first, since that is the normal answer", () => {
+    expect(endTimeChoices(start, now)[0]).toEqual({ value: "", label: "Now" });
+  });
+
+  it("never offers a time before the day started", () => {
+    for (const choice of endTimeChoices(start, now)) {
+      if (!choice.value) continue;
+      expect(new Date(choice.value) >= start).toBe(true);
+    }
+  });
+
+  it("never offers a time in the future", () => {
+    for (const choice of endTimeChoices(start, now)) {
+      if (!choice.value) continue;
+      expect(new Date(choice.value) <= now).toBe(true);
+    }
+  });
+
+  it("walks back hour by hour between the start and now", () => {
+    const hours = endTimeChoices(start, now)
+      .map((choice) => choice.value)
+      .filter(Boolean)
+      .map((value) => new Date(value).toISOString());
+    expect(hours).toContain("2026-07-29T18:00:00.000Z");
+    expect(hours).toContain("2026-07-29T15:00:00.000Z");
+    // 14:00 is before the 14:20 start, so it must not appear.
+    expect(hours).not.toContain("2026-07-29T14:00:00.000Z");
+  });
+
+  it("offers the start itself, so a day opened by mistake can be closed", () => {
+    const last = endTimeChoices(start, now).at(-1);
+    expect(new Date(last.value).toISOString()).toBe(start.toISOString());
+    expect(last.label).toContain("zero-length");
+  });
+
+  // The power-cut case: the day is from yesterday, so bare clock times would be
+  // ambiguous about which day they mean.
+  it("dates the options when the day outlived a reboot", () => {
+    const yesterday = new Date("2026-07-28T16:00:00Z");
+    const labels = endTimeChoices(yesterday, now).map((choice) => choice.label);
+    expect(labels.some((label) => label.includes("Yesterday"))).toBe(true);
+  });
+
+  it("degrades to just 'Now' if the start time is unusable", () => {
+    expect(endTimeChoices(undefined, now)).toEqual([{ value: "", label: "Now" }]);
+  });
+});
+
+describe("buildEndDayPayload", () => {
+  it("sends nothing for 'now', letting the base station's clock decide", () => {
+    expect(buildEndDayPayload("")).toEqual({});
+  });
+
+  it("sends the chosen time when one was picked", () => {
+    expect(buildEndDayPayload("2026-07-29T18:00:00.000Z"))
+      .toEqual({ ended_at: "2026-07-29T18:00:00.000Z" });
   });
 });

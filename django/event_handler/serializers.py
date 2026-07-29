@@ -7,6 +7,9 @@ never save garbage to the database. The same tools also format data going back o
 as clean JSON. Think: a bouncer checking every field at the door, plus a
 receptionist handing back a tidy summary. One of these per kind of record.
 """
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
@@ -79,11 +82,41 @@ class AthleteSerializer(serializers.ModelSerializer):
 
 class TrainingSessionSerializer(serializers.ModelSerializer):
     """One training session. started_at is set for us; a coach sets ended_at to
-    finish it."""
+    finish it.
+
+    A coach may pass a REAL `ended_at` rather than "now", which matters after a
+    power cut: the base station comes back with the day still open, and the honest
+    end time is whenever the room actually emptied, not whenever someone next
+    logged in. `ended_at` is validated because that time is now typed by a human
+    and it is written into an immutable DailyReport — a day that ended before it
+    started produces a report nothing can fix afterwards."""
+
     class Meta:
         model = TrainingSession
         fields = ["id", "label", "started_at", "ended_at", "athletes", "notes"]
         read_only_fields = ["id", "started_at"]
+
+    # A tablet's clock can sit a little ahead of the base station's. Allowing a
+    # small skew stops a correct "now" being refused as the future, without
+    # letting anyone close a day next Tuesday.
+    FUTURE_SKEW_ALLOWANCE = timedelta(minutes=2)
+
+    def validate_ended_at(self, value):
+        if value is None:
+            return value
+
+        if value > timezone.now() + self.FUTURE_SKEW_ALLOWANCE:
+            raise serializers.ValidationError(
+                "a training day cannot end in the future")
+
+        # On create there is no instance yet and started_at is auto_now_add, so
+        # there is nothing to compare against.
+        started_at = getattr(self.instance, "started_at", None)
+        if started_at is not None and value < started_at:
+            raise serializers.ValidationError(
+                f"a training day cannot end before it started "
+                f"({started_at.isoformat()})")
+        return value
 
 
 class ExerciseSerializer(serializers.ModelSerializer):
