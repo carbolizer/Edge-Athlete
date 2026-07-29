@@ -20,7 +20,11 @@
 .monitor-connection.connecting i,.monitor-connection.reconnecting i { background:var(--amber); }
 .monitor-connection.stale i { background:var(--coral); }
 .monitor-state-panel { align-items:flex-start; display:flex; flex-direction:column; justify-content:center; margin:auto; max-width:650px; min-height:100vh; padding:48px; }
-.monitor-state-mark { color:var(--lime); font-size:12px; font-weight:900; letter-spacing:.18em; margin-bottom:32px; }
+/* Was a lime "EA" lettermark; now the device's own app icon. Sized and squared
+   like .monitor-brand>img so a swapped icon letterboxes rather than stretches.
+   `align-self:flex-start` because the panel is a column — without it the image
+   stretches to the panel's full width. */
+.monitor-state-mark { align-self:flex-start; border-radius:10px; height:44px; margin-bottom:32px; object-fit:contain; width:44px; }
 .monitor-state-panel h2 { font-size:clamp(34px,5vw,64px); letter-spacing:-.055em; line-height:.98; margin:0; }
 .monitor-state-panel p { color:var(--muted); font-size:17px; line-height:1.6; max-width:48ch; }
 .monitor-state-panel button { background:var(--lime); border:0; color:#071006; cursor:pointer; font-weight:850; padding:12px 20px; }

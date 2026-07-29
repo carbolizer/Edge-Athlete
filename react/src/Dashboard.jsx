@@ -35,6 +35,7 @@ import TrainingDayPanel from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import { sameOriginPath } from "./workoutCatalog.js";
 import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } from "./dashboardView.js";
+import { roleIconSrc } from "./roleIcon.js";
 
 function velocity(value) {
   return value === null || value === undefined ? "--" : Number(value).toFixed(2);
@@ -81,10 +82,14 @@ function ConnectionBadge({ connectionState, requestState }) {
   );
 }
 
+// The shared loading / empty / error panel, used by both the wall and the coach
+// workspace. Its mark comes from the DEVICE's role rather than a fixed image,
+// because the same panel renders on both — a wall display should not wear the
+// coach app's icon while it waits for a session.
 function StatePanel({ title, body, action, actionLabel = "Retry" }) {
   return (
     <section className="monitor-state-panel">
-      <span className="monitor-state-mark">EA</span>
+      <img className="monitor-state-mark" src={roleIconSrc()} alt="" width="44" height="44" />
       <h2>{title}</h2>
       <p>{body}</p>
       {action && <button onClick={action}>{actionLabel}</button>}
@@ -176,7 +181,9 @@ function WallView({ monitor }) {
   return (
     <main className="monitor wall-monitor">
       <header className="wall-topbar">
-        <div className="monitor-brand"><b>EA</b><span>Edge Athlete</span></div>
+        {/* The WALL's own icon — this screen is the room-facing scoreboard, not
+            the coach app, so it wears the dashboard mark. */}
+        <div className="monitor-brand"><img src={roleIconSrc("wall")} alt="" width="38" height="38" /><span>Edge Athlete</span></div>
         <div className="wall-session">
           <span>Now training</span>
           <h1>{roomState.session.label}</h1>
