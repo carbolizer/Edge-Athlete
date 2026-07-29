@@ -15,7 +15,7 @@
 // serves index.html for any of these paths (see router.js), so refreshing or
 // hard-loading /rack/1 works and lands back here.
 
-import { useEffect, useState } from 'react'
+import { Component, useEffect, useState } from 'react'
 import ConnectionTest from './ConnectionTest.jsx'
 import RackScreen from './rack/RackScreen.jsx'
 import RackSetup from './rack/RackSetup.jsx'
@@ -27,6 +27,67 @@ import { navigate, usePathname } from './router.js'
 import { applyRoleIdentity, getDeviceId } from './device.js'
 import { Centered } from './ui.jsx'
 import { T } from './theme.js'
+
+// ─────────────────────────── when a screen breaks ───────────────────────────
+
+// Without this, ONE bad value anywhere in the tree unmounts the entire app and
+// the tablet goes black — no message, nothing in the console, nothing a coach
+// or a teammate can report beyond "it stopped working". React does that by
+// design: an uncaught render error tears down the whole root.
+//
+// A black screen in a weight room is the worst possible failure. It looks
+// identical to a dead tablet, a WiFi drop, and a crashed app, so nobody knows
+// whether to reload it, reboot it, or go find a laptop. This turns all of that
+// into a screen that says what broke and offers a way out.
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+
+  componentDidCatch(error, info) {
+    // Kept where the next person will look. The stack is minified in a
+    // production build, but the message alone usually names the field.
+    console.error('Edge Athlete crashed:', error, info?.componentStack)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <Centered>
+        <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: '.18em', textTransform: 'uppercase',
+          color: T.lime, marginBottom: 10 }}>Edge Athlete</div>
+        <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-.02em', marginBottom: 8 }}>
+          This screen stopped working
+        </div>
+        <div style={{ fontSize: 14, color: T.muted, marginBottom: 6, maxWidth: 460, textAlign: 'center' }}>
+          Nothing you did caused this and no training data was lost — sets and reps
+          are saved on the base station, not here.
+        </div>
+        <code style={{ fontSize: 12, color: T.muted, marginBottom: 24, maxWidth: 460,
+          textAlign: 'center', wordBreak: 'break-word' }}>
+          {String(this.state.error?.message || this.state.error)}
+        </code>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <button onClick={() => window.location.reload()}
+            style={{ padding: '10px 16px', borderRadius: 8, border: `1px solid ${T.line}`,
+              background: T.panel, color: T.ink, cursor: 'pointer', fontFamily: 'inherit' }}>
+            Reload this screen
+          </button>
+          <button onClick={() => { window.location.href = '/' }}
+            style={{ padding: '10px 16px', borderRadius: 8, border: `1px solid ${T.line}`,
+              background: T.panel, color: T.ink, cursor: 'pointer', fontFamily: 'inherit' }}>
+            Back to start
+          </button>
+        </div>
+      </Centered>
+    )
+  }
+}
 
 // Renders nothing; just bounces the URL to `to` once. Used for boot-time and
 // fallback redirects (kept in an effect so we never navigate during render).
@@ -172,9 +233,12 @@ export default function App() {
   // whether the tablet is live, waiting, or mid-session.
   const isRack = localStorage.getItem('device_role') === 'rack'
   return (
-    <>
+    // Keyed by pathname so navigating away from a broken screen clears the
+    // error — otherwise one bad route would hold the whole app hostage until a
+    // manual reload.
+    <ErrorBoundary key={pathname}>
       {route(pathname)}
       {isRack && <RackCommandListener />}
-    </>
+    </ErrorBoundary>
   )
 }

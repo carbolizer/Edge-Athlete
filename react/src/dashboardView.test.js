@@ -54,20 +54,56 @@ describe("wall movement presentation", () => {
 });
 
 describe("coach rack observation", () => {
-  it("derives signed-in progress and completion without assignment controls", () => {
-    const view = coachRackView({ training: {
-      athlete: { name: "Jordan" },
-      status: "ready",
-      expected_set_number: 2,
-      exercise: { name: "Bench press", sets: 4 },
-      progression: { completed_sets: 1 },
-      latest_result: { avg_velocity: 0.75 },
-    } });
-    expect(view).toEqual({
-      athleteName: "Jordan",
-      movementName: "Bench press",
-      progressLabel: "Set 2 of 4 · 1 completed",
-      latestResult: { avg_velocity: 0.75 },
+  // These fixtures are the SHAPE /api/room-state/?details=true actually returns.
+  // The previous version of this test invented a `training` block with a
+  // predicted next set — nothing on our side has ever produced that, so the test
+  // stayed green while the real screen crashed on `rack.nodes.length`. Fixtures
+  // that agree with the server are the whole point of this file.
+  const signedInRack = {
+    rack_number: 1,
+    status: "lifting",
+    status_color: "green",
+    athlete: { id: 7, name: "Jordan Lee" },
+    node: { node_id: "rack_1", battery_level: 88, signal_strength: -50, is_stale: false },
+    latest_set: {
+      id: 12, exercise: "Bench Press", set_number: 2, weight_lbs: 185,
+      reps_completed: 5, avg_velocity: 0.75, peak_velocity: 0.9,
+      is_false_set: false, target_zone: null, reps: [],
+    },
+  };
+
+  it("reads the athlete from the RACK and the movement from their latest set", () => {
+    expect(coachRackView(signedInRack)).toEqual({
+      athleteName: "Jordan Lee",
+      movementName: "Bench Press",
+      progressLabel: "Set 2 · 5 reps",
+      latestResult: signedInRack.latest_set,
     });
+  });
+
+  // Most racks, most of the time. An empty rack is the normal state, not a
+  // failure, and it must not read as though someone is on it.
+  it("says plainly when nobody has checked in", () => {
+    const idle = { rack_number: 3, status: "idle", athlete: null, latest_set: null, node: null };
+    expect(coachRackView(idle)).toEqual({
+      athleteName: "No athlete signed in",
+      movementName: "Waiting for check-in",
+      progressLabel: "No active progress",
+      latestResult: null,
+    });
+    expect(coachRackView(undefined).athleteName).toBe("No athlete signed in");
+  });
+
+  // Checked in but nothing lifted yet is a third state, distinct from both.
+  it("distinguishes signed in with no set from an empty rack", () => {
+    const view = coachRackView({ ...signedInRack, latest_set: null });
+    expect(view.athleteName).toBe("Jordan Lee");
+    expect(view.progressLabel).toBe("Signed in, nothing lifted yet");
+  });
+
+  // A mis-tracked set stays visible and labelled rather than silently counting.
+  it("marks a false set instead of hiding it", () => {
+    const view = coachRackView({ ...signedInRack, latest_set: { ...signedInRack.latest_set, is_false_set: true } });
+    expect(view.progressLabel).toBe("Set 2 (false set) · 5 reps");
   });
 });

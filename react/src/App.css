@@ -90,9 +90,16 @@
 
 /* Coach workspace */
 .coach-monitor { height:100vh; min-height:0; overflow-y:auto; overscroll-behavior:contain; width:100%; }
-.coach-topbar { align-items:center; border-bottom:1px solid var(--line); display:grid; gap:24px; grid-template-columns:1fr auto auto auto auto; min-height:72px; padding:10px 24px; }
+/* Three zones: identity, what's running, and the controls. The controls are one
+   flex group rather than separate grid columns so adding a button doesn't push
+   the row into wrapping. */
+.coach-topbar { align-items:center; border-bottom:1px solid var(--line); display:grid; gap:24px; grid-template-columns:auto 1fr auto; min-height:72px; padding:10px 24px; }
+.coach-topbar-actions { align-items:center; display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
 .coach-session-title h1 { font-size:20px; letter-spacing:-.035em; margin:1px 0 0; }
 .coach-logout { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font-size:11px; padding:8px 11px; }
+/* Square icon button, sized to match the height of the text buttons beside it. */
+.coach-icon-button { align-items:center; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; height:31px; justify-content:center; padding:0; width:31px; }
+.coach-icon-button:hover { border-color:var(--lime); color:var(--lime); }
 .coach-summary-strip { border-bottom:1px solid var(--line); display:grid; grid-template-columns:repeat(5,1fr); padding:0 24px; }
 .coach-summary-strip>div { border-right:1px solid var(--line); display:grid; gap:4px; padding:13px 18px; }
 .coach-summary-strip>div:first-child { border-left:1px solid var(--line); }

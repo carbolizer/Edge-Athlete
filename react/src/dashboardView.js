@@ -37,24 +37,32 @@ export function wallDisplayState({ roomState, requestState, connectionState, las
   return { status: roomState.session ? "ready" : "empty", roomState };
 }
 
+// One rack, summarised for the coach's rack list and observation panel.
+//
+// A rack knows who is on it because that athlete CHECKED IN there — nobody is
+// assigned to a rack in advance (canon D8). So the athlete lives on the rack
+// itself, and what they are doing is read from their most recent set. There is
+// no separate "training" block predicting what should happen next.
+//
+// Every field is optional on purpose: an idle rack with nobody on it is the
+// normal state of most racks most of the time, not an error.
 export function coachRackView(rack) {
-  const training = rack?.training;
-  if (!training) {
+  const athlete = rack?.athlete;
+  const latest = rack?.latest_set;
+  if (!athlete) {
     return {
       athleteName: "No athlete signed in",
-      movementName: "Waiting for athlete identity",
+      movementName: "Waiting for check-in",
       progressLabel: "No active progress",
       latestResult: null,
     };
   }
-  const exercise = training.exercise;
-  const completed = training.progression?.completed_sets ?? 0;
   return {
-    athleteName: training.athlete.name,
-    movementName: exercise?.name || "Program complete",
-    progressLabel: training.status === "complete"
-      ? "Program complete"
-      : `Set ${training.expected_set_number} of ${exercise?.sets ?? "--"} · ${completed} completed`,
-    latestResult: training.latest_result,
+    athleteName: athlete.name,
+    movementName: latest?.exercise || "No movement yet",
+    progressLabel: latest
+      ? `Set ${latest.set_number}${latest.is_false_set ? " (false set)" : ""} · ${latest.reps_completed ?? 0} reps`
+      : "Signed in, nothing lifted yet",
+    latestResult: latest,
   };
 }
