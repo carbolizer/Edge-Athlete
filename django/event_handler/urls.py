@@ -61,6 +61,18 @@ urlpatterns = [
     path('training-blocks/', views.training_blocks_view, name='training_blocks'),
     path('training-blocks/<int:block_id>/workouts/', views.training_block_workouts_view,
          name='training_block_workouts'),
+
+    # editing a template (P10). Reordering takes the WHOLE list, never one item —
+    # the position columns carry a non-deferrable unique constraint, so a
+    # one-at-a-time swap collides with the row already on that number.
+    path('training-blocks/<int:block_id>/workout-order/',
+         views.training_block_workout_order, name='training_block_workout_order'),
+    path('training-blocks/<int:block_id>/workouts/<int:workout_id>/',
+         views.training_block_workout_detail, name='training_block_workout_detail'),
+    path('training-blocks/<int:block_id>/workouts/<int:workout_id>/exercise-order/',
+         views.training_block_exercise_order, name='training_block_exercise_order'),
+    path('training-blocks/<int:block_id>/workouts/<int:workout_id>/exercises/<int:exercise_id>/',
+         views.training_block_exercise_detail, name='training_block_exercise_detail'),
     path('training-programs/', views.training_programs_view, name='training_programs'),
 
     # spreadsheet import. ONE pair of routes for all three kinds of sheet (roster,

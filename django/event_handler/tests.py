@@ -21,6 +21,7 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
                      TrainingBlockExercise)
 from .services.plan_resolution import movements_for_athlete
+from .services.planning import instantiate_block
 
 
 def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
@@ -1084,6 +1085,183 @@ class PlanningEndpointTests(APITestCase):
         for url in ("/api/training-groups/", "/api/training-blocks/",
                     "/api/training-blocks/1/workouts/", "/api/training-programs/"):
             self.assertEqual(self.client.get(url).status_code, 401, url)
+
+
+class TemplateEditingTests(APITestCase):
+    """Changing a template after it is written (P10).
+
+    Two things are being protected here. Order must survive a reload, which is
+    harder than it sounds against a non-deferrable unique constraint. And a
+    template edit must never reach a group that is already training a copy of it.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
+        self.block = TrainingBlock.objects.create(name="Fall Strength", coach=self.coach)
+        self.days = [
+            TrainingBlockWorkout.objects.create(training_block=self.block, name=f"Day {n}", position=n)
+            for n in (1, 2, 3)
+        ]
+        self.rows = [
+            TrainingBlockExercise.objects.create(
+                training_block_workout=self.days[0], exercise=ex, position=p,
+                sets=5, reps=3, target_percent=80)
+            for p, ex in enumerate((self.squat, self.bench), start=1)
+        ]
+
+    def _day_url(self, day):
+        return f"/api/training-blocks/{self.block.id}/workouts/{day.id}/"
+
+    # ── renaming and removing ────────────────────────────────────────────────
+
+    def test_a_day_can_be_renamed(self):
+        res = self.client.patch(self._day_url(self.days[0]), {"name": "Day 1 — Lower"},
+                                format="json")
+        self.assertEqual(res.status_code, 200)
+        self.days[0].refresh_from_db()
+        self.assertEqual(self.days[0].name, "Day 1 — Lower")
+
+    def test_a_day_cannot_be_renamed_to_nothing(self):
+        res = self.client.patch(self._day_url(self.days[0]), {"name": "   "}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["code"], "invalid_name")
+
+    def test_deleting_a_day_takes_its_prescription_rows_with_it(self):
+        res = self.client.delete(self._day_url(self.days[0]))
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(TrainingBlockWorkout.objects.filter(id=self.days[0].id).exists())
+        self.assertEqual(TrainingBlockExercise.objects.filter(
+            training_block_workout_id=self.days[0].id).count(), 0)
+
+    def test_a_day_in_another_block_cannot_be_edited_through_this_one(self):
+        """Without the parent check, /training-blocks/1/workouts/99/ would edit
+        a day belonging to block 2."""
+        other = TrainingBlock.objects.create(name="Spring", coach=self.coach)
+        stranger = TrainingBlockWorkout.objects.create(training_block=other, name="Theirs", position=1)
+        res = self.client.patch(
+            f"/api/training-blocks/{self.block.id}/workouts/{stranger.id}/",
+            {"name": "Hijacked"}, format="json")
+        self.assertEqual(res.status_code, 404)
+        stranger.refresh_from_db()
+        self.assertEqual(stranger.name, "Theirs")
+
+    # ── reordering ───────────────────────────────────────────────────────────
+
+    def test_days_can_be_reordered_and_the_order_survives_a_reload(self):
+        """The case a per-item PATCH cannot do: two days swapping numbers."""
+        order = [self.days[2].id, self.days[0].id, self.days[1].id]
+        res = self.client.put(f"/api/training-blocks/{self.block.id}/workout-order/",
+                              {"workout_ids": order}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([d["id"] for d in res.data], order)
+        # Read back from the database, not the response — the point is that it stuck.
+        self.assertEqual(
+            list(self.block.workouts.order_by("position").values_list("id", flat=True)), order)
+        self.assertEqual(
+            list(self.block.workouts.order_by("position").values_list("position", flat=True)),
+            [1, 2, 3])
+
+    def test_reordering_is_idempotent(self):
+        order = [self.days[1].id, self.days[2].id, self.days[0].id]
+        url = f"/api/training-blocks/{self.block.id}/workout-order/"
+        self.client.put(url, {"workout_ids": order}, format="json")
+        self.client.put(url, {"workout_ids": order}, format="json")
+        self.assertEqual(
+            list(self.block.workouts.order_by("position").values_list("id", flat=True)), order)
+
+    def test_a_partial_order_is_refused_rather_than_half_applied(self):
+        """Naming a subset would quietly drop the unnamed days out of the order."""
+        res = self.client.put(f"/api/training-blocks/{self.block.id}/workout-order/",
+                              {"workout_ids": [self.days[0].id]}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["code"], "invalid_order")
+        self.assertEqual(
+            list(self.block.workouts.order_by("position").values_list("position", flat=True)),
+            [1, 2, 3])
+
+    def test_movements_inside_a_day_can_be_reordered(self):
+        order = [self.rows[1].id, self.rows[0].id]
+        res = self.client.put(
+            f"/api/training-blocks/{self.block.id}/workouts/{self.days[0].id}/exercise-order/",
+            {"exercise_ids": order}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            list(self.days[0].exercises.order_by("position").values_list("id", flat=True)), order)
+
+    # ── editing a prescription row ───────────────────────────────────────────
+
+    def test_a_prescription_row_can_be_changed(self):
+        res = self.client.patch(
+            f"{self._day_url(self.days[0])}exercises/{self.rows[0].id}/",
+            {"target_percent": 72.5, "reps": 5}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.rows[0].refresh_from_db()
+        self.assertAlmostEqual(self.rows[0].target_percent, 72.5)
+        self.assertEqual(self.rows[0].reps, 5)
+
+    def test_position_cannot_be_changed_through_the_row_endpoint(self):
+        """Reordering is a whole-list operation; letting position in here is
+        exactly what breaks against the unique constraint."""
+        res = self.client.patch(
+            f"{self._day_url(self.days[0])}exercises/{self.rows[0].id}/",
+            {"position": 2}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["code"], "nothing_to_change")
+        self.rows[0].refresh_from_db()
+        self.assertEqual(self.rows[0].position, 1)
+
+    # ── "last edited" ────────────────────────────────────────────────────────
+
+    def test_editing_a_day_marks_the_BLOCK_as_edited(self):
+        """auto_now fires for the row being saved, so without an explicit touch
+        the child moves and the block goes stale — and a catalog sorted by
+        "recently edited" lies in exactly the case a coach cares about."""
+        before = TrainingBlock.objects.get(id=self.block.id).updated_at
+        self.client.patch(self._day_url(self.days[0]), {"name": "Renamed"}, format="json")
+        self.assertGreater(TrainingBlock.objects.get(id=self.block.id).updated_at, before)
+
+    def test_editing_a_prescription_row_marks_the_block_as_edited(self):
+        before = TrainingBlock.objects.get(id=self.block.id).updated_at
+        self.client.patch(f"{self._day_url(self.days[0])}exercises/{self.rows[0].id}/",
+                          {"reps": 8}, format="json")
+        self.assertGreater(TrainingBlock.objects.get(id=self.block.id).updated_at, before)
+
+    # ── the independence rule ────────────────────────────────────────────────
+
+    def test_deleting_from_a_template_leaves_a_deployed_program_alone(self):
+        """The whole reason deploying COPIES rather than references. A group
+        mid-season must not lose a day because a coach tidied the template."""
+        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        program = instantiate_block(self.block, group, start_date=timezone.now().date())
+        days_before = program.workouts.count()
+        rows_before = TrainingProgramExercise.objects.filter(
+            training_program_workout__training_program=program).count()
+        self.assertGreater(days_before, 0)
+        self.assertGreater(rows_before, 0)
+
+        self.client.delete(self._day_url(self.days[0]))
+        self.client.delete(f"{self._day_url(self.days[1])}")
+
+        self.assertEqual(program.workouts.count(), days_before)
+        self.assertEqual(TrainingProgramExercise.objects.filter(
+            training_program_workout__training_program=program).count(), rows_before)
+
+    def test_editing_a_deployed_program_does_not_mark_the_template_as_edited(self):
+        """A program is a snapshot. Reporting the template as changed when
+        nobody changed it would imply a coupling that does not exist."""
+        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        program = instantiate_block(self.block, group, start_date=timezone.now().date())
+        before = TrainingBlock.objects.get(id=self.block.id).updated_at
+
+        row = TrainingProgramExercise.objects.filter(
+            training_program_workout__training_program=program).first()
+        row.target_percent = 60
+        row.save(update_fields=["target_percent"])
+
+        self.assertEqual(TrainingBlock.objects.get(id=self.block.id).updated_at, before)
 
 
 class CsvImportTests(APITestCase):

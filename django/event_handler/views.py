@@ -46,7 +46,7 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
-                          TrainingProgramSerializer)
+                          TrainingBlockExerciseSerializer, TrainingProgramSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
@@ -55,7 +55,7 @@ from .services.reports import (AthleteNotInReport, reports_for_athlete, report_l
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import (movements_for_athlete as plan_movements_for_athlete,
                                        plans_by_athlete, resolve_target_weight)
-from .services.planning import instantiate_block
+from .services.planning import apply_order, instantiate_block, touch_block
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 
 def _require_coach(request):
@@ -1108,7 +1108,146 @@ def training_block_workouts_view(request, block_id):
                 velocity_zone_min=row.get("velocity_zone_min"),
                 velocity_zone_max=row.get("velocity_zone_max"),
             )
+    touch_block(block.id)
     return Response(TrainingBlockWorkoutSerializer(workout).data, status=201)
+
+
+# ─────────────────── editing a template (P10) ───────────────────
+#
+# A template you can write but never change is a template you rewrite from
+# scratch over one typo. Everything below edits the BLOCK side only.
+#
+# ⚠️ None of it can reach a deployed TrainingProgram. Program rows carry no
+# foreign key back to block rows — they were copied down at deploy time — so
+# deleting a day from a template cannot remove it from a group that is
+# currently training it. That independence is deliberate and load-bearing.
+
+def _block_workout(block_id, workout_id):
+    """One day, confirmed to be inside the block named in the URL.
+
+    Checking the parent matters: without it, /training-blocks/1/workouts/99/
+    would happily edit a day belonging to block 2.
+    """
+    return TrainingBlockWorkout.objects.filter(
+        id=workout_id, training_block_id=block_id).first()
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsCoach])
+def training_block_workout_detail(request, block_id, workout_id):
+    """Coach-only: rename or remove one day in a template.
+
+    Deleting takes its prescription rows with it (they cannot outlive the day
+    they belong to) but leaves every deployed program untouched.
+    """
+    workout = _block_workout(block_id, workout_id)
+    if workout is None:
+        return Response({"error": "workout not found in this block"}, status=404)
+
+    if request.method == "DELETE":
+        workout.delete()
+        touch_block(block_id)
+        return Response(status=204)
+
+    name = request.data.get("name")
+    if name is not None:
+        if not str(name).strip():
+            return Response({"code": "invalid_name",
+                             "detail": "A day needs a name."}, status=400)
+        workout.name = str(name).strip()
+        workout.save(update_fields=["name"])
+        touch_block(block_id)
+    return Response(TrainingBlockWorkoutSerializer(workout).data)
+
+
+@api_view(["PUT"])
+@permission_classes([IsCoach])
+def training_block_workout_order(request, block_id):
+    """Coach-only: set the order of the days in a template.
+
+    Takes the WHOLE list — {"workout_ids": [12, 9, 14]} — not one day at a time.
+    See services/planning.apply_order for why that is the only shape that works
+    against a non-deferrable position constraint, and why it is the better API
+    regardless.
+    """
+    block = TrainingBlock.objects.filter(id=block_id).first()
+    if block is None:
+        return Response({"error": "training block not found"}, status=404)
+
+    ids = request.data.get("workout_ids")
+    if not isinstance(ids, list):
+        return Response({"code": "invalid_order",
+                         "detail": "Send workout_ids as a list."}, status=400)
+    try:
+        apply_order(block.workouts.all(), ids)
+    except ValueError as problem:
+        # Naming a subset would silently drop days out of the order, so the whole
+        # list is required and a mismatch is refused rather than half-applied.
+        return Response({"code": "invalid_order", "detail": str(problem)}, status=400)
+
+    touch_block(block_id)
+    return Response(TrainingBlockWorkoutSerializer(
+        block.workouts.prefetch_related("exercises").order_by("position"), many=True).data)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsCoach])
+def training_block_exercise_detail(request, block_id, workout_id, exercise_id):
+    """Coach-only: change or remove one prescribed movement in a template day."""
+    workout = _block_workout(block_id, workout_id)
+    if workout is None:
+        return Response({"error": "workout not found in this block"}, status=404)
+    row = workout.exercises.filter(id=exercise_id).first()
+    if row is None:
+        return Response({"error": "exercise row not found in this workout"}, status=404)
+
+    if request.method == "DELETE":
+        row.delete()
+        touch_block(block_id)
+        return Response(status=204)
+
+    # Only the prescription itself is editable here. `position` is deliberately
+    # NOT: reordering is a whole-list operation, and letting it in through the
+    # back door is exactly what breaks against the unique constraint.
+    fields = {}
+    for field in ("sets", "reps", "target_percent", "velocity_zone_min", "velocity_zone_max"):
+        if field in request.data:
+            fields[field] = request.data[field]
+    if "exercise" in request.data:
+        if not Exercise.objects.filter(id=request.data["exercise"]).exists():
+            return Response({"error": "exercise not found"}, status=404)
+        fields["exercise_id"] = request.data["exercise"]
+    if not fields:
+        return Response({"code": "nothing_to_change",
+                         "detail": "Send at least one field to change."}, status=400)
+
+    for name, value in fields.items():
+        setattr(row, name, value)
+    row.save(update_fields=list(fields))
+    touch_block(block_id)
+    return Response(TrainingBlockExerciseSerializer(row).data)
+
+
+@api_view(["PUT"])
+@permission_classes([IsCoach])
+def training_block_exercise_order(request, block_id, workout_id):
+    """Coach-only: set the order of the movements inside one template day."""
+    workout = _block_workout(block_id, workout_id)
+    if workout is None:
+        return Response({"error": "workout not found in this block"}, status=404)
+
+    ids = request.data.get("exercise_ids")
+    if not isinstance(ids, list):
+        return Response({"code": "invalid_order",
+                         "detail": "Send exercise_ids as a list."}, status=400)
+    try:
+        apply_order(workout.exercises.all(), ids)
+    except ValueError as problem:
+        return Response({"code": "invalid_order", "detail": str(problem)}, status=400)
+
+    touch_block(block_id)
+    return Response(TrainingBlockExerciseSerializer(
+        workout.exercises.order_by("position"), many=True).data)
 
 
 @api_view(["GET", "POST"])

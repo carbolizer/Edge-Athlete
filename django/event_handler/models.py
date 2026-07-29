@@ -175,6 +175,12 @@ class TrainingBlock(models.Model):
     duration_weeks = models.IntegerField(null=True, blank=True)
     cadence_days_of_week = models.CharField(max_length=100, blank=True)  # e.g. "Mon,Wed,Fri"
     created_at = models.DateTimeField(auto_now_add=True)
+    # "Last edited", so a coach can sort a growing catalog by what they touched
+    # recently. ⚠️ auto_now only fires when THIS row is saved, and most edits are
+    # to a day or a prescription row inside the block — those are still edits to
+    # the template, so every write that touches a descendant must call
+    # touch_block() (services/planning.py) or this goes stale and the sort lies.
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.name
