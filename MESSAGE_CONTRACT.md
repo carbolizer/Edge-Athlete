@@ -427,7 +427,38 @@ snapshot and has no link back.
 | *(none)* | Every block in the department. This is the default on purpose. |
 | `?coach=me` | Only the caller's blocks |
 | `?coach={id}` | Only that coach's blocks. A non-numeric value that isn't `me` is a `400`, not a silent full list. |
+| `?category={id}` | Only blocks carrying that label. Repeatable. |
+| `?category=2&category=5` | **Any-of**, not all-of — the labels sit on different axes, so requiring both would usually match nothing. A block carrying both is still listed once. |
 | `?sort=recent` | Most recently edited first. Default order is alphabetical by name. |
+
+Filters combine: `?coach=me&category=2` is "my off-season blocks".
+
+### `GET|PATCH /api/training-blocks/{id}/` — one block's own fields (coach)
+
+PATCH accepts `name`, `categories`, `duration_weeks`, `cadence_days_of_week`.
+The days and rows *inside* the block have their own routes (below).
+
+This route exists because categories would otherwise be write-once: every block
+created before P11 has no labels, and a create-only API could never give it any.
+
+> ⚠️ **No DELETE, on purpose.** Nothing in the product deletes a whole block, and
+> the filter-not-fence reasoning above partly rests on that. Adding one is a real
+> decision, not a convenience.
+
+### `GET|POST /api/block-categories/` — the catalog's label vocabulary (coach)
+
+```jsonc
+{ "id": 1, "name": "Off-season", "block_count": 4 }
+```
+
+Department-wide and shared: labels only help if everyone files things under the
+same words. `name` is unique, so a duplicate is a `400` rather than a quiet
+near-copy. `block_count` rides along so the filter bar can show how much sits
+behind a label before you click it.
+
+**Not `Tag`.** `Tag` is movement labels on `Exercise` ("lower", "push") with a
+globally-unique name. Sharing one table would make a word like "Upper" mean a
+body region or a grade level depending on what it hangs off.
 
 > ⚠️ **`?coach=` is a lens, not a fence.** Blocks are global so a good one gets
 > reused; the filter exists so nobody scrolls a department-sized catalog to find

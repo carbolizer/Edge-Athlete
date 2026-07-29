@@ -208,13 +208,36 @@ export function sameOriginPath(value, origin) {
 // Duration and cadence are the coach's design, not decoration — they describe
 // how the block is meant to be run. Nothing generates a calendar from them yet,
 // which is why both are optional rather than absent.
-export function buildTrainingBlockPayload(name, durationWeeks, cadenceDays) {
+export function buildTrainingBlockPayload(name, durationWeeks, cadenceDays, categoryIds) {
   return {
     name: name.trim(),
     duration_weeks: durationWeeks === "" ? null : Number(durationWeeks),
     // Stored as a plain string like "Mon,Wed,Fri".
     cadence_days_of_week: (cadenceDays || []).join(","),
+    // A list, not one value — a block sits on several axes at once ("Off-season"
+    // AND "Football"), so the catalog filters any-of rather than all-of.
+    categories: (categoryIds || []).map(Number),
   };
+}
+
+// Categories are toggled the same way in three places (the create form, the
+// filter bar, and each saved block's own labels), so the add/remove rule lives
+// in one function rather than three copies that can drift apart.
+export function toggleId(selected, id) {
+  const value = Number(id);
+  return selected.includes(value)
+    ? selected.filter((item) => item !== value)
+    : [...selected, value];
+}
+
+// The filter is any-of, so no selection means "no narrowing" rather than
+// "nothing matches" — an empty list must produce a bare URL, not `?category=`.
+export function blockCatalogQuery(scope, categoryIds) {
+  const params = new URLSearchParams();
+  if (scope === "mine") params.set("coach", "me");
+  params.set("sort", "recent");
+  (categoryIds || []).forEach((id) => params.append("category", String(id)));
+  return `?${params.toString()}`;
 }
 
 export const CADENCE_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

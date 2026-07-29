@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCorrection, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
+import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
   // The block is in the URL, not the payload — a day cannot exist unattached, and
@@ -134,16 +134,54 @@ describe("the CSV repair loop", () => {
 
 describe("buildTrainingBlockPayload", () => {
   it("sends the cadence as a day string and leaves an unset duration null", () => {
-    expect(buildTrainingBlockPayload("  Fall Strength  ", "", ["Mon", "Wed", "Fri"])).toEqual({
+    expect(buildTrainingBlockPayload("  Fall Strength  ", "", ["Mon", "Wed", "Fri"], [])).toEqual({
       name: "Fall Strength",
       duration_weeks: null,
       cadence_days_of_week: "Mon,Wed,Fri",
+      categories: [],
     });
-    expect(buildTrainingBlockPayload("Spring", "8", [])).toEqual({
+    expect(buildTrainingBlockPayload("Spring", "8", [], [])).toEqual({
       name: "Spring",
       duration_weeks: 8,
       cadence_days_of_week: "",
+      categories: [],
     });
+  });
+
+  it("sends categories as numbers, because a checkbox value arrives as a string", () => {
+    expect(buildTrainingBlockPayload("Winter", "", [], ["3", 7]).categories).toEqual([3, 7]);
+  });
+});
+
+describe("toggleId", () => {
+  it("adds an id that is not selected and removes one that is", () => {
+    expect(toggleId([], 3)).toEqual([3]);
+    expect(toggleId([3, 7], 3)).toEqual([7]);
+  });
+
+  it("treats a string id as the same id, so a DOM value cannot double up", () => {
+    expect(toggleId([3], "3")).toEqual([]);
+  });
+});
+
+describe("blockCatalogQuery", () => {
+  it("asks for the caller's own blocks under the 'mine' lens", () => {
+    expect(blockCatalogQuery("mine", [])).toBe("?coach=me&sort=recent");
+  });
+
+  it("drops the coach filter under 'all' — the catalog is department-wide", () => {
+    expect(blockCatalogQuery("all", [])).toBe("?sort=recent");
+  });
+
+  it("repeats the category key so several labels mean any-of", () => {
+    expect(blockCatalogQuery("all", [2, 5])).toBe("?sort=recent&category=2&category=5");
+  });
+
+  // An empty selection has to mean "no narrowing". Emitting a bare `?category=`
+  // would send an empty value the server rejects, so the catalog would go blank
+  // the moment a coach cleared the last chip.
+  it("emits no category key at all when nothing is selected", () => {
+    expect(blockCatalogQuery("mine", [])).not.toContain("category");
   });
 });
 

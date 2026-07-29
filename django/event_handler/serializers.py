@@ -11,7 +11,8 @@ from rest_framework import serializers
 
 from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
-                     TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise)
+                     TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise,
+                     BlockCategory)
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -127,6 +128,23 @@ class TrainingGroupSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "coach", "created_at"]
 
 
+class BlockCategorySerializer(serializers.ModelSerializer):
+    """One catalog label — "Off-season", "Football". `block_count` rides along so
+    the filter bar can show how much is behind each one before you click it."""
+    block_count = serializers.IntegerField(source="blocks.count", read_only=True)
+
+    class Meta:
+        model = BlockCategory
+        fields = ["id", "name", "block_count"]
+        read_only_fields = ["id", "block_count"]
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("a category needs a name")
+        return name
+
+
 class TrainingBlockExerciseSerializer(serializers.ModelSerializer):
     """One prescribed movement in a template.
 
@@ -161,14 +179,22 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
 
     `updated_at` is exposed because the catalog sorts by most-recently-edited
     (`?sort=recent`). The column is maintained server-side whenever a coach
-    edits a day or a row inside the block — never by a program built from it."""
+    edits a day or a row inside the block — never by a program built from it.
+
+    `categories` is written as a list of ids; `category_names` comes back
+    alongside it so a caller can render the labels without a second request and
+    without holding its own copy of the lookup table."""
     workouts = TrainingBlockWorkoutSerializer(many=True, read_only=True)
+    category_names = serializers.SlugRelatedField(
+        source="categories", slug_field="name", many=True, read_only=True)
 
     class Meta:
         model = TrainingBlock
-        fields = ["id", "name", "coach", "duration_weeks", "cadence_days_of_week",
+        fields = ["id", "name", "coach", "categories", "category_names",
+                  "duration_weeks", "cadence_days_of_week",
                   "workouts", "created_at", "updated_at"]
-        read_only_fields = ["id", "coach", "workouts", "created_at", "updated_at"]
+        read_only_fields = ["id", "coach", "category_names", "workouts",
+                            "created_at", "updated_at"]
 
 
 class TrainingProgramExerciseSerializer(serializers.ModelSerializer):

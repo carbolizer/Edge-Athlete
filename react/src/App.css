@@ -383,6 +383,19 @@
 .block-scope-toggle button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:38px; padding:7px 14px; }
 .block-scope-toggle button.workout-secondary { background:transparent; border-color:var(--line); color:var(--muted); }
 
+/* Category chips. Same control in two roles: filtering the catalog, and
+   labelling one block. Both toggle, so both look the same on purpose. */
+.block-category-filter,.block-card-categories { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+.block-card-categories { margin:8px 0 10px; }
+.category-chip { background:transparent; border:1px solid var(--line); border-radius:999px; color:var(--muted); cursor:pointer; font-size:11px; font-weight:800; padding:5px 11px; }
+.category-chip b { color:var(--muted); font-weight:800; opacity:.7; }
+.category-chip.is-on { background:var(--lime); border-color:var(--lime); color:#071006; }
+.category-chip.is-on b { color:#071006; opacity:.65; }
+.category-chip.is-clear { border-style:dashed; }
+.new-category-form { align-items:flex-end; border-top:1px solid var(--line); display:flex; gap:10px; margin-top:16px; padding-top:14px; }
+.new-category-form label { display:flex; flex:1; flex-direction:column; gap:5px; }
+.new-category-form button { min-height:42px; padding:9px 15px; }
+
 /* Report browsing */
 .reports-workspace { display:grid; gap:14px; }
 .reports-heading { align-items:end; background:linear-gradient(110deg,#18241e,#10171b 68%); border:1px solid #2b4034; display:flex; gap:20px; justify-content:space-between; padding:24px 28px; }

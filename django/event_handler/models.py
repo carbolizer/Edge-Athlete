@@ -160,6 +160,31 @@ class TrainingGroup(models.Model):
         return self.name
 
 
+class BlockCategory(models.Model):
+    """A label for finding things in the shared block catalog — "Off-season",
+    "Football", "Freshman".
+
+    ⚠️ This is deliberately NOT the existing `Tag` model, even though both are
+    "a name you hang on something". `Tag`'s vocabulary is movement labels for
+    Exercises ("lower", "push") and its `name` is globally unique, so reusing it
+    would put two unrelated vocabularies in one namespace and make a word like
+    "Upper" mean a body region or a grade level depending on what it hangs off.
+    Two small tables are cheaper than one ambiguous one.
+
+    A block has MANY of these, not one, because real categories sit on different
+    axes: a block is honestly both "Off-season" AND "Football", and those are not
+    competing answers to the same question. Forcing one would mean inventing
+    combination rows ("Off-season Football"), which multiplies badly."""
+    name = models.CharField(max_length=60, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name_plural = "block categories"
+
+    def __str__(self):
+        return self.name
+
+
 class TrainingBlock(models.Model):
     """A reusable, timeless TEMPLATE a coach designs once and redeploys (tweak
     last year's block, run it again next year). Deliberately has no group and no
@@ -172,6 +197,10 @@ class TrainingBlock(models.Model):
     just keeps the door open without inventing more structure than needed today."""
     coach = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='training_blocks')
     name = models.CharField(max_length=255)
+    # Several, not one — a block sits on more than one axis at a time. See
+    # BlockCategory. Filtering is any-of, so a block tagged both "Off-season" and
+    # "Football" turns up under either.
+    categories = models.ManyToManyField(BlockCategory, related_name='blocks', blank=True)
     duration_weeks = models.IntegerField(null=True, blank=True)
     cadence_days_of_week = models.CharField(max_length=100, blank=True)  # e.g. "Mon,Wed,Fri"
     created_at = models.DateTimeField(auto_now_add=True)

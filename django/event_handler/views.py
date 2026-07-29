@@ -40,13 +40,14 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
                      Exercise, RackCheckIn, DailyReport, TrainingGroup, TrainingBlock,
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
-                     AthleteWorkoutExerciseOverride)
+                     AthleteWorkoutExerciseOverride, BlockCategory)
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
-                          TrainingBlockExerciseSerializer, TrainingProgramSerializer)
+                          TrainingBlockExerciseSerializer, TrainingProgramSerializer,
+                          BlockCategorySerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
@@ -1057,17 +1058,24 @@ def training_blocks_view(request):
     department-sized list to find their own work, and the full list is always
     one request away. It grants nothing and forbids nothing.
 
-      GET /api/training-blocks/                -> every block (default)
-      GET /api/training-blocks/?coach=me       -> only the caller's
-      GET /api/training-blocks/?coach=4        -> only that coach's
-      GET /api/training-blocks/?sort=recent    -> most recently EDITED first
+      GET /api/training-blocks/                    -> every block (default)
+      GET /api/training-blocks/?coach=me           -> only the caller's
+      GET /api/training-blocks/?coach=4            -> only that coach's
+      GET /api/training-blocks/?category=2         -> only blocks with that label
+      GET /api/training-blocks/?category=2&category=5  -> EITHER label (any-of)
+      GET /api/training-blocks/?sort=recent        -> most recently EDITED first
+
+    Several `category` values mean ANY-OF, not all-of, because the labels sit on
+    different axes — "Off-season" and "Football" are not competing answers to one
+    question, and asking for both meaning "must be both" would usually return
+    nothing. Any-of matches how a filter bar with checkboxes reads.
 
     `sort=recent` orders by `updated_at`, which P10 maintains whenever anyone
     edits a block's days or rows. Default order stays alphabetical, because a
     catalog you are browsing rather than resuming reads better by name.
     """
     if request.method == "GET":
-        blocks = TrainingBlock.objects.prefetch_related("workouts__exercises")
+        blocks = TrainingBlock.objects.prefetch_related("workouts__exercises", "categories")
 
         coach = request.query_params.get("coach")
         if coach == "me":
@@ -1077,12 +1085,72 @@ def training_blocks_view(request):
                 return Response({"error": "coach must be a coach id or 'me'"}, status=400)
             blocks = blocks.filter(coach_id=int(coach))
 
+        categories = request.query_params.getlist("category")
+        if categories:
+            if not all(value.isdigit() for value in categories):
+                return Response({"error": "category must be a category id"}, status=400)
+            # A join across a many-to-many repeats a row once per match, so a
+            # block carrying two of the requested labels would otherwise be
+            # listed twice.
+            blocks = blocks.filter(categories__id__in=[int(v) for v in categories]).distinct()
+
         order = "-updated_at" if request.query_params.get("sort") == "recent" else "name"
         return Response(TrainingBlockSerializer(blocks.order_by(order), many=True).data)
 
     form = TrainingBlockSerializer(data=request.data)
     form.is_valid(raise_exception=True)
     return Response(TrainingBlockSerializer(form.save(coach=request.user)).data, status=201)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsCoach])
+def training_block_detail(request, block_id):
+    """Coach-only: read or amend one block's own fields.
+
+    This exists because categories would otherwise be write-once. Every block
+    that already existed before P11 has no labels, and with create-only routes
+    there would be no way to give it any — the feature would only ever apply to
+    blocks made after it shipped.
+
+    PATCH covers the block's OWN fields (name, categories, duration, cadence).
+    The days and rows inside it have their own routes from P10.
+
+    ⚠️ There is deliberately NO DELETE here. Nothing in the product deletes a
+    whole block, and the canon's reasoning for `?coach=` being a filter rather
+    than a permission fence rests partly on that. Adding one is a real decision,
+    not a convenience — make it on purpose.
+    """
+    block = TrainingBlock.objects.filter(id=block_id).first()
+    if block is None:
+        return Response({"error": "training block not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(TrainingBlockSerializer(block).data)
+
+    form = TrainingBlockSerializer(block, data=request.data, partial=True)
+    form.is_valid(raise_exception=True)
+    # auto_now on `updated_at` fires here, so amending a block's own fields
+    # counts as editing it — same as editing a day inside it.
+    return Response(TrainingBlockSerializer(form.save()).data)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsCoach])
+def block_categories_view(request):
+    """Coach-only: the catalog's label vocabulary — "Off-season", "Football".
+
+    Shared by the whole department on purpose: the labels are only useful if
+    everyone files things under the same words. Names are unique, so a second
+    attempt at one that exists comes back 400 rather than quietly creating a
+    near-duplicate.
+    """
+    if request.method == "GET":
+        return Response(BlockCategorySerializer(
+            BlockCategory.objects.order_by("name"), many=True).data)
+
+    form = BlockCategorySerializer(data=request.data)
+    form.is_valid(raise_exception=True)
+    return Response(BlockCategorySerializer(form.save()).data, status=201)
 
 
 @api_view(["GET", "POST"])

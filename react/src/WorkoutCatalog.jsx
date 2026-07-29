@@ -31,7 +31,7 @@
 // server renumbers a list at once — see moveInList.
 
 import { useEffect, useState } from "react";
-import { applyCorrection, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
+import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
 
 const TRAINING_BLOCKS_URL = "/api/training-blocks/";
 // The catalog is shared by the whole department, so it opens on the coach's own
@@ -40,10 +40,12 @@ const TRAINING_BLOCKS_URL = "/api/training-blocks/";
 // own work is the thing that makes a shared catalog feel worse than a private
 // one. "Recently edited" is the default sort for the same reason: the block you
 // want next is almost always the one you touched last.
-const blockCatalogUrl = (scope) =>
-  scope === "mine"
-    ? `${TRAINING_BLOCKS_URL}?coach=me&sort=recent`
-    : `${TRAINING_BLOCKS_URL}?sort=recent`;
+const blockCatalogUrl = (scope, categoryIds) =>
+  `${TRAINING_BLOCKS_URL}${blockCatalogQuery(scope, categoryIds)}`;
+const BLOCK_CATEGORIES_URL = "/api/block-categories/";
+// One block's own fields — used to label a block that already existed. Without
+// this, categories would only ever apply to blocks made after the feature shipped.
+const blockDetailUrl = (blockId) => `${TRAINING_BLOCKS_URL}${blockId}/`;
 const CSV_PREVIEW_URL = "/api/imports/preview/";
 const CSV_IMPORT_URL = "/api/imports/";
 // A day lives inside a block, so its URL says so.
@@ -162,8 +164,15 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [programCount, setProgramCount] = useState(0);
   // "mine" or "all" — see blockCatalogUrl. A lens, not a permission.
   const [blockScope, setBlockScope] = useState("mine");
-  const [programUrl, setProgramUrl] = useState(blockCatalogUrl("mine"));
-  const [retryProgramUrl, setRetryProgramUrl] = useState(blockCatalogUrl("mine"));
+  // The department's label vocabulary, and which of them the catalog is
+  // currently narrowed to. Empty means no narrowing.
+  const [categories, setCategories] = useState([]);
+  const [categoryFilter, setCategoryFilter] = useState([]);
+  const [newBlockCategories, setNewBlockCategories] = useState([]);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [categoryErrors, setCategoryErrors] = useState([]);
+  const [programUrl, setProgramUrl] = useState(blockCatalogUrl("mine", []));
+  const [retryProgramUrl, setRetryProgramUrl] = useState(blockCatalogUrl("mine", []));
   const [programPagination, setProgramPagination] = useState({ previous: null, next: null });
   const [programCatalogState, setProgramCatalogState] = useState("loading");
   const [programCatalogErrors, setProgramCatalogErrors] = useState([]);
@@ -206,11 +215,70 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   // of local state, no client-side filtering to drift out of sync with the API.
   function showBlockScope(scope) {
     setBlockScope(scope);
-    loadPrograms(blockCatalogUrl(scope));
+    loadPrograms(blockCatalogUrl(scope, categoryFilter));
+  }
+
+  function toggleCategoryFilter(categoryId) {
+    const next = toggleId(categoryFilter, categoryId);
+    setCategoryFilter(next);
+    loadPrograms(blockCatalogUrl(blockScope, next));
+  }
+
+  async function loadCategories() {
+    try {
+      const response = await fetch(BLOCK_CATEGORIES_URL, { headers });
+      const body = await response.json().catch(() => []);
+      setCategories(Array.isArray(body) ? body : body.results || []);
+    } catch {
+      setCategories([]);
+    }
+  }
+
+  // A new label is department-wide, so it is created here rather than buried in
+  // a settings screen — the moment you need one is the moment you are filing a
+  // block and find nothing that fits.
+  async function createCategory(event) {
+    event.preventDefault();
+    setCategoryErrors([]);
+    try {
+      const response = await fetch(BLOCK_CATEGORIES_URL, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newCategoryName.trim() }),
+      });
+      const body = await parseResponse(response, "The category could not be created.");
+      if (body === null) return;
+      setNewCategoryName("");
+      await loadCategories();
+    } catch (errors) {
+      setCategoryErrors(Array.isArray(errors) ? errors : [{ detail: "The category could not be created." }]);
+    }
+  }
+
+  // Labelling a block that already exists. PATCHes only `categories`, so it
+  // cannot disturb the block's name, cadence, or its days.
+  async function toggleBlockCategory(block, categoryId) {
+    const next = toggleId((block.categories || []).map(Number), categoryId);
+    try {
+      const response = await fetch(blockDetailUrl(block.id), {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ categories: next }),
+      });
+      const body = await parseResponse(response, "The labels could not be saved.");
+      if (body === null) return;
+      // Patch the one row in place rather than refetching: a reload would
+      // re-sort the list under the coach's cursor mid-click.
+      setPrograms((rows) => rows.map((row) => (row.id === block.id ? { ...row, ...body } : row)));
+      await loadCategories();
+    } catch (errors) {
+      setCategoryErrors(Array.isArray(errors) ? errors : [{ detail: "The labels could not be saved." }]);
+    }
   }
 
   useEffect(() => {
-    loadPrograms(blockCatalogUrl("mine"));
+    loadPrograms(blockCatalogUrl("mine", []));
+    loadCategories();
     // The two pickers. Both are small, rarely-changing lists, so they load once
     // and are not paginated. A failure here leaves an empty dropdown rather than
     // breaking the screen — the panels that need them disable themselves.
@@ -349,18 +417,19 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       const response = await fetch(TRAINING_BLOCKS_URL, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify(buildTrainingBlockPayload(programName, durationWeeks, cadenceDays)),
+        body: JSON.stringify(buildTrainingBlockPayload(programName, durationWeeks, cadenceDays, newBlockCategories)),
       });
       const body = await parseResponse(response, "The block could not be created.");
       if (body === null) return;
       setProgramName("");
       setDurationWeeks("");
       setCadenceDays([]);
+      setNewBlockCategories([]);
       setProgramStatus(`${body.name || programName.trim()} was created. Add its days below.`);
       // Select it in the day builder — creating a block is almost always
       // followed by filling it in, so save the coach the extra click.
       if (body.id) setWorkoutBlockId(String(body.id));
-      await loadPrograms(blockCatalogUrl(blockScope));
+      await loadPrograms(blockCatalogUrl(blockScope, categoryFilter));
     } catch (errors) {
       setProgramErrors(Array.isArray(errors) ? errors : [{ detail: "The block could not be created." }]);
     } finally {
@@ -635,6 +704,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
             <p className="monitor-empty">Which days of the week this block is meant to be trained on.</p>
             <div>{CADENCE_DAYS.map((day) => <label key={day}><input type="checkbox" checked={cadenceDays.includes(day)} onChange={() => setCadenceDays((current) => toggleCadenceDay(current, day))} disabled={programSaving} /><span>{day}</span></label>)}</div>
           </fieldset>
+          <fieldset className="program-draft"><legend>Categories</legend>
+            <p className="monitor-empty">How this block gets found later. Pick as many as fit — they sit on different axes, so a block can be both "Off-season" and "Football".</p>
+            {categories.length === 0
+              ? <p className="monitor-empty">No categories yet. Add one below the catalog.</p>
+              : <div>{categories.map((category) => <label key={category.id}><input type="checkbox" checked={newBlockCategories.includes(category.id)} onChange={() => setNewBlockCategories((current) => toggleId(current, category.id))} disabled={programSaving} /><span>{category.name}</span></label>)}</div>}
+          </fieldset>
           <div className="workout-form-actions"><button type="submit" disabled={programSaving}>{programSaving ? "Creating..." : "Create block"}</button></div>
           <ErrorList errors={programErrors} />
           {programStatus && <p className="workout-status" role="status">{programStatus}</p>}
@@ -659,11 +734,21 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           <button type="button" className={blockScope === "mine" ? "" : "workout-secondary"} aria-pressed={blockScope === "mine"} onClick={() => showBlockScope("mine")}>My blocks</button>
           <button type="button" className={blockScope === "all" ? "" : "workout-secondary"} aria-pressed={blockScope === "all"} onClick={() => showBlockScope("all")}>All coaches</button>
         </div>
+        {categories.length > 0 && <div className="block-category-filter" role="group" aria-label="Filter by category">
+          {categories.map((category) => <button key={category.id} type="button" className={categoryFilter.includes(category.id) ? "category-chip is-on" : "category-chip"} aria-pressed={categoryFilter.includes(category.id)} onClick={() => toggleCategoryFilter(category.id)}>{category.name} <b>{category.block_count}</b></button>)}
+          {categoryFilter.length > 0 && <button type="button" className="category-chip is-clear" onClick={() => { setCategoryFilter([]); loadPrograms(blockCatalogUrl(blockScope, [])); }}>Clear</button>}
+        </div>}
+        {categoryFilter.length > 1 && <p className="monitor-empty">Showing blocks in <b>any</b> of the selected categories.</p>}
         {programCatalogState === "loading" && <p className="monitor-empty" role="status">Loading program page...</p>}
         <ErrorList errors={programCatalogErrors} title="Program catalog unavailable:" />
         {programCatalogState === "error" && <button type="button" className="workout-secondary" onClick={() => loadPrograms(retryProgramUrl)}>Retry page</button>}
         {programCatalogState !== "loading" && programCount === 0 && <p className="monitor-empty">{blockScope === "mine" ? "You haven't created any blocks yet — try All coaches." : "No blocks have been created."}</p>}
-        <div className="program-browser-list">{programs.map((block) => <article key={block.id || block.name}><header><span>{block.workouts?.length || 0} day{block.workouts?.length === 1 ? "" : "s"}{block.duration_weeks ? ` · ${block.duration_weeks} wk` : ""}{block.cadence_days_of_week ? ` · ${block.cadence_days_of_week}` : ""}</span><h4>{block.name}</h4></header>{block.workouts?.length ? <ol>{block.workouts.map((workout, index) => <li key={workout.id || index}><span>{workout.position ?? index + 1}</span><b>{workout.name}</b></li>)}</ol> : <p className="monitor-empty">No days yet — add one with the manual builder.</p>}</article>)}</div>
+        <div className="program-browser-list">{programs.map((block) => <article key={block.id || block.name}><header><span>{block.workouts?.length || 0} day{block.workouts?.length === 1 ? "" : "s"}{block.duration_weeks ? ` · ${block.duration_weeks} wk` : ""}{block.cadence_days_of_week ? ` · ${block.cadence_days_of_week}` : ""}</span><h4>{block.name}</h4></header>{categories.length > 0 && <div className="block-card-categories" role="group" aria-label={`Categories for ${block.name}`}>{categories.map((category) => <button key={category.id} type="button" className={(block.categories || []).includes(category.id) ? "category-chip is-on" : "category-chip"} aria-pressed={(block.categories || []).includes(category.id)} onClick={() => toggleBlockCategory(block, category.id)}>{category.name}</button>)}</div>}{block.workouts?.length ? <ol>{block.workouts.map((workout, index) => <li key={workout.id || index}><span>{workout.position ?? index + 1}</span><b>{workout.name}</b></li>)}</ol> : <p className="monitor-empty">No days yet — add one with the manual builder.</p>}</article>)}</div>
+        <form className="new-category-form" onSubmit={createCategory}>
+          <label>New category<input value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} maxLength="60" placeholder="Off-season" /></label>
+          <button type="submit" className="workout-secondary" disabled={!newCategoryName.trim()}>Add category</button>
+        </form>
+        <ErrorList errors={categoryErrors} title="Categories:" />
         {(programPagination.previous || programPagination.next || programCount > programs.length) && <nav className="workout-pagination" aria-label="Workout program catalog pages"><button type="button" className="workout-secondary" onClick={() => loadPrograms(programPagination.previous)} disabled={!programPagination.previous || programCatalogState === "loading"}>Previous</button><span role="status">Showing {programs.length} on this page · {programCount} total</span><button type="button" onClick={() => loadPrograms(programPagination.next)} disabled={!programPagination.next || programCatalogState === "loading"}>Next</button></nav>}
       </section>
     </div>

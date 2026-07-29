@@ -59,8 +59,15 @@ urlpatterns = [
     path('training-groups/<int:group_id>/athletes/', views.training_group_athletes_view,
          name='training_group_athletes'),
     path('training-blocks/', views.training_blocks_view, name='training_blocks'),
+    # The block's OWN fields (name, categories, duration, cadence). GET and PATCH
+    # only — nothing in the product deletes a whole block, and that is on purpose.
+    path('training-blocks/<int:block_id>/', views.training_block_detail,
+         name='training_block_detail'),
     path('training-blocks/<int:block_id>/workouts/', views.training_block_workouts_view,
          name='training_block_workouts'),
+    # The label vocabulary the catalog filters by. Shared department-wide, because
+    # labels only help if everyone files things under the same words.
+    path('block-categories/', views.block_categories_view, name='block_categories'),
 
     # editing a template (P10). Reordering takes the WHOLE list, never one item —
     # the position columns carry a non-deferrable unique constraint, so a

@@ -19,7 +19,7 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
-                     TrainingBlockExercise)
+                     TrainingBlockExercise, BlockCategory)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import instantiate_block, touch_block
 
@@ -1330,6 +1330,124 @@ class BlockCatalogLensTests(APITestCase):
         """A column the client cannot read cannot sort anything client-side."""
         res = self.client.get("/api/training-blocks/")
         self.assertIn("updated_at", res.data[0])
+
+
+class BlockCategoryTests(APITestCase):
+    """Labelling the shared block catalog (P11, step 2).
+
+    A block carries SEVERAL categories, not one, because the labels sit on
+    different axes — a block is honestly both "Off-season" and "Football". That
+    choice is what makes any-of the right filter behaviour, so the two are
+    tested together.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.offseason = BlockCategory.objects.create(name="Off-season")
+        self.football = BlockCategory.objects.create(name="Football")
+        self.freshman = BlockCategory.objects.create(name="Freshman")
+
+        self.both = TrainingBlock.objects.create(name="Alpha", coach=self.coach)
+        self.both.categories.set([self.offseason, self.football])
+        self.one = TrainingBlock.objects.create(name="Beta", coach=self.coach)
+        self.one.categories.set([self.freshman])
+        self.none = TrainingBlock.objects.create(name="Gamma", coach=self.coach)
+
+    def _names(self, response):
+        return sorted(block["name"] for block in response.data)
+
+    # ── the vocabulary ───────────────────────────────────────────────────────
+
+    def test_categories_can_be_created_and_listed(self):
+        created = self.client.post("/api/block-categories/", {"name": "Winter"},
+                                   format="json")
+        self.assertEqual(created.status_code, 201)
+
+        listed = self.client.get("/api/block-categories/")
+        self.assertIn("Winter", [row["name"] for row in listed.data])
+
+    def test_a_duplicate_category_is_refused(self):
+        """Two rows named the same defeat the whole point of a shared vocabulary."""
+        res = self.client.post("/api/block-categories/", {"name": "Football"},
+                               format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_blank_category_name_is_refused(self):
+        res = self.client.post("/api/block-categories/", {"name": "   "}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_block_count_rides_along(self):
+        listed = self.client.get("/api/block-categories/")
+        counts = {row["name"]: row["block_count"] for row in listed.data}
+        self.assertEqual(counts["Off-season"], 1)
+        self.assertEqual(counts["Football"], 1)
+
+    # ── labelling a block ────────────────────────────────────────────────────
+
+    def test_a_block_can_be_created_with_categories(self):
+        res = self.client.post("/api/training-blocks/", {
+            "name": "Delta", "categories": [self.football.id, self.freshman.id],
+        }, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(sorted(res.data["categories"]),
+                         sorted([self.football.id, self.freshman.id]))
+        self.assertEqual(sorted(res.data["category_names"]), ["Football", "Freshman"])
+
+    def test_an_existing_block_can_be_labelled_later(self):
+        """The reason the detail route exists: every block that predates P11 has
+        no labels, and a create-only API could never give it any."""
+        res = self.client.patch(f"/api/training-blocks/{self.none.id}/",
+                                {"categories": [self.football.id]}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["category_names"], ["Football"])
+
+    def test_labels_can_be_cleared(self):
+        res = self.client.patch(f"/api/training-blocks/{self.both.id}/",
+                                {"categories": []}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["category_names"], [])
+
+    def test_a_block_has_no_delete_route(self):
+        """Guarded on purpose — see the note in training_block_detail. The canon's
+        filter-not-fence reasoning partly rests on nobody being able to delete."""
+        res = self.client.delete(f"/api/training-blocks/{self.both.id}/")
+        self.assertEqual(res.status_code, 405)
+
+    def test_a_missing_block_is_404_not_500(self):
+        self.assertEqual(self.client.patch("/api/training-blocks/99999/",
+                                           {"name": "x"}, format="json").status_code, 404)
+
+    # ── filtering ────────────────────────────────────────────────────────────
+
+    def test_one_category_narrows_the_catalog(self):
+        res = self.client.get(f"/api/training-blocks/?category={self.freshman.id}")
+        self.assertEqual(self._names(res), ["Beta"])
+
+    def test_several_categories_mean_any_of(self):
+        """All-of would usually return nothing — the labels are different axes."""
+        res = self.client.get(
+            f"/api/training-blocks/?category={self.freshman.id}&category={self.football.id}")
+        self.assertEqual(self._names(res), ["Alpha", "Beta"])
+
+    def test_a_block_matching_two_requested_labels_is_listed_once(self):
+        """A many-to-many join repeats a row per match; without distinct() Alpha
+        would appear twice and the count shown to the coach would be wrong."""
+        res = self.client.get(
+            f"/api/training-blocks/?category={self.offseason.id}&category={self.football.id}")
+        self.assertEqual(self._names(res), ["Alpha"])
+
+    def test_a_nonsense_category_value_is_rejected(self):
+        res = self.client.get("/api/training-blocks/?category=football")
+        self.assertEqual(res.status_code, 400)
+
+    def test_category_and_coach_filters_combine(self):
+        other = User.objects.create_user(username="other", password="pw")
+        theirs = TrainingBlock.objects.create(name="Epsilon", coach=other)
+        theirs.categories.set([self.football])
+
+        res = self.client.get(f"/api/training-blocks/?coach=me&category={self.football.id}")
+        self.assertEqual(self._names(res), ["Alpha"])
 
 
 class CsvImportTests(APITestCase):
