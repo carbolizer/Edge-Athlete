@@ -25,6 +25,10 @@ db.sqlite3
 
 # -- production
 /build
+# The React container builds its own bundle at image build time (see the `react`
+# service in docker-compose.yml), so a committed dist is never the thing that
+# gets served — it was only ever diff noise that churned on every build.
+react/dist/
 
 # -- misc
 .DS_Store
