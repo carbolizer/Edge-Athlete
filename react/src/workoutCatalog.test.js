@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addProgramWorkout, buildWorkoutPayload, buildWorkoutProgramPayload, errorLabel, flattenApiErrors, moveProgramWorkout, sameOriginPath } from "./workoutCatalog.js";
+import { buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, errorLabel, flattenApiErrors, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
   // A workout is one DAY inside a block, so the block id travels with it — a day
@@ -66,29 +66,50 @@ describe("sameOriginPath", () => {
   });
 });
 
-describe("workout program draft helpers", () => {
-  const squat = { id: 4, name: "Lower Strength", exercises: [] };
-  const press = { id: 9, name: "Upper Strength", exercises: [] };
-
-  it("stores only stable workout identity and prevents duplicate IDs", () => {
-    const selected = addProgramWorkout([], squat);
-    expect(selected).toEqual([{ id: 4, name: "Lower Strength" }]);
-    expect(addProgramWorkout(selected, { id: "4", name: "Renamed" })).toBe(selected);
-  });
-
-  it("reorders within bounds without changing membership", () => {
-    const selected = [squat, press];
-    expect(moveProgramWorkout(selected, 1, -1)).toEqual([press, squat]);
-    expect(moveProgramWorkout(selected, 0, -1)).toBe(selected);
-  });
-
-  it("builds a trimmed, contiguously ordered API payload", () => {
-    expect(buildWorkoutProgramPayload("  Strength Week  ", [squat, press])).toEqual({
-      name: "Strength Week",
-      items: [
-        { workout_id: 4, position: 1 },
-        { workout_id: 9, position: 2 },
-      ],
+describe("buildTrainingBlockPayload", () => {
+  it("sends the cadence as a day string and leaves an unset duration null", () => {
+    expect(buildTrainingBlockPayload("  Fall Strength  ", "", ["Mon", "Wed", "Fri"])).toEqual({
+      name: "Fall Strength",
+      duration_weeks: null,
+      cadence_days_of_week: "Mon,Wed,Fri",
     });
+    expect(buildTrainingBlockPayload("Spring", "8", [])).toEqual({
+      name: "Spring",
+      duration_weeks: 8,
+      cadence_days_of_week: "",
+    });
+  });
+});
+
+describe("toggleCadenceDay", () => {
+  // Days come back in week order however they were clicked, so a coach who
+  // picks Friday before Monday still gets "Mon,Wed,Fri" rather than "Fri,Mon".
+  it("keeps week order regardless of click order, and removes on second click", () => {
+    let days = toggleCadenceDay([], "Fri");
+    days = toggleCadenceDay(days, "Mon");
+    days = toggleCadenceDay(days, "Wed");
+    expect(days).toEqual(["Mon", "Wed", "Fri"]);
+    expect(toggleCadenceDay(days, "Wed")).toEqual(["Mon", "Fri"]);
+  });
+});
+
+describe("buildDeployPayload", () => {
+  it("carries the block, group, and dates", () => {
+    expect(buildDeployPayload("  Varsity — Fall  ", 3, 7, "2026-09-01", "2026-11-01")).toEqual({
+      name: "Varsity — Fall",
+      training_group: 3,
+      training_block: 7,
+      start_date: "2026-09-01",
+      end_date: "2026-11-01",
+    });
+  });
+
+  // A one-off plan for a group, with no template behind it, is a first-class
+  // path — not an error. It can be promoted to a template later.
+  it("omits the block entirely for a standalone plan, and an absent end date", () => {
+    const payload = buildDeployPayload("Rehab", 4, "", "2026-09-01", "");
+    expect(payload.training_block).toBeUndefined();
+    expect(payload.end_date).toBeUndefined();
+    expect(payload.training_group).toBe(4);
   });
 });

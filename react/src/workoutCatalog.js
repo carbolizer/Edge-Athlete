@@ -108,25 +108,43 @@ export function sameOriginPath(value, origin) {
   }
 }
 
-export function addProgramWorkout(selected, workout) {
-  if (selected.some((item) => Number(item.id) === Number(workout.id))) return selected;
-  return [...selected, { id: workout.id, name: workout.name }];
-}
-
-export function moveProgramWorkout(selected, index, direction) {
-  const target = index + direction;
-  if (target < 0 || target >= selected.length) return selected;
-  const reordered = [...selected];
-  [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
-  return reordered;
-}
-
-export function buildWorkoutProgramPayload(name, selected) {
+// A block is the template itself: what it's called, how long it runs, and which
+// days of the week it's meant to be trained on. Its workouts are added
+// afterwards, each one choosing this block and its own position.
+//
+// Duration and cadence are the coach's design, not decoration — they describe
+// how the block is meant to be run. Nothing generates a calendar from them yet,
+// which is why both are optional rather than absent.
+export function buildTrainingBlockPayload(name, durationWeeks, cadenceDays) {
   return {
     name: name.trim(),
-    items: selected.map((workout, index) => ({
-      workout_id: Number(workout.id),
-      position: index + 1,
-    })),
+    duration_weeks: durationWeeks === "" ? null : Number(durationWeeks),
+    // Stored as a plain string like "Mon,Wed,Fri".
+    cadence_days_of_week: (cadenceDays || []).join(","),
+  };
+}
+
+export const CADENCE_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+export function toggleCadenceDay(selected, day) {
+  return selected.includes(day)
+    ? selected.filter((item) => item !== day)
+    : CADENCE_DAYS.filter((item) => selected.includes(item) || item === day);
+}
+
+// Deploying is what turns a template into something athletes actually train:
+// the block gets copied down for one group, starting on a real date. The copy is
+// independent from that moment on, so editing it later never disturbs the
+// template it came from.
+//
+// `training_block` is optional on purpose — a coach can write a one-off plan for
+// a group with no template behind it, and promote it to a template later.
+export function buildDeployPayload(name, trainingGroupId, trainingBlockId, startDate, endDate) {
+  return {
+    name: name.trim(),
+    training_group: Number(trainingGroupId),
+    ...(trainingBlockId ? { training_block: Number(trainingBlockId) } : {}),
+    start_date: startDate,
+    ...(endDate ? { end_date: endDate } : {}),
   };
 }
