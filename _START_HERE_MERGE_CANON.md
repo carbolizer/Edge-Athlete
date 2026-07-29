@@ -992,7 +992,28 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 | **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. **Plus: decide `rackState.js`** — P7 kept it orphaned on purpose (§8.1); either a wired screen now needs it, or it and its test get deleted here. Do not ship 280 lines of dead tested code. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
 | **P9 — Naming alignment** *(last, deliberately)* | Route and view names still speak his old vocabulary, because §3.3 said bend the URL to the existing client rather than reshape its code. That was right during the merge and wrong to keep afterwards: a route named for a table that no longer exists is a trap for the next person. Rename routes, view functions, and serializers to match the model names — see the drift table below. | Every route name matches the model it serves; `SPEC.md` + `MESSAGE_CONTRACT.md` regenerated; frontend call sites updated in the same commit; full test pass. |
 
-**Why P9 is last.** Renaming is the one change that touches his frontend and our
+| **P10 — Catalog editing + reordering** *(after the rename, deliberately)* | Templates can be BUILT today but not edited: there is no route to rename a day, remove one, reorder the days in a block, or change a prescription row after it is written. Add them (names below already reflect P9's rename): `PATCH`/`DELETE training-blocks/{id}/workouts/{id}/`, `PUT training-blocks/{id}/workout-order/`, `PATCH`/`DELETE .../workouts/{id}/exercises/{id}/`, `PUT .../workouts/{id}/exercise-order/`. Then the catalog UI for each. | A coach can rename, delete, and reorder days in a block and rows in a day; order survives a reload; full test pass; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
+
+**⚠️ P10's ordering constraint — design decided 2026-07-28, do not re-derive.** `TrainingBlockWorkout` and
+`TrainingBlockExercise` each carry `UniqueConstraint(parent, position)` and those constraints are **NOT
+deferrable**, so Postgres checks them per statement. A per-item `PATCH {"position": 2}` therefore FAILS the
+moment two rows swap — the first write collides with the row still sitting on that number. Making the
+constraints deferrable would be a migration.
+
+**So reorder is a WHOLE-LIST operation, not a per-item one:** `PUT …/workout-order/ {"workout_ids":[12,9,14]}`
+assigns positions 1..n inside one transaction in **two passes** — bump every row to `position + 10000`, then
+write the final values, so no two rows ever share a number mid-flight. **No schema change is required.** This
+is also the better API on its own merits: idempotent, one round trip, and structurally unable to leave a gap
+or a duplicate, whereas a sequence of per-item PATCHes leaves the block in a broken order if one call fails.
+
+**Why P10 comes AFTER P9** *(decided 2026-07-28)*: these are brand-new routes, and P9 is the rename. Building
+them before P9 means inventing names in the old vocabulary and then immediately renaming them; building them
+after means they are born with the right names and P9 has less surface to sweep. It also keeps P7's risk
+(the `App.jsx` hand-merge) away from new backend — P7's whole premise was that every endpoint it needs already
+shipped in P5. The catalog is fully usable without reordering in the meantime: a day is created with its
+position, and moving one means recreating it.
+
+**Why P9 is last of the MERGE phases.** Renaming is the one change that touches his frontend and our
 backend at the same time while changing no behavior. Doing it before P7 means
 hand-merging `App.jsx` against a moving target; doing it after P8 means the merge
 is already proven green, so any test that breaks during the rename is the rename's
@@ -1052,6 +1073,17 @@ the call and not let them drift into `main` unexamined.** Every other logic modu
 consumer — verified, not assumed: `athletePlanning`→`AthleteWorkoutPlanning`, `historyView`+`dashboardView`→
 `Dashboard`, `trainingDay`→`TrainingDayPanel`+`ReportsWorkspace`, `roomMonitor`→`useLiveRoomState`,
 `workoutCatalog`→4 files, `reportBrowsing`→`ReportsWorkspace`.
+
+⚠️ **Drift caught in step 4 (2026-07-28) — recorded so it is not repeated.** While planning the catalog
+rewire I claimed "creating a TrainingBlock is just naming it" and "there is no arrange-the-workouts step any
+more." **Both were wrong**, and the user caught them. A `TrainingBlock` carries `duration_weeks` and
+`cadence_days_of_week` (e.g. Mon/Wed/Fri) as part of what the coach DESIGNS, and the order of days inside it
+is real, coach-owned, and stored in `position`. The model docstring's "nothing reads them yet" refers to the
+future calendar *generator*, not to the fields being decorative. The correct read is §4.1 above plus
+`instantiate_block()`: a **block** is the template (ordered days + cadence); a **program** is that block
+copied down for a group with real dates attached, editable afterwards without touching the template.
+**This is the second time this hierarchy was restated from memory and got it wrong — read §4.1 before
+describing it, every time.**
 
 **D10 is resolved (2026-07-28).** The open worry was that one freak set could set an athlete's reference max.
 It cannot: `Set.is_false_set` already gates what counts toward the recalc, so a mis-tracked rep is excluded

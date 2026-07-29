@@ -2,17 +2,32 @@ import { describe, expect, it } from "vitest";
 import { addProgramWorkout, buildWorkoutPayload, buildWorkoutProgramPayload, errorLabel, flattenApiErrors, moveProgramWorkout, sameOriginPath } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
-  it("trims text, normalizes numbers, and assigns contiguous positions", () => {
-    expect(buildWorkoutPayload("  Lower Strength  ", [
-      { exercise: " Back squat ", sets: "4", reps: "5", default_weight_lbs: "225.5", velocity_min: "0.55", velocity_max: "0.75" },
-      { exercise: "RDL", sets: "3", reps: "8", default_weight_lbs: "0", velocity_min: "", velocity_max: "" },
-    ])).toEqual({
-      name: "Lower Strength",
+  // A workout is one DAY inside a block, so the block id travels with it — a day
+  // cannot exist unattached. Movements are catalog ids, never typed-in names, and
+  // the load is a PERCENT of each athlete's own max rather than a weight in pounds.
+  it("sends the block, catalog ids, and percent targets with contiguous positions", () => {
+    expect(buildWorkoutPayload("  Day 1 — Lower  ", [
+      { exercise: "3", sets: "4", reps: "5", target_percent: "80", velocity_zone_min: "0.55", velocity_zone_max: "0.75" },
+      { exercise: "7", sets: "3", reps: "8", target_percent: "65", velocity_zone_min: "", velocity_zone_max: "" },
+    ], 2, 1)).toEqual({
+      training_block: 2,
+      name: "Day 1 — Lower",
+      position: 1,
       exercises: [
-        { exercise: "Back squat", position: 1, sets: 4, reps: 5, default_weight_lbs: 225.5, velocity_min: 0.55, velocity_max: 0.75 },
-        { exercise: "RDL", position: 2, sets: 3, reps: 8, default_weight_lbs: 0, velocity_min: null, velocity_max: null },
+        { exercise: 3, position: 1, sets: 4, reps: 5, target_percent: 80, velocity_zone_min: 0.55, velocity_zone_max: 0.75 },
+        { exercise: 7, position: 2, sets: 3, reps: 8, target_percent: 65, velocity_zone_min: null, velocity_zone_max: null },
       ],
     });
+  });
+
+  // Position is optional: the server appends the day to the end of the block when
+  // the coach doesn't say where it goes.
+  it("omits position entirely when none is given", () => {
+    const payload = buildWorkoutPayload("Day 2", [
+      { exercise: "3", sets: "5", reps: "3", target_percent: "75", velocity_zone_min: "", velocity_zone_max: "" },
+    ], 2);
+    expect(payload.position).toBeUndefined();
+    expect(payload.training_block).toBe(2);
   });
 });
 
