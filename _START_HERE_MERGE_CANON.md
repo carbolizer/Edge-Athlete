@@ -1018,6 +1018,53 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 
 | **P13 — The athlete analytics read (D19)** | His `athlete` and `history` tabs were built on an analytics endpoint we never wrote. Widen `analytics/athlete/{id}/` to return the athlete, a summary, per-exercise aggregates, and per-set reps. | The athlete and history tabs load for a real athlete; the rep-by-rep comparison works; a coach with no completed sets sees an empty state rather than an error; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
 
+| **P14 — Scheduling: a program lays its days onto dates (D20)** | A `TrainingProgram` has a `start_date` and its block has a cadence, but nothing ever turns those into dates. Add a schedule of slots, and let a coach create a session from one. | Deploying a block generates one slot per training day for `duration_weeks`; a coach can create a session from a slot and start it separately; moving a slot is a date change and regenerates nothing; editing the block's cadence afterwards moves no existing slot. |
+| **P15 — Promote a program into a block (D21)** | Turn any `TrainingProgram` — one written by hand, or one edited after deployment — into a new reusable `TrainingBlock`. | A program with days and prescription rows becomes a block holding the same days and rows; the program's `training_block` then points at it; the program itself is unchanged. |
+
+**⚠️ D21 — "promotion" does not exist, and this canon has been WRONG about it.** Two docstrings and this
+document say a one-off program *"can be promoted into a template later — just adding a TrainingBlock row and
+pointing this FK at it, no data migration, no rewrite."* **That is false.** Setting `TrainingProgram.
+training_block` records provenance and copies nothing, so it would produce a block that claims to be the
+source of a program while containing **zero days** — deploying it would hand a group an empty plan.
+
+The real operation is `instantiate_block()` run backwards: create the block, copy each `TrainingProgramWorkout`
+up into a `TrainingBlockWorkout`, copy each `TrainingProgramExercise` up into a `TrainingBlockExercise`, then
+point the FK. About 25 lines mirroring a function we already have, and **no schema change** — `training_block`
+is already nullable. It works on **any** program, hand-written or edited-after-deploy, because the source rows
+are the same shape either way.
+
+**⚠️ D20 — scheduling: what exists today, and the design agreed 2026-07-29.**
+
+**Today there is no schedule at all.** Not partial — absent:
+- `TrainingSession.started_at` is `auto_now_add`, so **a session exists only once it starts**. The schema
+  cannot currently represent "Thursday's session, not yet run", which is what a calendar needs.
+- `cadence_days_of_week` and `duration_weeks` on `TrainingBlock` are **written and never read** — verified by
+  grep; the only references are the model, the serializer field list, and the migration.
+- `TrainingProgram.start_date` is used ONLY for ordering programs and for D13 precedence. It schedules nothing.
+- `SessionParticipation` (this group is running this day) is linked **by hand** — the seed command does it in
+  code and no UI does it at all.
+
+**The agreed design.** The schedule lives in its OWN table; a `TrainingSession` still only exists when it is
+real. That is what keeps this small — no model is asked to mean two things.
+
+- **`ScheduledSession`**: `training_program`, `date`, `training_program_workout` (which day), and a
+  **NULLABLE `session`** FK. The slot is a plan; the session fills in when a coach creates it. Moving a
+  session is one `date` write — nothing regenerates.
+- **The generator stops on `duration_weeks`** *(decided by the user)*. Cadence alone cannot say when to stop.
+- ⚠️ **Slots are FROZEN once generated. Editing the block's cadence afterwards moves no existing slot.** Same
+  independence rule as a deployed program: once a program is an instance it is its own thing. A coach who
+  wants the new cadence makes a new program from the block.
+- **Create ≠ start.** A coach creates the session from a slot, runs the normal setup flow, and starts it
+  separately. This requires **`started_at` to become nullable** and `_active_session()` to filter
+  `started_at__isnull=False` — a one-line change, because that helper is deliberately the single place every
+  endpoint agrees on which session is active.
+- ✅ **This fixes D18 for free.** Once "active" means *started*, pre-created future sessions can no longer
+  hijack the racks. P12 and P14 want the same change; whichever lands first should make it.
+- ❌ **CUT: several TrainingGroups on one program.** It was raised and deliberately dropped. It is the only
+  schema-invasive part (`training_group` is a single FK; M2M would disturb D13's largest-group-first
+  precedence) and it is **unnecessary** — a session already hosts many groups via many PROGRAMS on one
+  session, which is exactly what `SessionParticipation` is for. One program = one group keeps D12/D13 intact.
+
 **⚠️ D19 — the analytics shape gap (found in the browser, 2026-07-29).** Selecting an athlete threw
 `Cannot read properties of undefined (reading 'id')`: his code reads `context.athlete.id`, and
 `analytics/athlete/{id}/` returns only `{athlete_id, sets:[…]}` — a flat velocity trend. The three athlete
@@ -1280,8 +1327,10 @@ next movement. Nothing in that flow looks or behaves differently than on `Sprint
   `clear_simulation_data` wipes demo data cleanly.
 - **D5 — MQTT → keep his `realtime/` + monitoring outbox; fold in our rack `broadcast/publisher`** without
   changing any rack topic/route. Drop our inherited `notification_flow/` cruft. Webhooks untouched.
-- **D6 — `TrainingProgram.training_block` is NULLABLE** → one-off programs are a permanent first-class path;
-  promotion to a template is just pointing the FK at a new block row.
+- **D6 — `TrainingProgram.training_block` is NULLABLE** → one-off programs are a permanent first-class path.
+  ⚠️ **CORRECTED 2026-07-29:** this decision used to end "promotion to a template is just pointing the FK at a
+  new block row." That is wrong — the FK records provenance and copies nothing, so it would produce a block
+  with no days. Promotion has to copy the rows up first; see D21 / P15.
 - **D7 — CSV import survives at BOTH block and program level.** Block-level = reusable template;
   program-level = immediate one-off. Only the old single fixed target shape retired. ⚠️ **The single-contract
   framing here is SUPERSEDED by D16** (sheet-type detection); the both-levels requirement stands unchanged.

@@ -994,8 +994,8 @@ class PlanningEndpointTests(APITestCase):
         self.assertEqual(still.target_percent, 80)
 
     def test_a_group_can_have_a_one_off_plan_with_no_template(self):
-        """Not every plan is worth templating; a coach can write one directly and
-        promote it later."""
+        """Not every plan is worth templating; a coach can write one directly.
+        (Turning one back into a template is P15 — it is not built yet.)"""
         group = self.client.post("/api/training-groups/", {"name": "Rehab"},
                                  format="json").data
         res = self.client.post("/api/training-programs/", {

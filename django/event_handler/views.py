@@ -1258,8 +1258,11 @@ def training_programs_view(request):
     Two ways to create one, both first-class:
       with "training_block"    — copy that template down for this TrainingGroup
       without "training_block" — a one-off plan authored directly for the TrainingGroup,
-                                 no template involved. It can be promoted into a
-                                 template later without rebuilding anything.
+                                 no template involved.
+
+    ⚠️ There is no way yet to turn a one-off back INTO a template. Pointing
+    training_block at a new block would only record provenance — the block would
+    contain no days. See P15.
     """
     if request.method == "GET":
         programs = TrainingProgram.objects.select_related("training_group") \

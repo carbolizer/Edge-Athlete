@@ -328,11 +328,15 @@ class TrainingSession(models.Model):
     """One training session in the gym — a window of time containing many sets
     across the athletes who took part.
 
-    NOTE (merge in progress): the canon renames this to TrainingSession and moves
-    the group link to a SessionParticipation join row (a session becomes a SHARED
-    timeslot many groups can be on). That rename touches every call site across
-    views/serializers/tests, so it's deliberately deferred to its own phase — this
-    model still reads/writes exactly as it always has for now."""
+    A session is SHARED: several TrainingGroups can be on the same one, each via
+    its own SessionParticipation row pointing at that group's program and the day
+    they are running. The session itself belongs to nobody.
+
+    ⚠️ `started_at` is auto_now_add, so a session EXISTS ONLY ONCE IT STARTS —
+    there is currently no way to represent "Thursday's session, not yet run".
+    That is what P14 (scheduling) changes: a schedule of future slots lives in
+    its own table, and this field becomes nullable so a session can be created
+    ahead of time and started later."""
     label = models.CharField(max_length=255)
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)

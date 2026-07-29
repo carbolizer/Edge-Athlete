@@ -192,8 +192,12 @@ class TrainingProgramSerializer(serializers.ModelSerializer):
     """A template deployed for one TrainingGroup, starting on a date.
 
     `training_block` is deliberately optional. A coach can write a one-off plan
-    for a TrainingGroup without ever making a template, and promote it to a template
-    later just by pointing this at one — no rebuild, no migration."""
+    for a TrainingGroup without ever making a template.
+
+    ⚠️ Turning that one-off INTO a template is not just setting this field —
+    that records where a program came from and copies nothing, so it would leave
+    a block with no days in it. The real operation copies the program's days and
+    prescription rows up into a new block first. Not built yet; see P15."""
     workouts = TrainingProgramWorkoutSerializer(many=True, read_only=True)
     group_name = serializers.CharField(source="training_group.name", read_only=True)
 
