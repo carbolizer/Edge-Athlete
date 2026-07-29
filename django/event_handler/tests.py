@@ -837,6 +837,32 @@ class CoachWeightAdjustmentTests(APITestCase):
         me = next(a for a in res.data["athletes"] if a["athlete_id"] == self.athlete.id)
         self.assertNotEqual(me["status"], "resting")
 
+    def test_a_coach_can_actually_reach_the_flag_over_http(self):
+        """Every other test here sets the flag through the ORM, which hid the
+        real gap: it was missing from SetSerializer.fields, so DRF silently
+        dropped it and no client could make an adjustment at all. The whole D15
+        exclusion list was unreachable from outside Python."""
+        coach = User.objects.create_user(username="d15coach", password="pw")
+        self.client.force_authenticate(user=coach)
+        res = self.client.post("/api/sets/", {
+            "session": self.session.id, "athlete": self.athlete.id,
+            "exercise": self.squat.id, "set_number": 1,
+            "weight_lbs": 185, "is_coach_adjustment": True,
+        }, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.data["is_coach_adjustment"])
+        self.assertTrue(Set.objects.get(id=res.data["id"]).is_coach_adjustment)
+
+    def test_a_set_is_a_real_lift_unless_it_says_otherwise(self):
+        """The flag must default to False, or an ordinary set posted by a tablet
+        would stop counting as work."""
+        res = self.client.post("/api/sets/", {
+            "session": self.session.id, "athlete": self.athlete.id,
+            "exercise": self.squat.id, "set_number": 1, "weight_lbs": 225,
+        }, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertFalse(res.data["is_coach_adjustment"])
+
 
 class PlanningEndpointTests(APITestCase):
     """Building a template and deploying it to a squad.

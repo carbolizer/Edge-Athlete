@@ -26,6 +26,7 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import { navigate } from "./router.js";
+import { coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
 import useLiveRoomState from "./useLiveRoomState.js";
 import { compareReps, groupHistorySets } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
@@ -57,6 +58,9 @@ function timeLabel(value) {
 // own version of this button; this is the one for the two Dashboard views.
 function changeDeviceRole() {
   localStorage.removeItem("device_role");
+  // Drops the coach login too. Re-purposing a tablet as a wall display must not
+  // leave a valid token sitting on a screen nobody is standing at.
+  setCoachToken(null);
   navigate("/");
 }
 
@@ -463,32 +467,30 @@ function CoachView({ monitor, accessToken, onLogout }) {
 }
 
 export default function Dashboard({ mode = "wall" }) {
-  const [accessToken, setAccessToken] = useState(null);
+  // The token is read from storage on mount, not started at null, so a refresh,
+  // a tablet waking from sleep, or a browser reloading a backgrounded tab does
+  // not throw the coach back to a login screen mid-session. It is the same
+  // stored token /coach/setup uses, so the two screens share one login.
+  const [accessToken, setAccessToken] = useState(() => getCoachToken());
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
-  const monitor = useLiveRoomState({ mode, accessToken, onAuthRequired: () => setAccessToken(null) });
+  const monitor = useLiveRoomState({ mode, accessToken, onAuthRequired: () => forget() });
+
+  // One place to drop the login, so the stored copy can never outlive the
+  // in-memory one — a stale token left in storage is a coach still signed in on
+  // a shared tablet after they walked away.
+  function forget() {
+    setCoachToken(null);
+    setAccessToken(null);
+  }
 
   async function login(username, password) {
     setLoginBusy(true);
     setLoginError("");
     try {
-      const response = await fetch("/api/auth/login/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-      if (response.status === 429) {
-        setLoginError("Too many login attempts. Wait a minute, then try again.");
-        return;
-      }
-      if (!response.ok) {
-        setLoginError("The username or password was not accepted.");
-        return;
-      }
-      const body = await response.json();
-      setAccessToken(body.access);
-    } catch {
-      setLoginError("The base station could not be reached.");
+      setAccessToken(await coachLogin(username, password));
+    } catch (error) {
+      setLoginError(error.message || "The base station could not be reached.");
     } finally {
       setLoginBusy(false);
     }
@@ -498,7 +500,7 @@ export default function Dashboard({ mode = "wall" }) {
     return <CoachLogin onLogin={login} error={loginError} busy={loginBusy} />;
   }
   if (mode === "coach") {
-    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={() => setAccessToken(null)} />;
+    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} />;
   }
   return <WallView monitor={monitor} />;
 }

@@ -20,7 +20,11 @@ export async function coachLogin(username, password) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   })
+  // Rate limiting answers before any JSON exists, and "HTTP 429" tells a coach
+  // standing at a tablet nothing. Say what to do instead.
+  if (res.status === 429) throw new Error('Too many login attempts. Wait a minute, then try again.')
   const data = await res.json().catch(() => ({}))
+  if (res.status === 401) throw new Error('The username or password was not accepted.')
   if (!res.ok || !data.access) {
     const detail = data.detail || data.error || `HTTP ${res.status}`
     throw new Error(typeof detail === 'string' ? detail : 'login failed')

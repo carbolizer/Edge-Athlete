@@ -1,7 +1,29 @@
-/*
- * Keeps a REST room snapshot current from privacy-safe MQTT revision events.
- * PostgreSQL remains authoritative; MQTT only tells the browser when to refetch.
- */
+// useLiveRoomState.js — keeps the wall display and the coach screen showing
+// what is happening in the room RIGHT NOW.
+//
+// The obvious way to do this would be to push the room's state over MQTT and
+// render whatever arrives. We deliberately don't. MQTT only ever says "something
+// changed, revision 47" — the browser then asks the database what the truth is.
+// The database stays the single source of truth, and no athlete's name or
+// numbers travel over a broadcast channel a gym display is subscribed to.
+//
+// So the loop is: connect → fetch a snapshot → listen → on a newer revision,
+// fetch again. Polling would work too; this just avoids asking a question when
+// nothing has happened.
+//
+// Both screens run through here, one boolean apart. The wall view is public and
+// gets the anonymous snapshot; the coach view asks for ?details=true, which adds
+// ids and requires the login.
+//
+// Most of the complexity below is about not lying to the room:
+//   - a fetch in flight blocks a second one, but remembers a newer revision came
+//     in and re-fetches once it lands, so the screen can't settle on stale data
+//   - `generationRef` voids answers from a previous mode/login, so switching
+//     views can't be overwritten by a reply meant for the old one
+//   - a failed refresh keeps the last good snapshot and marks it "stale" rather
+//     than blanking a wall screen mid-session
+//   - if MQTT goes quiet for 15s the connection is shown as stale, because a
+//     frozen scoreboard that looks live is worse than one that admits it
 import { useEffect, useRef, useState } from "react";
 import mqtt from "mqtt";
 import { parseMonitoringEvent, ROOM_STATE_TOPIC, shouldReconcile } from "./roomMonitor.js";

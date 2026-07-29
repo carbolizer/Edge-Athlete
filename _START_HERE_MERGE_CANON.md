@@ -1024,9 +1024,15 @@ orphaned.
   of a group propagates naturally: you may touch a program because you own the group it runs for. ⚠️ A real
   weight room has several staff on one group, which **the current single `coach` FK cannot express** — it
   needs a `TrainingGroupCoach` join (group × user × role) to say "Sarah and Mike both run Varsity".
-- **Still to decide before building:** is this a *permission boundary* ("an assistant cannot delete a block")
-  or only a *filter* ("show me mine first")? The filter is cheap; the boundary means object-level permission
-  checks on every write endpoint and is most of the phase's cost.
+- ✅ **RESOLVED (2026-07-28): P11 is a FILTER, not a permission boundary.** "Show me mine first", not "you
+  may not touch theirs". Chosen because it is far cheaper — a queryset filter and a UI default, versus
+  object-level checks on every write endpoint plus a who-can-do-what test matrix — and because the scenario a
+  boundary would guard **is not reachable anyway**: `workout-programs/` is `GET, POST` only, there is no block
+  DELETE and no detail route, and P10 only adds delete for the days and rows *inside* a block. An assistant
+  cannot delete a block because nobody can.
+  ⚠️ **Accepted consequence, stated so it stays a choice and not a surprise:** any authenticated coach can
+  still edit any block's contents once P10 ships, and `IsCoach` remains "is authenticated". If a real
+  boundary is ever wanted, it is additive on top of this — the filter does not have to be undone first.
 
 **⚠️ `updated_at` belongs in P10, not P11** *(decided 2026-07-28)*. "Last edited" is meaningless until editing
 exists, and P10 is the phase that introduces it — before P10 a block cannot be changed at all, so last-edited

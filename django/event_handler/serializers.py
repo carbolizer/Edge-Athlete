@@ -37,14 +37,22 @@ class SetCompleteSerializer(serializers.Serializer):
 class SetSerializer(serializers.ModelSerializer):
     """The Set record. Used to CHECK the fields when a tablet starts a set, and to
     FORMAT the saved set we send back. System-filled fields (times, totals) are
-    read-only — clients don't get to set them."""
+    read-only — clients don't get to set them.
+
+    `is_coach_adjustment` marks a set a COACH created to move an athlete's working
+    load mid-session (merge canon D15), rather than one the athlete lifted. It
+    rides this same endpoint on purpose — it is still a set at a weight — but it
+    is excluded everywhere work is counted: set totals, session status, analytics,
+    and daily reports. Without the flag it would look like the athlete had trained
+    a set they never performed, and would advance their set counter."""
     class Meta:
         model = Set
         fields = ["id", "session", "athlete", "node", "exercise", "set_number",
-                  "weight_lbs", "is_makeup", "started_at", "ended_at", "reps_completed",
-                  "avg_velocity", "peak_velocity", "is_false_set"]
-        # is_makeup is intentionally writable at create; everything system-filled
-        # (times, totals, false-set) stays read-only.
+                  "weight_lbs", "is_makeup", "is_coach_adjustment", "started_at",
+                  "ended_at", "reps_completed", "avg_velocity", "peak_velocity",
+                  "is_false_set"]
+        # is_makeup and is_coach_adjustment are intentionally writable at create;
+        # everything system-filled (times, totals, false-set) stays read-only.
         read_only_fields = ["id", "started_at", "ended_at", "reps_completed",
                             "avg_velocity", "peak_velocity", "is_false_set"]
 

@@ -1,3 +1,27 @@
+// TrainingDayPanel.jsx — opening and closing a day of training.
+//
+// Two buttons, and the second one is permanent.
+//
+//   START   Name today's training, tick who is in it, and the room is open.
+//           Racks only accept lifting once a day is running.
+//
+//   END     Closes the day and FREEZES it into a report that is never edited
+//           again. It also recalculates everyone's reference maxes from what
+//           they actually lifted, which is why it asks for confirmation first —
+//           this is the moment today stops being editable and starts being
+//           history.
+//
+// Ending is a PATCH on the session rather than a POST to an end/ route, because
+// "end the day" is just "set its end time" and that endpoint already did that.
+// It answers with a POINTER to the finished report, so we fetch the report
+// itself before rendering it below.
+//
+// The report view is deliberately BOUNDED. A busy day holds thousands of
+// individual reps, and mounting them all locks up a tablet at the exact moment a
+// coach wants to read the summary. So it renders a slice and says so — the saved
+// report always keeps every row. Nothing here can shrink what was stored; the
+// limit is about what the screen can hold.
+
 import { useState } from "react";
 import { budgetReportRendering, buildTrainingDayPayload, orderedReportExercises, orderedReportPrescriptions, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
 
