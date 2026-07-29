@@ -25,9 +25,9 @@ from django.utils import timezone
 
 from django.contrib.auth.models import User
 
-from event_handler.models import (Athlete, AthleteReferenceMax, Exercise, Node, Rep,
-                                  Session, SessionParticipation, Set, TrainingBlock,
-                                  TrainingBlockExercise, TrainingBlockWorkout,
+from event_handler.models import (Athlete, AthleteReferenceMax, DailyReport, Exercise,
+                                  Node, Rep, Session, SessionParticipation, Set,
+                                  TrainingBlock, TrainingBlockExercise, TrainingBlockWorkout,
                                   TrainingGroup, TrainingProgram)
 from event_handler.services.planning import instantiate_block
 
@@ -65,11 +65,20 @@ class Command(BaseCommand):
         names = list(ATHLETES)
 
         if options["reset"]:
-            # Deleting the Session cascades its Sets/Reps; the rest we clear by
-            # the fixed names/ids this seed owns, so real data is left alone.
-            # Sets are PROTECTed against a session delete now (that is the whole
-            # point of the change), so clear them explicitly before the session.
+            # We clear by the fixed names/ids this seed owns, so real data is
+            # left alone.
+            #
+            # Order matters, and BOTH of these are PROTECT on purpose: a Set is
+            # the only permanent record that an athlete actually lifted, and a
+            # DailyReport is the frozen history of a finished day. Neither may
+            # be taken out silently by deleting a session. So the seeder — which
+            # is allowed to destroy its own demo data — has to say plainly that
+            # it is removing them.
+            #
+            # The report side only bites once a day has actually been ENDED, so
+            # it went unnoticed until someone ended one in the browser.
             Set.objects.filter(session__label=SESSION_LABEL).delete()
+            DailyReport.objects.filter(session__label=SESSION_LABEL).delete()
             Session.objects.filter(label=SESSION_LABEL).delete()
             AthleteReferenceMax.objects.filter(athlete__name__in=names).delete()
             TrainingProgram.objects.filter(training_group__name=GROUP_NAME).delete()

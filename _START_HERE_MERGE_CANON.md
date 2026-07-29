@@ -989,12 +989,36 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 > exists to avoid. The retirement and the delete fix are behavioural and had to
 > happen before P7 wires his frontend up; the rename did not.
 | **P7 — Coach frontend + `App.jsx` seam** | `git checkout braydons-dev-branch -- <his coach files>` (§0.4); wire each to our APIs (§7); drop the panels whose backends died; hand-merge `App.jsx` so **our** role splash + rack route survive alongside **his** coach/dashboard/reports routes. **Plus the D17 repair grid**: render preview rows into his existing builder table, mark errored cells, offer `suggestions`, and apply a correction to every row sharing that spelling. Pure UI — **depends on D17(c)/(d) shipping in P5**, so nothing here needs a backend change. Rename `default_weight_lbs` → `target_percent` in `workoutCatalog.js` + `WorkoutCatalog.jsx` (D16 rule 1). | His coach pages load and function against our APIs; role splash + rack route intact; **a CSV with one misspelled name is repairable in-app without re-uploading, and the fix applies to every row sharing that spelling**; §2.1 check clean. |
-| **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. **Plus: decide `rackState.js`** — P7 kept it orphaned on purpose (§8.1); either a wired screen now needs it, or it and its test get deleted here. Do not ship 280 lines of dead tested code. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
+| **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. **Plus: decide `rackState.js`** — P7 kept it orphaned on purpose (§8.1); either a wired screen now needs it, or it and its test get deleted here. Do not ship 280 lines of dead tested code. **Ships with D18 unfixed as a known issue** — several sessions can be open at once and the racks follow whichever started last; confirm that is still an acceptable trade before fast-forwarding. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
 | **P9 — Naming alignment** *(last, deliberately)* | Route and view names still speak his old vocabulary, because §3.3 said bend the URL to the existing client rather than reshape its code. That was right during the merge and wrong to keep afterwards: a route named for a table that no longer exists is a trap for the next person. Rename routes, view functions, and serializers to match the model names — see the drift table below. | Every route name matches the model it serves; `SPEC.md` + `MESSAGE_CONTRACT.md` regenerated; frontend call sites updated in the same commit; full test pass. |
 
 | **P10 — Catalog editing + reordering** *(after the rename, deliberately)* | Templates can be BUILT today but not edited: there is no route to rename a day, remove one, reorder the days in a block, or change a prescription row after it is written. Add them (names below already reflect P9's rename): `PATCH`/`DELETE training-blocks/{id}/workouts/{id}/`, `PUT training-blocks/{id}/workout-order/`, `PATCH`/`DELETE .../workouts/{id}/exercises/{id}/`, `PUT .../workouts/{id}/exercise-order/`. Then the catalog UI for each. **Also adds `TrainingBlock.updated_at` (`auto_now`)** — every route in this phase edits the template, so each must explicitly touch its parent block; a `TrainingProgram` edit must not (see the note below). | A coach can rename, delete, and reorder days in a block and rows in a day; order survives a reload; **editing a day or a prescription row in a BLOCK moves that block's `updated_at`, while editing a deployed PROGRAM leaves every block untouched**; full test pass; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
 
 | **P11 — Multi-coach: ownership, filtering, and block categories** *(after the merge is shipped)* | Today "coach" means nothing but "logged in" — see the audit below. Give a coach a working relationship to their athletes without walling off the shared catalog: a coach-scoped filter on the block catalog, a category on `TrainingBlock`, and real ownership of `TrainingGroup`. | A coach can see only their own blocks by default and still search the whole department's; blocks carry a category; a group has one or more coaches with roles; every write endpoint enforces it; full test pass; `SPEC.md` + `MESSAGE_CONTRACT.md` updated. |
+
+| **P12 — One open session at a time (D18)** | Nothing stops several sessions being open at once, and "the active session" is simply the most recent one with no `ended_at`. Add the guard, and say which day ended. | `POST /api/sessions/` refuses (409) while another session is open, naming it; ending a day tells the coach which day ended and that its report was generated; a test proves two open sessions cannot be created. |
+
+**⚠️ D18 — the stacked-session trap (found in the browser, 2026-07-29).** Pressing "End training day" appeared
+to do nothing: the panel swapped straight back to another active day and the same button. It was working every
+time. The demo database had **four sessions with `ended_at IS NULL`**, and `_active_session()` resolves the
+active one as *the most recent unended session* — so ending the top one immediately promotes the next, and the
+screen looks unchanged.
+
+**Why this is more than a UI annoyance.** `POST /api/sessions/` does not check whether a session is already
+open, and the dev panel's "Start empty session" will happily add another. Once two exist, **the rack screens
+follow the same last-one-wins rule**, so a stray empty session silently becomes the one athletes check into —
+their sets attach to a session with no participants, and the day's report is wrong. The failure is quiet: the
+tablets look normal and nothing errors.
+
+This is **pre-existing, not merge damage** — `_active_session()` has always been last-one-wins. It is recorded
+here rather than fixed in P7 because P7's premise is that it adds no backend behaviour, and this is the third
+gap of its kind found late. **It is a KNOWN ISSUE shipping with the merge** (see the P8 row) — a conscious
+decision, not an oversight.
+
+The fix is small: a guard on session create returning 409 with the open session's id and label, plus a
+confirmation on the coach panel naming the day it just ended. The harder question deliberately left open: what
+should happen to a session left open overnight — auto-close it at some hour, or keep requiring a human to end
+it? Auto-closing writes an immutable `DailyReport` with nobody watching, so it is not obviously safer.
 
 **Where multi-coach stands TODAY (audited 2026-07-28) — the starting point, not the target.**
 Coaches are stock `django.contrib.auth.User`; there is no custom user model, no `Coach` model, no profile.
