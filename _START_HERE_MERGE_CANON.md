@@ -1012,7 +1012,32 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 
 | **P10 — Catalog editing + reordering** *(after the rename, deliberately)* | Templates can be BUILT today but not edited: there is no route to rename a day, remove one, reorder the days in a block, or change a prescription row after it is written. Add them (names below already reflect P9's rename): `PATCH`/`DELETE training-blocks/{id}/workouts/{id}/`, `PUT training-blocks/{id}/workout-order/`, `PATCH`/`DELETE .../workouts/{id}/exercises/{id}/`, `PUT .../workouts/{id}/exercise-order/`. Then the catalog UI for each. **Also adds `TrainingBlock.updated_at` (`auto_now`)** — every route in this phase edits the template, so each must explicitly touch its parent block; a `TrainingProgram` edit must not (see the note below). | A coach can rename, delete, and reorder days in a block and rows in a day; order survives a reload; **editing a day or a prescription row in a BLOCK moves that block's `updated_at`, while editing a deployed PROGRAM leaves every block untouched**; full test pass; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
 
-| **P11 — Multi-coach: ownership, filtering, and block categories** *(after the merge is shipped)* | Today "coach" means nothing but "logged in" — see the audit below. Give a coach a working relationship to their athletes without walling off the shared catalog: a coach-scoped filter on the block catalog, a category on `TrainingBlock`, and real ownership of `TrainingGroup`. | A coach can see only their own blocks by default and still search the whole department's; blocks carry a category; a group has one or more coaches with roles; every write endpoint enforces it; full test pass; `SPEC.md` + `MESSAGE_CONTRACT.md` updated. |
+| ✅ **P11 — Multi-coach: filtering, block categories, group staff** — DONE 2026-07-29 | Today "coach" means nothing but "logged in" — see the audit below. Give a coach a working relationship to their athletes without walling off the shared catalog: a coach-scoped filter on the block catalog, categories on `TrainingBlock`, and real staff on `TrainingGroup`. | A coach sees their own blocks by default and the whole department's one click away ✅; blocks carry categories ✅ (M2M, any-of); a group has one or more coaches with roles ✅; ~~every write endpoint enforces it~~ → **struck, superseded by the filter-not-fence resolution below — nothing enforces, on purpose, and a test asserts the non-enforcement**; full test pass ✅ (166 backend / 71 frontend); `SPEC.md` + `MESSAGE_CONTRACT.md` + `NAMING_CHANGES.md` updated ✅. |
+
+> **P11 as built (2026-07-29).** Three commits, one per step.
+> - **Step 1 — the coach lens.** `?coach=me` / `?coach={id}` / `?sort=recent` on
+>   `training-blocks/`; UI opens on "My blocks". No migration.
+>   ⚠️ Found on the way: **P10's `updated_at` was never serialized**, so the
+>   sort it existed for was impossible. Fixed here.
+> - **Step 2 — categories.** `BlockCategory` + M2M, migration `0014`. **Many per
+>   block**, decided by the user: the labels sit on different axes, so filtering
+>   is **any-of** with `.distinct()`. Added `GET|PATCH /training-blocks/{id}/`
+>   because categories would otherwise be write-once — no pre-P11 block could
+>   ever be labelled. **No DELETE on that route**, deliberately.
+> - **Step 3 — group staff.** `TrainingGroupCoach` (group × user × role) replaces
+>   the single `coach` FK, migration `0015`, existing coaches carried over as
+>   `head`. **The only breaking API change in the merge so far.**
+>   ⚠️ Django's auto-generated migration put `RemoveField` FIRST, which would
+>   have destroyed every group's coach before the backfill could read it. The
+>   hand-written version is create → backfill → drop, and two
+>   `TransactionTestCase` tests run it against a real database. The sabotage
+>   check was done: they do catch a missing backfill.
+>
+> ⚠️ **Not built, and it matters:** there is **no UI for group staff**. The API
+> works and the group creator becomes head coach, but a coach cannot add an
+> assistant from the tablet — that needs Django admin. Decide before ship whether
+> that is acceptable or whether the staff editor belongs in the coach-tablet
+> wireframe work (§8.2).
 
 | **P12 — One open session at a time (D18)** | Nothing stops several sessions being open at once, and "the active session" is simply the most recent one with no `ended_at`. Add the guard, and say which day ended. | `POST /api/sessions/` refuses (409) while another session is open, naming it; ending a day tells the coach which day ended and that its report was generated; a test proves two open sessions cannot be created. |
 

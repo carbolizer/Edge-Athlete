@@ -269,9 +269,23 @@ Full field-level detail lives in the Phase 5 prompt below — this is the
 summary view:
 
 ```
-TrainingGroup — coach (FK→User), name, created_at
+TrainingGroup — name, created_at
+                (P11: the single `coach` FK is GONE — see TrainingGroupCoach.
+                Several staff run one group; one field could not say that.)
+TrainingGroupCoach — training_group (FK→TrainingGroup), coach (FK→User),
+                role ("head" | "assistant"), created_at
+                unique(training_group, coach). One head at a time: naming a
+                new head demotes the incumbent. ⚠️ A row here is a STATEMENT,
+                not a permission — nothing enforces it yet, by decision.
 Block         — training_group (FK→TrainingGroup), name, order (Int)
-Tag           — name (unique)
+Tag           — name (unique). ⚠️ Movement labels on Exercise ONLY. Block
+                catalog labels are BlockCategory — separate on purpose, or
+                "Upper" would mean a body region or a grade level depending
+                on what it hangs off.
+BlockCategory — name (unique), created_at
+                TrainingBlock.categories is M2M → several per block, because
+                the labels sit on different axes ("Off-season" AND "Football").
+                Catalog filtering is ANY-OF.
 Exercise      — name (unique), tags (M2M→Tag), is_stub (Bool), created_at
                 (standard auto-increment PK — no custom ID assignment logic)
 SessionExercise — session (FK→TrainingSession), exercise (FK→Exercise), target_sets,
