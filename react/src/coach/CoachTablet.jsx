@@ -411,6 +411,13 @@ export default function CoachTablet() {
             </p>
           </div>
           <div className="coach-topbar-actions">
+            {/* Room Layout is reached from a cog on the coach workspace, so it
+                needs a way back. Without it the only exits are Sign out and
+                Change device role — both of which drop the login, which is a
+                harsh price for opening the wrong screen. */}
+            <button type="button" className="coach-btn coach-btn-ghost" onClick={() => navigate('/coach')}>
+              ← Coach workspace
+            </button>
             {token && (
               <button type="button" className="coach-btn coach-btn-ghost" onClick={logout}>
                 Sign out
