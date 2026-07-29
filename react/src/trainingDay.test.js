@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetReportRendering, buildTrainingDayPayload, orderedReportExercises, orderedReportPrescriptions, qualifyingReportSets, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
+import { budgetReportRendering, buildTrainingDayPayload, endedDayMessage, orderedReportExercises, orderedReportPrescriptions, qualifyingReportSets, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
 
 describe("training day payloads", () => {
   it("trims the label and deduplicates numeric athlete IDs", () => {
@@ -59,5 +59,32 @@ describe("generated report presentation", () => {
     expect(rendered.athletes[0].sets[1].reps.map((rep) => rep.id)).toEqual([121]);
     expect(rendered.athletes[1]).toEqual({ entry: athletes[1], sets: [], totalSets: 1 });
     expect(athletes[0].sets[1].reps).toHaveLength(2);
+  });
+});
+
+describe("endedDayMessage", () => {
+  // The message is the whole fix for D18's symptom: the panel could redraw
+  // looking identical, so the words have to carry what changed.
+  it("names the day that ended and confirms the report", () => {
+    expect(endedDayMessage({ ended: { label: "Thursday — Lower", report_generated: true, still_open: null } }))
+      .toBe("“Thursday — Lower” ended. Its report is finalized.");
+  });
+
+  it("says so when no report was produced", () => {
+    expect(endedDayMessage({ ended: { label: "Monday", report_generated: false, still_open: null } }))
+      .toContain("No report was generated.");
+  });
+
+  // A second open day is how the original bug hid. Surfacing it is the point.
+  it("warns when another day is still open", () => {
+    const message = endedDayMessage({
+      ended: { label: "Monday", report_generated: true, still_open: { id: 2, label: "Stray" } },
+    });
+    expect(message).toContain("still open");
+    expect(message).toContain("Stray");
+  });
+
+  it("falls back to a plain sentence for an older response with no `ended` block", () => {
+    expect(endedDayMessage({})).toBe("Training day ended and report generated.");
   });
 });

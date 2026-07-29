@@ -80,3 +80,26 @@ export function budgetReportRendering(athletes, limits = REPORT_RENDER_LIMITS) {
   };
 }
 export const REPORT_RENDER_LIMITS = Object.freeze({ athletes: 100, sets: 200, reps: 1000 });
+
+// What to tell the coach after ending a day.
+//
+// This exists because the panel used to say a flat "Training day ended and
+// report generated" while the screen redrew looking identical — several sessions
+// were open at once, so ending one promoted the next and the button appeared
+// broken. Naming the day that ended is the difference between a confusing screen
+// and an explained one, and `still_open` is surfaced rather than swallowed
+// because a silent second open day is exactly how that bug hid.
+export function endedDayMessage(body) {
+  const ended = body?.ended;
+  if (!ended) return "Training day ended and report generated.";
+
+  const label = ended.label ? `“${ended.label}”` : "The training day";
+  const report = ended.report_generated
+    ? "Its report is finalized."
+    : "No report was generated.";
+  const stillOpen = ended.still_open?.label
+    ? ` ⚠️ Another day is still open: “${ended.still_open.label}”.`
+    : "";
+
+  return `${label} ended. ${report}${stillOpen}`;
+}

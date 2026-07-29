@@ -16,6 +16,14 @@
 // It answers with a POINTER to the finished report, so we fetch the report
 // itself before rendering it below.
 //
+// ⚠️ WHY THE CONFIRMATION NAMES THE DAY. This panel once looked broken: pressing
+// End training day redrew the same active day and the same button, every time.
+// It was working perfectly — the database held several unended sessions, and
+// ending the newest instantly promoted the next one into its place. Only ONE day
+// can be open now (the server refuses a second), and the server also answers
+// with which day it just ended, so the confirmation can say so by name instead
+// of leaving the coach to infer it from a screen that may look identical.
+//
 // The report view is deliberately BOUNDED. A busy day holds thousands of
 // individual reps, and mounting them all locks up a tablet at the exact moment a
 // coach wants to read the summary. So it renders a slice and says so — the saved
@@ -23,7 +31,7 @@
 // limit is about what the screen can hold.
 
 import { useState } from "react";
-import { budgetReportRendering, buildTrainingDayPayload, orderedReportExercises, orderedReportPrescriptions, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
+import { budgetReportRendering, buildTrainingDayPayload, endedDayMessage, orderedReportExercises, orderedReportPrescriptions, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
 
 function ReportRep({ rep }) {
   return <li><span>Rep {rep.rep_number ?? rep.number ?? "--"}</span><b>{reportValue(rep.mean_velocity, " m/s mean")}</b><b>{reportValue(rep.peak_velocity, " m/s peak")}</b><b>{reportValue(rep.duration_ms, " ms")}</b></li>;
@@ -91,6 +99,16 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
     setStatus("");
     try {
       const response = await fetch("/api/sessions/", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(buildTrainingDayPayload(label, selectedAthleteIds)) });
+      // 409 means a day is already open. Reaching it usually means this tablet's
+      // view is stale — the start form is only shown when we believe nothing is
+      // running — so refresh rather than just complaining, or the coach is left
+      // staring at a form for a day that already exists.
+      if (response.status === 409) {
+        const conflict = await response.json().catch(() => ({}));
+        setError(conflict.detail || "A training day is already open.");
+        await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
+        return;
+      }
       const body = await parseResponse(response, "Training day could not be started.");
       if (body === null) return;
       setLabel("");
@@ -132,7 +150,7 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
       }
       setGeneratedReport(report);
       setConfirmEnd(false);
-      setStatus("Training day ended and report generated.");
+      setStatus(endedDayMessage(body));
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
     } catch (endError) {
       setError(endError.message || "Training day could not be ended.");

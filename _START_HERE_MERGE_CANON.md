@@ -1039,7 +1039,29 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 > that is acceptable or whether the staff editor belongs in the coach-tablet
 > wireframe work (§8.2).
 
-| **P12 — One open session at a time (D18)** | Nothing stops several sessions being open at once, and "the active session" is simply the most recent one with no `ended_at`. Add the guard, and say which day ended. | `POST /api/sessions/` refuses (409) while another session is open, naming it; ending a day tells the coach which day ended and that its report was generated; a test proves two open sessions cannot be created. |
+| ✅ **P12 — One open session at a time (D18)** — DONE 2026-07-29 | Nothing stops several sessions being open at once, and "the active session" is simply the most recent one with no `ended_at`. Add the guard, and say which day ended. | `POST /api/sessions/` refuses (409) while another session is open, naming it ✅; ending a day tells the coach which day ended and that its report was generated ✅ (an `ended` block, surfaced by `endedDayMessage`); a test proves two open sessions cannot be created ✅. 175 backend / 75 frontend. |
+
+> **P12 as built (2026-07-29).** Commit `173f8d3` (backend) plus the panel change.
+> - **No `force` override on the 409.** There is no honest reason to run two days
+>   at once, and a flag would just move the quiet corruption behind a switch.
+> - ⚠️ **This canon claimed `_active_session()` was "deliberately the single place
+>   every endpoint agrees on which session is active". It was not.** The same
+>   query was hand-written in `sessions_active` and `athlete_progress` as well —
+>   both on the rack path. Three copies of one rule. Now genuinely one helper,
+>   which is what makes **P14's `started_at__isnull=False` change actually the one
+>   line this document promised.** Frozen-contract key-diff run after touching
+>   both rack endpoints: unchanged.
+> - **The seeder was a cause, not a bystander.** It created a session
+>   unconditionally, so every reseed stacked another open day — that is how the
+>   demo database reached four. It now closes what is open first; two reseeds in a
+>   row leave exactly one open session (verified).
+> - **Learned from the tests, now written down:** `POST /api/sessions/` requires a
+>   **non-empty** `athletes` roster, and `sessions/active/` returns `session_id`,
+>   not a nested session object.
+>
+> **Still open, deliberately:** what should happen to a day left open overnight.
+> Auto-closing writes an immutable `DailyReport` with nobody watching, so it is not
+> obviously safer than requiring a human to end it.
 
 | **P13 — The athlete analytics read (D19)** | His `athlete` and `history` tabs were built on an analytics endpoint we never wrote. Widen `analytics/athlete/{id}/` to return the athlete, a summary, per-exercise aggregates, and per-set reps. | The athlete and history tabs load for a real athlete; the rep-by-rep comparison works; a coach with no completed sets sees an empty state rather than an error; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
 
