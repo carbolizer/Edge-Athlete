@@ -412,8 +412,28 @@ past sessions and sets stay attached to whatever they ran under.
 
 ```jsonc
 { "id": 1, "name": "Fall Strength", "duration_weeks": 8,
-  "cadence_days_of_week": "Mon,Wed,Fri" }
+  "cadence_days_of_week": "Mon,Wed,Fri",
+  "coach": 2, "created_at": "...", "updated_at": "..." }
 ```
+
+`updated_at` moves whenever a coach edits a day or a row **inside the block**. It
+does **not** move when someone edits a program deployed from it — a program is a
+snapshot and has no link back.
+
+**Query parameters (GET):**
+
+| Param | Effect |
+|---|---|
+| *(none)* | Every block in the department. This is the default on purpose. |
+| `?coach=me` | Only the caller's blocks |
+| `?coach={id}` | Only that coach's blocks. A non-numeric value that isn't `me` is a `400`, not a silent full list. |
+| `?sort=recent` | Most recently edited first. Default order is alphabetical by name. |
+
+> ⚠️ **`?coach=` is a lens, not a fence.** Blocks are global so a good one gets
+> reused; the filter exists so nobody scrolls a department-sized catalog to find
+> their own work. It grants nothing and forbids nothing — any authenticated coach
+> can still read and edit any block. If a real permission boundary is ever wanted,
+> it is additive on top of this and the filter does not have to be undone first.
 
 ### `GET|POST /api/training-blocks/{id}/workouts/` — one day inside a template (coach)
 

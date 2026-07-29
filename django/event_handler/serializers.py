@@ -157,14 +157,18 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
 
     `duration_weeks` and `cadence_days_of_week` describe how it is meant to be
     run. Nothing reads them yet — they are here so a future calendar feature can
-    lay a block onto dates without a schema change."""
+    lay a block onto dates without a schema change.
+
+    `updated_at` is exposed because the catalog sorts by most-recently-edited
+    (`?sort=recent`). The column is maintained server-side whenever a coach
+    edits a day or a row inside the block — never by a program built from it."""
     workouts = TrainingBlockWorkoutSerializer(many=True, read_only=True)
 
     class Meta:
         model = TrainingBlock
         fields = ["id", "name", "coach", "duration_weeks", "cadence_days_of_week",
-                  "workouts", "created_at"]
-        read_only_fields = ["id", "coach", "workouts", "created_at"]
+                  "workouts", "created_at", "updated_at"]
+        read_only_fields = ["id", "coach", "workouts", "created_at", "updated_at"]
 
 
 class TrainingProgramExerciseSerializer(serializers.ModelSerializer):

@@ -21,7 +21,7 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
                      TrainingBlockExercise)
 from .services.plan_resolution import movements_for_athlete
-from .services.planning import instantiate_block
+from .services.planning import instantiate_block, touch_block
 
 
 def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
@@ -1262,6 +1262,74 @@ class TemplateEditingTests(APITestCase):
         row.save(update_fields=["target_percent"])
 
         self.assertEqual(TrainingBlock.objects.get(id=self.block.id).updated_at, before)
+
+
+class BlockCatalogLensTests(APITestCase):
+    """The coach filter on the block catalog (P11, step 1).
+
+    The thing these tests are really pinning down is that the filter is a LENS,
+    NOT A FENCE. It is easy to write a filter and then quietly start treating it
+    as permission — so there is a test below that asserts the opposite: another
+    coach's block is still fully visible and still editable. If someone ever
+    wants a real boundary, it goes on TOP of this, and that test is the one that
+    should be changed deliberately rather than discovered broken.
+    """
+
+    def setUp(self):
+        self.sarah = User.objects.create_user(username="sarah", password="pw")
+        self.mike = User.objects.create_user(username="mike", password="pw")
+        self.client.force_authenticate(user=self.sarah)
+        self.hers = TrainingBlock.objects.create(name="Alpha Fall", coach=self.sarah)
+        self.his = TrainingBlock.objects.create(name="Beta Winter", coach=self.mike)
+
+    def _names(self, response):
+        return [block["name"] for block in response.data]
+
+    def test_the_catalog_is_global_by_default(self):
+        """No filter means the whole department — the shared catalog is the point."""
+        res = self.client.get("/api/training-blocks/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self._names(res), ["Alpha Fall", "Beta Winter"])
+
+    def test_coach_me_narrows_to_the_caller(self):
+        res = self.client.get("/api/training-blocks/?coach=me")
+        self.assertEqual(self._names(res), ["Alpha Fall"])
+
+    def test_coach_id_narrows_to_that_coach(self):
+        res = self.client.get(f"/api/training-blocks/?coach={self.mike.id}")
+        self.assertEqual(self._names(res), ["Beta Winter"])
+
+    def test_a_nonsense_coach_value_is_rejected_not_ignored(self):
+        """Silently returning everything would look like 'this coach owns it all'."""
+        res = self.client.get("/api/training-blocks/?coach=sarah")
+        self.assertEqual(res.status_code, 400)
+
+    def test_the_filter_is_not_a_permission_boundary(self):
+        """Sarah can still see and edit Mike's block. This is deliberate."""
+        day = TrainingBlockWorkout.objects.create(
+            training_block=self.his, name="Day 1", position=1)
+
+        listed = self.client.get("/api/training-blocks/")
+        self.assertIn("Beta Winter", self._names(listed))
+
+        edit = self.client.patch(
+            f"/api/training-blocks/{self.his.id}/workouts/{day.id}/",
+            {"name": "Day 1 — Lower"}, format="json")
+        self.assertEqual(edit.status_code, 200)
+
+    # ── sorting ──────────────────────────────────────────────────────────────
+
+    def test_sort_recent_orders_by_last_edited(self):
+        """P10 added `updated_at` for exactly this; until now nothing served it."""
+        touch_block(self.his.id)
+
+        res = self.client.get("/api/training-blocks/?sort=recent")
+        self.assertEqual(self._names(res), ["Beta Winter", "Alpha Fall"])
+
+    def test_updated_at_is_serialized(self):
+        """A column the client cannot read cannot sort anything client-side."""
+        res = self.client.get("/api/training-blocks/")
+        self.assertIn("updated_at", res.data[0])
 
 
 class CsvImportTests(APITestCase):

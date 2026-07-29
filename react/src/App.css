@@ -378,6 +378,11 @@
 .workout-pagination button.workout-secondary { background:transparent; border-color:var(--line); color:var(--ink); }
 .workout-pagination button:disabled { cursor:not-allowed; opacity:.42; }
 
+/* "My blocks / All coaches" — a lens on the shared catalog, not a permission. */
+.block-scope-toggle { display:flex; gap:8px; margin-bottom:14px; }
+.block-scope-toggle button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:38px; padding:7px 14px; }
+.block-scope-toggle button.workout-secondary { background:transparent; border-color:var(--line); color:var(--muted); }
+
 /* Report browsing */
 .reports-workspace { display:grid; gap:14px; }
 .reports-heading { align-items:end; background:linear-gradient(110deg,#18241e,#10171b 68%); border:1px solid #2b4034; display:flex; gap:20px; justify-content:space-between; padding:24px 28px; }

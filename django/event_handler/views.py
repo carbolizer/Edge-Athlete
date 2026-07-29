@@ -1048,14 +1048,37 @@ def training_group_athletes_view(request, group_id):
 def training_blocks_view(request):
     """Coach-only: the reusable TEMPLATES a coach designs once and redeploys.
 
-    Called `workout-programs` because that is what the coach front end asks for;
-    internally these are TrainingBlocks. A template has no TrainingGroup and no dates —
-    it is the recipe, not a serving of it.
+    A TrainingBlock has no TrainingGroup and no dates — it is the recipe, not a
+    serving of it.
+
+    Blocks are GLOBAL ON PURPOSE. The whole department can see and reuse every
+    one, because a good block getting reused is the point of a shared catalog.
+    So `?coach=` is a LENS, NOT A FENCE — it exists so nobody scrolls a
+    department-sized list to find their own work, and the full list is always
+    one request away. It grants nothing and forbids nothing.
+
+      GET /api/training-blocks/                -> every block (default)
+      GET /api/training-blocks/?coach=me       -> only the caller's
+      GET /api/training-blocks/?coach=4        -> only that coach's
+      GET /api/training-blocks/?sort=recent    -> most recently EDITED first
+
+    `sort=recent` orders by `updated_at`, which P10 maintains whenever anyone
+    edits a block's days or rows. Default order stays alphabetical, because a
+    catalog you are browsing rather than resuming reads better by name.
     """
     if request.method == "GET":
-        return Response(TrainingBlockSerializer(
-            TrainingBlock.objects.prefetch_related("workouts__exercises").order_by("name"),
-            many=True).data)
+        blocks = TrainingBlock.objects.prefetch_related("workouts__exercises")
+
+        coach = request.query_params.get("coach")
+        if coach == "me":
+            blocks = blocks.filter(coach=request.user)
+        elif coach:
+            if not coach.isdigit():
+                return Response({"error": "coach must be a coach id or 'me'"}, status=400)
+            blocks = blocks.filter(coach_id=int(coach))
+
+        order = "-updated_at" if request.query_params.get("sort") == "recent" else "name"
+        return Response(TrainingBlockSerializer(blocks.order_by(order), many=True).data)
 
     form = TrainingBlockSerializer(data=request.data)
     form.is_valid(raise_exception=True)

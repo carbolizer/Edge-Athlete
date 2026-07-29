@@ -34,6 +34,16 @@ import { useEffect, useState } from "react";
 import { applyCorrection, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 const TRAINING_BLOCKS_URL = "/api/training-blocks/";
+// The catalog is shared by the whole department, so it opens on the coach's own
+// blocks — not because the others are off limits (they are one click away and
+// fully editable), but because scrolling a department-sized list to find your
+// own work is the thing that makes a shared catalog feel worse than a private
+// one. "Recently edited" is the default sort for the same reason: the block you
+// want next is almost always the one you touched last.
+const blockCatalogUrl = (scope) =>
+  scope === "mine"
+    ? `${TRAINING_BLOCKS_URL}?coach=me&sort=recent`
+    : `${TRAINING_BLOCKS_URL}?sort=recent`;
 const CSV_PREVIEW_URL = "/api/imports/preview/";
 const CSV_IMPORT_URL = "/api/imports/";
 // A day lives inside a block, so its URL says so.
@@ -150,8 +160,10 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [deploySaving, setDeploySaving] = useState(false);
   const [programs, setPrograms] = useState([]);
   const [programCount, setProgramCount] = useState(0);
-  const [programUrl, setProgramUrl] = useState(TRAINING_BLOCKS_URL);
-  const [retryProgramUrl, setRetryProgramUrl] = useState(TRAINING_BLOCKS_URL);
+  // "mine" or "all" — see blockCatalogUrl. A lens, not a permission.
+  const [blockScope, setBlockScope] = useState("mine");
+  const [programUrl, setProgramUrl] = useState(blockCatalogUrl("mine"));
+  const [retryProgramUrl, setRetryProgramUrl] = useState(blockCatalogUrl("mine"));
   const [programPagination, setProgramPagination] = useState({ previous: null, next: null });
   const [programCatalogState, setProgramCatalogState] = useState("loading");
   const [programCatalogErrors, setProgramCatalogErrors] = useState([]);
@@ -190,8 +202,15 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     }
   }
 
+  // Switching the lens is just a different URL for the same list — no reordering
+  // of local state, no client-side filtering to drift out of sync with the API.
+  function showBlockScope(scope) {
+    setBlockScope(scope);
+    loadPrograms(blockCatalogUrl(scope));
+  }
+
   useEffect(() => {
-    loadPrograms(TRAINING_BLOCKS_URL);
+    loadPrograms(blockCatalogUrl("mine"));
     // The two pickers. Both are small, rarely-changing lists, so they load once
     // and are not paginated. A failure here leaves an empty dropdown rather than
     // breaking the screen — the panels that need them disable themselves.
@@ -341,7 +360,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       // Select it in the day builder — creating a block is almost always
       // followed by filling it in, so save the coach the extra click.
       if (body.id) setWorkoutBlockId(String(body.id));
-      await loadPrograms(TRAINING_BLOCKS_URL);
+      await loadPrograms(blockCatalogUrl(blockScope));
     } catch (errors) {
       setProgramErrors(Array.isArray(errors) ? errors : [{ detail: "The block could not be created." }]);
     } finally {
@@ -635,11 +654,15 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
         </form>
       </section>
 
-      <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, with their days in training order.</p></header>
+      <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>
+        <div className="block-scope-toggle" role="group" aria-label="Whose blocks to show">
+          <button type="button" className={blockScope === "mine" ? "" : "workout-secondary"} aria-pressed={blockScope === "mine"} onClick={() => showBlockScope("mine")}>My blocks</button>
+          <button type="button" className={blockScope === "all" ? "" : "workout-secondary"} aria-pressed={blockScope === "all"} onClick={() => showBlockScope("all")}>All coaches</button>
+        </div>
         {programCatalogState === "loading" && <p className="monitor-empty" role="status">Loading program page...</p>}
         <ErrorList errors={programCatalogErrors} title="Program catalog unavailable:" />
         {programCatalogState === "error" && <button type="button" className="workout-secondary" onClick={() => loadPrograms(retryProgramUrl)}>Retry page</button>}
-        {programCatalogState !== "loading" && programCount === 0 && <p className="monitor-empty">No blocks have been created.</p>}
+        {programCatalogState !== "loading" && programCount === 0 && <p className="monitor-empty">{blockScope === "mine" ? "You haven't created any blocks yet — try All coaches." : "No blocks have been created."}</p>}
         <div className="program-browser-list">{programs.map((block) => <article key={block.id || block.name}><header><span>{block.workouts?.length || 0} day{block.workouts?.length === 1 ? "" : "s"}{block.duration_weeks ? ` · ${block.duration_weeks} wk` : ""}{block.cadence_days_of_week ? ` · ${block.cadence_days_of_week}` : ""}</span><h4>{block.name}</h4></header>{block.workouts?.length ? <ol>{block.workouts.map((workout, index) => <li key={workout.id || index}><span>{workout.position ?? index + 1}</span><b>{workout.name}</b></li>)}</ol> : <p className="monitor-empty">No days yet — add one with the manual builder.</p>}</article>)}</div>
         {(programPagination.previous || programPagination.next || programCount > programs.length) && <nav className="workout-pagination" aria-label="Workout program catalog pages"><button type="button" className="workout-secondary" onClick={() => loadPrograms(programPagination.previous)} disabled={!programPagination.previous || programCatalogState === "loading"}>Previous</button><span role="status">Showing {programs.length} on this page · {programCount} total</span><button type="button" onClick={() => loadPrograms(programPagination.next)} disabled={!programPagination.next || programCatalogState === "loading"}>Next</button></nav>}
       </section>
