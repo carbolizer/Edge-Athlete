@@ -151,13 +151,65 @@ class TrainingGroup(models.Model):
     Membership lives on Athlete.training_groups (M2M), not here — an athlete can
     be in several groups at once. Long-lived: a group
     outlives many blocks/programs. It carries no dates and no workouts itself —
-    it's "who trains together," not a schedule."""
-    coach = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='training_groups')
+    it's "who trains together," not a schedule.
+
+    ⚠️ The staff who run a group live in TrainingGroupCoach, not in a field here.
+    This used to be a single `coach` FK, which could not say what a real weight
+    room does every day: "Sarah and Mike both run Varsity"."""
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    @property
+    def head_coach(self):
+        """The one coach who answers for the group, or None.
+
+        A convenience for display and for anything that needs a single name.
+        It is NOT a permission check and NOT the only coach — read `coaches`
+        when the question is "who may run this"."""
+        link = self.coach_links.filter(role=TrainingGroupCoach.HEAD).first()
+        return link.coach if link else None
+
     def __str__(self):
         return self.name
+
+
+class TrainingGroupCoach(models.Model):
+    """Which staff run a TrainingGroup, and in what capacity.
+
+    A join table rather than a field on TrainingGroup because a real weight room
+    puts several people on one group — a head coach plus assistants — and a
+    single FK can only ever name one of them. That FK is what this replaced; its
+    value was carried over as the head coach of each group it named.
+
+    ⚠️ Being listed here is currently a STATEMENT, not a permission. Nothing in
+    the API asks this table whether a write is allowed — `IsCoach` still means
+    "is authenticated", same as before. The canon calls this filter-not-fence,
+    and it is deliberate: recording who runs what is useful on its own, and a
+    real boundary can be added on top later without undoing any of this. Do not
+    read a row here as authorization until something actually enforces it."""
+    HEAD = "head"
+    ASSISTANT = "assistant"
+    ROLE_CHOICES = [(HEAD, "Head coach"), (ASSISTANT, "Assistant coach")]
+
+    training_group = models.ForeignKey(TrainingGroup, on_delete=models.CASCADE,
+                                       related_name='coach_links')
+    # PROTECT, matching the FK this replaced: deleting a user who still runs a
+    # group should fail loudly rather than quietly orphaning the group's staff.
+    coach = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                              related_name='training_group_links')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ASSISTANT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # One row per person per group. Without this, adding the same coach
+            # twice would silently double them in every staff list.
+            models.UniqueConstraint(fields=["training_group", "coach"],
+                                    name="one_row_per_coach_per_group"),
+        ]
+
+    def __str__(self):
+        return f"{self.coach} — {self.training_group} ({self.role})"
 
 
 class BlockCategory(models.Model):

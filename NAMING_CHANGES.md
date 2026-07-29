@@ -33,6 +33,12 @@ exists is a trap for whoever reads it next.
 | Was | Now | Notes |
 |---|---|---|
 | `Session` | `TrainingSession` | Migration `0012`, `RenameModel`. Table renamed; every FK re-pointed automatically. No data moved. |
+| `TrainingGroup.coach` (one FK) | `TrainingGroupCoach` (join table) | Migration `0015`. **P11, and the one breaking API change since.** Each group's existing coach was carried across as its `head` coach — nobody lost a group. |
+
+**Why:** a real weight room puts several staff on one group ("Sarah and Mike both
+run Varsity"), which a single field cannot say. `coaches` is now a list and
+`head_coach` is the one who answers for it — nullable, so don't assume it exists.
+Being on the list is a *statement*, not a permission: nothing enforces it yet.
 
 **Why:** "Session" is one of the most overloaded words in web software — Django
 has sessions, HTTP has sessions, auth has sessions. Ours means one shared

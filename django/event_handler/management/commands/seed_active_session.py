@@ -28,7 +28,7 @@ from django.contrib.auth.models import User
 from event_handler.models import (Athlete, AthleteReferenceMax, DailyReport, Exercise,
                                   Node, Rep, TrainingSession, SessionParticipation, Set,
                                   TrainingBlock, TrainingBlockExercise, TrainingBlockWorkout,
-                                  TrainingGroup, TrainingProgram)
+                                  TrainingGroup, TrainingGroupCoach, TrainingProgram)
 from event_handler.services.planning import instantiate_block
 
 SESSION_LABEL = "Thursday — Lower + Push"
@@ -104,7 +104,11 @@ class Command(BaseCommand):
 
         # Athletes, and the group they all train with.
         athletes = {name: Athlete.objects.get_or_create(name=name)[0] for name in ATHLETES}
-        group, _ = TrainingGroup.objects.get_or_create(name=GROUP_NAME, coach=coach)
+        group, _ = TrainingGroup.objects.get_or_create(name=GROUP_NAME)
+        # Staff are a join table now, not a field — a group can have several.
+        TrainingGroupCoach.objects.get_or_create(
+            training_group=group, coach=coach,
+            defaults={"role": TrainingGroupCoach.HEAD})
         for athlete in athletes.values():
             athlete.training_groups.add(group)
 

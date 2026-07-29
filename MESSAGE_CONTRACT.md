@@ -396,8 +396,41 @@ out per athlete from their reference max at read time (§4).
 A TrainingGroup is a *subset* of the gym that trains together, not everyone on file.
 
 ```jsonc
-{ "id": 4, "name": "Varsity Football", "athlete_count": 12 }
+{ "id": 4, "name": "Varsity Football", "athlete_count": 12,
+  "coaches": [
+    { "id": 1, "coach": 2, "coach_name": "sarah", "role": "head" },
+    { "id": 2, "coach": 5, "coach_name": "mike",  "role": "assistant" }
+  ],
+  "head_coach": { "id": 2, "name": "sarah" } }
 ```
+
+> ⚠️ **BREAKING (P11):** the single `coach` field is **gone**. A real weight room
+> puts several staff on one group, and one field could only name one of them.
+> Read `coaches` for the list, or `head_coach` when a screen needs one name —
+> `head_coach` is **nullable**, so don't assume it's there.
+
+Whoever creates a group becomes its head coach; a group with no staff at all is
+never what someone meant to make.
+
+### `GET|POST|PATCH|DELETE /api/training-groups/{id}/coaches/` — who runs the group (coach)
+
+| Method | Body | Effect |
+|---|---|---|
+| `GET` | — | The staff list |
+| `POST` | `{"coach": 4, "role": "assistant"}` | Add someone. `role` defaults to `assistant`. Adding a coach already listed changes their role instead of erroring. |
+| `PATCH` | `{"coach": 4, "role": "head"}` | Change a role. A coach not already listed is a `404`, not a silent add. |
+| `DELETE` | `{"coach": 4}` | Remove someone. Removing the last one is allowed — the group reports `head_coach: null`. |
+
+**One head at a time.** Naming a new head demotes the incumbent to assistant, on
+both the add and the role-change path, so "make Mike the head" is a single call
+and can never leave two heads behind.
+
+> ⚠️ **This list is a statement, not a permission.** Nothing consults it when
+> deciding whether a write is allowed — `IsCoach` still means "is authenticated",
+> exactly as before. That is the canon's filter-not-fence decision. Recording who
+> runs what is useful on its own, and enforcement can be layered on later without
+> undoing any of this. A test asserts the current non-enforcement on purpose, so
+> that adding a boundary is a deliberate change rather than a broken build.
 
 ### `POST /api/training-groups/{id}/athletes/` — set a TrainingGroup's members (coach)
 

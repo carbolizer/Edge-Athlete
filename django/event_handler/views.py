@@ -28,6 +28,7 @@ Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
 import json
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
@@ -40,14 +41,17 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
                      Exercise, RackCheckIn, DailyReport, TrainingGroup, TrainingBlock,
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
-                     AthleteWorkoutExerciseOverride, BlockCategory)
+                     AthleteWorkoutExerciseOverride, BlockCategory, TrainingGroupCoach)
+
+# Coaches are Django users; there is no separate coach table. See SPEC.md.
+User = get_user_model()
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
                           TrainingBlockExerciseSerializer, TrainingProgramSerializer,
-                          BlockCategorySerializer)
+                          BlockCategorySerializer, TrainingGroupCoachSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
@@ -1004,14 +1008,96 @@ def training_groups_view(request):
     A TrainingGroup is a NAMED SUBSET of athletes who train the same plan — not the whole
     roster. A gym runs several at once (a team TrainingGroup, a position TrainingGroup, a
     rehab group), and an athlete can be in more than one.
+
+    Staff are a LIST, not a field: see `training_group_coaches_view`. Whoever
+    creates a group becomes its head coach, because a group with no staff at all
+    is never what someone meant to make.
     """
     if request.method == "GET":
         return Response(TrainingGroupSerializer(
-            TrainingGroup.objects.all().order_by("name"), many=True).data)
+            TrainingGroup.objects.prefetch_related("coach_links__coach").order_by("name"),
+            many=True).data)
 
     form = TrainingGroupSerializer(data=request.data)
     form.is_valid(raise_exception=True)
-    return Response(TrainingGroupSerializer(form.save(coach=request.user)).data, status=201)
+    with transaction.atomic():
+        group = form.save()
+        TrainingGroupCoach.objects.create(
+            training_group=group, coach=request.user, role=TrainingGroupCoach.HEAD)
+    return Response(TrainingGroupSerializer(group).data, status=201)
+
+
+@api_view(["GET", "POST", "PATCH", "DELETE"])
+@permission_classes([IsCoach])
+def training_group_coaches_view(request, group_id):
+    """Coach-only: who runs this TrainingGroup.
+
+    This replaced a single `coach` field on the group in P11, because a real
+    weight room puts several staff on one group and one field can only name one
+    of them.
+
+      GET    -> the staff list
+      POST   -> add someone:    { "coach": 4, "role": "assistant" }
+      PATCH  -> change a role:  { "coach": 4, "role": "head" }
+      DELETE -> remove someone: { "coach": 4 }
+
+    ⚠️ Being on this list is a STATEMENT, not a permission. Nothing here is
+    consulted when deciding whether a write is allowed — `IsCoach` still means
+    "is authenticated". That is the canon's filter-not-fence decision, and it is
+    deliberate: recording who runs what is useful on its own, and enforcement can
+    be added later on top of this without undoing any of it.
+    """
+    group = TrainingGroup.objects.filter(id=group_id).first()
+    if group is None:
+        return Response({"error": "training group not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(TrainingGroupCoachSerializer(
+            group.coach_links.select_related("coach").order_by("role", "coach__username"),
+            many=True).data)
+
+    coach_id = request.data.get("coach")
+    if not User.objects.filter(id=coach_id).exists():
+        return Response({"error": "coach not found"}, status=400)
+
+    if request.method == "DELETE":
+        removed, _ = group.coach_links.filter(coach_id=coach_id).delete()
+        if not removed:
+            return Response({"error": "that coach does not run this group"}, status=404)
+        # A group with no staff is allowed rather than blocked: the sequence
+        # "swap the head coach" is easier to get right if removing the old one
+        # first is legal. It shows as head_coach: null until someone is added.
+        return Response(TrainingGroupCoachSerializer(
+            group.coach_links.select_related("coach"), many=True).data)
+
+    role = request.data.get("role") or TrainingGroupCoach.ASSISTANT
+    if role not in dict(TrainingGroupCoach.ROLE_CHOICES):
+        return Response({"error": "role must be 'head' or 'assistant'"}, status=400)
+
+    with transaction.atomic():
+        if role == TrainingGroupCoach.HEAD:
+            # Only one head at a time. Demoting the incumbent rather than
+            # refusing means "make Mike the head" is one call, which is how a
+            # coach thinks about it — and it cannot leave two heads behind.
+            group.coach_links.filter(role=TrainingGroupCoach.HEAD).exclude(
+                coach_id=coach_id).update(role=TrainingGroupCoach.ASSISTANT)
+
+        if request.method == "PATCH":
+            link = group.coach_links.filter(coach_id=coach_id).first()
+            if link is None:
+                return Response({"error": "that coach does not run this group"}, status=404)
+            link.role = role
+            link.save(update_fields=["role"])
+        else:
+            # update_or_create, not create: adding someone already on the list is
+            # a role change in disguise, and the unique constraint would
+            # otherwise turn an ordinary click into a 500.
+            TrainingGroupCoach.objects.update_or_create(
+                training_group=group, coach_id=coach_id, defaults={"role": role})
+
+    return Response(TrainingGroupCoachSerializer(
+        group.coach_links.select_related("coach").order_by("role", "coach__username"),
+        many=True).data, status=200 if request.method == "PATCH" else 201)
 
 
 @api_view(["GET", "POST", "DELETE"])

@@ -58,6 +58,10 @@ urlpatterns = [
     path('training-groups/', views.training_groups_view, name='training_groups'),
     path('training-groups/<int:group_id>/athletes/', views.training_group_athletes_view,
          name='training_group_athletes'),
+    # Who RUNS the group — several staff, not one. Replaced TrainingGroup.coach
+    # in P11 so "Sarah and Mike both run Varsity" is expressible.
+    path('training-groups/<int:group_id>/coaches/', views.training_group_coaches_view,
+         name='training_group_coaches'),
     path('training-blocks/', views.training_blocks_view, name='training_blocks'),
     # The block's OWN fields (name, categories, duration, cadence). GET and PATCH
     # only — nothing in the product deletes a whole block, and that is on purpose.

@@ -13,13 +13,16 @@ from django.db import models
 from django.db.models import ProtectedError
 from django.utils import timezone
 from django.contrib.auth.models import User
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TransactionTestCase
 from rest_framework.test import APITestCase
 
 from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Exercise,
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
-                     TrainingBlockExercise, BlockCategory)
+                     TrainingBlockExercise, BlockCategory, TrainingGroupCoach)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import instantiate_block, touch_block
 
@@ -43,7 +46,7 @@ def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
 
     group = athlete.training_groups.first()
     if group is None:
-        group = TrainingGroup.objects.create(name=f"Group for {athlete.name}", coach=coach)
+        group = TrainingGroup.objects.create(name=f"Group for {athlete.name}")
         athlete.training_groups.add(group)
 
     program = TrainingProgram.objects.filter(training_group=group).first()
@@ -756,7 +759,7 @@ class PlanResolutionTests(APITestCase):
             reference_weight_lbs=weight, rep_basis=rep_basis)
 
     def _group(self, name, extra_members=0):
-        group = TrainingGroup.objects.create(coach=self.coach, name=name)
+        group = TrainingGroup.objects.create(name=name)
         self.athlete.training_groups.add(group)
         for n in range(extra_members):
             Athlete.objects.create(name=f"{name} member {n}").training_groups.add(group)
@@ -822,7 +825,7 @@ class PlanResolutionTests(APITestCase):
     def test_a_group_not_training_today_contributes_nothing(self):
         """Belonging to a TrainingGroup isn't enough — that group has to actually be in
         this session, which is what lets one athlete carry several plans."""
-        group = TrainingGroup.objects.create(coach=self.coach, name="Off today")
+        group = TrainingGroup.objects.create(name="Off today")
         self.athlete.training_groups.add(group)
         TrainingProgram.objects.create(training_group=group, name="Other",
                                        start_date=timezone.now().date())
@@ -1234,7 +1237,7 @@ class TemplateEditingTests(APITestCase):
     def test_deleting_from_a_template_leaves_a_deployed_program_alone(self):
         """The whole reason deploying COPIES rather than references. A group
         mid-season must not lose a day because a coach tidied the template."""
-        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        group = TrainingGroup.objects.create(name="Varsity")
         program = instantiate_block(self.block, group, start_date=timezone.now().date())
         days_before = program.workouts.count()
         rows_before = TrainingProgramExercise.objects.filter(
@@ -1252,7 +1255,7 @@ class TemplateEditingTests(APITestCase):
     def test_editing_a_deployed_program_does_not_mark_the_template_as_edited(self):
         """A program is a snapshot. Reporting the template as changed when
         nobody changed it would imply a coupling that does not exist."""
-        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        group = TrainingGroup.objects.create(name="Varsity")
         program = instantiate_block(self.block, group, start_date=timezone.now().date())
         before = TrainingBlock.objects.get(id=self.block.id).updated_at
 
@@ -1450,6 +1453,188 @@ class BlockCategoryTests(APITestCase):
         self.assertEqual(self._names(res), ["Alpha"])
 
 
+class TrainingGroupStaffTests(APITestCase):
+    """Several coaches on one group (P11, step 3).
+
+    This replaced a single `coach` field on TrainingGroup. A real weight room
+    puts a head coach and assistants on the same group, and one field could
+    only ever name one of them.
+    """
+
+    def setUp(self):
+        self.sarah = User.objects.create_user(username="sarah", password="pw")
+        self.mike = User.objects.create_user(username="mike", password="pw")
+        self.dana = User.objects.create_user(username="dana", password="pw")
+        self.client.force_authenticate(user=self.sarah)
+        self.group = TrainingGroup.objects.create(name="Varsity")
+        TrainingGroupCoach.objects.create(
+            training_group=self.group, coach=self.sarah, role=TrainingGroupCoach.HEAD)
+
+    def _url(self):
+        return f"/api/training-groups/{self.group.id}/coaches/"
+
+    def _staff(self, response):
+        return {row["coach_name"]: row["role"] for row in response.data}
+
+    # ── the shape of the change ──────────────────────────────────────────────
+
+    def test_a_group_no_longer_has_a_single_coach_field(self):
+        """The point of the migration. If this passes while `coach` still exists,
+        the field was left behind and there are now two answers to 'who runs
+        this group' waiting to disagree."""
+        self.assertFalse(any(f.name == "coach" for f in TrainingGroup._meta.get_fields()))
+
+    def test_the_group_payload_lists_staff_and_names_a_head(self):
+        res = self.client.get("/api/training-groups/")
+        group = next(row for row in res.data if row["id"] == self.group.id)
+        self.assertEqual([c["coach_name"] for c in group["coaches"]], ["sarah"])
+        self.assertEqual(group["head_coach"]["name"], "sarah")
+
+    def test_creating_a_group_makes_the_creator_its_head_coach(self):
+        """A group with no staff at all is never what someone meant to make."""
+        res = self.client.post("/api/training-groups/", {"name": "Freshmen"},
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["head_coach"]["name"], "sarah")
+
+    # ── adding and removing staff ────────────────────────────────────────────
+
+    def test_two_coaches_can_run_the_same_group(self):
+        """The thing the old single field could not say."""
+        res = self.client.post(self._url(), {"coach": self.mike.id, "role": "assistant"},
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(self._staff(res), {"sarah": "head", "mike": "assistant"})
+
+    def test_adding_the_same_coach_twice_updates_the_role_instead_of_erroring(self):
+        """The unique constraint would otherwise turn an ordinary click into a 500."""
+        self.client.post(self._url(), {"coach": self.mike.id, "role": "assistant"},
+                         format="json")
+        res = self.client.post(self._url(), {"coach": self.mike.id, "role": "assistant"},
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(self.group.coach_links.filter(coach=self.mike).count(), 1)
+
+    def test_a_coach_can_be_removed(self):
+        self.client.post(self._url(), {"coach": self.mike.id}, format="json")
+        res = self.client.delete(self._url(), {"coach": self.mike.id}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("mike", self._staff(res))
+
+    def test_removing_someone_who_does_not_run_the_group_is_404(self):
+        res = self.client.delete(self._url(), {"coach": self.dana.id}, format="json")
+        self.assertEqual(res.status_code, 404)
+
+    def test_an_unknown_coach_is_refused(self):
+        res = self.client.post(self._url(), {"coach": 99999}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_bad_role_is_refused(self):
+        res = self.client.post(self._url(), {"coach": self.mike.id, "role": "boss"},
+                               format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_missing_group_is_404(self):
+        res = self.client.get("/api/training-groups/99999/coaches/")
+        self.assertEqual(res.status_code, 404)
+
+    # ── the head-coach rule ──────────────────────────────────────────────────
+
+    def test_promoting_a_new_head_demotes_the_old_one(self):
+        """One head at a time. Two would make `head_coach` arbitrary."""
+        self.client.post(self._url(), {"coach": self.mike.id, "role": "assistant"},
+                         format="json")
+        res = self.client.patch(self._url(), {"coach": self.mike.id, "role": "head"},
+                                format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self._staff(res), {"mike": "head", "sarah": "assistant"})
+        self.assertEqual(self.group.coach_links.filter(role="head").count(), 1)
+
+    def test_adding_someone_straight_in_as_head_also_demotes_the_incumbent(self):
+        """The rule has to hold on the add path too, not just the role change —
+        otherwise 'add Mike as head' quietly leaves two heads."""
+        res = self.client.post(self._url(), {"coach": self.mike.id, "role": "head"},
+                               format="json")
+        self.assertEqual(self._staff(res), {"mike": "head", "sarah": "assistant"})
+
+    def test_patching_someone_who_is_not_on_the_list_is_404_not_a_silent_add(self):
+        res = self.client.patch(self._url(), {"coach": self.dana.id, "role": "head"},
+                                format="json")
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_group_with_no_staff_reports_no_head_rather_than_failing(self):
+        """Removing the last coach is legal — it makes 'swap the head' a sequence
+        a caller can get right without a special endpoint."""
+        self.client.delete(self._url(), {"coach": self.sarah.id}, format="json")
+        res = self.client.get("/api/training-groups/")
+        group = next(row for row in res.data if row["id"] == self.group.id)
+        self.assertIsNone(group["head_coach"])
+
+    def test_a_role_defaults_to_assistant(self):
+        """Silently making an unlabelled addition the head would be worse than
+        an explicit requirement, so the quiet default is the lesser role."""
+        res = self.client.post(self._url(), {"coach": self.mike.id}, format="json")
+        self.assertEqual(self._staff(res)["mike"], "assistant")
+
+    # ── the list is not a permission ─────────────────────────────────────────
+
+    def test_a_coach_who_does_not_run_the_group_can_still_change_its_staff(self):
+        """Deliberate, and stated in the canon as filter-not-fence. If a real
+        boundary is ever added, THIS is the test that should be changed on
+        purpose rather than discovered broken."""
+        self.client.force_authenticate(user=self.dana)
+        res = self.client.post(self._url(), {"coach": self.dana.id, "role": "assistant"},
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+
+
+class TrainingGroupCoachMigrationTests(TransactionTestCase):
+    """The 0015 data migration, run for real against a database.
+
+    Worth testing rather than eyeballing: the auto-generated version of this
+    migration dropped the `coach` column BEFORE creating the join table, which
+    would have deleted every group's coach with no way to get it back. These
+    tests pin the order by exercising the outcome.
+    """
+
+    migrate_from = [("event_handler", "0014_blockcategory_trainingblock_categories")]
+    migrate_to = [("event_handler", "0015_traininggroupcoach")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_an_existing_group_keeps_its_coach_as_the_head(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldGroup = old_apps.get_model("event_handler", "TrainingGroup")
+        UserModel = old_apps.get_model("auth", "User")
+
+        coach = UserModel.objects.create(username="carried-over")
+        group = OldGroup.objects.create(name="Varsity", coach_id=coach.id)
+
+        new_apps = self._migrate(self.migrate_to)
+        Link = new_apps.get_model("event_handler", "TrainingGroupCoach")
+
+        link = Link.objects.get(training_group_id=group.id)
+        self.assertEqual(link.coach_id, coach.id)
+        self.assertEqual(link.role, "head")
+
+    def test_it_runs_on_a_database_with_no_groups(self):
+        """A fresh install has nothing to carry across; the backfill must be a
+        no-op rather than an error."""
+        self._migrate(self.migrate_from)
+        new_apps = self._migrate(self.migrate_to)
+        Link = new_apps.get_model("event_handler", "TrainingGroupCoach")
+        self.assertEqual(Link.objects.count(), 0)
+
+    def tearDown(self):
+        # Leave the database at the latest migration, or every test that runs
+        # after this class sees a half-migrated schema.
+        self._migrate([("event_handler", "0015_traininggroupcoach")])
+
+
 class CsvImportTests(APITestCase):
     """Importing a coach's spreadsheets (canon D16/D17).
 
@@ -1636,7 +1821,7 @@ class CsvImportTests(APITestCase):
         gym is believable, two in one group is not."""
         in_group = Athlete.objects.create(name="Jordan Lee")
         Athlete.objects.create(name="Jordan Lee")   # a different Jordan, elsewhere
-        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        group = TrainingGroup.objects.create(name="Varsity")
         in_group.training_groups.add(group)
 
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
@@ -1662,7 +1847,7 @@ class CsvImportTests(APITestCase):
     # ── the roster sheet ─────────────────────────────────────────────────────
 
     def test_a_roster_creates_people_and_can_drop_them_into_a_group(self):
-        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        group = TrainingGroup.objects.create(name="Varsity")
         res = self._upload("athlete_name,training_group\nJordan Lee,Varsity\nSam Rivera,Varsity\n",
                            url="/api/imports/")
         self.assertEqual(res.data["created"], 2)
@@ -1703,7 +1888,7 @@ class CsvImportTests(APITestCase):
 
     def test_a_plan_imports_into_one_groups_program_too(self):
         """D7: both levels. A one-off for one TrainingGroup never becomes a template."""
-        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        group = TrainingGroup.objects.create(name="Varsity")
         program = TrainingProgram.objects.create(training_group=group, name="Spring",
                                                  start_date=timezone.now().date())
         res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
@@ -1802,7 +1987,7 @@ class AthleteAssignmentTests(APITestCase):
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.athlete = Athlete.objects.create(name="Jordan Lee")
-        self.group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        self.group = TrainingGroup.objects.create(name="Varsity")
         self.program = TrainingProgram.objects.create(
             training_group=self.group, name="Fall", start_date=timezone.now().date())
         workout = TrainingProgramWorkout.objects.create(
@@ -1844,7 +2029,7 @@ class AthleteAssignmentTests(APITestCase):
     def test_two_groups_both_show_up_with_the_group_that_owns_each(self):
         """D13: an athlete can carry more than one plan, and a coach needs to see
         which TrainingGroup each one comes from."""
-        speed = TrainingGroup.objects.create(name="Speed", coach=self.coach)
+        speed = TrainingGroup.objects.create(name="Speed")
         TrainingProgram.objects.create(training_group=speed, name="Sprint",
                                        start_date=timezone.now().date())
         self.athlete.training_groups.add(self.group, speed)
@@ -1855,7 +2040,7 @@ class AthleteAssignmentTests(APITestCase):
     def test_removing_the_assignment_takes_them_out_of_the_prescribing_groups_only(self):
         """A TrainingGroup with no plan attached is roster information a coach set up on
         purpose — clearing an assignment shouldn't quietly discard it."""
-        empty = TrainingGroup.objects.create(name="Freshmen", coach=self.coach)
+        empty = TrainingGroup.objects.create(name="Freshmen")
         self.athlete.training_groups.add(self.group, empty)
         res = self.client.delete(self._url())
         self.assertEqual(res.status_code, 200)

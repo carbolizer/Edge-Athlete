@@ -12,7 +12,7 @@ from rest_framework import serializers
 from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise,
-                     BlockCategory)
+                     BlockCategory, TrainingGroupCoach)
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -117,15 +117,38 @@ class NodeSerializer(serializers.ModelSerializer):
 # editing the template later changes future deployments but never rewrites what
 # a TrainingGroup already trained.
 
+class TrainingGroupCoachSerializer(serializers.ModelSerializer):
+    """One person on a group's staff, and in what capacity.
+
+    `coach_name` rides along because every screen showing staff shows names, and
+    an id alone would force a second request to the user list."""
+    coach_name = serializers.CharField(source="coach.username", read_only=True)
+
+    class Meta:
+        model = TrainingGroupCoach
+        fields = ["id", "coach", "coach_name", "role", "created_at"]
+        read_only_fields = ["id", "coach_name", "created_at"]
+
+
 class TrainingGroupSerializer(serializers.ModelSerializer):
     """A TrainingGroup. `athlete_count` rides along because the coach UI lists TrainingGroups by
-    size, and it decides plan order when someone is in two TrainingGroups at once."""
+    size, and it decides plan order when someone is in two TrainingGroups at once.
+
+    ⚠️ `coaches` is a LIST because several staff run one group — this replaced a
+    single `coach` field in P11. `head_coach` is the one who answers for it, for
+    screens that need a single name; it can be null if nobody holds that role."""
     athlete_count = serializers.IntegerField(source="athletes.count", read_only=True)
+    coaches = TrainingGroupCoachSerializer(source="coach_links", many=True, read_only=True)
+    head_coach = serializers.SerializerMethodField()
 
     class Meta:
         model = TrainingGroup
-        fields = ["id", "name", "coach", "athlete_count", "created_at"]
-        read_only_fields = ["id", "coach", "created_at"]
+        fields = ["id", "name", "coaches", "head_coach", "athlete_count", "created_at"]
+        read_only_fields = ["id", "coaches", "head_coach", "created_at"]
+
+    def get_head_coach(self, group):
+        coach = group.head_coach
+        return {"id": coach.id, "name": coach.username} if coach else None
 
 
 class BlockCategorySerializer(serializers.ModelSerializer):
