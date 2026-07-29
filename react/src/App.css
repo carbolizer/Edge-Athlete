@@ -313,8 +313,22 @@
 .workout-panel>header h3 { font-size:22px; letter-spacing:-.035em; margin:4px 0 0; }
 .workout-panel form { display:grid; gap:14px; margin-top:18px; }
 .workout-panel label { color:var(--muted); display:grid; font-size:9px; font-weight:850; gap:6px; letter-spacing:.07em; text-transform:uppercase; }
-.workout-panel input { background:#0b1114; border:1px solid var(--line); color:var(--ink); min-height:42px; min-width:0; padding:9px 10px; width:100%; }
-.workout-panel input:focus { border-color:var(--lime); }
+/* Selects are styled with the inputs. Left to the browser they render as pale
+   native controls next to dark fields, which reads as "these two boxes are
+   different kinds of thing" when they are just fields on one form. */
+.workout-panel input, .workout-panel select { appearance:none; background:#0b1114; border:1px solid var(--line); color:var(--ink); font:inherit; min-height:42px; min-width:0; padding:9px 10px; width:100%; }
+.workout-panel select { background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%); background-position:right 15px center,right 10px center; background-repeat:no-repeat; background-size:5px 5px,5px 5px; padding-right:32px; }
+.workout-panel input:focus, .workout-panel select:focus { border-color:var(--lime); }
+
+/* The block's training days. Without this each checkbox stacks into its own row
+   as a large bare square with the label stranded beside it — a week of days
+   should read as a row of small toggles. */
+.workout-panel fieldset.program-draft { border:1px solid var(--line); padding:14px; }
+.workout-panel fieldset.program-draft > div { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.workout-panel fieldset.program-draft > div > label { align-items:center; border:1px solid var(--line); cursor:pointer; display:flex; flex-direction:row; gap:7px; padding:8px 11px; }
+.workout-panel fieldset.program-draft > div > label:hover { border-color:var(--lime); }
+.workout-panel fieldset.program-draft input[type=checkbox] { accent-color:var(--lime); height:15px; margin:0; min-height:0; min-width:0; width:15px; }
+.workout-panel fieldset.program-draft > div > label > span { color:var(--ink); font-size:11px; font-weight:700; letter-spacing:.04em; }
 .workout-exercise-list { display:grid; gap:9px; }
 .workout-exercise-list fieldset { align-items:end; border:1px solid var(--line); display:grid; gap:9px; grid-template-columns:minmax(170px,1.5fr) repeat(5,minmax(72px,.55fr)) auto; margin:0; min-width:0; padding:13px; }
 .workout-exercise-list legend { color:var(--lime); font-size:10px; font-weight:900; letter-spacing:.08em; padding:0 6px; text-transform:uppercase; }

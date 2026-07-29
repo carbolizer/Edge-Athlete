@@ -210,13 +210,24 @@ def athletes_view(request):
     return Response(AthleteSerializer(form.save()).data, status=201)
 
 
-@api_view(["PATCH"])
+@api_view(["GET", "PATCH"])
 @permission_classes([IsCoach])
 def athlete_detail(request, athlete_id):
-    """Coach-only: update a lifter's details."""
+    """Coach-only: read or update one lifter.
+
+    GET matters more than it looks. `notes` is a plain field on Athlete rather
+    than its own resource (merge canon R1), so this is the ONLY way to read a
+    coach's notes on someone — there is no notes route to fall back on. A detail
+    endpoint that could be written but not read forced the coach screen to pull
+    the entire roster just to see one athlete's note.
+    """
     athlete = Athlete.objects.filter(id=athlete_id).first()
     if athlete is None:
         return Response({"error": "athlete not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(AthleteSerializer(athlete).data)
+
     form = AthleteSerializer(athlete, data=request.data, partial=True)
     form.is_valid(raise_exception=True)
     return Response(AthleteSerializer(form.save()).data)

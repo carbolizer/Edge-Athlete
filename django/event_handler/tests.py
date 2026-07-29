@@ -385,6 +385,50 @@ class ExerciseCatalogEndpointTests(APITestCase):
         self.assertEqual(names, sorted(names))
 
 
+class AthleteNotesTests(APITestCase):
+    """Coach notes on an athlete (merge canon R1).
+
+    `notes` is a plain field on Athlete rather than its own resource, so this one
+    endpoint is the ONLY way to read or write them. That makes GET load-bearing:
+    a detail route that could be written but not read left the coach screen with
+    no way to show a note it had just saved.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="notescoach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+
+    def test_a_note_can_be_written_and_read_back(self):
+        res = self.client.patch(f"/api/athletes/{self.athlete.id}/",
+                                {"notes": "Left knee — keep depth honest."}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["notes"], "Left knee — keep depth honest.")
+
+        res = self.client.get(f"/api/athletes/{self.athlete.id}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["notes"], "Left knee — keep depth honest.")
+        self.assertEqual(res.data["id"], self.athlete.id)
+
+    def test_writing_a_note_leaves_the_rest_of_the_athlete_alone(self):
+        """A note is a partial update — it must not blank out their name or tag."""
+        self.athlete.nfc_tag_id = "tag-123"
+        self.athlete.save()
+        self.client.patch(f"/api/athletes/{self.athlete.id}/", {"notes": "back tomorrow"},
+                          format="json")
+        self.athlete.refresh_from_db()
+        self.assertEqual(self.athlete.name, "Jordan Lee")
+        self.assertEqual(self.athlete.nfc_tag_id, "tag-123")
+
+    def test_an_athlete_with_no_note_reads_as_empty_not_missing(self):
+        res = self.client.get(f"/api/athletes/{self.athlete.id}/")
+        self.assertIn("notes", res.data)
+        self.assertEqual(res.data["notes"], "")
+
+    def test_reading_an_unknown_athlete_is_404(self):
+        self.assertEqual(self.client.get("/api/athletes/999999/").status_code, 404)
+
+
 class RoomStateEndpointTests(APITestCase):
     """GET /api/room-state/ — the derived live room picture (merge canon D8).
 
