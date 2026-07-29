@@ -1635,6 +1635,100 @@ class TrainingGroupCoachMigrationTests(TransactionTestCase):
         self._migrate([("event_handler", "0015_traininggroupcoach")])
 
 
+class OneOpenSessionTests(APITestCase):
+    """One training day open at a time (canon D18, P12).
+
+    The bug this closes was invisible, which is what made it dangerous. Racks
+    follow `_active_session()`, which is last-one-wins, so a second open session
+    quietly became the one athletes checked into: their sets landed on a session
+    with no participants and the day's report came out wrong, while every tablet
+    looked completely normal.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        # A session needs a non-empty roster — the API rejects a day with nobody
+        # in it, which is correct and worth knowing when reading these payloads.
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+
+    def test_the_first_session_opens_normally(self):
+        res = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        self.assertEqual(res.status_code, 201)
+
+    def test_a_second_open_session_is_refused_with_409(self):
+        self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        res = self.client.post("/api/sessions/", {"label": "Tuesday", "athletes": [self.athlete.id]}, format="json")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(TrainingSession.objects.count(), 1)
+
+    def test_the_refusal_names_the_day_already_open(self):
+        """A bare 409 is a dead end — the caller needs to be able to say
+        'end Monday first' rather than 'something went wrong'."""
+        opened = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        res = self.client.post("/api/sessions/", {"label": "Tuesday", "athletes": [self.athlete.id]}, format="json")
+        self.assertEqual(res.data["open_session"]["id"], opened.data["id"])
+        self.assertEqual(res.data["open_session"]["label"], "Monday")
+        self.assertIn("Monday", res.data["detail"])
+
+    def test_a_new_day_can_open_once_the_previous_one_ends(self):
+        first = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        self.client.patch(f"/api/sessions/{first.data['id']}/", {}, format="json")
+
+        res = self.client.post("/api/sessions/", {"label": "Tuesday", "athletes": [self.athlete.id]}, format="json")
+        self.assertEqual(res.status_code, 201)
+
+    def test_an_ended_session_does_not_block_anything(self):
+        TrainingSession.objects.create(label="Last week", ended_at=timezone.now())
+        res = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        self.assertEqual(res.status_code, 201)
+
+    # ── ending a day says what happened ──────────────────────────────────────
+
+    def test_ending_a_day_names_the_day_that_ended(self):
+        """The original symptom: the panel redrew identically and the button
+        looked broken. Saying which day ended is the cure."""
+        opened = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        res = self.client.patch(f"/api/sessions/{opened.data['id']}/", {}, format="json")
+
+        self.assertEqual(res.data["ended"]["label"], "Monday")
+        self.assertIsNotNone(res.data["ended"]["ended_at"])
+
+    def test_ending_the_only_open_day_reports_nothing_still_open(self):
+        opened = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
+        res = self.client.patch(f"/api/sessions/{opened.data['id']}/", {}, format="json")
+        self.assertIsNone(res.data["ended"]["still_open"])
+
+    def test_ending_one_of_a_stack_says_another_is_still_open(self):
+        """Data that predates the guard can still hold a stack. Reporting it is
+        the difference between a confusing screen and an explained one."""
+        first = TrainingSession.objects.create(label="Stray")
+        second = TrainingSession.objects.create(label="Monday")
+
+        res = self.client.patch(f"/api/sessions/{second.id}/", {}, format="json")
+        self.assertEqual(res.data["ended"]["label"], "Monday")
+        self.assertEqual(res.data["ended"]["still_open"]["label"], "Stray")
+        self.assertEqual(res.data["ended"]["still_open"]["id"], first.id)
+
+    # ── the one definition of "active" ───────────────────────────────────────
+
+    def test_every_endpoint_resolves_the_same_active_session(self):
+        """P12 folded three hand-written copies of this query into one helper.
+        The rack path and the coach path disagreeing about which session is live
+        is the shape of the original bug, so it is worth pinning."""
+        stray = TrainingSession.objects.create(label="Stray")
+        current = TrainingSession.objects.create(label="Monday")
+        current.athletes.add(self.athlete)
+
+        # `session_id`, not a nested object — this is the frozen rack contract.
+        rack_view = self.client.get("/api/sessions/active/")
+        self.assertEqual(rack_view.data["session_id"], current.id)
+
+        progress = self.client.get(f"/api/sessions/active/athlete/{self.athlete.id}/progress/")
+        self.assertEqual(progress.status_code, 200)
+        self.assertNotEqual(current.id, stray.id)
+
+
 class CsvImportTests(APITestCase):
     """Importing a coach's spreadsheets (canon D16/D17).
 

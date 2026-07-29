@@ -118,10 +118,37 @@ def rack_assign(request, device_id):
     return Response(RackScreenSerializer(screen).data)
 
 
+def _open_sessions():
+    """Every session that has not been ended, newest first.
+
+    Tie-break: newest `started_at`, then highest id, so same-instant creates
+    resolve deterministically rather than by whatever order the database felt
+    like returning.
+
+    There should normally be at most ONE — `sessions_view` refuses to open a
+    second (P12). This returns a queryset anyway because the guard needs to name
+    what is already open, and because a database that predates the guard can
+    still hold several.
+    """
+    return TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id")
+
+
 def _active_session():
-    """The current session (most recent with no end), or None — resolved the same
-    way everywhere so every endpoint agrees on which session is 'active'."""
-    return TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    """The current session, or None.
+
+    ⚠️ THE SINGLE DEFINITION OF "ACTIVE". Every endpoint — coach, rack, and wall
+    — must come through here, so they cannot disagree about which session
+    athletes are checking into. Until P12 this same query was also written out by
+    hand in `sessions_active` and `athlete_progress`; three copies of one rule is
+    three places to forget when the rule changes, and P14 is going to change it
+    (a session will have to be STARTED, not merely created, to count as active).
+
+    "Most recent unended session" is last-one-wins, which is why a stray second
+    open session used to silently capture check-ins (canon D18). P12 stops a
+    second one being opened; this helper still tolerates one existing, because
+    old data can.
+    """
+    return _open_sessions().first()
 
 
 @api_view(["POST"])
@@ -302,7 +329,36 @@ def exercises_list(request):
 @api_view(["POST"])
 @permission_classes([IsCoach])
 def sessions_view(request):
-    """Coach-only: start a training session."""
+    """Coach-only: start a training session.
+
+    ONE OPEN SESSION AT A TIME (canon D18). A second open session is refused with
+    409, naming the one already open.
+
+    Why this matters more than it looks: `_active_session()` is last-one-wins, and
+    the rack screens follow it. So a stray second session did not produce an
+    error — it silently became the one athletes checked into, their sets attached
+    to a session with no participants, and the day's report came out wrong while
+    every tablet looked completely normal. It also made "End training day" look
+    broken, because ending the top session instantly promoted the next one and
+    the panel redrew identically.
+
+    The refusal names the open session so the caller can offer "end that one
+    first" instead of a dead end. `force` is deliberately NOT offered: there is no
+    honest reason to run two days at once, and an override would just move the
+    quiet corruption behind a flag.
+    """
+    open_session = _active_session()
+    if open_session is not None:
+        return Response({
+            "error": "a training day is already open",
+            "open_session": {
+                "id": open_session.id,
+                "label": open_session.label,
+                "started_at": open_session.started_at,
+            },
+            "detail": f"End '{open_session.label}' before starting another day.",
+        }, status=409)
+
     form = TrainingSessionSerializer(data=request.data)
     form.is_valid(raise_exception=True)
     return Response(TrainingSessionSerializer(form.save()).data, status=201)
@@ -323,6 +379,13 @@ def session_detail(request, session_id):
     coach tablet can jump straight to the finished report without a second call.
     Ending an already-ended session is safe: it returns the existing report
     rather than writing a second one.
+
+    It also gains an `ended` block naming the day that just ended and whether
+    another is still open (canon D18). Before P12 the coach panel could redraw
+    looking completely unchanged — ending the top of several stacked sessions
+    instantly promoted the next one — so the button appeared to do nothing while
+    working perfectly every time. Saying what happened is the fix for that; the
+    create guard is what stops the stack forming in the first place.
     """
     session = TrainingSession.objects.filter(id=session_id).first()
     if session is None:
@@ -345,6 +408,21 @@ def session_detail(request, session_id):
     body = TrainingSessionSerializer(session).data
     if report is not None:
         body["daily_report"] = {"id": report.id, "generated_at": report.generated_at}
+
+    # Name the day that ended and say whether anything is still open, so the
+    # panel can confirm in words rather than leaving the coach to infer it from a
+    # screen that may look identical. `still_open` should be null now that the
+    # create guard exists — it stays in the payload because databases that
+    # predate the guard can hold a stack, and a silent one is how D18 hid.
+    remaining = _active_session()
+    body["ended"] = {
+        "id": session.id,
+        "label": session.label,
+        "ended_at": session.ended_at,
+        "report_generated": report is not None,
+        "still_open": ({"id": remaining.id, "label": remaining.label}
+                       if remaining is not None else None),
+    }
     return Response(body)
 
 
@@ -379,10 +457,11 @@ def sessions_active(request):
     what triggers the Phase 11 inline "set your max" entry. (Wire key stays
     `maxes` to match the Phase 10/11 contract; it carries reference maxes.)
 
-    "Active" = the most recent TrainingSession whose ended_at is null. Tie-break: newest
-    started_at, then highest id (covers same-instant creates deterministically).
+    "Active" comes from `_active_session()` — the one definition every endpoint
+    shares, so the rack and the coach tablet can never disagree about which
+    session is live.
     """
-    session = TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    session = _active_session()
     if session is None:
         # No live session: return the same envelope with nulls/empties so the
         # tablet can render a plain "no active session" screen without having to
@@ -486,7 +565,7 @@ def athlete_progress(request, athlete_id):
         session, while never touching the prescribed target. TrainingSession-scoped only:
         a prior session's loads are never read, so each session starts at target.
     """
-    session = TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    session = _active_session()
     athlete = Athlete.objects.filter(id=athlete_id).first()
     if athlete is None:
         return Response({"error": "athlete not found"}, status=404)

@@ -336,9 +336,44 @@ than writing a second one.
 {
   "id": 3, "label": "Thursday — Lower + Push",
   "ended_at": "2026-07-25T06:24:28Z",
-  "daily_report": { "id": 1, "generated_at": "2026-07-25T06:24:28Z" }
+  "daily_report": { "id": 1, "generated_at": "2026-07-25T06:24:28Z" },
+  "ended": {
+    "id": 3, "label": "Thursday — Lower + Push",
+    "ended_at": "2026-07-25T06:24:28Z",
+    "report_generated": true,
+    "still_open": null        // or { id, label } if data predating the P12 guard
+  }                           // holds a stack of open sessions
 }
 ```
+
+`ended` exists so the UI can confirm **in words** which day ended. Before P12 the
+panel could redraw looking identical — ending the top of several stacked sessions
+instantly promoted the next — so the button appeared to do nothing while working
+perfectly every time (canon D18).
+
+### `POST /api/sessions/` — start a training day (coach)
+
+Body: `{ "label": "Monday — Upper", "athletes": [4, 7, 9] }`. **`athletes` is
+required and must not be empty** — a training day with nobody in it is refused.
+
+> ⚠️ **ONE OPEN DAY AT A TIME (P12).** A second open session is a **409** naming
+> the one already open, so the caller can offer "end that one first":
+>
+> ```jsonc
+> { "error": "a training day is already open",
+>   "open_session": { "id": 3, "label": "Monday", "started_at": "..." },
+>   "detail": "End 'Monday' before starting another day." }
+> ```
+>
+> There is **no `force` override.** `_active_session()` is last-one-wins and the
+> racks follow it, so a second open session did not error — it silently became the
+> one athletes checked into, their sets landed on a session with no participants,
+> and the day's report came out wrong while every tablet looked normal. An
+> override would just move that quiet corruption behind a flag.
+
+**Still open by design:** what should happen to a day left open overnight.
+Auto-closing writes an immutable `DailyReport` with nobody watching, so it is not
+obviously safer than requiring a human to end it.
 
 ### `GET /api/reports/` — finished training days (coach)
 

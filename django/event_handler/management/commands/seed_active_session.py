@@ -129,6 +129,17 @@ class Command(BaseCommand):
 
         program = instantiate_block(block, group, start_date=timezone.now().date())
 
+        # Close anything still open before opening a new day. Re-running the
+        # seeder used to stack another open session every time, which is exactly
+        # how the demo database ended up with four of them and made "End training
+        # day" look broken (canon D18) — ending the top one just promoted the
+        # next. The API now refuses a second open session; the seeder writes rows
+        # directly, so it has to hold the same rule itself.
+        closed = TrainingSession.objects.filter(ended_at__isnull=True).update(
+            ended_at=timezone.now())
+        if closed:
+            self.stdout.write(f"  closed {closed} session(s) that were still open")
+
         # The live session, roster = all four athletes.
         session = TrainingSession.objects.create(label=SESSION_LABEL)
         session.athletes.set(athletes.values())
