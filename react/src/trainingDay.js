@@ -176,3 +176,20 @@ export function endTimeChoices(startedAt, now = new Date(), limit = 24) {
 export function buildEndDayPayload(endedAtChoice) {
   return endedAtChoice ? { ended_at: endedAtChoice } : {};
 }
+
+// A timestamp a coach can read at a glance.
+//
+// `reportValue` is a generic "value, or -- if absent" helper, so handing it a
+// timestamp printed the raw ISO string: "started 2026-07-28T20:42:37.736189Z".
+// That is machine output, and it landed in the copy where the DATE matters most
+// — the notice telling a coach their day has been open since before today.
+//
+// Same day reads as just a clock time, because "started 2:41 PM" is unambiguous
+// when it is still today. Anything older gets its day named, since that is the
+// whole point of showing it.
+export function timestampLabel(value, now = new Date()) {
+  if (value === null || value === undefined) return "--";
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return "--";
+  return dayLabel(when, now);
+}

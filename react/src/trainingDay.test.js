@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetReportRendering, buildEndDayPayload, buildTrainingDayPayload, endedDayMessage, endTimeChoices, orderedReportExercises, orderedReportPrescriptions, qualifyingReportSets, reportAthletes, reportSnapshot, reportSummary, reportValue, unfinishedRackNumbers } from "./trainingDay.js";
+import { budgetReportRendering, buildEndDayPayload, buildTrainingDayPayload, endedDayMessage, endTimeChoices, orderedReportExercises, orderedReportPrescriptions, qualifyingReportSets, reportAthletes, reportSnapshot, reportSummary, reportValue, timestampLabel, unfinishedRackNumbers } from "./trainingDay.js";
 
 describe("training day payloads", () => {
   it("trims the label and deduplicates numeric athlete IDs", () => {
@@ -152,5 +152,30 @@ describe("buildEndDayPayload", () => {
   it("sends the chosen time when one was picked", () => {
     expect(buildEndDayPayload("2026-07-29T18:00:00.000Z"))
       .toEqual({ ended_at: "2026-07-29T18:00:00.000Z" });
+  });
+});
+
+describe("timestampLabel", () => {
+  const now = new Date("2026-07-29T18:42:00Z");
+
+  it("shows only a clock time for something earlier today", () => {
+    expect(timestampLabel("2026-07-29T14:41:00Z", now)).toMatch(/\d{1,2}:\d{2}/);
+    expect(timestampLabel("2026-07-29T14:41:00Z", now)).not.toContain("Yesterday");
+  });
+
+  // The reason this function exists: the stale-day notice is precisely where the
+  // DATE is the point, and it was printing a raw ISO string.
+  it("names the day for anything older", () => {
+    expect(timestampLabel("2026-07-28T20:42:00Z", now)).toContain("Yesterday");
+  });
+
+  it("never leaks a raw ISO string", () => {
+    expect(timestampLabel("2026-07-28T20:42:37.736189Z", now)).not.toContain("T20:42");
+  });
+
+  it("falls back to -- for missing or unparseable values", () => {
+    expect(timestampLabel(null, now)).toBe("--");
+    expect(timestampLabel(undefined, now)).toBe("--");
+    expect(timestampLabel("not a date", now)).toBe("--");
   });
 });
