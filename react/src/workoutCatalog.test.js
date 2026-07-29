@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCorrection, buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
+import { applyCorrection, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
   // The block is in the URL, not the payload — a day cannot exist unattached, and
@@ -177,5 +177,38 @@ describe("buildDeployPayload", () => {
     expect(payload.training_block).toBeUndefined();
     expect(payload.end_date).toBeUndefined();
     expect(payload.training_group).toBe(4);
+  });
+});
+
+describe("editing a template", () => {
+  const ids = [10, 20, 30];
+
+  it("hands back the whole new order, because the server renumbers a list at once", () => {
+    expect(moveInList(ids, 30, -1)).toEqual([10, 30, 20]);
+    expect(moveInList(ids, 10, 1)).toEqual([20, 10, 30]);
+  });
+
+  // The arrow at either end should be disabled, but if it is ever clicked it
+  // must not wrap the last day around to the front.
+  it("refuses to move past either end rather than wrapping", () => {
+    expect(moveInList(ids, 10, -1)).toBe(ids);
+    expect(moveInList(ids, 30, 1)).toBe(ids);
+    expect(moveInList(ids, 999, -1)).toBe(ids);
+  });
+
+  it("sends only the fields actually filled in", () => {
+    expect(buildRowEdit({ sets: "4", reps: "", target_percent: "72.5" }))
+      .toEqual({ sets: 4, target_percent: 72.5 });
+  });
+
+  // Ordering goes through the whole-list route; accepting it here is exactly
+  // what breaks against the position constraint.
+  it("never sends position", () => {
+    expect(buildRowEdit({ position: "2", sets: "5" })).toEqual({ sets: 5 });
+  });
+
+  it("treats an untouched row as nothing to save", () => {
+    expect(buildRowEdit({})).toEqual({});
+    expect(Object.keys(buildRowEdit({ sets: "", reps: "" }))).toHaveLength(0);
   });
 });

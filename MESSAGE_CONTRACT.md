@@ -418,14 +418,46 @@ past sessions and sets stay attached to whatever they ran under.
 ### `GET|POST /api/training-blocks/{id}/workouts/` — one day inside a template (coach)
 
 ```jsonc
-{ "training_block": 1, "name": "Day 1 — Lower", "position": 1,
+{ "name": "Day 1 — Lower", "position": 1,
   "exercises": [
     { "exercise": 1, "sets": 5, "reps": 3, "target_percent": 80,
       "velocity_zone_min": 0.5, "velocity_zone_max": 0.8 },
     { "exercise": 2, "sets": 3, "reps": 5, "target_percent": 75 } ] }
 ```
 
-`position` orders the day and must run 1, 2, 3… with no gaps.
+The block is in the URL, not the body — a day cannot exist without one.
+`position` orders the day and must run 1, 2, 3… with no gaps; omit it to append.
+
+### Editing a template (coach)
+
+| Route | Does |
+|---|---|
+| `PATCH /api/training-blocks/{id}/workouts/{id}/` | Rename a day — `{"name": "Day 1 — Lower"}` |
+| `DELETE` same | Remove a day and its prescription rows |
+| `PUT /api/training-blocks/{id}/workout-order/` | `{"workout_ids": [12, 9, 14]}` → positions 1, 2, 3 |
+| `PATCH /api/training-blocks/{id}/workouts/{id}/exercises/{id}/` | Change `sets`, `reps`, `target_percent`, `velocity_zone_min/max`, or `exercise` |
+| `DELETE` same | Remove one prescribed movement |
+| `PUT /api/training-blocks/{id}/workouts/{id}/exercise-order/` | `{"exercise_ids": [7, 3]}` → positions 1, 2 |
+
+**Reordering takes the WHOLE list, never one item.** Both `position` columns
+carry a `UniqueConstraint(parent, position)` that Postgres checks after every
+statement, so `PATCH {"position": 2}` collides with whichever row is still on 2.
+The server renumbers in two passes inside one transaction (shift everything to
+`position + 10000`, then write the finals), so no two rows ever share a number
+mid-flight. It is also idempotent and cannot leave a gap or a duplicate.
+
+- **`position` is rejected by the row `PATCH`** (`400 nothing_to_change` if it is
+  the only field sent) — ordering has exactly one route.
+- **A partial id list is refused** (`400 invalid_order`) rather than half-applied;
+  naming a subset would silently drop the rest out of the order.
+- **The parent is checked**: `/training-blocks/1/workouts/99/` is a `404` when day
+  99 belongs to another block.
+- **Editing a template never touches a deployed program.** `TrainingProgramWorkout`
+  and `TrainingProgramExercise` hold no foreign key back to the block rows — they
+  were copied at deploy time — so deleting a day from a template cannot remove it
+  from a group currently training it.
+- **Every edit here moves the block's `updated_at`**, because changing a day *is*
+  changing the template. Editing a deployed program moves nothing on the block.
 
 ### `GET|POST /api/training-programs/` — deploy a template for a TrainingGroup (coach)
 

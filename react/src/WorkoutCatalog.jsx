@@ -26,11 +26,12 @@
 // Movements are chosen from the shared exercise catalog rather than typed, so
 // "Back Squat" and "back squat" can never drift into two different movements.
 //
-// Days can be created but NOT yet renamed, removed, or reordered — those routes
-// don't exist. See P10 in the merge canon.
+// Days can be renamed, reordered, and removed from the "Days by block" panel.
+// Reordering sends the WHOLE new order rather than one position, because the
+// server renumbers a list at once — see moveInList.
 
 import { useEffect, useState } from "react";
-import { applyCorrection, buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
+import { applyCorrection, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 const TRAINING_BLOCKS_URL = "/api/training-blocks/";
 const CSV_PREVIEW_URL = "/api/imports/preview/";
@@ -119,6 +120,11 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   // made on the first pass is still applied on the second.
   const [corrections, setCorrections] = useState({});
   const [rawErrors, setRawErrors] = useState([]);
+  // template editing: which day is open, what is being typed, and what failed
+  const [openDayId, setOpenDayId] = useState(null);
+  const [rowDrafts, setRowDrafts] = useState({});
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
   const [athletes, setAthletes] = useState([]);
   // the movement catalog and the TrainingGroups, for the pickers
   const [movements, setMovements] = useState([]);
@@ -369,6 +375,96 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     }
   }
 
+  // ─────────────────── editing a template ───────────────────
+  //
+  // Every one of these reloads the blocks afterwards rather than patching state
+  // by hand: the server owns positions, and guessing at them locally is how a
+  // screen ends up disagreeing with the database.
+
+  async function editRequest(url, options, failure) {
+    setEditBusy(true);
+    setEditError("");
+    try {
+      const response = await fetch(url, { headers, ...options });
+      if (response.status === 401 || response.status === 403) { onLogout(); return false; }
+      if (response.status !== 204 && !response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || failure);
+      }
+      await loadPrograms(programUrl);
+      return true;
+    } catch (problem) {
+      setEditError(problem.message || failure);
+      return false;
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  const jsonBody = (body) => ({
+    method: "PATCH",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  function renameDay(block, workout) {
+    const next = window.prompt("Rename this day", workout.name);
+    if (next === null || next.trim() === workout.name) return;
+    editRequest(`/api/training-blocks/${block.id}/workouts/${workout.id}/`,
+      jsonBody({ name: next }), "The day could not be renamed.");
+  }
+
+  // Deleting a day cannot reach a group already training a copy of this block —
+  // deploying copies the rows down rather than pointing at them. The wording
+  // says so, because "delete" on a template a team is mid-season on is exactly
+  // the thing a coach would hesitate over.
+  function deleteDay(block, workout) {
+    if (!window.confirm(`Delete "${workout.name}" from ${block.name}?\n\nGroups already training a deployed copy keep theirs.`)) return;
+    editRequest(`/api/training-blocks/${block.id}/workouts/${workout.id}/`,
+      { method: "DELETE" }, "The day could not be deleted.");
+  }
+
+  // Up/down send the WHOLE new order, because the server renumbers a list at
+  // once — a one-at-a-time swap collides with the row already on that number.
+  function moveDay(block, workout, direction) {
+    const ids = (block.workouts || []).map((w) => w.id);
+    const next = moveInList(ids, workout.id, direction);
+    if (next === ids) return;
+    editRequest(`/api/training-blocks/${block.id}/workout-order/`,
+      { method: "PUT", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ workout_ids: next }) },
+      "The days could not be reordered.");
+  }
+
+  function moveRow(block, workout, row, direction) {
+    const ids = (workout.exercises || []).map((e) => e.id);
+    const next = moveInList(ids, row.id, direction);
+    if (next === ids) return;
+    editRequest(`/api/training-blocks/${block.id}/workouts/${workout.id}/exercise-order/`,
+      { method: "PUT", headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ exercise_ids: next }) },
+      "The movements could not be reordered.");
+  }
+
+  function deleteRow(block, workout, row) {
+    if (!window.confirm(`Remove ${row.exercise_name || "this movement"} from ${workout.name}?`)) return;
+    editRequest(`/api/training-blocks/${block.id}/workouts/${workout.id}/exercises/${row.id}/`,
+      { method: "DELETE" }, "The movement could not be removed.");
+  }
+
+  async function saveRow(block, workout, row) {
+    const payload = buildRowEdit(rowDrafts[row.id] || {});
+    if (!Object.keys(payload).length) return;
+    const ok = await editRequest(
+      `/api/training-blocks/${block.id}/workouts/${workout.id}/exercises/${row.id}/`,
+      jsonBody(payload), "The movement could not be saved.");
+    if (ok) setRowDrafts((current) => ({ ...current, [row.id]: {} }));
+  }
+
+  function updateRowDraft(rowId, field, value) {
+    setRowDrafts((current) => ({ ...current, [rowId]: { ...current[rowId], [field]: value } }));
+  }
+
   function pickCorrection(kind, value, recordId) {
     setCorrections((current) => applyCorrection(current, kind, value, recordId));
   }
@@ -452,12 +548,63 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     {/* Days no longer have a global list of their own — a day belongs to one
         block, so they are read from the blocks we already loaded. Each block
         arrives with its days and their prescription rows nested inside it. */}
-    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Movements appear in prescribed order.</p></header>
+    {/* Days grouped under the block they belong to, because up/down only means
+        anything within one block — and because a day's name ("Day 1") is
+        ambiguous without it. Open a day to edit its movements. */}
+    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Rename, reorder, or remove. Changes here never touch a group already training a deployed copy.</p></header>
       {programCatalogState === "loading" && <p className="monitor-empty" role="status">Loading blocks...</p>}
       {programCatalogState !== "loading" && allDays.length === 0 && <p className="monitor-empty">No days have been added to any block yet.</p>}
-      <div className="workout-card-grid">{allDays.map(({ block, workout }) => (
-        <article key={workout.id}><header><span>{block.name} · day {workout.position} · {workout.exercises?.length || 0} exercise{workout.exercises?.length === 1 ? "" : "s"}</span><h4>{workout.name}</h4></header><ol>{(workout.exercises || []).map((exercise) => <ExerciseSummary exercise={exercise} key={exercise.id || `${exercise.position}-${exercise.exercise}`} />)}</ol></article>
-      ))}</div>
+      {editError && <p className="training-day-error" role="alert">{editError}</p>}
+
+      {programs.filter((block) => (block.workouts || []).length).map((block) => (
+        <div className="workout-block-group" key={block.id}>
+          <h4 className="workout-block-heading">{block.name}</h4>
+          <div className="workout-card-grid">{(block.workouts || []).map((workout, index, all) => {
+            const open = openDayId === workout.id;
+            return (
+              <article key={workout.id}>
+                <header>
+                  <span>Day {workout.position} · {workout.exercises?.length || 0} movement{workout.exercises?.length === 1 ? "" : "s"}</span>
+                  <h4>{workout.name}</h4>
+                </header>
+
+                <div className="workout-day-actions">
+                  <button type="button" onClick={() => moveDay(block, workout, -1)} disabled={editBusy || index === 0} aria-label={`Move ${workout.name} earlier`}>↑</button>
+                  <button type="button" onClick={() => moveDay(block, workout, 1)} disabled={editBusy || index === all.length - 1} aria-label={`Move ${workout.name} later`}>↓</button>
+                  <button type="button" className="workout-secondary" onClick={() => renameDay(block, workout)} disabled={editBusy}>Rename</button>
+                  <button type="button" className="workout-secondary" onClick={() => setOpenDayId(open ? null : workout.id)} disabled={editBusy}>{open ? "Done" : "Edit movements"}</button>
+                  <button type="button" className="workout-remove" onClick={() => deleteDay(block, workout)} disabled={editBusy}>Delete day</button>
+                </div>
+
+                {!open ? <ol>{(workout.exercises || []).map((exercise) => <ExerciseSummary exercise={exercise} key={exercise.id || `${exercise.position}-${exercise.exercise}`} />)}</ol> : (
+                  <div className="workout-row-editor">
+                    {(workout.exercises || []).length === 0 && <p className="monitor-empty">This day has no movements.</p>}
+                    {(workout.exercises || []).map((row, rowIndex, rows) => {
+                      const draft = rowDrafts[row.id] || {};
+                      return (
+                        <fieldset key={row.id}>
+                          <legend>{row.position}. {row.exercise_name || row.exercise}</legend>
+                          {/* Blank means "leave as it is" — the server only
+                              changes the fields it is actually sent. */}
+                          <label>Sets<input type="number" min="1" step="1" placeholder={String(row.sets)} value={draft.sets ?? ""} onChange={(e) => updateRowDraft(row.id, "sets", e.target.value)} disabled={editBusy} /></label>
+                          <label>Reps<input type="number" min="1" step="1" placeholder={String(row.reps)} value={draft.reps ?? ""} onChange={(e) => updateRowDraft(row.id, "reps", e.target.value)} disabled={editBusy} /></label>
+                          <label>Target (% of max)<input type="number" min={MIN_TARGET_PERCENT} max={MAX_TARGET_PERCENT} step="any" placeholder={String(row.target_percent)} value={draft.target_percent ?? ""} onChange={(e) => updateRowDraft(row.id, "target_percent", e.target.value)} disabled={editBusy} /></label>
+                          <div className="workout-day-actions">
+                            <button type="button" onClick={() => moveRow(block, workout, row, -1)} disabled={editBusy || rowIndex === 0} aria-label="Move earlier">↑</button>
+                            <button type="button" onClick={() => moveRow(block, workout, row, 1)} disabled={editBusy || rowIndex === rows.length - 1} aria-label="Move later">↓</button>
+                            <button type="button" onClick={() => saveRow(block, workout, row)} disabled={editBusy || !Object.keys(buildRowEdit(draft)).length}>Save</button>
+                            <button type="button" className="workout-remove" onClick={() => deleteRow(block, workout, row)} disabled={editBusy}>Remove</button>
+                          </div>
+                        </fieldset>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+            );
+          })}</div>
+        </div>
+      ))}
     </section>
 
     <div className="workout-program-grid">

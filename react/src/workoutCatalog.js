@@ -159,6 +159,37 @@ export function countCorrections(corrections) {
   return Object.values(corrections || {}).reduce((total, group) => total + Object.keys(group).length, 0);
 }
 
+// ─────────────────────── editing a template (P10) ───────────────────────
+
+// Move one item up or down, and hand back the WHOLE new order.
+//
+// The server renumbers a whole list at once rather than accepting "put this one
+// at 2" — the position columns have a uniqueness rule that a one-at-a-time swap
+// trips over. So the up/down buttons build the full order and send that.
+//
+// Moving the first item up (or the last down) returns the list unchanged rather
+// than wrapping around, which is what a coach expects from an arrow that should
+// simply be disabled at the end.
+export function moveInList(ids, id, direction) {
+  const from = ids.indexOf(id);
+  const to = from + direction;
+  if (from === -1 || to < 0 || to >= ids.length) return ids;
+  const next = [...ids];
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
+}
+
+// Only the fields the row endpoint accepts, and only the ones actually touched.
+// `position` is deliberately absent: ordering goes through the whole-list route.
+export function buildRowEdit(draft) {
+  const payload = {};
+  for (const field of ["sets", "reps", "target_percent", "velocity_zone_min", "velocity_zone_max"]) {
+    if (draft[field] === undefined || draft[field] === "") continue;
+    payload[field] = Number(draft[field]);
+  }
+  return payload;
+}
+
 export function sameOriginPath(value, origin) {
   if (!value) return null;
   try {

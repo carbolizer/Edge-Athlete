@@ -323,6 +323,19 @@
 /* The block's training days. Without this each checkbox stacks into its own row
    as a large bare square with the label stranded beside it — a week of days
    should read as a row of small toggles. */
+/* Days grouped under their block, with the edit controls per card. */
+.workout-block-group { margin-top:18px; }
+.workout-block-heading { color:var(--muted); font-size:10px; font-weight:850; letter-spacing:.09em; margin:0 0 10px; text-transform:uppercase; }
+.workout-day-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+.workout-day-actions button { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font-size:11px; padding:6px 10px; }
+.workout-day-actions button:hover:not(:disabled) { border-color:var(--lime); color:var(--lime); }
+.workout-day-actions button:disabled { opacity:.35; cursor:default; }
+.workout-day-actions .workout-remove { border-color:rgba(239,68,68,.4); color:#f87171; }
+.workout-day-actions .workout-remove:hover:not(:disabled) { border-color:#f87171; color:#f87171; }
+.workout-row-editor { display:grid; gap:10px; margin-top:12px; }
+.workout-row-editor fieldset { border:1px solid var(--line); display:grid; gap:8px; padding:12px; }
+.workout-row-editor legend { color:var(--lime); font-size:10px; font-weight:850; letter-spacing:.07em; padding:0 6px; text-transform:uppercase; }
+
 .workout-panel fieldset.program-draft { border:1px solid var(--line); padding:14px; }
 .workout-panel fieldset.program-draft > div { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .workout-panel fieldset.program-draft > div > label { align-items:center; border:1px solid var(--line); cursor:pointer; display:flex; flex-direction:row; gap:7px; padding:8px 11px; }
