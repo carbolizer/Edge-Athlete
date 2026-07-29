@@ -992,7 +992,60 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 | **P8 — Verify + ship** | Fresh-DB boot, full test pass, visual rack check, browser-verify every coach page. **Plus: decide `rackState.js`** — P7 kept it orphaned on purpose (§8.1); either a wired screen now needs it, or it and its test get deleted here. Do not ship 280 lines of dead tested code. | All green → **fast-forward `SprintBranch` to `merge-braydon`.** |
 | **P9 — Naming alignment** *(last, deliberately)* | Route and view names still speak his old vocabulary, because §3.3 said bend the URL to the existing client rather than reshape its code. That was right during the merge and wrong to keep afterwards: a route named for a table that no longer exists is a trap for the next person. Rename routes, view functions, and serializers to match the model names — see the drift table below. | Every route name matches the model it serves; `SPEC.md` + `MESSAGE_CONTRACT.md` regenerated; frontend call sites updated in the same commit; full test pass. |
 
-| **P10 — Catalog editing + reordering** *(after the rename, deliberately)* | Templates can be BUILT today but not edited: there is no route to rename a day, remove one, reorder the days in a block, or change a prescription row after it is written. Add them (names below already reflect P9's rename): `PATCH`/`DELETE training-blocks/{id}/workouts/{id}/`, `PUT training-blocks/{id}/workout-order/`, `PATCH`/`DELETE .../workouts/{id}/exercises/{id}/`, `PUT .../workouts/{id}/exercise-order/`. Then the catalog UI for each. | A coach can rename, delete, and reorder days in a block and rows in a day; order survives a reload; full test pass; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
+| **P10 — Catalog editing + reordering** *(after the rename, deliberately)* | Templates can be BUILT today but not edited: there is no route to rename a day, remove one, reorder the days in a block, or change a prescription row after it is written. Add them (names below already reflect P9's rename): `PATCH`/`DELETE training-blocks/{id}/workouts/{id}/`, `PUT training-blocks/{id}/workout-order/`, `PATCH`/`DELETE .../workouts/{id}/exercises/{id}/`, `PUT .../workouts/{id}/exercise-order/`. Then the catalog UI for each. **Also adds `TrainingBlock.updated_at` (`auto_now`)** — every route in this phase edits the template, so each must explicitly touch its parent block; a `TrainingProgram` edit must not (see the note below). | A coach can rename, delete, and reorder days in a block and rows in a day; order survives a reload; **editing a day or a prescription row in a BLOCK moves that block's `updated_at`, while editing a deployed PROGRAM leaves every block untouched**; full test pass; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
+
+| **P11 — Multi-coach: ownership, filtering, and block categories** *(after the merge is shipped)* | Today "coach" means nothing but "logged in" — see the audit below. Give a coach a working relationship to their athletes without walling off the shared catalog: a coach-scoped filter on the block catalog, a category on `TrainingBlock`, and real ownership of `TrainingGroup`. | A coach can see only their own blocks by default and still search the whole department's; blocks carry a category; a group has one or more coaches with roles; every write endpoint enforces it; full test pass; `SPEC.md` + `MESSAGE_CONTRACT.md` updated. |
+
+**Where multi-coach stands TODAY (audited 2026-07-28) — the starting point, not the target.**
+Coaches are stock `django.contrib.auth.User`; there is no custom user model, no `Coach` model, no profile.
+Out of 21 models exactly **two** carry an owner — `TrainingGroup.coach` and `TrainingBlock.coach`, both
+`PROTECT` — and both are only ever *written* (`form.save(coach=request.user)`), never read back. `IsCoach` is
+`return bool(request.user and request.user.is_authenticated)`: no role check, no object-level check anywhere.
+So with two coaches in the database, **either can edit or delete the other's groups and blocks**, and
+`TrainingProgram`, `Session`, `DailyReport`, `Athlete`, and `AthleteReferenceMax` have no owner at all. The
+`PROTECT` does earn its keep: a coach who still owns groups or blocks cannot be deleted, so history is never
+orphaned.
+
+**P11 design decisions (from the user, 2026-07-28):**
+- **A `TrainingBlock` stays GLOBAL.** The whole athletic department can see and reuse every template — the
+  point of a shared catalog is that a good block gets reused. The coach link is a **LENS, NOT A FENCE**:
+  `?coach=me` (or `?coach={id}`) so nobody scrolls a department-sized catalog to find their own work, but the
+  full list is always one click away. This needs **no migration** — `TrainingBlock.coach` already exists and
+  is already populated on create; it is a queryset filter and a UI default.
+- **Blocks get a CATEGORY** so the shared catalog stays navigable as it grows (season, sport, population).
+  ⚠️ **Do not reuse the existing `Tag` model** — its vocabulary is movement labels hung on `Exercise`
+  ("lower", "push"), `name` is globally unique, and merging two vocabularies into one namespace makes
+  "Upper" mean two different things. Use a dedicated lookup table. **Open: one category per block (FK) or
+  several (M2M)?** A block is plausibly both "Off-season" and "Football", which argues M2M; "category"
+  singular argues FK. Decide at build time — FK is trivially widened to M2M later, the reverse is not.
+- **`TrainingBlock.updated_at` for sorting by most-recently-edited — but see below, it belongs to P10.**
+- **Group ownership is the real anchor.** A group is the durable thing a coach *has*; blocks are meant to be
+  shared and sessions are shared by design (many groups, one timeslot, via `SessionParticipation`). Ownership
+  of a group propagates naturally: you may touch a program because you own the group it runs for. ⚠️ A real
+  weight room has several staff on one group, which **the current single `coach` FK cannot express** — it
+  needs a `TrainingGroupCoach` join (group × user × role) to say "Sarah and Mike both run Varsity".
+- **Still to decide before building:** is this a *permission boundary* ("an assistant cannot delete a block")
+  or only a *filter* ("show me mine first")? The filter is cheap; the boundary means object-level permission
+  checks on every write endpoint and is most of the phase's cost.
+
+**⚠️ `updated_at` belongs in P10, not P11** *(decided 2026-07-28)*. "Last edited" is meaningless until editing
+exists, and P10 is the phase that introduces it — before P10 a block cannot be changed at all, so last-edited
+is just created-at. Add `models.DateTimeField(auto_now=True)` to **`TrainingBlock`** in P10's migration.
+
+**The trap:** `auto_now` fires on `Model.save()` for *the row being saved*. Every P10 route edits a
+`TrainingBlockWorkout` or a `TrainingBlockExercise` — and **those rows ARE the template**, so renaming a day
+or changing a prescription row genuinely IS editing that block, even though the saved row is a child. Without
+an explicit touch, the child's timestamp moves and the block's goes stale, and a catalog sorted by "recently
+edited" is wrong in exactly the case a coach cares about. **So: every P10 write must explicitly touch its
+parent `TrainingBlock` in the same transaction.**
+
+**⚠️ The opposite is also a rule, and it is the more dangerous one to get wrong. Editing a `TrainingProgram`
+— or any `TrainingProgramWorkout` / `TrainingProgramExercise` — must NEVER touch the block's `updated_at`.**
+A program is a snapshot copy taken at deploy time and independent from that moment on (§4.1,
+`instantiate_block()`); that independence is the whole reason a coach can adjust one group's plan mid-season
+without disturbing the template or any other group running it. Bubbling a program edit up to the block would
+report the template as "edited" when nobody edited it, and would quietly imply a coupling that does not exist.
+The two hierarchies are parallel and only the block side carries this timestamp.
 
 **⚠️ P10's ordering constraint — design decided 2026-07-28, do not re-derive.** `TrainingBlockWorkout` and
 `TrainingBlockExercise` each carry `UniqueConstraint(parent, position)` and those constraints are **NOT
