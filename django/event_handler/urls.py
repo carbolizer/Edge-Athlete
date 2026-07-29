@@ -41,7 +41,7 @@ urlpatterns = [
     path('exercises/', views.exercises_list, name='exercises_list'),
 
     # training plans
-    path('programs/', views.programs_view, name='programs'),
+    path('prescriptions/', views.prescriptions_view, name='prescriptions'),
 
     # sessions
     path('sessions/', views.sessions_view, name='sessions'),
@@ -50,7 +50,7 @@ urlpatterns = [
     path('sessions/active/status/', views.session_status, name='session_status'),
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
 
-    # planning — squads, reusable templates, and templates deployed for a squad.
+    # planning — TrainingGroups, reusable templates, and templates deployed for a TrainingGroup.
     # Route names follow what the coach front end already calls: its
     # "workout-programs" are our reusable TrainingBlocks, and its "workouts" are
     # the days inside one. We bend the URLs to the existing client rather than
@@ -58,30 +58,31 @@ urlpatterns = [
     path('training-groups/', views.training_groups_view, name='training_groups'),
     path('training-groups/<int:group_id>/athletes/', views.training_group_athletes_view,
          name='training_group_athletes'),
-    path('workout-programs/', views.workout_programs_view, name='workout_programs'),
-    path('workouts/', views.workouts_view, name='workouts'),
+    path('training-blocks/', views.training_blocks_view, name='training_blocks'),
+    path('training-blocks/<int:block_id>/workouts/', views.training_block_workouts_view,
+         name='training_block_workouts'),
     path('training-programs/', views.training_programs_view, name='training_programs'),
 
     # spreadsheet import. ONE pair of routes for all three kinds of sheet (roster,
     # max sheet, workout plan) — which one you uploaded is worked out from its
     # column names, so a coach never has to declare it (canon D16). Preview writes
     # nothing; import re-checks and then saves in one all-or-nothing step.
-    path('workouts/imports/preview/', views.workout_import_preview, name='workout_import_preview'),
-    path('workouts/imports/', views.workout_import, name='workout_import'),
+    path('imports/preview/', views.import_preview, name='import_preview'),
+    path('imports/', views.import_commit, name='import_commit'),
 
-    # which squads are training in a session — this is what makes one session
-    # shared between several squads on different plans.
+    # which TrainingGroups are training in a session — this is what makes one session
+    # shared between several TrainingGroups on different plans.
     path('sessions/<int:session_id>/participation/', views.session_participation_view,
          name='session_participation'),
 
     # what one athlete is training. Reads as "this athlete's program"; underneath
-    # it is squad membership, because a plan belongs to a squad (D12/D13). Writes
-    # say which squads they moved.
-    path('athletes/<int:athlete_id>/workout-assignment/', views.athlete_workout_assignment,
-         name='athlete_workout_assignment'),
+    # it is TrainingGroup membership, because a plan belongs to a TrainingGroup (D12/D13). Writes
+    # say which TrainingGroups they moved.
+    path('athletes/<int:athlete_id>/program/', views.athlete_program_view,
+         name='athlete_program'),
 
-    # the per-athlete exception to a squad's prescription (rare by design).
-    path('athletes/<int:athlete_id>/workout-exercises/<int:exercise_id>/override/',
+    # the per-athlete exception to a TrainingGroup's prescription (rare by design).
+    path('athletes/<int:athlete_id>/program-exercises/<int:exercise_id>/override/',
          views.athlete_exercise_override_view, name='athlete_exercise_override'),
 
     # reports — ONE family. "This athlete's reports" is the same list filtered
@@ -91,7 +92,7 @@ urlpatterns = [
     path('reports/<int:report_id>/pdf/', views.report_pdf_view, name='report_pdf'),
 
     # reference maxes — the prescription lever (% of these = every target weight).
-    # Accepts a list so a whole squad's testing day goes in with one call.
+    # Accepts a list so a whole TrainingGroup's testing day goes in with one call.
     path('reference-maxes/', views.reference_maxes_view, name='reference_maxes'),
 
     # sets

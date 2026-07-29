@@ -38,7 +38,7 @@ from django.db.models.functions import Lower
 from django.utils import timezone
 
 from event_handler.models import (MonitoringEvent, Node, RackCheckIn,
-                                  RackScreen, Rep, Session, Set)
+                                  RackScreen, Rep, TrainingSession, Set)
 from event_handler.services.plan_resolution import velocity_zones_by_athlete
 
 # Hard ceilings so one absurd gym (or a bad import) can never make this endpoint
@@ -54,7 +54,7 @@ _REAL_COLORS = {"green", "yellow", "red"}
 
 def _active_session():
     """The one live session — newest session that has not been ended."""
-    return Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    return TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
 
 
 def _current_athlete_by_rack(session):

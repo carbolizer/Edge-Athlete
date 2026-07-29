@@ -10,8 +10,8 @@ Grouped by who uses them:
   TABLET (open — no login):
     - rack_register / rack_racknumber: a tablet says "here I am" and asks
       "which rack am I?"
-    - programs_view (GET): look up an athlete's plan (targets + the speed zone
-      used to color reps).
+    - prescriptions_view (GET): look up an athlete's resolved targets for today
+      (weights + the speed zone used to color reps).
     - set_create: start a set (make an empty record).
     - set_complete: finish a set — save all its reps + totals in one
       all-or-nothing step. The ONLY place rep records are created.
@@ -36,14 +36,14 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import (Node, RackScreen, Athlete, Session, Set, Rep, AthleteReferenceMax,
+from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, AthleteReferenceMax,
                      Exercise, RackCheckIn, DailyReport, TrainingGroup, TrainingBlock,
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride)
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
-                          AthleteSerializer, SessionSerializer,
+                          AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
                           TrainingProgramSerializer)
@@ -116,7 +116,7 @@ def rack_assign(request, device_id):
 def _active_session():
     """The current session (most recent with no end), or None — resolved the same
     way everywhere so every endpoint agrees on which session is 'active'."""
-    return Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    return TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
 
 
 @api_view(["POST"])
@@ -237,7 +237,7 @@ def athlete_detail(request, athlete_id):
 
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
-def programs_view(request):
+def prescriptions_view(request):
     """GET: an athlete's training plan for today, ?athlete={id} to filter (open).
 
     SAME ADDRESS, DIFFERENT SOURCE. This used to read a per-athlete table where a
@@ -298,9 +298,9 @@ def exercises_list(request):
 @permission_classes([IsCoach])
 def sessions_view(request):
     """Coach-only: start a training session."""
-    form = SessionSerializer(data=request.data)
+    form = TrainingSessionSerializer(data=request.data)
     form.is_valid(raise_exception=True)
-    return Response(SessionSerializer(form.save()).data, status=201)
+    return Response(TrainingSessionSerializer(form.save()).data, status=201)
 
 
 @api_view(["PATCH"])
@@ -319,10 +319,10 @@ def session_detail(request, session_id):
     Ending an already-ended session is safe: it returns the existing report
     rather than writing a second one.
     """
-    session = Session.objects.filter(id=session_id).first()
+    session = TrainingSession.objects.filter(id=session_id).first()
     if session is None:
         return Response({"error": "session not found"}, status=404)
-    form = SessionSerializer(session, data=request.data, partial=True)
+    form = TrainingSessionSerializer(session, data=request.data, partial=True)
     form.is_valid(raise_exception=True)
 
     # "Is this PATCH ending the day?" — either the caller omitted ended_at (our
@@ -331,13 +331,13 @@ def session_detail(request, session_id):
                     or form.validated_data.get("ended_at") is not None)
 
     if not ends_session:
-        return Response(SessionSerializer(form.save()).data)
+        return Response(TrainingSessionSerializer(form.save()).data)
 
     requested_end = form.validated_data.get("ended_at") if "ended_at" in request.data else None
     report, _created = end_session(session_id, ended_at=requested_end)
 
     session.refresh_from_db()
-    body = SessionSerializer(session).data
+    body = TrainingSessionSerializer(session).data
     if report is not None:
         body["daily_report"] = {"id": report.id, "generated_at": report.generated_at}
     return Response(body)
@@ -374,10 +374,10 @@ def sessions_active(request):
     what triggers the Phase 11 inline "set your max" entry. (Wire key stays
     `maxes` to match the Phase 10/11 contract; it carries reference maxes.)
 
-    "Active" = the most recent Session whose ended_at is null. Tie-break: newest
+    "Active" = the most recent TrainingSession whose ended_at is null. Tie-break: newest
     started_at, then highest id (covers same-instant creates deterministically).
     """
-    session = Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    session = TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
     if session is None:
         # No live session: return the same envelope with nulls/empties so the
         # tablet can render a plain "no active session" screen without having to
@@ -478,10 +478,10 @@ def athlete_progress(request, athlete_id):
         completed set of that movement THIS session (null if none yet). It lets the
         tablet default the next set to what they last actually lifted — carrying an
         on-the-fly weight change forward across reloads/rack moves WITHIN the
-        session, while never touching the prescribed target. Session-scoped only:
+        session, while never touching the prescribed target. TrainingSession-scoped only:
         a prior session's loads are never read, so each session starts at target.
     """
-    session = Session.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
+    session = TrainingSession.objects.filter(ended_at__isnull=True).order_by("-started_at", "-id").first()
     athlete = Athlete.objects.filter(id=athlete_id).first()
     if athlete is None:
         return Response({"error": "athlete not found"}, status=404)
@@ -526,7 +526,7 @@ def athlete_progress(request, athlete_id):
 
     # WHERE THE PLAN COMES FROM (mid-merge, two sources on purpose).
     #
-    # The new way: the athlete's squad is training in this session, and the squad's
+    # The new way: the athlete's TrainingGroup is training in this session, and the TrainingGroup's
     # plan says "5 sets of 3 at 80%" — their weight is worked out from their own
     # current max. One plan, everyone gets their own numbers.
     #
@@ -909,7 +909,7 @@ def reference_maxes_view(request):
     a different thing from adjusting the load on a bar today — that rides on the
     set itself and changes nothing about the plan.
 
-    Takes a LIST so a coach can enter a whole squad's testing day in one go
+    Takes a LIST so a coach can enter a whole TrainingGroup's testing day in one go
     rather than one athlete at a time:
 
         { "exercise": 1, "rep_basis": 1,
@@ -989,7 +989,7 @@ def report_pdf_view(request, report_id):
     return response
 
 
-# ─────────────────────────── planning: squads, templates, plans ───────────────────────────
+# ─────────────────────────── planning: TrainingGroups, templates, plans ───────────────────────────
 #
 # Route names here match what the coach front end already calls, even where our
 # model names differ (its "workout-programs" are our reusable TrainingBlocks).
@@ -998,10 +998,10 @@ def report_pdf_view(request, report_id):
 @api_view(["GET", "POST"])
 @permission_classes([IsCoach])
 def training_groups_view(request):
-    """Coach-only: list or create squads.
+    """Coach-only: list or create TrainingGroups.
 
-    A squad is a NAMED SUBSET of athletes who train the same plan — not the whole
-    roster. A gym runs several at once (a team squad, a position squad, a
+    A TrainingGroup is a NAMED SUBSET of athletes who train the same plan — not the whole
+    roster. A gym runs several at once (a team TrainingGroup, a position TrainingGroup, a
     rehab group), and an athlete can be in more than one.
     """
     if request.method == "GET":
@@ -1016,7 +1016,7 @@ def training_groups_view(request):
 @api_view(["GET", "POST", "DELETE"])
 @permission_classes([IsCoach])
 def training_group_athletes_view(request, group_id):
-    """Coach-only: who is in this squad.
+    """Coach-only: who is in this TrainingGroup.
 
     POST adds, DELETE removes; both take {"athletes": [ids]}. Membership is
     current-state only — taking someone out never rewrites what they already
@@ -1045,11 +1045,11 @@ def training_group_athletes_view(request, group_id):
 
 @api_view(["GET", "POST"])
 @permission_classes([IsCoach])
-def workout_programs_view(request):
+def training_blocks_view(request):
     """Coach-only: the reusable TEMPLATES a coach designs once and redeploys.
 
     Called `workout-programs` because that is what the coach front end asks for;
-    internally these are TrainingBlocks. A template has no squad and no dates —
+    internally these are TrainingBlocks. A template has no TrainingGroup and no dates —
     it is the recipe, not a serving of it.
     """
     if request.method == "GET":
@@ -1064,27 +1064,29 @@ def workout_programs_view(request):
 
 @api_view(["GET", "POST"])
 @permission_classes([IsCoach])
-def workouts_view(request):
+def training_block_workouts_view(request, block_id):
     """Coach-only: the individual days inside a template, and their movements.
+
+    The block is in the URL rather than the body, because a day cannot exist
+    without one — nesting says that in the address instead of leaving it as a
+    field a caller could forget.
 
     POST accepts a whole day at once — its name, its position in the block, and
     the movements in order — because a coach thinks in days, not in rows:
 
-        { "training_block": 1, "name": "Day 1 — Lower", "position": 1,
+        POST /api/training-blocks/1/workouts/
+        { "name": "Day 1 — Lower", "position": 1,
           "exercises": [ {"exercise": 3, "sets": 5, "reps": 3, "target_percent": 80} ] }
 
     Writing the day in one call also means a half-entered workout can't exist.
     """
-    if request.method == "GET":
-        workouts = TrainingBlockWorkout.objects.prefetch_related("exercises")
-        block_id = request.query_params.get("training_block")
-        if block_id:
-            workouts = workouts.filter(training_block_id=block_id)
-        return Response(TrainingBlockWorkoutSerializer(workouts.order_by("position"), many=True).data)
-
-    block = TrainingBlock.objects.filter(id=request.data.get("training_block")).first()
+    block = TrainingBlock.objects.filter(id=block_id).first()
     if block is None:
         return Response({"error": "training block not found"}, status=404)
+
+    if request.method == "GET":
+        workouts = block.workouts.prefetch_related("exercises").order_by("position")
+        return Response(TrainingBlockWorkoutSerializer(workouts, many=True).data)
 
     rows = request.data.get("exercises") or []
     with transaction.atomic():
@@ -1112,11 +1114,11 @@ def workouts_view(request):
 @api_view(["GET", "POST"])
 @permission_classes([IsCoach])
 def training_programs_view(request):
-    """Coach-only: a template DEPLOYED for a squad, starting on a date.
+    """Coach-only: a template DEPLOYED for a TrainingGroup, starting on a date.
 
     Two ways to create one, both first-class:
-      with "training_block"    — copy that template down for this squad
-      without "training_block" — a one-off plan authored directly for the squad,
+      with "training_block"    — copy that template down for this TrainingGroup
+      without "training_block" — a one-off plan authored directly for the TrainingGroup,
                                  no template involved. It can be promoted into a
                                  template later without rebuilding anything.
     """
@@ -1153,17 +1155,17 @@ def training_programs_view(request):
 @api_view(["GET", "POST", "DELETE"])
 @permission_classes([IsCoach])
 def session_participation_view(request, session_id):
-    """Coach-only: which squads are training in this session, and what they're doing.
+    """Coach-only: which TrainingGroups are training in this session, and what they're doing.
 
-    This is what makes one session shared. Several squads can be in the gym at
-    the same time on different plans, and each athlete gets their own squad's
-    workout — which is exactly how an athlete in two squads ends up doing both.
+    This is what makes one session shared. Several TrainingGroups can be in the gym at
+    the same time on different plans, and each athlete gets their own TrainingGroup's
+    workout — which is exactly how an athlete in two TrainingGroups ends up doing both.
 
     POST body: { "training_program": 1, "training_program_workout": 4 }
-    The workout is the day being run. Until it is set, that squad has nothing
+    The workout is the day being run. Until it is set, that TrainingGroup has nothing
     scheduled and its athletes see an empty list — a planning gap, not an error.
     """
-    session = Session.objects.filter(id=session_id).first()
+    session = TrainingSession.objects.filter(id=session_id).first()
     if session is None:
         return Response({"error": "session not found"}, status=404)
 
@@ -1207,13 +1209,13 @@ def session_participation_view(request, session_id):
 def athlete_exercise_override_view(request, athlete_id, exercise_id):
     """Coach-only: an exception for one athlete on one prescribed movement.
 
-    For the outlier the squad percentage doesn't suit — someone coming back from
+    For the outlier the TrainingGroup percentage doesn't suit — someone coming back from
     injury, or a lifter whose bench is far behind their squat. It overrides the
     PERCENTAGE, never a fixed weight, so their number still tracks their own max
     instead of freezing in place.
 
     `exercise_id` here is the program-exercise row being overridden (the specific
-    line in that squad's plan), not the catalog movement.
+    line in that TrainingGroup's plan), not the catalog movement.
 
     Most athletes never need one of these. It is an escape hatch, not the path.
     """
@@ -1258,8 +1260,8 @@ def _import_target(request):
     """Work out where an upload is going, from the form fields sent with it.
 
     Returns (target, kind, scope_group, error_response). A max sheet or roster
-    may name a squad so duplicate names can be told apart by who is actually in
-    it; a plan MUST name a template or a squad, because there is nowhere else to
+    may name a TrainingGroup so duplicate names can be told apart by who is actually in
+    it; a plan MUST name a template or a TrainingGroup, because there is nowhere else to
     put workouts.
     """
     block_id = request.data.get("training_block")
@@ -1342,7 +1344,7 @@ def _import_response(sheet_type, payload, errors, skipped, *, created=None):
 @api_view(["POST"])
 @permission_classes([IsCoach])
 @parser_classes([MultiPartParser, FormParser])
-def workout_import_preview(request):
+def import_preview(request):
     """Check an uploaded spreadsheet and write NOTHING.
 
     Always the first half of the pair: the coach sees what we understood, fixes
@@ -1360,14 +1362,14 @@ def workout_import_preview(request):
 
     if sheet_type == SHEET_PLAN and target is None and not errors:
         errors = [{"row": None, "field": "training_block", "code": "target_required",
-                   "detail": "Choose which template or squad plan these workouts belong to."}]
+                   "detail": "Choose which template or TrainingGroup plan these workouts belong to."}]
     return _import_response(sheet_type, payload, errors, skipped)
 
 
 @api_view(["POST"])
 @permission_classes([IsCoach])
 @parser_classes([MultiPartParser, FormParser])
-def workout_import(request):
+def import_commit(request):
     """Re-check an uploaded spreadsheet and, if it is clean, save it in one step.
 
     Re-checked rather than trusting the preview because the gym changes between
@@ -1386,7 +1388,7 @@ def workout_import(request):
 
     if sheet_type == SHEET_PLAN and target is None and not errors:
         errors = [{"row": None, "field": "training_block", "code": "target_required",
-                   "detail": "Choose which template or squad plan these workouts belong to."}]
+                   "detail": "Choose which template or TrainingGroup plan these workouts belong to."}]
     if errors:
         return _import_response(sheet_type, payload, errors, skipped)
 
@@ -1396,19 +1398,19 @@ def workout_import(request):
 
 @api_view(["GET", "PUT", "DELETE"])
 @permission_classes([IsCoach])
-def athlete_workout_assignment(request, athlete_id):
-    """What this athlete is training, and which squad decides it.
+def athlete_program_view(request, athlete_id):
+    """What this athlete is training, and which TrainingGroup decides it.
 
     HIS PAGE ASKS A QUESTION OUR MODEL ANSWERS DIFFERENTLY. His planning screen
     was built where a program is pinned onto one athlete. Here a program belongs
-    to a SQUAD, and an athlete trains it by being in that squad (D12) — which is
+    to a GROUP, and an athlete trains it by being in that TrainingGroup (D12) — which is
     what lets one plan serve thirty people and one athlete carry two plans at
     once (D13). So the route keeps its name and its shape, and the meaning
-    underneath is squad membership:
+    underneath is TrainingGroup membership:
 
-        GET     -> every program that currently applies to them, and via which squad
-        PUT     -> put them in the squad that runs this program
-        DELETE  -> take them out of the squads currently prescribing to them
+        GET     -> every program that currently applies to them, and via which TrainingGroup
+        PUT     -> put them in the TrainingGroup that runs this program
+        DELETE  -> take them out of the TrainingGroups currently prescribing to them
 
     Writes therefore have a WIDER effect than the wording suggests, and the
     response says so plainly (`groups_changed`) rather than letting a coach
@@ -1441,9 +1443,9 @@ def athlete_workout_assignment(request, athlete_id):
 
 
 def _groups_prescribing_to(athlete):
-    """The squads this athlete is in that actually have a plan attached.
+    """The TrainingGroups this athlete is in that actually have a plan attached.
 
-    A squad with no program isn't prescribing anything, so removing someone from
+    A TrainingGroup with no program isn't prescribing anything, so removing someone from
     it would be busywork that also loses roster information the coach set up on
     purpose.
     """
@@ -1451,7 +1453,7 @@ def _groups_prescribing_to(athlete):
 
 
 def _assignment_body(athlete, groups_changed=None):
-    """One athlete's plans, grouped by the squad each comes from."""
+    """One athlete's plans, grouped by the TrainingGroup each comes from."""
     programs = (TrainingProgram.objects
                 .filter(training_group__athletes=athlete)
                 .select_related("training_group", "training_block")

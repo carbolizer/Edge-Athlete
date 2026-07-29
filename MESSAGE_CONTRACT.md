@@ -172,7 +172,7 @@ Not MQTT, but the same data contract, so they live here too.
 }
 ```
 - Fetched when an athlete **checks in** at a rack (Phase 11 Step 2), and again after each of their sets completes. **Derived per request** from the athlete's `Program` rows + their completed `Set` rows this session — **no new tables**.
-- **`target_weight_lbs` vs `last_weight_lbs` (the weight seam):** `target_weight_lbs` is the coach's prescription (`Program`, `NOT NULL`, untouched by the tablet). `last_weight_lbs` is what the athlete ACTUALLY last lifted this session (newest non-false `Set.weight_lbs`, `null` before their first set). The tablet defaults the next set's load to `last_weight_lbs ?? target_weight_lbs`, so an on-the-fly weight change carries forward across sets, reloads, and rack moves **within the session** — while the prescription stays clean. **Session-scoped:** a prior session's loads are never read, so each session starts at target. (A local, unsaved numpad edit takes precedence over both until the set is created.)
+- **`target_weight_lbs` vs `last_weight_lbs` (the weight seam):** `target_weight_lbs` is the coach's prescription (`Program`, `NOT NULL`, untouched by the tablet). `last_weight_lbs` is what the athlete ACTUALLY last lifted this session (newest non-false `Set.weight_lbs`, `null` before their first set). The tablet defaults the next set's load to `last_weight_lbs ?? target_weight_lbs`, so an on-the-fly weight change carries forward across sets, reloads, and rack moves **within the session** — while the prescription stays clean. **TrainingSession-scoped:** a prior session's loads are never read, so each session starts at target. (A local, unsaved numpad edit takes precedence over both until the set is created.)
 - **`movements` order = `Program.id`** (the athlete's program-creation order = intended workout order). The server order never changes; the tablet may float an *in-progress* movement to the top presentationally only (see SPEC Phase 11 Step 2).
 - **`next_set_number` is the source of truth for `set_number`** on `POST /api/sets/` — NOT a client counter, so numbering stays correct across rack moves + supersets.
 - **`completed_sets`** counts non-false `Set` rows for that athlete/exercise this session; **`false_sets`** counts false ones. `status` = `complete` once `completed_sets >= planned_sets`.
@@ -361,7 +361,7 @@ never disagree.
 ### `POST /api/reference-maxes/` — record what athletes can lift (coach)
 
 **The prescription lever.** Every target weight is a percentage of these numbers.
-Takes a list so a whole squad's testing day goes in with one call.
+Takes a list so a whole TrainingGroup's testing day goes in with one call.
 
 ```jsonc
 { "exercise": 1, "rep_basis": 1,
@@ -381,41 +381,41 @@ are never rewritten.
 
 ## 3b. REST — planning (coach only)
 
-The hierarchy these serve: a **squad** (`TrainingGroup`) trains a **plan**
+The hierarchy these serve: a **TrainingGroup** (`TrainingGroup`) trains a **plan**
 (`TrainingProgram`), which is usually a copy of a reusable **template**
 (`TrainingBlock`). Plans store a **percent**, never pounds — the weight is worked
 out per athlete from their reference max at read time (§4).
 
-> **Route names lag the model names.** `workout-programs/` is the template and
+> **Route names lag the model names.** `training-blocks/` is the template and
 > `workouts/` is a day inside one, because these URLs were bent to fit the coach
 > client that already existed rather than reshaping its code. Scheduled for
 > renaming in P9; see the merge canon's drift table.
 
-### `GET|POST /api/training-groups/` — squads (coach)
+### `GET|POST /api/training-groups/` — TrainingGroups (coach)
 
-A squad is a *subset* of the gym that trains together, not everyone on file.
+A TrainingGroup is a *subset* of the gym that trains together, not everyone on file.
 
 ```jsonc
 { "id": 4, "name": "Varsity Football", "athlete_count": 12 }
 ```
 
-### `POST /api/training-groups/{id}/athletes/` — set a squad's members (coach)
+### `POST /api/training-groups/{id}/athletes/` — set a TrainingGroup's members (coach)
 
 ```jsonc
-{ "athletes": [3, 4, 7] }        // → the squad's full member list
+{ "athletes": [3, 4, 7] }        // → the TrainingGroup's full member list
 ```
 
 Membership is **current-state only**. Adding or removing never rewrites history:
 past sessions and sets stay attached to whatever they ran under.
 
-### `GET|POST /api/workout-programs/` — reusable templates (coach)
+### `GET|POST /api/training-blocks/` — reusable templates (coach)
 
 ```jsonc
 { "id": 1, "name": "Fall Strength", "duration_weeks": 8,
   "cadence_days_of_week": "Mon,Wed,Fri" }
 ```
 
-### `GET|POST /api/workouts/` — one day inside a template (coach)
+### `GET|POST /api/training-blocks/{id}/workouts/` — one day inside a template (coach)
 
 ```jsonc
 { "training_block": 1, "name": "Day 1 — Lower", "position": 1,
@@ -427,7 +427,7 @@ past sessions and sets stay attached to whatever they ran under.
 
 `position` orders the day and must run 1, 2, 3… with no gaps.
 
-### `GET|POST /api/training-programs/` — deploy a template for a squad (coach)
+### `GET|POST /api/training-programs/` — deploy a template for a TrainingGroup (coach)
 
 ```jsonc
 { "training_group": 4, "training_block": 1,
@@ -435,24 +435,24 @@ past sessions and sets stay attached to whatever they ran under.
 ```
 
 Deploying **copies** the template's rows down rather than pointing at them, so
-editing the template next season cannot rewrite what this squad already trained.
+editing the template next season cannot rewrite what this TrainingGroup already trained.
 `training_block` may be **null** — a one-off plan is a permanent first-class path,
 not a shim (D6).
 
-### `POST /api/sessions/{id}/participation/` — which squads train today (coach)
+### `POST /api/sessions/{id}/participation/` — which TrainingGroups train today (coach)
 
 ```jsonc
 { "training_group": 4, "training_program": 3 }
 ```
 
-This is what lets one session hold several squads on different plans.
+This is what lets one session hold several TrainingGroups on different plans.
 
-### `GET|PUT|DELETE /api/athletes/{id}/workout-assignment/` — one athlete's plan (coach)
+### `GET|PUT|DELETE /api/athletes/{id}/program/` — one athlete's plan (coach)
 
-**Reads as "this athlete's program"; underneath it is squad membership**, because
-a plan belongs to a squad (D12/D13). `PUT { "workout_program_id": 3 }` puts them
-in that program's squad; `DELETE` takes them out of the squads currently
-prescribing to them, leaving plan-less squads alone.
+**Reads as "this athlete's program"; underneath it is TrainingGroup membership**, because
+a plan belongs to a TrainingGroup (D12/D13). `PUT { "workout_program_id": 3 }` puts them
+in that program's TrainingGroup; `DELETE` takes them out of the TrainingGroups currently
+prescribing to them, leaving plan-less TrainingGroups alone.
 
 ```jsonc
 { "athlete": { "id": 1, "name": "Jordan Lee" },
@@ -475,9 +475,9 @@ prescribing to them, leaving plan-less squads alone.
 `groups_changed` appears on writes only, and says what actually moved — a write
 here has a **wider effect than the route name suggests**.
 
-### `GET|PUT|DELETE /api/athletes/{id}/workout-exercises/{id}/override/` — one athlete's exception (coach)
+### `GET|PUT|DELETE /api/athletes/{id}/program-exercises/{id}/override/` — one athlete's exception (coach)
 
-Rare by design: everyone in a squad trains the squad's plan unless a row like
+Rare by design: everyone in a TrainingGroup trains the TrainingGroup's plan unless a row like
 this says otherwise.
 
 ```jsonc
@@ -488,7 +488,7 @@ this says otherwise.
 
 ## 3c. REST — spreadsheet import (coach only)
 
-### `POST /api/workouts/imports/preview/` · `POST /api/workouts/imports/`
+### `POST /api/imports/preview/` · `POST /api/imports/`
 
 `multipart/form-data`. **Preview writes nothing**; import re-checks and then saves
 all-or-nothing. Which of three sheets was uploaded is detected from the **column
@@ -570,7 +570,7 @@ this wrong is the most likely way two parts disagree.
 
 | Field | Who computes it | How |
 |---|---|---|
-| `velocity_color` | **the rack tablet**, per rep | Compare the rep's velocity to the *exercise's* velocity zone (`velocity_zone_min/max`), sourced from `session_exercises[]` in the `GET /api/sessions/active/` response the tablet already fetched once at rack-assignment time (Phase 10/11) — **not** `GET /api/programs/`, which the v2 rack-screen flow no longer calls. `green` = on target, `yellow` = dropping, `red` = fatigued. Included when the tablet sends the set-complete body. |
+| `velocity_color` | **the rack tablet**, per rep | Compare the rep's velocity to the *exercise's* velocity zone (`velocity_zone_min/max`), sourced from `session_exercises[]` in the `GET /api/sessions/active/` response the tablet already fetched once at rack-assignment time (Phase 10/11) — **not** `GET /api/prescriptions/`, which the v2 rack-screen flow no longer calls. `green` = on target, `yellow` = dropping, `red` = fatigued. Included when the tablet sends the set-complete body. |
 | `rep_number` (saved) | **the rack tablet** | Numbered `1..N` within the set. The tablet owns set boundaries, so it assigns the authoritative number; the node's `rep_number` is only advisory ordering. |
 | `is_velocity_pr` | **Django**, at set-complete | `true` if this set's `peak_velocity` beats the athlete's previous best for that exercise. |
 | `is_weight_pr` | **Django**, at set-complete | `true` if this set's `weight_lbs` beats the athlete's previous heaviest for that exercise. |

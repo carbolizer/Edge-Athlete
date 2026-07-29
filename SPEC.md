@@ -38,7 +38,7 @@ These are real gaps, not stretch goals — they were deliberately deferred to ge
 - **No rack "unassign" path (affects Phase 14):** only registration + assignment exist; there's no way to free a rack number back to the unassigned pool if a screen is retired or replaced.
 - **Clock reliability on the offline Pi (affects Phase 1/RUNBOOK, Phase 18):** the base station never touches the internet, so there's no NTP sync. If it lacks a hardware RTC, a cold boot could start with a wrong system clock, silently corrupting every `timestamp` field. Needs either an RTC module or a manual time-set step documented in the boot procedure.
 - **Stale `RackScreen` rows (affects Phase 16):** if a screen's `localStorage` is ever wiped, it registers a brand-new `device_id` and the old row is orphaned at its old rack number with no cleanup.
-- **Group reassignment mid-flight (affects Phase 5/14):** if an athlete's `group` changes while a `Session` tied to their old group is still in progress (not yet green/marked done), no rule is defined for whether they still appear on that session's roster. Current design snapshots roster at CSV-upload time, so this is likely fine by construction but untested against a live reassignment mid-session.
+- **Group reassignment mid-flight (affects Phase 5/14):** if an athlete's `group` changes while a `TrainingSession` tied to their old group is still in progress (not yet green/marked done), no rule is defined for whether they still appear on that session's roster. Current design snapshots roster at CSV-upload time, so this is likely fine by construction but untested against a live reassignment mid-session.
 - **Exercise catalog editing after confirmation (affects Phase 6):** once an `Exercise` is confirmed (`is_stub=False`), there's no defined path to later edit its tags or fix a name typo — only the stub-confirmation flow touches the catalog today.
 - **Insights model itself (affects Phase 5/8):** `generate_insights` is a stub returning `[]`. Choosing/training the actual local model and defining what "notable" means for `flagged_for_review` is explicitly out of scope here, same as the fatigue-model stub.
 - **Retroactive max entry vs. already-completed Sets (affects Phase 5/7/11):** if an athlete's first-ever AthleteReferenceMax gets entered mid-session (via the Phase 11 inline prompt) AFTER they've already completed earlier sets in that same session using no calculated target (or a stale one), those earlier Sets are not recalculated or flagged — the new reference only affects target-weight display going forward from the moment it's entered. No retroactive recomputation is in scope for this spec. (See the finalization-gate item below, which is the intended long-term home for recomputation.)
@@ -96,7 +96,7 @@ Edge Athlete is real-time barbell velocity tracking for weight rooms that can't 
 5. The base station writes that one set (and its reps) to Postgres in a single transaction, then publishes broadcast events to Mosquitto: leaderboard changes, rack-state changes, and coach alerts.
 6. The **team dashboard** (the Pi's own kiosk browser) and the **coach tablet** subscribe to their broadcast topics and update live — a room-wide scoreboard and a single coach admin view.
 
-**v2 addition:** a coach now plans training ahead of time — designing workouts in a spreadsheet, exporting a CSV, and uploading it to create a Group → Block → Session → planned-exercise structure before any rack even powers on. See **Phases 5–8** for the full design.
+**v2 addition:** a coach now plans training ahead of time — designing workouts in a spreadsheet, exporting a CSV, and uploading it to create a Group → Block → TrainingSession → planned-exercise structure before any rack even powers on. See **Phases 5–8** for the full design.
 
 ---
 
@@ -128,7 +128,7 @@ Not 8 sprints, not exit-after-4 — those earlier numbers are wrong. Six sprints
 ### Coach tablet is one page for this spec
 The full vision (separate Room / Athletes / Racks / Analytics tabs) is deferred. This spec builds a single consolidated admin view: live room state, abnormal-performance alerts/suggestions, and basic graphs. Multi-page expansion is future work.
 
-**Revised in v2:** Phase 14 now includes group/block/session drill-down navigation (Groups list → Block detail → Session detail) and a CSV upload flow, which are additional views/routes beyond the original single consolidated page. This is a narrower kind of multi-view growth than the originally-deferred "separate Room/Athletes/Racks/Analytics tabs" vision — it's drill-down navigation into planning data, not a general tabbed admin app — but it does mean "one page" no longer describes the coach tablet literally. The live-room-state + alerts + basic-graphs portion, and the Room Layout drag-and-drop assignment section, remain exactly as originally specified and stay consolidated in one view.
+**Revised in v2:** Phase 14 now includes group/block/session drill-down navigation (Groups list → Block detail → TrainingSession detail) and a CSV upload flow, which are additional views/routes beyond the original single consolidated page. This is a narrower kind of multi-view growth than the originally-deferred "separate Room/Athletes/Racks/Analytics tabs" vision — it's drill-down navigation into planning data, not a general tabbed admin app — but it does mean "one page" no longer describes the coach tablet literally. The live-room-state + alerts + basic-graphs portion, and the Room Layout drag-and-drop assignment section, remain exactly as originally specified and stay consolidated in one view.
 
 ### Local fatigue ML is scaffolded, not trained
 Fatigue detection gets a real interface (`ml/inference.py`) and a real call site (fires after set-complete), but the function returns a stub value in this spec. Training a real model is explicitly out of scope.
@@ -167,7 +167,7 @@ Read the reference repo to get these exactly right. Rename `privacydots-*` servi
 | `django/basestation_config/` (settings, urls, wsgi, asgi) | Reuse; rename app references. `urls.py` already wires `simplejwt` `TokenObtainPairView` at `/api/auth/login/` and refresh at `/api/auth/refresh/` — reuse as-is. |
 | `django/event_handler/` app | **Keep the app name** — gut its contents. Renaming is unnecessary churn; "handles events" still fits. |
 | `Device` model | Rename to `Node`; extend with `mount_type`, `rack_number` (see Data Models). |
-| `MotionEvent` model | **Delete.** Replaced by `Athlete` / `Program` / `Session` / `Set` / `Rep`. |
+| `MotionEvent` model | **Delete.** Replaced by `Athlete` / `Program` / `TrainingSession` / `Set` / `Rep`. |
 | `notification_flow/mqtt_ingester/parser.py` | Reuse `parse_pulse_payload` nearly as-is (already normalizes heartbeat data cleanly). **Add `parse_rep_payload`. Delete `parse_motion_payload`.** |
 | `notification_flow/event_processor/process_pulse.py` | Header still reads `# TODO: @Brayd-n implement`. **Treat it as unfinished** — finish/verify it in Phase 3 against the new `Node` model; do not assume it's done. Also delete `process_motion.py`. |
 | `notification_flow/mqtt_ingester/subscriber.py` | Reuse the connect/subscribe/route pattern. Rewire it to subscribe to **`edgeathlete/node/+/pulse` only** — reps never reach Django's subscriber. |
@@ -249,8 +249,8 @@ RackScreen — device_id (CharField, unique, client-generated at first setup),
 Athlete    — name, nfc_tag_id (unique, nullable), created_at (auto), notes (Text, blank)
 Program    — athlete (FK→Athlete), exercise (FK→Exercise), target_sets (Int), target_reps (Int),
              target_weight_lbs (Float), velocity_zone_min (Float), velocity_zone_max (Float)
-Session    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
-Set        — session (FK→Session), athlete (FK→Athlete), node (FK→Node, nullable),
+TrainingSession    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
+Set        — session (FK→TrainingSession), athlete (FK→Athlete), node (FK→Node, nullable),
              exercise (FK→Exercise), set_number (Int), weight_lbs (Float, nullable), started_at, ended_at (nullable),
              reps_completed (Int, default 0), avg_velocity (Float, nullable),
              peak_velocity (Float, nullable), is_false_set (Bool, default False)
@@ -262,7 +262,7 @@ Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float
 **`RackScreen` is the physical screen's own identity — separate from `Node.rack_number`, which tracks which sensor is linked to a rack. A rack screen and its sensor node are assigned independently.**
 **Exercise-identity note (built early, sprint of 2026-07-17, branch `exercise-catalog`):** `Program.exercise`, `Set.exercise`, and `AthleteReferenceMax.exercise` are all `FK→Exercise` (the catalog below), not free text. This deliberately goes one step past canon, which introduced the catalog but left `Program`/`Set` on text — half-normalizing breaks the rack endpoint's id-vs-name lookup, so all three were converted together via a reversible backfill migration (`0005_link_models_to_exercise_catalog`). See `MINISPEC-exercise-catalog.md`.
 
-### Extended in Phase 5+ (Group/Session Hierarchy & Athlete Max Layer)
+### Extended in Phase 5+ (Group/TrainingSession Hierarchy & Athlete Max Layer)
 
 New models, built in Phase 5, plus extensions to three of the original seven.
 Full field-level detail lives in the Phase 5 prompt below — this is the
@@ -274,16 +274,16 @@ Block         — training_group (FK→TrainingGroup), name, order (Int)
 Tag           — name (unique)
 Exercise      — name (unique), tags (M2M→Tag), is_stub (Bool), created_at
                 (standard auto-increment PK — no custom ID assignment logic)
-SessionExercise — session (FK→Session), exercise (FK→Exercise), target_sets,
+SessionExercise — session (FK→TrainingSession), exercise (FK→Exercise), target_sets,
                 target_reps, target_weight_percent (Float — % of the
                 athlete's own max, not an absolute weight), velocity_zone_min,
                 velocity_zone_max, coach_notes
-SessionInsight  — session (FK→Session), athlete (FK→Athlete, nullable = team-
+SessionInsight  — session (FK→TrainingSession), athlete (FK→Athlete, nullable = team-
                 level), content (Text), source (choices: local_model/coach_note),
                 flagged_for_review (Bool), created_at
 AthleteReferenceMax — athlete (FK→Athlete), exercise (FK→Exercise),
                 reference_weight_lbs (Float), rep_basis (Int, default 1),
-                source (choices: manual/estimated), source_session (FK→Session,
+                source (choices: manual/estimated), source_session (FK→TrainingSession,
                 nullable, SET_NULL), recorded_at (auto) — APPEND-ONLY history,
                 never overwritten; "current reference" = latest recorded_at row.
                 This is an athlete's CURRENT WORKING reference (what they can do
@@ -301,10 +301,10 @@ AthleteReferenceMax — athlete (FK→Athlete), exercise (FK→Exercise),
                 note above.)
 
 Athlete  EXTENDED — group (FK→TrainingGroup, nullable, SET_NULL). Current
-           group only; reassigning it never rewrites historical Session/Set
-           data, which stays attached to whatever Block/Session it actually
+           group only; reassigning it never rewrites historical TrainingSession/Set
+           data, which stays attached to whatever Block/TrainingSession it actually
            happened under.
-Session  EXTENDED — block (FK→Block, nullable), schedule_date (DateTime,
+TrainingSession  EXTENDED — block (FK→Block, nullable), schedule_date (DateTime,
            nullable — planning only, decoupled from started_at/ended_at).
 Set      EXTENDED — is_makeup (Bool, default False) — excluded from
            team_completion_time calculations.
@@ -336,8 +336,8 @@ GET   /api/athletes/                   list                               (open 
 POST  /api/athletes/                   create                             (coach only)
 PATCH /api/athletes/{id}/              update                             (coach only)
 
-GET   /api/programs/?athlete={id}      list for athlete                   (open read)
-POST  /api/programs/                   create                             (coach only)
+GET   /api/prescriptions/?athlete={id}      list for athlete                   (open read)
+POST  /api/prescriptions/                   create                             (coach only)
 
 POST  /api/sessions/                   create session                     (coach only)
 PATCH /api/sessions/{id}/              end session                        (coach only)
@@ -360,7 +360,7 @@ GET   /api/analytics/athlete/{id}/     trend data                         (coach
 
 ```
 POST  /api/sessions/upload/            CSV import — creates/reuses the full   (coach only)
-                                        Group → Block → Session →
+                                        Group → Block → TrainingSession →
                                         SessionExercise chain in one
                                         transaction; stubs unrecognized
                                         exercises rather than rejecting
@@ -614,7 +614,7 @@ Program:
   velocity_zone_min  FloatField()
   velocity_zone_max  FloatField()
 
-Session:
+TrainingSession:
   label       CharField(max_length=255)
   started_at  DateTimeField(auto_now_add=True)
   ended_at    DateTimeField(null=True, blank=True)
@@ -622,7 +622,7 @@ Session:
   notes       TextField(blank=True, default="")
 
 Set:
-  session         ForeignKey(Session, on_delete=CASCADE, related_name="sets")
+  session         ForeignKey(TrainingSession, on_delete=CASCADE, related_name="sets")
   athlete         ForeignKey(Athlete, on_delete=CASCADE, related_name="sets")
   node            ForeignKey(Node, on_delete=SET_NULL, null=True, blank=True, related_name="sets")
   exercise        CharField(max_length=255)
@@ -658,7 +658,7 @@ commit it.
 a = Athlete.objects.create(name="Test A")
 p = Program.objects.create(athlete=a, exercise="Squat", target_sets=3,
     target_reps=5, target_weight_lbs=225, velocity_zone_min=0.5, velocity_zone_max=0.8)
-s = Session.objects.create(label="AM Lift"); s.athletes.add(a)
+s = TrainingSession.objects.create(label="AM Lift"); s.athletes.add(a)
 n = Node.objects.create(node_id="rack_1", rack_number=1, mount_type="bar")
 st = Set.objects.create(session=s, athlete=a, node=n, exercise="Squat", set_number=1)
 r = Rep.objects.create(set=st, rep_number=1, timestamp="2026-01-01T00:00:00Z",
@@ -668,7 +668,7 @@ r = Rep.objects.create(set=st, rep_number=1, timestamp="2026-01-01T00:00:00Z",
 
 ### ✅ Phase 2 Exit Checklist
 - [ ] All seven models migrated cleanly
-- [ ] Django shell creates one of each and the FK chain `Athlete → Program`, `Session → Set → Rep`, `Set → Node` resolves
+- [ ] Django shell creates one of each and the FK chain `Athlete → Program`, `TrainingSession → Set → Rep`, `Set → Node` resolves
 - [ ] `Rep` has no direct-creation endpoint anywhere (only ever via set-complete, built Phase 4)
 - [ ] Zero `MotionEvent` and zero `Device` references remain anywhere
 - [ ] Migration file committed
@@ -761,7 +761,7 @@ Working directory: django/event_handler/. JWT login/refresh are already wired in
 basestation_config/urls.py via simplejwt — reuse them, do not re-add.
 
 ## serializers.py
-DRF ModelSerializers for Node, RackScreen, Athlete, Program, Session, Set, Rep.
+DRF ModelSerializers for Node, RackScreen, Athlete, Program, TrainingSession, Set, Rep.
 Add a RepInputSerializer (rep_number, mean_velocity, peak_velocity, duration_ms,
 timestamp, velocity_color) and a SetCompleteSerializer with:
   reps_completed, avg_velocity, peak_velocity, is_false_set,
@@ -777,7 +777,7 @@ Open (AllowAny):
   POST  /api/racks/register/          upsert a RackScreen by device_id, rack_number stays null if new
   GET   /api/racks/racknumber/?device_id=   return {rack_number} for polling while unassigned
   GET   /api/athletes/
-  GET   /api/programs/?athlete={id}
+  GET   /api/prescriptions/?athlete={id}
   POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, weight_lbs, started_at=now)
   POST  /api/sets/{id}/complete/      *** batch write, see below ***
 Coach-only (IsCoach):
@@ -785,7 +785,7 @@ Coach-only (IsCoach):
   GET   /api/racks/unassigned/        list RackScreen rows where rack_number is null
   PATCH /api/racks/{device_id}/       assign rack_number
   POST  /api/athletes/  PATCH /api/athletes/{id}/
-  POST  /api/programs/
+  POST  /api/prescriptions/
   POST  /api/sessions/  PATCH /api/sessions/{id}/   (end = set ended_at=now)
   GET   /api/analytics/session/{id}/  aggregate: total sets, reps, avg velocity per athlete
   GET   /api/analytics/athlete/{id}/  velocity trend across that athlete's sets
@@ -839,7 +839,7 @@ curl -sX GET  'localhost/api/racks/racknumber/?device_id=abc123'                
 
 ---
 
-# SPRINT 2 (EXTENDED) — Group/Session Data Layer
+# SPRINT 2 (EXTENDED) — Group/TrainingSession Data Layer
 
 Phases 5–8 extend the models and API Phase 4 already built. They run before
 the broadcast/rack-screen phases because Phase 10's rack screen and Phase 14's
@@ -857,7 +857,7 @@ fully independent of Track A. **Convergence point:** Phase 11 needs both
 tracks finished, since its picker and target-weight calculation depend on
 the `/api/sessions/active/` response shape Track B builds.
 
-## Phase 5 — Group/Block/Session Hierarchy, Exercise Catalog, Athlete Max & Insights Scaffold · Owner: TBD
+## Phase 5 — Group/Block/TrainingSession Hierarchy, Exercise Catalog, Athlete Max & Insights Scaffold · Owner: TBD
 
 ### Goal
 Introduce the coach → group → block → session hierarchy, replace free-text
@@ -899,7 +899,7 @@ hand-roll ID assignment. Gaps left by deleted stub rows are expected and fine
 no walk-the-table or reorganize-on-delete logic is needed or wanted).
 
 SessionExercise:
-  session                ForeignKey(Session, on_delete=CASCADE, related_name="session_exercises")
+  session                ForeignKey(TrainingSession, on_delete=CASCADE, related_name="session_exercises")
   exercise                ForeignKey(Exercise, on_delete=PROTECT, related_name="session_exercises")
   target_sets             IntegerField(null=True, blank=True)
   target_reps             IntegerField(null=True, blank=True)
@@ -914,7 +914,7 @@ weight — see the CSV format note in Phase 6 and the per-athlete calculation
 in the Phase 10 patch.)
 
 SessionInsight:
-  session             ForeignKey(Session, on_delete=CASCADE, related_name="insights")
+  session             ForeignKey(TrainingSession, on_delete=CASCADE, related_name="insights")
   athlete             ForeignKey(Athlete, on_delete=CASCADE, null=True, blank=True,
                                   related_name="insights")   # null = team-level insight
   content             TextField()
@@ -943,17 +943,17 @@ Athlete: ADD
   group  ForeignKey(TrainingGroup, on_delete=SET_NULL, null=True, blank=True,
                      related_name="athletes")
   # This is the athlete's CURRENT group only. Historical Sessions/Sets stay
-  # attached to whatever Block/Session they were actually created under —
+  # attached to whatever Block/TrainingSession they were actually created under —
   # reassigning group here must never rewrite past records. See Phase 7 for
   # how session rosters snapshot membership at creation time instead of
   # querying this field live.
 
-Session: ADD
+TrainingSession: ADD
   block          ForeignKey(Block, on_delete=CASCADE, null=True, blank=True,
                              related_name="sessions")
   schedule_date  DateTimeField(null=True, blank=True)
   # schedule_date is PLANNING ONLY — when this session is meant to happen.
-  # started_at/ended_at (already on Session) remain execution-only and stay
+  # started_at/ended_at (already on TrainingSession) remain execution-only and stay
   # unset until someone actually runs the session. Do not conflate the two.
 
 Set: ADD
@@ -975,14 +975,14 @@ Run makemigrations/migrate, copy the migration file back, commit.
 ```
 
 ### Verify
-- `TrainingGroup → Block → Session` FK chain resolves in the Django shell.
-- `Athlete.group` can be reassigned without altering any existing `Session`/`Set`/`Rep` rows tied to that athlete's history.
+- `TrainingGroup → Block → TrainingSession` FK chain resolves in the Django shell.
+- `Athlete.group` can be reassigned without altering any existing `TrainingSession`/`Set`/`Rep` rows tied to that athlete's history.
 - Creating an `Exercise` with `is_stub=True` and no tags works; deleting it removes it cleanly with no ID-reuse logic anywhere.
 - `generate_insights(session_id)` is callable and returns `[]`.
 
 ### ✅ Phase 5 Exit Checklist
 - [ ] All new models migrated; no existing model's prior fields removed or renamed
-- [ ] `Athlete.group` reassignment does not touch historical Session/Set data
+- [ ] `Athlete.group` reassignment does not touch historical TrainingSession/Set data
 - [ ] `Exercise` uses standard auto-increment; no custom ID-walking logic anywhere in the codebase
 - [ ] `generate_insights` has a real signature, stub return, no call site yet (that's Phase 8)
 - [ ] Every new model/file has a WHY comment
@@ -995,7 +995,7 @@ Run makemigrations/migrate, copy the migration file back, commit.
 
 ### Goal
 Let a coach upload the CSV export (one row per planned exercise) and have it
-create/reuse the full Group → Block → Session → SessionExercise chain in one
+create/reuse the full Group → Block → TrainingSession → SessionExercise chain in one
 transaction, stubbing unrecognized exercises rather than rejecting the row.
 
 ### Prompt to paste into Claude
@@ -1023,8 +1023,8 @@ Inside a SINGLE transaction.atomic():
   3. For each group of rows:
      a. get_or_create TrainingGroup by (coach=request.user, name=group_name)
      b. get_or_create Block by (training_group, name=block_name)
-     c. create Session (block=block, label=session_label,
-        schedule_date=schedule_date). Snapshot the roster onto Session's
+     c. create TrainingSession (block=block, label=session_label,
+        schedule_date=schedule_date). Snapshot the roster onto TrainingSession's
         existing `athletes` M2M from TrainingGroup.athletes AT THIS MOMENT —
         this is the "history stays where it happened" guarantee. Do not
         query group.athletes again later for this session; the M2M IS the
@@ -1053,23 +1053,23 @@ Every file opens with a WHY comment.
 - Uploading a second CSV for the same group/block reuses the existing `TrainingGroup`/`Block` rows rather than duplicating them.
 - An exercise name not in the catalog creates a stub `Exercise` (`is_stub=True`) and the response lists it for confirmation.
 - Confirming a stub sets `is_stub=False`; rejecting it deletes the `Exercise` and its `SessionExercise` rows with no orphaned references left behind.
-- Session roster (`Session.athletes`) matches the group's membership at upload time, unaffected by later `Athlete.group` reassignment.
+- TrainingSession roster (`TrainingSession.athletes`) matches the group's membership at upload time, unaffected by later `Athlete.group` reassignment.
 
 ### ✅ Phase 6 Exit Checklist
-- [ ] Full CSV upload creates/reuses Group → Block → Session → SessionExercise correctly in one transaction
+- [ ] Full CSV upload creates/reuses Group → Block → TrainingSession → SessionExercise correctly in one transaction
 - [ ] Repeat upload for the same group/block reuses existing rows, no duplication
 - [ ] Unrecognized exercises stub cleanly; confirm/reject both work with no orphaned rows
-- [ ] Session roster snapshot taken at creation time, not computed live
+- [ ] TrainingSession roster snapshot taken at creation time, not computed live
 - [ ] Every file has a WHY comment
 
 **STOP. Review the above before moving to Phase 7.**
 
 ---
 
-## Phase 7 — Session Status, Roster, Makeup Flow & Athlete Max Entry · Owner: TBD
+## Phase 7 — TrainingSession Status, Roster, Makeup Flow & Athlete Max Entry · Owner: TBD
 
 ### Goal
-Compute red/yellow/green completion status at the Session/Block/Group level
+Compute red/yellow/green completion status at the TrainingSession/Block/Group level
 (derived, not stored), support the retroactive makeup-session flow, implement
 the team_completion_time rule, and open the athlete-max write/read endpoints.
 
@@ -1078,12 +1078,12 @@ the team_completion_time rule, and open the athlete-max write/read endpoints.
 Working directory: django/event_handler/. Builds on Phases 5/6.
 
 ## GET /api/sessions/{id}/roster-status/   (coach-only, JWT)
-Returns each athlete on the session's roster (Session.athletes, the snapshot
+Returns each athlete on the session's roster (TrainingSession.athletes, the snapshot
 from Phase 6) alongside whether a completed Set exists for them:
   { athletes: [ {athlete_id, name, has_data: bool}, ... ] }
 
 ## Status computation (derived — do NOT add a stored status field anywhere)
-  - Session status: red = zero non-makeup completed Sets exist; green = every
+  - TrainingSession status: red = zero non-makeup completed Sets exist; green = every
     roster athlete has one; yellow = some but not all.
   - Block status: rolls up from child Sessions (red if all red, green if all
     green, yellow otherwise).
@@ -1123,13 +1123,13 @@ Every file opens with a WHY comment.
 
 ### Verify
 - A session with 0 of N roster athletes completed reports red; some-but-not-all reports yellow; all reports green.
-- A `Block` with a mix of red/green child `Session`s reports yellow; a `TrainingGroup` reflects the same rollup one level up.
+- A `Block` with a mix of red/green child `TrainingSession`s reports yellow; a `TrainingGroup` reflects the same rollup one level up.
 - Roster-status endpoint correctly flags athletes with no completed Set.
 - A makeup Set (`is_makeup=True`) completes normally but does not affect `team_completion_time`; a session where every Set is a makeup returns `team_completion_time: null`.
 - `POST /api/athlete-maxes/` creates a new row without touching any prior row for the same athlete/exercise pair; `GET /api/athlete-maxes/?athlete=&exercise=` returns the full ordered history.
 
 ### ✅ Phase 7 Exit Checklist
-- [ ] Status is computed at request time at all three levels (Session/Block/Group), never stored
+- [ ] Status is computed at request time at all three levels (TrainingSession/Block/Group), never stored
 - [ ] Roster-status endpoint correctly identifies missing athletes
 - [ ] `is_makeup` flows through set creation and completion correctly
 - [ ] `team_completion_time` uses max(), excludes makeups, returns null when no qualifying Sets exist
@@ -1205,7 +1205,7 @@ fire-and-forget; log failures, never raise into the request path.
      publish_dashboard_state({type:"leaderboard_update", ...set summary...})
 2. Node reassignment (PATCH /api/nodes/{node_id}/):
      publish_rack_state(new_rack_number, {type:"node_reassigned", node_id})
-3. Athlete check-in (however a Set/Session ties an athlete to a rack — publish on
+3. Athlete check-in (however a Set/TrainingSession ties an athlete to a rack — publish on
    set create): publish_rack_state(rack_number, {type:"athlete_checkin", athlete, rack_number})
 
 Import the publisher into views.py and replace the Phase 4 marker comment with
@@ -1279,7 +1279,7 @@ state before rendering RackScreen.jsx's live panel:
                            target_weight_percent, velocity_zone_min,
                            velocity_zone_max}, ... ] }
 "Active" = schedule_date is today or earlier, parent session's ended_at is
-null — pick the most recent qualifying Session; document whatever tie-break
+null — pick the most recent qualifying TrainingSession; document whatever tie-break
 rule you choose in a code comment. Do NOT poll this endpoint — same one-shot
 pattern as rack registration itself. roster[].maxes is each athlete's CURRENT
 AthleteMax (Phase 5/7 — latest recorded_at row) per exercise_id, keyed for
@@ -1380,7 +1380,7 @@ is a layout reference only.
 
 ## Athlete + exercise selection — sourced from the Phase 10 active-session fetch
 Before a set can start, "idle" needs a selected athlete and exercise. Do NOT
-call GET /api/athletes/ or GET /api/programs/?athlete={id} for this picker —
+call GET /api/athletes/ or GET /api/prescriptions/?athlete={id} for this picker —
 source both dropdowns from the Phase 10 active-session fetch already sitting
 in state:
   - Athlete dropdown sources from session.roster. Athletes with
@@ -1523,7 +1523,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
    - **Active-set float-to-top (client-side, transient):** when a set goes ACTIVE at this rack (countdown/active), that movement's card floats to the TOP of the stack so the in-progress movement is front-and-center. This reorder is presentational and **per-rack only — NOT persisted and NOT in the endpoint**; on any other rack, or once the set ends, the list returns to `Program.id` order. (Server order is immutable; only the client floats the active card. This is the one and only thing that ever reorders the stack.)
 
 6. **Fluid check-in — no COACH-assigned athlete↔rack binding.** The coach assigns racks↔screens/nodes only (Carl's admin); a coach never pins an athlete to a rack. An athlete binds themselves, transiently, by **checking in**.
-   - **Check-in records + hot list (fast re-pick).** Checking an athlete in **writes a `RackCheckIn`** row (append-only: `{session, athlete, rack_number, checked_in_at}`). An athlete's **current rack this session = their newest check-in row** (newest-wins, same pattern as `AthleteReferenceMax`). A rack's **hot list** = the athletes whose newest check-in is THIS rack, surfaced first so a lifter doing 5 sets doesn't re-scroll the roster; the full roster stays reachable. It's server-side, so it survives a tablet reload and follows the athlete across tablets. **Session-scoped only — filtered by session; nothing persists past it.**
+   - **Check-in records + hot list (fast re-pick).** Checking an athlete in **writes a `RackCheckIn`** row (append-only: `{session, athlete, rack_number, checked_in_at}`). An athlete's **current rack this session = their newest check-in row** (newest-wins, same pattern as `AthleteReferenceMax`). A rack's **hot list** = the athletes whose newest check-in is THIS rack, surfaced first so a lifter doing 5 sets doesn't re-scroll the roster; the full roster stays reachable. It's server-side, so it survives a tablet reload and follows the athlete across tablets. **TrainingSession-scoped only — filtered by session; nothing persists past it.**
    - **Single-rack ownership (assumption + rule).** We assume one athlete can't lift at two racks at once. Checking in at a new rack writes a newer `RackCheckIn` that **supersedes** the old one — that rack now owns the athlete, and they drop off the previous rack's hot list. Newest-wins enforces single ownership for free, and is exactly why progress needs no live cross-rack push (the retired 2b).
    - **Endpoints:** `POST /api/racks/{n}/checkin/` (records a check-in) and `GET /api/racks/{n}/checkins/` (the hot list). Shapes in MESSAGE_CONTRACT §3.
    - **"Not here?" guard:** an auto-suggested next-up athlete/movement is only a suggestion; a "Not here?" control clears it so a set is never armed for someone who walked away.
@@ -1713,26 +1713,26 @@ for reassignment (GET /api/nodes/). Dragging a screen onto a slot calls
 PATCH /api/racks/{device_id}/; dragging a node calls PATCH /api/nodes/{node_id}/.
 One shared drag-and-drop component for both entity types.
 
-## Group/Block/Session browsing
+## Group/Block/TrainingSession browsing
 1. Groups list — GET /api/groups/, each row shows a rolled-up status dot.
 2. Group detail — GET /api/blocks/?group={id}, same status-dot pattern.
 3. Block detail — GET /api/sessions/?block={id}, same status-dot pattern,
    plus a roster-completion summary per session (e.g. "3/8 athletes") from
    GET /api/sessions/{id}/roster-status/.
-4. Session detail — full roster from roster-status/; clicking a "no data"
+4. TrainingSession detail — full roster from roster-status/; clicking a "no data"
    athlete is the entry point for a makeup hand-off — reuse the SAME
    drag-and-drop/assignment pattern built above (assign this athlete+session
    to a rack), not a new interaction pattern.
 
 ## CSV upload flow
-"Upload Session CSV" action (from Group or Block view) posts to
+"Upload TrainingSession CSV" action (from Group or Block view) posts to
 /api/sessions/upload/ (Phase 6). On response, if any exercises were stubbed,
 show a confirmation modal per stubbed exercise (tags, target numbers,
 Confirm/Reject), calling PATCH /api/exercises/{id}/confirm/ (Phase 6).
 
 ## Status dots
 One reusable StatusDot.jsx ("red"|"yellow"|"green"), used identically at
-Group/Block/Session levels — same one-component principle as the shared
+Group/Block/TrainingSession levels — same one-component principle as the shared
 drag-and-drop component above.
 
 ## Athlete max entry
@@ -1756,7 +1756,7 @@ Every file opens with a WHY comment.
 
 ### Verify
 - Login gate, live room state, and Room Layout drag-and-drop rack/node assignment all work as originally specified.
-- Navigating Group → Block → Session shows correctly rolled-up status dots at every level, matching the backend's computed status.
+- Navigating Group → Block → TrainingSession shows correctly rolled-up status dots at every level, matching the backend's computed status.
 - Uploading a CSV with one new exercise surfaces exactly one confirmation modal; confirming updates the catalog, rejecting removes the stub and its SessionExercise link with no leftover references in the UI.
 - Selecting a "no data" athlete from a session's roster successfully routes a makeup set to a chosen rack, reusing the existing assignment pattern.
 - Athlete max entry form posts correctly; progression chart renders full history for a selected exercise.
@@ -1807,7 +1807,7 @@ Waist and wrist mount thresholds, WiFi reconnect logic, enclosure v1. Resolve (o
 Seed script, one-command `start.sh`, `DEMO_SCRIPT.md`, screen-recording backup. The full session script must run clean at least twice in a row before demo day.
 
 Add to the seed script and `DEMO_SCRIPT.md`: seed at least one TrainingGroup
-with a Block and a CSV-uploaded Session (including at least one intentionally
+with a Block and a CSV-uploaded TrainingSession (including at least one intentionally
 unrecognized exercise name, to demo the stub-confirmation flow), and include
 one deliberately "missing" athlete to demo the makeup flow and its effect
 (or non-effect) on team_completion_time. The full session script (already
@@ -1835,7 +1835,7 @@ Don't let these block a phase — they're intentionally punted:
 For quick reference — the full detail for each item lives in its phase above.
 
 - **Phases 1–4:** unchanged from v1, already built.
-- **Phases 5–8 (new):** Group/Block/Session hierarchy, Exercise catalog + Tag
+- **Phases 5–8 (new):** Group/Block/TrainingSession hierarchy, Exercise catalog + Tag
   system, CSV import pipeline, red/yellow/green status computation, makeup
   flow + `team_completion_time`, append-only `AthleteMax` tracking, and the
   `generate_insights` scaffold.

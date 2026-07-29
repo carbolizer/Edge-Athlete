@@ -26,7 +26,7 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 
 from event_handler.models import (Athlete, AthleteReferenceMax, DailyReport, Exercise,
-                                  Node, Rep, Session, SessionParticipation, Set,
+                                  Node, Rep, TrainingSession, SessionParticipation, Set,
                                   TrainingBlock, TrainingBlockExercise, TrainingBlockWorkout,
                                   TrainingGroup, TrainingProgram)
 from event_handler.services.planning import instantiate_block
@@ -79,7 +79,7 @@ class Command(BaseCommand):
             # it went unnoticed until someone ended one in the browser.
             Set.objects.filter(session__label=SESSION_LABEL).delete()
             DailyReport.objects.filter(session__label=SESSION_LABEL).delete()
-            Session.objects.filter(label=SESSION_LABEL).delete()
+            TrainingSession.objects.filter(label=SESSION_LABEL).delete()
             AthleteReferenceMax.objects.filter(athlete__name__in=names).delete()
             TrainingProgram.objects.filter(training_group__name=GROUP_NAME).delete()
             TrainingBlock.objects.filter(name=BLOCK_NAME).delete()
@@ -126,7 +126,7 @@ class Command(BaseCommand):
         program = instantiate_block(block, group, start_date=timezone.now().date())
 
         # The live session, roster = all four athletes.
-        session = Session.objects.create(label=SESSION_LABEL)
+        session = TrainingSession.objects.create(label=SESSION_LABEL)
         session.athletes.set(athletes.values())
 
         # Put the group ON the session, pointed at the day's workout. Without

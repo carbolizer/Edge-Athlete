@@ -32,12 +32,15 @@ export function createExerciseDraft(position) {
   };
 }
 
-// A whole training day in one payload — its block, its name, its place in the
-// block, and its movements in order. Sent as one call so a half-entered workout
-// can never exist in the catalog.
-export function buildWorkoutPayload(name, exercises, trainingBlockId, position) {
+// A whole training day in one payload — its name, its place in the block, and
+// its movements in order. Sent as one call so a half-entered workout can never
+// exist in the catalog.
+//
+// The block is NOT in here: it is in the URL (/training-blocks/{id}/workouts/),
+// because a day cannot exist without one and an address states that better than
+// a field a caller can forget.
+export function buildWorkoutPayload(name, exercises, position) {
   return {
-    training_block: Number(trainingBlockId),
     name: name.trim(),
     ...(position ? { position: Number(position) } : {}),
     exercises: exercises.map((exercise, index) => ({

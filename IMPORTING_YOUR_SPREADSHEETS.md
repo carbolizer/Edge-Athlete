@@ -77,7 +77,7 @@ Day 2 - Upper,Barbell Row,2,4,8,70
 
 There's no column for pounds.
 
-On upload you choose a **template** (you'll run it again) or **one squad's plan**.
+On upload you choose a **template** (you'll run it again) or **one TrainingGroup's plan**.
 Either way the new days are added after what's already there.
 
 ---
@@ -99,7 +99,7 @@ saves until every line is clean.
 | Must be saved as UTF-8 CSV | Re-save as **CSV UTF-8** |
 
 Two athletes with the same name? You'll be asked which — and asked far less often
-if you pick the squad you're importing for.
+if you pick the TrainingGroup you're importing for.
 
 A max sheet never creates people. An unknown name stops and asks, so a typo can't
 become a second Jordan Lee.

@@ -32,12 +32,11 @@
 import { useEffect, useState } from "react";
 import { applyCorrection, buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
-const WORKOUTS_URL = "/api/workouts/";
-const CSV_PREVIEW_URL = "/api/workouts/imports/preview/";
-const CSV_IMPORT_URL = "/api/workouts/imports/";
-// "workout-programs" is what his front end called our reusable TrainingBlocks.
-// The URL keeps his name until P9 renames both sides together.
-const WORKOUT_PROGRAMS_URL = "/api/workout-programs/";
+const TRAINING_BLOCKS_URL = "/api/training-blocks/";
+const CSV_PREVIEW_URL = "/api/imports/preview/";
+const CSV_IMPORT_URL = "/api/imports/";
+// A day lives inside a block, so its URL says so.
+const blockWorkoutsUrl = (blockId) => `/api/training-blocks/${blockId}/workouts/`;
 const EXERCISES_URL = "/api/exercises/";
 const TRAINING_GROUPS_URL = "/api/training-groups/";
 const DEPLOY_URL = "/api/training-programs/";
@@ -105,13 +104,6 @@ function ExerciseSummary({ exercise }) {
 }
 
 export default function WorkoutCatalog({ accessToken, onLogout }) {
-  const [workouts, setWorkouts] = useState([]);
-  const [workoutCount, setWorkoutCount] = useState(0);
-  const [catalogUrl, setCatalogUrl] = useState(WORKOUTS_URL);
-  const [retryCatalogUrl, setRetryCatalogUrl] = useState(WORKOUTS_URL);
-  const [pagination, setPagination] = useState({ previous: null, next: null });
-  const [catalogState, setCatalogState] = useState("loading");
-  const [catalogErrors, setCatalogErrors] = useState([]);
   const [name, setName] = useState("");
   const [exercises, setExercises] = useState([createExerciseDraft(1)]);
   const [manualErrors, setManualErrors] = useState([]);
@@ -128,7 +120,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [corrections, setCorrections] = useState({});
   const [rawErrors, setRawErrors] = useState([]);
   const [athletes, setAthletes] = useState([]);
-  // the movement catalog and the squads, for the pickers
+  // the movement catalog and the TrainingGroups, for the pickers
   const [movements, setMovements] = useState([]);
   const [groups, setGroups] = useState([]);
   // which block the manual builder is adding a day to, and where in the block
@@ -152,8 +144,8 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [deploySaving, setDeploySaving] = useState(false);
   const [programs, setPrograms] = useState([]);
   const [programCount, setProgramCount] = useState(0);
-  const [programUrl, setProgramUrl] = useState(WORKOUT_PROGRAMS_URL);
-  const [retryProgramUrl, setRetryProgramUrl] = useState(WORKOUT_PROGRAMS_URL);
+  const [programUrl, setProgramUrl] = useState(TRAINING_BLOCKS_URL);
+  const [retryProgramUrl, setRetryProgramUrl] = useState(TRAINING_BLOCKS_URL);
   const [programPagination, setProgramPagination] = useState({ previous: null, next: null });
   const [programCatalogState, setProgramCatalogState] = useState("loading");
   const [programCatalogErrors, setProgramCatalogErrors] = useState([]);
@@ -167,29 +159,6 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw flattenApiErrors(body, fallback);
     return body;
-  }
-
-  async function loadWorkouts(url = catalogUrl) {
-    setCatalogState("loading");
-    setCatalogErrors([]);
-    setRetryCatalogUrl(url);
-    try {
-      const response = await fetch(url, { headers });
-      const body = await parseResponse(response, "The workout catalog could not be loaded.");
-      if (body === null) return;
-      const results = Array.isArray(body) ? body : body.results || body.workouts || [];
-      setWorkouts(results);
-      setWorkoutCount(Array.isArray(body) ? body.length : body.count ?? results.length);
-      setPagination({
-        previous: sameOriginPath(body.previous, window.location.origin),
-        next: sameOriginPath(body.next, window.location.origin),
-      });
-      setCatalogUrl(url);
-      setCatalogState("ready");
-    } catch (errors) {
-      setCatalogErrors(Array.isArray(errors) ? errors : [{ detail: "The workout catalog could not be loaded." }]);
-      setCatalogState("error");
-    }
   }
 
   async function loadPrograms(url = programUrl) {
@@ -216,8 +185,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   }
 
   useEffect(() => {
-    loadWorkouts(WORKOUTS_URL);
-    loadPrograms(WORKOUT_PROGRAMS_URL);
+    loadPrograms(TRAINING_BLOCKS_URL);
     // The two pickers. Both are small, rarely-changing lists, so they load once
     // and are not paginated. A failure here leaves an empty dropdown rather than
     // breaking the screen — the panels that need them disable themselves.
@@ -251,10 +219,10 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     setManualErrors([]);
     setManualStatus("");
     try {
-      const response = await fetch(WORKOUTS_URL, {
+      const response = await fetch(blockWorkoutsUrl(workoutBlockId), {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify(buildWorkoutPayload(name, exercises, workoutBlockId, workoutPosition)),
+        body: JSON.stringify(buildWorkoutPayload(name, exercises, workoutPosition)),
       });
       const body = await parseResponse(response, "The workout could not be created.");
       if (body === null) return;
@@ -262,7 +230,6 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       setWorkoutPosition("");
       setExercises([createExerciseDraft(1)]);
       setManualStatus(`${body.name || name.trim()} was added to the block.`);
-      await loadWorkouts(catalogUrl);
       await loadPrograms(programUrl);
     } catch (errors) {
       setManualErrors(Array.isArray(errors) ? errors : [{ detail: "The workout could not be created." }]);
@@ -338,7 +305,6 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       setCorrections({});
       setRawErrors([]);
       setFileInputKey((key) => key + 1);
-      await loadWorkouts(catalogUrl);
       await loadPrograms(programUrl);
     } catch (errors) {
       setCsvErrors(Array.isArray(errors) ? errors : [{ detail: `The CSV could not be ${action === "preview" ? "previewed" : "imported"}.` }]);
@@ -355,7 +321,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     setProgramErrors([]);
     setProgramStatus("");
     try {
-      const response = await fetch(WORKOUT_PROGRAMS_URL, {
+      const response = await fetch(TRAINING_BLOCKS_URL, {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(buildTrainingBlockPayload(programName, durationWeeks, cadenceDays)),
@@ -369,7 +335,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       // Select it in the day builder — creating a block is almost always
       // followed by filling it in, so save the coach the extra click.
       if (body.id) setWorkoutBlockId(String(body.id));
-      await loadPrograms(WORKOUT_PROGRAMS_URL);
+      await loadPrograms(TRAINING_BLOCKS_URL);
     } catch (errors) {
       setProgramErrors(Array.isArray(errors) ? errors : [{ detail: "The block could not be created." }]);
     } finally {
@@ -410,6 +376,11 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   // Two kinds of problem, and they need different treatment. A name we couldn't
   // match is a question the coach can answer right here; a missing column or an
   // unreadable file is not, and pretending otherwise wastes their time.
+  // Every day across every block, flattened for the catalog list, each carrying
+  // the block it came from — "Day 1" means nothing without it.
+  const allDays = programs.flatMap((block) =>
+    (block.workouts || []).map((workout) => ({ block, workout })));
+
   const repairs = repairableErrors(rawErrors);
   const otherErrors = repairs.length ? csvErrors.filter((error) => !correctionKind(error.code)) : csvErrors;
   const repairedCount = repairs.filter((error) => corrections[correctionKind(error.code)]?.[error.value] !== undefined).length;
@@ -417,7 +388,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const previewRows = preview?.rows || [];
 
   return <div className="workout-catalog context-tab-content">
-    <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Create ordered workouts manually or validate a CSV before an atomic import.</p></div><b>{workoutCount} workout{workoutCount === 1 ? "" : "s"}</b></header>
+    <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Design a block, fill it with days, then deploy it to a group. Loads are a percent of each athlete's own max.</p></div><b>{programCount} block{programCount === 1 ? "" : "s"} · {allDays.length} day{allDays.length === 1 ? "" : "s"}</b></header>
     <div className="workout-builder-grid">
       <section className="workout-panel"><header><span>Manual builder</span><h3>Add a day to a block</h3><p>Movements are saved in the order shown. Loads are a percent of each athlete's own max.</p></header>
         <form onSubmit={createWorkout}>
@@ -478,15 +449,15 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       </section>
     </div>
 
-    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Available workouts</h3><p>Exercises appear in prescribed order.</p></header>
-      {catalogState === "loading" && <p className="monitor-empty" role="status">Loading workout page...</p>}
-      <ErrorList errors={catalogErrors} title="Catalog unavailable:" />
-      {catalogState === "error" && <button type="button" className="workout-secondary" onClick={() => loadWorkouts(retryCatalogUrl)}>Retry page</button>}
-      {catalogState !== "loading" && workoutCount === 0 && <p className="monitor-empty">No workouts have been created.</p>}
-      <div className="workout-card-grid">{workouts.map((workout) => (
-        <article key={workout.id || workout.name}><header><span>Day {workout.position} · {workout.exercises?.length || 0} exercise{workout.exercises?.length === 1 ? "" : "s"}</span><h4>{workout.name}</h4></header><ol>{(workout.exercises || []).map((exercise) => <ExerciseSummary exercise={exercise} key={exercise.id || `${exercise.position}-${exercise.exercise}`} />)}</ol></article>
+    {/* Days no longer have a global list of their own — a day belongs to one
+        block, so they are read from the blocks we already loaded. Each block
+        arrives with its days and their prescription rows nested inside it. */}
+    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Movements appear in prescribed order.</p></header>
+      {programCatalogState === "loading" && <p className="monitor-empty" role="status">Loading blocks...</p>}
+      {programCatalogState !== "loading" && allDays.length === 0 && <p className="monitor-empty">No days have been added to any block yet.</p>}
+      <div className="workout-card-grid">{allDays.map(({ block, workout }) => (
+        <article key={workout.id}><header><span>{block.name} · day {workout.position} · {workout.exercises?.length || 0} exercise{workout.exercises?.length === 1 ? "" : "s"}</span><h4>{workout.name}</h4></header><ol>{(workout.exercises || []).map((exercise) => <ExerciseSummary exercise={exercise} key={exercise.id || `${exercise.position}-${exercise.exercise}`} />)}</ol></article>
       ))}</div>
-      {(pagination.previous || pagination.next || workoutCount > workouts.length) && <nav className="workout-pagination" aria-label="Workout catalog pages"><button type="button" className="workout-secondary" onClick={() => loadWorkouts(pagination.previous)} disabled={!pagination.previous || catalogState === "loading"}>Previous</button><span role="status">Showing {workouts.length} on this page · {workoutCount} total</span><button type="button" onClick={() => loadWorkouts(pagination.next)} disabled={!pagination.next || catalogState === "loading"}>Next</button></nav>}
     </section>
 
     <div className="workout-program-grid">

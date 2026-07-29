@@ -27,7 +27,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..models import (AthleteReferenceMax, DailyReport, MonitoringEvent,
-                      RackCheckIn, Rep, Session, Set)
+                      RackCheckIn, Rep, TrainingSession, Set)
 from .lifting_math import one_rep_max
 
 REPORT_SCHEMA_VERSION = 1
@@ -165,7 +165,7 @@ def end_session(session_id, ended_at=None):
     for one day — so the row lock plus this check make the second call a no-op.
     """
     with transaction.atomic():
-        session = Session.objects.select_for_update().filter(id=session_id).first()
+        session = TrainingSession.objects.select_for_update().filter(id=session_id).first()
         if session is None:
             return None, False
 

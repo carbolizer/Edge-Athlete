@@ -9,7 +9,7 @@ receptionist handing back a tidy summary. One of these per kind of record.
 """
 from rest_framework import serializers
 
-from .models import (Set, Rep, RackScreen, Athlete, Session, Node, Exercise,
+from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise)
 
@@ -76,11 +76,11 @@ class AthleteSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
 
 
-class SessionSerializer(serializers.ModelSerializer):
+class TrainingSessionSerializer(serializers.ModelSerializer):
     """One training session. started_at is set for us; a coach sets ended_at to
     finish it."""
     class Meta:
-        model = Session
+        model = TrainingSession
         fields = ["id", "label", "started_at", "ended_at", "athletes", "notes"]
         read_only_fields = ["id", "started_at"]
 
@@ -107,18 +107,18 @@ class NodeSerializer(serializers.ModelSerializer):
 # ─────────────────────────── planning (Training* hierarchy) ───────────────────────────
 #
 # Read the names carefully, they are not what you'd guess:
-#   TrainingGroup   — a squad. A NAMED SUBSET of athletes, not everyone.
-#   TrainingBlock   — a reusable TEMPLATE. Timeless: no squad, no dates.
-#   TrainingProgram — that template PLACED IN TIME for one squad.
+#   TrainingGroup   — a TrainingGroup. A NAMED SUBSET of athletes, not everyone.
+#   TrainingBlock   — a reusable TEMPLATE. Timeless: no TrainingGroup, no dates.
+#   TrainingProgram — that template PLACED IN TIME for one TrainingGroup.
 #
 # A block is written once and redeployed for years; a program is one deployment
 # of it. The block's rows get copied down into the program at that moment, so
 # editing the template later changes future deployments but never rewrites what
-# a squad already trained.
+# a TrainingGroup already trained.
 
 class TrainingGroupSerializer(serializers.ModelSerializer):
-    """A squad. `athlete_count` rides along because the coach UI lists squads by
-    size, and it decides plan order when someone is in two squads at once."""
+    """A TrainingGroup. `athlete_count` rides along because the coach UI lists TrainingGroups by
+    size, and it decides plan order when someone is in two TrainingGroups at once."""
     athlete_count = serializers.IntegerField(source="athletes.count", read_only=True)
 
     class Meta:
@@ -131,7 +131,7 @@ class TrainingBlockExerciseSerializer(serializers.ModelSerializer):
     """One prescribed movement in a template.
 
     `target_percent` is a percentage of each athlete's own max — never a weight.
-    That is the whole point: one line serves a whole squad, and everyone's number
+    That is the whole point: one line serves a whole TrainingGroup, and everyone's number
     follows their own strength."""
     exercise_name = serializers.CharField(source="exercise.name", read_only=True)
 
@@ -189,10 +189,10 @@ class TrainingProgramWorkoutSerializer(serializers.ModelSerializer):
 
 
 class TrainingProgramSerializer(serializers.ModelSerializer):
-    """A template deployed for one squad, starting on a date.
+    """A template deployed for one TrainingGroup, starting on a date.
 
     `training_block` is deliberately optional. A coach can write a one-off plan
-    for a squad without ever making a template, and promote it to a template
+    for a TrainingGroup without ever making a template, and promote it to a template
     later just by pointing this at one — no rebuild, no migration."""
     workouts = TrainingProgramWorkoutSerializer(many=True, read_only=True)
     group_name = serializers.CharField(source="training_group.name", read_only=True)

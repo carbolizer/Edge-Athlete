@@ -112,11 +112,11 @@ class NameResolver:
     Built once per import and reused for every row, so a roster of a few hundred
     is read from the database once rather than once per line.
 
-    The order it tries things matters. An exact match inside the squad being
-    imported for beats an exact match across the whole gym, because that is what
-    narrows real ambiguity: two "Jordan Lee"s in a building is believable, two in
-    the same thirty-person squad is not. Only when both of those are inconclusive
-    do we stop and ask the coach.
+    The order it tries things matters. An exact match inside the TrainingGroup
+    being imported for beats an exact match across the whole gym, because that is
+    what narrows real ambiguity: two "Jordan Lee"s in a building is believable,
+    two in the same thirty-person group is not. Only when both of those are
+    inconclusive do we stop and ask the coach.
 
     A COACH'S ANSWER OUTRANKS ALL OF IT
     Once the coach has told us who "Jordn Reyes" is, that answer is used for
@@ -395,7 +395,7 @@ def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
             if group_id is None:
                 continue
         elif scope_group is not None:
-            group_id = scope_group.id  # importing "into" a squad puts them in it
+            group_id = scope_group.id  # importing "into" a TrainingGroup puts them in it
 
         notes = raw.get("notes")
         entries.append({
@@ -410,7 +410,7 @@ def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
 
 @transaction.atomic
 def create_athletes(entries):
-    """Add everyone, and put them in their squad if the sheet said which."""
+    """Add everyone, and put them in their TrainingGroup if the sheet said which."""
     created = []
     for entry in entries:
         athlete = Athlete.objects.create(
@@ -523,7 +523,7 @@ def _check_positions(workout, errors):
             f"'{workout['name']}' must number its exercises 1, 2, 3... with no gaps."))
 
 
-# A template and a squad's live plan hold identical rows in two parallel pairs of
+# A template and a TrainingGroup's live plan hold identical rows in two parallel pairs of
 # tables (see models.py — a program is a snapshot copy of a block, so editing one
 # season's plan can't rewrite last season's history). Importing into either is the
 # same work against different names, so the names are looked up here rather than
@@ -546,7 +546,7 @@ _PLAN_TARGETS = {
 
 @transaction.atomic
 def create_plan_workouts(workouts, target, kind):
-    """Add these workouts to a template ("block") or to a squad's plan ("program").
+    """Add these workouts to a template ("block") or to a TrainingGroup's plan ("program").
 
     New workouts are APPENDED after whatever the target already has, so importing
     into a template that already holds two days adds days three and four instead

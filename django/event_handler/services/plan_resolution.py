@@ -1,8 +1,8 @@
 """Works out what an athlete is doing today, and what weight goes on the bar.
 
 THE ONE IDEA BEHIND ALL OF THIS
-A coach writes a plan once, for a squad, in percentages — "back squat, 5 sets of
-3, at 80%". Every athlete in that squad gets a different weight out of the same
+A coach writes a plan once, for a TrainingGroup, in percentages — "back squat, 5 sets of
+3, at 80%". Every athlete in that TrainingGroup gets a different weight out of the same
 line, because 80% is taken against THEIR current max. Nobody types a weight per
 athlete, and as people get stronger their numbers follow automatically.
 
@@ -77,13 +77,13 @@ def _overrides_for(athlete_id, program_exercise_ids):
 def _programs_for_athlete_today(athlete, session):
     """Which plans apply to this athlete in this session.
 
-    This is an INTERSECTION: the squads the athlete belongs to, AND the squads
+    This is an INTERSECTION: the TrainingGroups the athlete belongs to, AND the TrainingGroups
     that are actually training in this session. That is what lets one person sit
     in both "Varsity Football" and "Receivers" without ever choosing between
     them — they get the football plan at a football session and the receiver plan
     at a receiver session, with nothing to configure.
 
-    Ordered biggest squad first, so the whole-team lift comes before position
+    Ordered biggest TrainingGroup first, so the whole-team lift comes before position
     work. Ties break on start date, then creation, then id — never on database
     ordering, so the same inputs always give the same answer.
     """
@@ -142,7 +142,7 @@ def movements_for_athlete(athlete, session):
     endpoint that renders the frozen rack contract can map them straight across
     without reaching back into the database.
 
-    An empty list is a legitimate answer at several points (no squad, squad not
+    An empty list is a legitimate answer at several points (no TrainingGroup, TrainingGroup not
     training today, coach hasn't picked the workout yet). None of those are
     errors: the rack simply shows nothing to do.
     """
@@ -157,7 +157,7 @@ def movements_for_athlete(athlete, session):
 
     # UNION the plans, keeping ONE entry per movement.
     #
-    # Someone in two squads trains the team lift AND their position work — the
+    # Someone in two TrainingGroups trains the team lift AND their position work — the
     # lists combine rather than one replacing the other. But a movement must
     # appear only once: progress is counted per movement, so a duplicate would
     # make the same completed sets show up twice and corrupt the set counter
@@ -173,7 +173,7 @@ def movements_for_athlete(athlete, session):
     for participation in participations:
         workout = participation.training_program_workout
         if workout is None:
-            continue  # coach hasn't chosen this squad's workout for the day yet
+            continue  # coach hasn't chosen this TrainingGroup's workout for the day yet
         for row in workout.exercises.select_related("exercise").order_by("position"):
             if allowed_ids is not None and row.exercise_id not in allowed_ids:
                 continue  # this rack can't do it, so don't offer it

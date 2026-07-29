@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
 
-from .models import (Athlete, Session, Set, Rep, AthleteReferenceMax, Exercise,
+from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Exercise,
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
@@ -79,7 +79,7 @@ class ActiveSessionEndpointTests(APITestCase):
         return exercise
 
     def _program(self, athlete, exercise, weight, session=None, record_max=True):
-        return give_plan(athlete, session or Session.objects.filter(
+        return give_plan(athlete, session or TrainingSession.objects.filter(
             ended_at__isnull=True).order_by("-started_at", "-id").first(),
             exercise, weight, record_max=record_max)
 
@@ -91,7 +91,7 @@ class ActiveSessionEndpointTests(APITestCase):
         return m
 
     def test_no_active_session_returns_empty_envelope(self):
-        Session.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
+        TrainingSession.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
         res = self.client.get(self.URL)
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["session_id"], None)
@@ -99,14 +99,14 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertEqual(res.data["session_exercises"], [])
 
     def test_picks_most_recent_unended_session(self):
-        Session.objects.create(label="Older")
-        newer = Session.objects.create(label="Newer")
+        TrainingSession.objects.create(label="Older")
+        newer = TrainingSession.objects.create(label="Newer")
         res = self.client.get(self.URL)
         self.assertEqual(res.data["session_id"], newer.id)
         self.assertEqual(res.data["label"], "Newer")
 
     def test_roster_has_data_reflects_completed_sets(self):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         lifted = Athlete.objects.create(name="Lifted")
         idle = Athlete.objects.create(name="Idle")
@@ -122,7 +122,7 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertFalse(by_name["Idle"]["has_data"])
 
     def test_returns_current_max_and_omits_missing_ones(self):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")  # in the catalog, but no max for this athlete
         athlete = Athlete.objects.create(name="Max Tester")
@@ -139,7 +139,7 @@ class ActiveSessionEndpointTests(APITestCase):
     def test_reference_max_can_go_down(self):
         # A reference max is "what they can do now", not a lifetime best: a newer,
         # LOWER row must supersede an older, higher one.
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         athlete = Athlete.objects.create(name="Bad Week")
         session.athletes.add(athlete)
@@ -150,7 +150,7 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertEqual(res.data["roster"][0]["maxes"][squat.id], 285.0)
 
     def test_targets_and_exercises_come_from_programs(self):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         athlete = Athlete.objects.create(name="Planned")
         session.athletes.add(athlete)
@@ -175,7 +175,7 @@ class AthleteProgressEndpointTests(APITestCase):
         return exercise
 
     def _program(self, athlete, exercise, weight, sets=5, session=None):
-        return give_plan(athlete, session or Session.objects.filter(
+        return give_plan(athlete, session or TrainingSession.objects.filter(
             ended_at__isnull=True).order_by("-started_at", "-id").first(),
             exercise, weight, sets=sets)
 
@@ -195,18 +195,18 @@ class AthleteProgressEndpointTests(APITestCase):
         self.assertEqual(res.data["movements"], [])
 
     def test_unknown_athlete_is_404(self):
-        Session.objects.create(label="Live")
+        TrainingSession.objects.create(label="Live")
         res = self.client.get(self._url(999999))
         self.assertEqual(res.status_code, 404)
 
     def test_athlete_not_on_roster_is_404(self):
-        Session.objects.create(label="Live")
+        TrainingSession.objects.create(label="Live")
         outsider = Athlete.objects.create(name="Outsider")
         res = self.client.get(self._url(outsider.id))
         self.assertEqual(res.status_code, 404)
 
     def test_derives_progress_in_program_order(self):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")
         athlete = Athlete.objects.create(name="Lifter")
@@ -235,7 +235,7 @@ class AthleteProgressEndpointTests(APITestCase):
         self.assertEqual(bn["status"], "not_started")
 
     def test_completed_movement_advances_current(self):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")
         athlete = Athlete.objects.create(name="Lifter")
@@ -254,7 +254,7 @@ class AthleteProgressEndpointTests(APITestCase):
         # The day-view default for the next set follows what the athlete LAST
         # actually lifted this session (so an on-the-fly weight change carries
         # forward), never the prescribed target, and a false attempt doesn't count.
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")
         athlete = Athlete.objects.create(name="Lifter")
@@ -281,7 +281,7 @@ class RackCheckInEndpointTests(APITestCase):
     rack (one athlete = one rack), and the guards."""
 
     def _session_with(self, *names):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         athletes = [Athlete.objects.create(name=n) for n in names]
         session.athletes.add(*athletes)
         return session, athletes
@@ -306,7 +306,7 @@ class RackCheckInEndpointTests(APITestCase):
         self.assertEqual([a["name"] for a in self._hot_list(2).data["athletes"]], ["Jordan"])
 
     def test_no_active_session_checkin_is_400(self):
-        Session.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
+        TrainingSession.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
         athlete = Athlete.objects.create(name="Nobody")
         self.assertEqual(self._checkin(1, athlete).status_code, 400)
 
@@ -330,7 +330,7 @@ class SessionStatusEndpointTests(APITestCase):
     rides along for the lifting/resting/ready cases."""
 
     def _live(self, *names):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         athletes = [Athlete.objects.create(name=n) for n in names]
         session.athletes.add(*athletes)
         return session, athletes
@@ -440,7 +440,7 @@ class RoomStateEndpointTests(APITestCase):
     """
 
     def _room(self):
-        session = Session.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live")
         athlete = Athlete.objects.create(name="Jordan Lee")
         session.athletes.add(athlete)
         squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -545,7 +545,7 @@ class SessionCompletionTests(APITestCase):
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw")
         self.client.force_authenticate(user=self.coach)
-        self.session = Session.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday")
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -635,7 +635,7 @@ class ReportsEndpointTests(APITestCase):
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw")
         self.client.force_authenticate(user=self.coach)
-        self.session = Session.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday")
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -705,7 +705,7 @@ class ReferenceMaxWriteTests(APITestCase):
         self.a1 = Athlete.objects.create(name="A One")
         self.a2 = Athlete.objects.create(name="A Two")
 
-    def test_records_a_whole_squad_in_one_call(self):
+    def test_records_a_whole_group_in_one_call(self):
         res = self.client.post("/api/reference-maxes/", {
             "exercise": self.squat.id, "rep_basis": 1,
             "entries": [{"athlete": self.a1.id, "reference_weight_lbs": 315},
@@ -743,7 +743,7 @@ class PlanResolutionTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw")
-        self.session = Session.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday")
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -779,22 +779,22 @@ class PlanResolutionTests(APITestCase):
         """The canon's worked example: a 225x3 reference, prescribed at 80%,
         must land on 200 lb — converted to a single, then rounded to the bar."""
         self._max(self.squat, 225, rep_basis=3)
-        self._program(self._group("Squad"), [(self.squat, 5, 3, 80)])
+        self._program(self._group("Varsity"), [(self.squat, 5, 3, 80)])
         movements = movements_for_athlete(self.athlete, self.session)
         self.assertEqual(movements[0]["target_weight_lbs"], 200.0)
 
     def test_no_max_on_file_gives_no_target_rather_than_a_guess(self):
         """An athlete nobody has tested yet still gets their workout — the weight
         is simply blank, and they key in what they're using. Never guess."""
-        self._program(self._group("Squad"), [(self.squat, 5, 3, 80)])
+        self._program(self._group("Varsity"), [(self.squat, 5, 3, 80)])
         movements = movements_for_athlete(self.athlete, self.session)
         self.assertEqual(len(movements), 1)
         self.assertIsNone(movements[0]["target_weight_lbs"])
 
-    def test_two_squads_combine_and_the_lighter_prescription_wins(self):
-        """The canon's second worked example. Someone in the team squad AND a
-        position squad trains BOTH lists, the shared movement appears once at the
-        lighter load, and the bigger squad's work comes first."""
+    def test_two_groups_combine_and_the_lighter_prescription_wins(self):
+        """The canon's second worked example. Someone in the team group AND a
+        position group trains BOTH lists, the shared movement appears once at the
+        lighter load, and the bigger group's work comes first."""
         clean = Exercise.objects.get_or_create(name="Power Clean")[0]
         sled = Exercise.objects.get_or_create(name="Deadlift")[0]
         for exercise in (self.squat, self.bench, clean, sled):
@@ -810,16 +810,16 @@ class PlanResolutionTests(APITestCase):
 
         self.assertEqual(len(movements), 4)                 # 5 rows, one shared
         self.assertEqual(names.count("Back Squat"), 1)      # never duplicated
-        self.assertEqual(names[0], "Back Squat")            # bigger squad leads
+        self.assertEqual(names[0], "Back Squat")            # bigger group leads
         squat_row = movements[0]
         self.assertEqual((squat_row["planned_sets"], squat_row["target_reps"]), (3, 5))
         self.assertEqual(squat_row["target_weight_lbs"], 140.0)   # 200 x 70%, not 80%
 
-    def test_an_athlete_in_no_squad_simply_has_nothing_planned(self):
+    def test_an_athlete_in_no_group_simply_has_nothing_planned(self):
         self.assertEqual(movements_for_athlete(self.athlete, self.session), [])
 
-    def test_a_squad_not_training_today_contributes_nothing(self):
-        """Belonging to a squad isn't enough — that squad has to actually be in
+    def test_a_group_not_training_today_contributes_nothing(self):
+        """Belonging to a TrainingGroup isn't enough — that group has to actually be in
         this session, which is what lets one athlete carry several plans."""
         group = TrainingGroup.objects.create(coach=self.coach, name="Off today")
         self.athlete.training_groups.add(group)
@@ -831,7 +831,7 @@ class PlanResolutionTests(APITestCase):
         """The exception for an athlete the percentage doesn't suit. It overrides
         the PERCENTAGE, so their number still tracks their max."""
         self._max(self.squat, 200)
-        program = self._program(self._group("Squad"), [(self.squat, 5, 3, 80)])
+        program = self._program(self._group("Varsity"), [(self.squat, 5, 3, 80)])
         row = TrainingProgramExercise.objects.get()
         AthleteWorkoutExerciseOverride.objects.create(
             athlete=self.athlete, training_program_exercise=row, target_percent=60)
@@ -845,7 +845,7 @@ class PlanResolutionTests(APITestCase):
         """A station told what it has won't offer a movement it can't run."""
         for exercise in (self.squat, self.bench):
             self._max(exercise, 200)
-        self._program(self._group("Squad"), [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75)])
+        self._program(self._group("Varsity"), [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75)])
 
         node = Node.objects.create(node_id="rack_1", rack_number=1)
         node.allowed_exercises.add(self.squat)          # this rack squats only
@@ -859,7 +859,7 @@ class PlanResolutionTests(APITestCase):
         their whole workout instead of being stopped by a timing gap."""
         for exercise in (self.squat, self.bench):
             self._max(exercise, 200)
-        self._program(self._group("Squad"), [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75)])
+        self._program(self._group("Varsity"), [(self.squat, 5, 3, 80), (self.bench, 3, 5, 75)])
         self.assertEqual(len(movements_for_athlete(self.athlete, self.session)), 2)
 
 
@@ -872,7 +872,7 @@ class CoachWeightAdjustmentTests(APITestCase):
     """
 
     def setUp(self):
-        self.session = Session.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday")
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -943,9 +943,9 @@ class CoachWeightAdjustmentTests(APITestCase):
 
 
 class PlanningEndpointTests(APITestCase):
-    """Building a template and deploying it to a squad.
+    """Building a template and deploying it to a TrainingGroup.
 
-    Walks the path a coach actually takes: make a squad, write a template once,
+    Walks the path a coach actually takes: make a TrainingGroup, write a template once,
     deploy it, schedule it — and check an athlete ends up with their own weights.
     """
 
@@ -956,33 +956,33 @@ class PlanningEndpointTests(APITestCase):
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
 
     def _template_with_a_day(self):
-        block = self.client.post("/api/workout-programs/", {"name": "Fall Strength"},
+        block = self.client.post("/api/training-blocks/", {"name": "Fall Strength"},
                                  format="json").data
-        self.client.post("/api/workouts/", {
-            "training_block": block["id"], "name": "Day 1", "position": 1,
+        self.client.post(f"/api/training-blocks/{block['id']}/workouts/", {
+            "name": "Day 1", "position": 1,
             "exercises": [
                 {"exercise": self.squat.id, "sets": 5, "reps": 3, "target_percent": 80},
                 {"exercise": self.bench.id, "sets": 3, "reps": 5, "target_percent": 75},
             ]}, format="json")
         return block
 
-    def test_a_squad_is_a_subset_of_athletes_not_everyone(self):
+    def test_a_group_is_a_subset_of_athletes_not_everyone(self):
         alice = Athlete.objects.create(name="Alice")
-        Athlete.objects.create(name="Not in the squad")
-        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+        Athlete.objects.create(name="Not in the group")
+        group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
-        res = self.client.post(f"/api/training-groups/{squad['id']}/athletes/",
+        res = self.client.post(f"/api/training-groups/{group['id']}/athletes/",
                                {"athletes": [alice.id]}, format="json")
         self.assertEqual([a["name"] for a in res.data], ["Alice"])
 
     def test_deploying_a_template_copies_it_rather_than_pointing_at_it(self):
         """The copy is what lets a coach edit next season's template without
-        rewriting what this squad already trained."""
+        rewriting what this group already trained."""
         block = self._template_with_a_day()
-        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+        group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
         program = self.client.post("/api/training-programs/", {
-            "training_group": squad["id"], "training_block": block["id"],
+            "training_group": group["id"], "training_block": block["id"],
             "start_date": "2026-07-27"}, format="json").data
 
         self.assertEqual(len(program["workouts"]), 1)
@@ -992,32 +992,32 @@ class PlanningEndpointTests(APITestCase):
         still = TrainingProgramExercise.objects.get(exercise=self.squat)
         self.assertEqual(still.target_percent, 80)
 
-    def test_a_squad_can_have_a_one_off_plan_with_no_template(self):
+    def test_a_group_can_have_a_one_off_plan_with_no_template(self):
         """Not every plan is worth templating; a coach can write one directly and
         promote it later."""
-        squad = self.client.post("/api/training-groups/", {"name": "Rehab"},
+        group = self.client.post("/api/training-groups/", {"name": "Rehab"},
                                  format="json").data
         res = self.client.post("/api/training-programs/", {
-            "training_group": squad["id"], "name": "Ad hoc", "start_date": "2026-07-27"},
+            "training_group": group["id"], "name": "Ad hoc", "start_date": "2026-07-27"},
             format="json")
         self.assertEqual(res.status_code, 201)
         self.assertIsNone(res.data["training_block"])
 
-    def test_scheduling_a_squad_gives_its_athletes_their_own_weights(self):
-        """End to end: template -> squad -> today's session -> a real number."""
+    def test_scheduling_a_group_gives_its_athletes_their_own_weights(self):
+        """End to end: template -> TrainingGroup -> today's session -> a real number."""
         athlete = Athlete.objects.create(name="Jordan Lee")
         AthleteReferenceMax.objects.create(athlete=athlete, exercise=self.squat,
                                            reference_weight_lbs=315, rep_basis=1)
-        session = Session.objects.create(label="Thursday")
+        session = TrainingSession.objects.create(label="Thursday")
         session.athletes.add(athlete)
 
         block = self._template_with_a_day()
-        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+        group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
-        self.client.post(f"/api/training-groups/{squad['id']}/athletes/",
+        self.client.post(f"/api/training-groups/{group['id']}/athletes/",
                          {"athletes": [athlete.id]}, format="json")
         program = self.client.post("/api/training-programs/", {
-            "training_group": squad["id"], "training_block": block["id"],
+            "training_group": group["id"], "training_block": block["id"],
             "start_date": "2026-07-27"}, format="json").data
 
         res = self.client.post(f"/api/sessions/{session.id}/participation/", {
@@ -1032,16 +1032,16 @@ class PlanningEndpointTests(APITestCase):
 
     def test_a_workout_cannot_be_scheduled_under_the_wrong_program(self):
         """Guards against a coach's UI sending mismatched ids and silently
-        scheduling a squad onto another squad's day."""
-        session = Session.objects.create(label="Thursday")
+        scheduling a TrainingGroup onto another TrainingGroup's day."""
+        session = TrainingSession.objects.create(label="Thursday")
         block = self._template_with_a_day()
-        squad_a = self.client.post("/api/training-groups/", {"name": "A"}, format="json").data
-        squad_b = self.client.post("/api/training-groups/", {"name": "B"}, format="json").data
+        group_a = self.client.post("/api/training-groups/", {"name": "A"}, format="json").data
+        group_b = self.client.post("/api/training-groups/", {"name": "B"}, format="json").data
         prog_a = self.client.post("/api/training-programs/", {
-            "training_group": squad_a["id"], "training_block": block["id"],
+            "training_group": group_a["id"], "training_block": block["id"],
             "start_date": "2026-07-27"}, format="json").data
         prog_b = self.client.post("/api/training-programs/", {
-            "training_group": squad_b["id"], "training_block": block["id"],
+            "training_group": group_b["id"], "training_block": block["id"],
             "start_date": "2026-07-27"}, format="json").data
 
         res = self.client.post(f"/api/sessions/{session.id}/participation/", {
@@ -1052,13 +1052,13 @@ class PlanningEndpointTests(APITestCase):
     def test_override_endpoint_round_trips_and_clears(self):
         athlete = Athlete.objects.create(name="Jordan Lee")
         block = self._template_with_a_day()
-        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+        group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
         program = self.client.post("/api/training-programs/", {
-            "training_group": squad["id"], "training_block": block["id"],
+            "training_group": group["id"], "training_block": block["id"],
             "start_date": "2026-07-27"}, format="json").data
         row_id = program["workouts"][0]["exercises"][0]["id"]
-        url = f"/api/athletes/{athlete.id}/workout-exercises/{row_id}/override/"
+        url = f"/api/athletes/{athlete.id}/program-exercises/{row_id}/override/"
 
         self.assertIsNone(self.client.get(url).data["target_percent"])
         self.assertEqual(self.client.put(url, {"target_percent": 60},
@@ -1069,20 +1069,20 @@ class PlanningEndpointTests(APITestCase):
     def test_an_override_that_sets_nothing_is_rejected(self):
         athlete = Athlete.objects.create(name="Jordan Lee")
         block = self._template_with_a_day()
-        squad = self.client.post("/api/training-groups/", {"name": "Varsity"},
+        group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
         program = self.client.post("/api/training-programs/", {
-            "training_group": squad["id"], "training_block": block["id"],
+            "training_group": group["id"], "training_block": block["id"],
             "start_date": "2026-07-27"}, format="json").data
         row_id = program["workouts"][0]["exercises"][0]["id"]
-        res = self.client.put(f"/api/athletes/{athlete.id}/workout-exercises/{row_id}/override/",
+        res = self.client.put(f"/api/athletes/{athlete.id}/program-exercises/{row_id}/override/",
                               {}, format="json")
         self.assertEqual(res.status_code, 400)
 
     def test_planning_requires_a_coach(self):
         self.client.force_authenticate(user=None)
-        for url in ("/api/training-groups/", "/api/workout-programs/",
-                    "/api/workouts/", "/api/training-programs/"):
+        for url in ("/api/training-groups/", "/api/training-blocks/",
+                    "/api/training-blocks/1/workouts/", "/api/training-programs/"):
             self.assertEqual(self.client.get(url).status_code, 401, url)
 
 
@@ -1100,7 +1100,7 @@ class CsvImportTests(APITestCase):
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
 
-    def _upload(self, text, url="/api/workouts/imports/preview/", **extra):
+    def _upload(self, text, url="/api/imports/preview/", **extra):
         upload = SimpleUploadedFile("sheet.csv", text.encode("utf-8"), content_type="text/csv")
         return self.client.post(url, {"file": upload, **extra}, format="multipart")
 
@@ -1125,7 +1125,7 @@ class CsvImportTests(APITestCase):
     def test_a_bare_max_needs_no_guessing(self):
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
-                           url="/api/workouts/imports/")
+                           url="/api/imports/")
         self.assertEqual(res.status_code, 200)
         record = AthleteReferenceMax.objects.get()
         self.assertEqual(record.reference_weight_lbs, 315)
@@ -1136,7 +1136,7 @@ class CsvImportTests(APITestCase):
         happens in one place later, so the original fact stays visible."""
         Athlete.objects.create(name="Jordan Lee")
         self._upload("athlete_name,exercise,weight_lbs,reps\nJordan Lee,Back Squat,225,5\n",
-                     url="/api/workouts/imports/")
+                     url="/api/imports/")
         record = AthleteReferenceMax.objects.get()
         self.assertEqual(record.reference_weight_lbs, 225)
         self.assertEqual(record.rep_basis, 5)
@@ -1144,7 +1144,7 @@ class CsvImportTests(APITestCase):
     def test_a_stated_percentage_is_back_solved_exactly(self):
         Athlete.objects.create(name="Jordan Lee")
         self._upload("athlete_name,exercise,weight_lbs,target_percent\n"
-                     "Jordan Lee,Back Squat,225,75\n", url="/api/workouts/imports/")
+                     "Jordan Lee,Back Squat,225,75\n", url="/api/imports/")
         self.assertEqual(AthleteReferenceMax.objects.get().reference_weight_lbs, 300)
 
     def test_a_weight_that_could_mean_anything_is_SKIPPED_not_guessed(self):
@@ -1153,7 +1153,7 @@ class CsvImportTests(APITestCase):
         down with it. Missing is safe; wrong is not."""
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,weight_lbs\nJordan Lee,Back Squat,225\n",
-                           url="/api/workouts/imports/")
+                           url="/api/imports/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(AthleteReferenceMax.objects.count(), 0)
         self.assertEqual(res.data["skipped"][0]["code"], "weight_meaning_unknown")
@@ -1163,7 +1163,7 @@ class CsvImportTests(APITestCase):
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,weight_lbs,reps\n"
                            "Jordan Lee,Back Squat,225,5\n"
-                           "Jordan Lee,Bench Press,185,\n", url="/api/workouts/imports/")
+                           "Jordan Lee,Bench Press,185,\n", url="/api/imports/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["created"], 1)
         self.assertEqual(res.data["counts"]["skipped"], 1)
@@ -1188,7 +1188,7 @@ class CsvImportTests(APITestCase):
         Athlete.objects.create(name="Sam Rivera")
         res = self._upload("athlete_name,exercise,max_lbs\n"
                            "Jordn Lee,Back Squat,315\n"
-                           "Sam Rivera,Back Squat,275\n", url="/api/workouts/imports/")
+                           "Sam Rivera,Back Squat,275\n", url="/api/imports/")
         self.assertEqual(res.status_code, 400)
         self.assertEqual(AthleteReferenceMax.objects.count(), 0)
 
@@ -1201,10 +1201,10 @@ class CsvImportTests(APITestCase):
         sheet = ("athlete_name,exercise,max_lbs\n"
                  "Jordn Lee,Back Squat,315\n")
 
-        self.assertEqual(self._upload(sheet, url="/api/workouts/imports/").status_code, 400)
+        self.assertEqual(self._upload(sheet, url="/api/imports/").status_code, 400)
         self.assertEqual(AthleteReferenceMax.objects.count(), 0)
 
-        res = self._upload(sheet, url="/api/workouts/imports/",
+        res = self._upload(sheet, url="/api/imports/",
                            corrections=json.dumps({"athlete": {"Jordn Lee": jordan.id}}))
         self.assertEqual(res.status_code, 200)
         self.assertEqual(AthleteReferenceMax.objects.get().athlete_id, jordan.id)
@@ -1216,7 +1216,7 @@ class CsvImportTests(APITestCase):
         res = self._upload("athlete_name,exercise,max_lbs\n"
                            "Jordn Lee,Back Squat,315\n"
                            "jordn lee,Bench Press,225\n",
-                           url="/api/workouts/imports/",
+                           url="/api/imports/",
                            corrections=json.dumps({"athlete": {"Jordn Lee": jordan.id}}))
         self.assertEqual(res.status_code, 200)
         # Both rows landed, including the one spelled with different casing.
@@ -1227,7 +1227,7 @@ class CsvImportTests(APITestCase):
         id happens to be. It falls back to normal matching and re-reports."""
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordn Lee,Back Squat,315\n",
-                           url="/api/workouts/imports/",
+                           url="/api/imports/",
                            corrections=json.dumps({"athlete": {"Jordn Lee": 999999}}))
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.data["errors"][0]["code"], "unknown_athlete")
@@ -1238,7 +1238,7 @@ class CsvImportTests(APITestCase):
         the misspelling is identical."""
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n",
-                           url="/api/workouts/imports/",
+                           url="/api/imports/",
                            corrections=json.dumps({"athlete": {"Bakc Squat": self.squat.id}}))
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.data["errors"][0]["code"], "unknown_exercise")
@@ -1248,14 +1248,14 @@ class CsvImportTests(APITestCase):
         and look like their fix didn't take."""
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
-                           url="/api/workouts/imports/", corrections="{not json")
+                           url="/api/imports/", corrections="{not json")
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.data["code"], "invalid_corrections")
 
     def test_a_correction_also_repairs_a_misspelled_movement(self):
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n",
-                           url="/api/workouts/imports/",
+                           url="/api/imports/",
                            corrections=json.dumps({"exercise": {"Bakc Squat": self.squat.id}}))
         self.assertEqual(res.status_code, 200)
         self.assertEqual(AthleteReferenceMax.objects.get().exercise_id, self.squat.id)
@@ -1267,18 +1267,18 @@ class CsvImportTests(APITestCase):
         self.assertEqual(problem["code"], "unknown_exercise")
         self.assertIn("Back Squat", problem["suggestions"])
 
-    def test_two_people_with_one_name_are_told_apart_by_the_squad(self):
-        """Squad-scoping is what collapses the ambiguity — two Jordan Lees in a
-        gym is believable, two in one squad is not."""
-        in_squad = Athlete.objects.create(name="Jordan Lee")
+    def test_two_people_with_one_name_are_told_apart_by_the_group(self):
+        """TrainingGroup-scoping is what collapses the ambiguity — two Jordan Lees in a
+        gym is believable, two in one group is not."""
+        in_group = Athlete.objects.create(name="Jordan Lee")
         Athlete.objects.create(name="Jordan Lee")   # a different Jordan, elsewhere
-        squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
-        in_squad.training_groups.add(squad)
+        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        in_group.training_groups.add(group)
 
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
-                           url="/api/workouts/imports/", training_group=squad.id)
+                           url="/api/imports/", training_group=group.id)
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(AthleteReferenceMax.objects.get().athlete_id, in_squad.id)
+        self.assertEqual(AthleteReferenceMax.objects.get().athlete_id, in_group.id)
 
     def test_an_unscoped_duplicate_name_stops_and_asks(self):
         Athlete.objects.create(name="Jordan Lee")
@@ -1291,23 +1291,23 @@ class CsvImportTests(APITestCase):
     def test_surname_first_and_stray_spacing_still_match(self):
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\n\"Lee,  Jordan\",back  squat,315\n",
-                           url="/api/workouts/imports/")
+                           url="/api/imports/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(AthleteReferenceMax.objects.count(), 1)
 
     # ── the roster sheet ─────────────────────────────────────────────────────
 
-    def test_a_roster_creates_people_and_can_drop_them_into_a_squad(self):
-        squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+    def test_a_roster_creates_people_and_can_drop_them_into_a_group(self):
+        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
         res = self._upload("athlete_name,training_group\nJordan Lee,Varsity\nSam Rivera,Varsity\n",
-                           url="/api/workouts/imports/")
+                           url="/api/imports/")
         self.assertEqual(res.data["created"], 2)
-        self.assertEqual(squad.athletes.count(), 2)
+        self.assertEqual(group.athletes.count(), 2)
 
     def test_re_uploading_a_roster_adds_the_new_people_without_duplicating_the_old(self):
         Athlete.objects.create(name="Jordan Lee")
         res = self._upload("athlete_name\nJordan Lee\nSam Rivera\n",
-                           url="/api/workouts/imports/")
+                           url="/api/imports/")
         self.assertEqual(res.data["created"], 1)
         self.assertEqual(Athlete.objects.filter(name="Jordan Lee").count(), 1)
         self.assertEqual(res.data["skipped"][0]["code"], "already_on_roster")
@@ -1315,7 +1315,7 @@ class CsvImportTests(APITestCase):
     def test_a_max_sheet_never_creates_a_missing_athlete(self):
         """A typo turned into a new athlete would shadow the real person forever."""
         res = self._upload("athlete_name,exercise,max_lbs\nNobody At All,Back Squat,315\n",
-                           url="/api/workouts/imports/")
+                           url="/api/imports/")
         self.assertEqual(res.status_code, 400)
         self.assertEqual(Athlete.objects.count(), 0)
 
@@ -1331,20 +1331,20 @@ class CsvImportTests(APITestCase):
             "Day 1 - Lower,Back Squat,1,5,3,80\n"
             "Day 2 - Upper,Bench Press,1,3,5,75\n"
             "Day 1 - Lower,Bench Press,2,3,8,65\n",
-            url="/api/workouts/imports/", training_block=block.id)
+            url="/api/imports/", training_block=block.id)
         self.assertEqual(res.status_code, 200)
         days = list(TrainingBlockWorkout.objects.filter(training_block=block).order_by("position"))
         self.assertEqual([d.name for d in days], ["Day 1 - Lower", "Day 2 - Upper"])
         self.assertEqual(days[0].exercises.count(), 2)
 
-    def test_a_plan_imports_into_one_squads_program_too(self):
-        """D7: both levels. A one-off for one squad never becomes a template."""
-        squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
-        program = TrainingProgram.objects.create(training_group=squad, name="Spring",
+    def test_a_plan_imports_into_one_groups_program_too(self):
+        """D7: both levels. A one-off for one TrainingGroup never becomes a template."""
+        group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        program = TrainingProgram.objects.create(training_group=group, name="Spring",
                                                  start_date=timezone.now().date())
         res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
                            "Day 1,Back Squat,1,5,3,80\n",
-                           url="/api/workouts/imports/", training_program=program.id)
+                           url="/api/imports/", training_program=program.id)
         self.assertEqual(res.status_code, 200)
         self.assertEqual(TrainingProgramWorkout.objects.filter(training_program=program).count(), 1)
         self.assertEqual(TrainingBlockWorkout.objects.count(), 0)
@@ -1353,8 +1353,8 @@ class CsvImportTests(APITestCase):
         block = self._block()
         sheet = ("workout_name,exercise,position,sets,reps,target_percent\n"
                  "Day 1,Back Squat,1,5,3,80\n")
-        self._upload(sheet, url="/api/workouts/imports/", training_block=block.id)
-        res = self._upload(sheet.replace("Day 1", "Day 2"), url="/api/workouts/imports/",
+        self._upload(sheet, url="/api/imports/", training_block=block.id)
+        res = self._upload(sheet.replace("Day 1", "Day 2"), url="/api/imports/",
                            training_block=block.id)
         self.assertEqual(res.status_code, 200)
         positions = list(TrainingBlockWorkout.objects.filter(training_block=block)
@@ -1408,7 +1408,7 @@ class CsvImportTests(APITestCase):
         upload = SimpleUploadedFile(
             "sheet.csv", "﻿athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n".encode("utf-8"),
             content_type="text/csv")
-        res = self.client.post("/api/workouts/imports/", {"file": upload}, format="multipart")
+        res = self.client.post("/api/imports/", {"file": upload}, format="multipart")
         self.assertEqual(res.status_code, 200)
 
     def test_preview_writes_nothing(self):
@@ -1420,16 +1420,16 @@ class CsvImportTests(APITestCase):
 
     def test_import_requires_a_coach(self):
         self.client.force_authenticate(user=None)
-        res = self._upload("athlete_name\nJordan Lee\n", url="/api/workouts/imports/")
+        res = self._upload("athlete_name\nJordan Lee\n", url="/api/imports/")
         self.assertIn(res.status_code, (401, 403))
         self.assertEqual(Athlete.objects.count(), 0)
 
 
 class AthleteAssignmentTests(APITestCase):
-    """What one athlete is training (`athletes/{id}/workout-assignment/`).
+    """What one athlete is training (`athletes/{id}/program/`).
 
     His page was built where a program pins onto one athlete; here it belongs to
-    a squad and the athlete trains it by membership. These pin that the route
+    a TrainingGroup and the athlete trains it by membership. These pin that the route
     still answers his question, and that a write says what it really did.
     """
 
@@ -1438,9 +1438,9 @@ class AthleteAssignmentTests(APITestCase):
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.athlete = Athlete.objects.create(name="Jordan Lee")
-        self.squad = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
+        self.group = TrainingGroup.objects.create(name="Varsity", coach=self.coach)
         self.program = TrainingProgram.objects.create(
-            training_group=self.squad, name="Fall", start_date=timezone.now().date())
+            training_group=self.group, name="Fall", start_date=timezone.now().date())
         workout = TrainingProgramWorkout.objects.create(
             training_program=self.program, name="Day 1", position=1)
         TrainingProgramExercise.objects.create(
@@ -1448,58 +1448,58 @@ class AthleteAssignmentTests(APITestCase):
             sets=5, reps=3, target_percent=80)
 
     def _url(self):
-        return f"/api/athletes/{self.athlete.id}/workout-assignment/"
+        return f"/api/athletes/{self.athlete.id}/program/"
 
-    def test_an_athlete_in_no_squad_has_no_plan(self):
+    def test_an_athlete_in_no_group_has_no_plan(self):
         res = self.client.get(self._url())
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["assignment"], [])
 
-    def test_assigning_a_program_puts_them_in_its_squad_and_says_so(self):
+    def test_assigning_a_program_puts_them_in_its_group_and_says_so(self):
         res = self.client.put(self._url(), {"workout_program_id": self.program.id},
                               format="json")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["groups_changed"],
-                         [{"id": self.squad.id, "name": "Varsity", "action": "added"}])
-        self.assertIn(self.squad, self.athlete.training_groups.all())
+                         [{"id": self.group.id, "name": "Varsity", "action": "added"}])
+        self.assertIn(self.group, self.athlete.training_groups.all())
 
     def test_the_plan_comes_back_with_real_pounds_not_just_a_percent(self):
         """A percent on its own tells a coach nothing about what goes on the bar."""
         AthleteReferenceMax.objects.create(athlete=self.athlete, exercise=self.squat,
                                            reference_weight_lbs=315, rep_basis=1)
-        self.athlete.training_groups.add(self.squad)
+        self.athlete.training_groups.add(self.group)
         row = self.client.get(self._url()).data["assignment"][0]["workouts"][0]["exercises"][0]
         self.assertEqual(row["target_percent"], 80)
         self.assertEqual(row["target_weight_lbs"], 250.0)   # 315 x 80% = 252 -> 250
 
     def test_an_athlete_with_no_max_still_reads_without_error(self):
-        self.athlete.training_groups.add(self.squad)
+        self.athlete.training_groups.add(self.group)
         row = self.client.get(self._url()).data["assignment"][0]["workouts"][0]["exercises"][0]
         self.assertIsNone(row["target_weight_lbs"])
 
-    def test_two_squads_both_show_up_with_the_squad_that_owns_each(self):
+    def test_two_groups_both_show_up_with_the_group_that_owns_each(self):
         """D13: an athlete can carry more than one plan, and a coach needs to see
-        which squad each one comes from."""
+        which TrainingGroup each one comes from."""
         speed = TrainingGroup.objects.create(name="Speed", coach=self.coach)
         TrainingProgram.objects.create(training_group=speed, name="Sprint",
                                        start_date=timezone.now().date())
-        self.athlete.training_groups.add(self.squad, speed)
+        self.athlete.training_groups.add(self.group, speed)
         assignment = self.client.get(self._url()).data["assignment"]
         self.assertEqual({a["training_group"]["name"] for a in assignment},
                          {"Varsity", "Speed"})
 
-    def test_removing_the_assignment_takes_them_out_of_the_prescribing_squads_only(self):
-        """A squad with no plan attached is roster information a coach set up on
+    def test_removing_the_assignment_takes_them_out_of_the_prescribing_groups_only(self):
+        """A TrainingGroup with no plan attached is roster information a coach set up on
         purpose — clearing an assignment shouldn't quietly discard it."""
         empty = TrainingGroup.objects.create(name="Freshmen", coach=self.coach)
-        self.athlete.training_groups.add(self.squad, empty)
+        self.athlete.training_groups.add(self.group, empty)
         res = self.client.delete(self._url())
         self.assertEqual(res.status_code, 200)
         self.assertEqual([g["name"] for g in res.data["groups_changed"]], ["Varsity"])
         self.assertEqual([g.name for g in self.athlete.training_groups.all()], ["Freshmen"])
 
     def test_unknown_athlete_and_unknown_program_are_404(self):
-        self.assertEqual(self.client.get("/api/athletes/999999/workout-assignment/").status_code, 404)
+        self.assertEqual(self.client.get("/api/athletes/999999/program/").status_code, 404)
         res = self.client.put(self._url(), {"workout_program_id": 999999}, format="json")
         self.assertEqual(res.status_code, 404)
 
@@ -1520,7 +1520,7 @@ class SessionDeleteProtectionTests(APITestCase):
     """
 
     def setUp(self):
-        self.session = Session.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday")
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
 
@@ -1537,13 +1537,13 @@ class SessionDeleteProtectionTests(APITestCase):
 
         self.assertEqual(Set.objects.count(), 1)
         self.assertEqual(Rep.objects.count(), 1)
-        self.assertEqual(Session.objects.count(), 1)
+        self.assertEqual(TrainingSession.objects.count(), 1)
 
     def test_an_empty_session_can_still_be_deleted(self):
         """Nobody lifted, so there is nothing to protect — a mis-created session
         should not be permanent."""
         self.session.delete()
-        self.assertEqual(Session.objects.count(), 0)
+        self.assertEqual(TrainingSession.objects.count(), 0)
 
     def test_the_protection_is_in_the_applied_migration_not_just_the_model(self):
         """A model that says PROTECT while the database still says CASCADE would

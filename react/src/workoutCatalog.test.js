@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { applyCorrection, buildDeployPayload, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
-  // A workout is one DAY inside a block, so the block id travels with it — a day
-  // cannot exist unattached. Movements are catalog ids, never typed-in names, and
-  // the load is a PERCENT of each athlete's own max rather than a weight in pounds.
-  it("sends the block, catalog ids, and percent targets with contiguous positions", () => {
+  // The block is in the URL, not the payload — a day cannot exist unattached, and
+  // an address says so better than a field a caller can forget. Movements are
+  // catalog ids, never typed names, and the load is a PERCENT of each athlete's
+  // own max rather than a weight in pounds.
+  it("sends catalog ids and percent targets with contiguous positions", () => {
     expect(buildWorkoutPayload("  Day 1 — Lower  ", [
       { exercise: "3", sets: "4", reps: "5", target_percent: "80", velocity_zone_min: "0.55", velocity_zone_max: "0.75" },
       { exercise: "7", sets: "3", reps: "8", target_percent: "65", velocity_zone_min: "", velocity_zone_max: "" },
-    ], 2, 1)).toEqual({
-      training_block: 2,
+    ], 1)).toEqual({
       name: "Day 1 — Lower",
       position: 1,
       exercises: [
@@ -25,9 +25,9 @@ describe("buildWorkoutPayload", () => {
   it("omits position entirely when none is given", () => {
     const payload = buildWorkoutPayload("Day 2", [
       { exercise: "3", sets: "5", reps: "3", target_percent: "75", velocity_zone_min: "", velocity_zone_max: "" },
-    ], 2);
+    ]);
     expect(payload.position).toBeUndefined();
-    expect(payload.training_block).toBe(2);
+    expect(payload.training_block).toBeUndefined();
   });
 });
 
@@ -54,13 +54,13 @@ describe("sameOriginPath", () => {
   const origin = "https://edge-athlete.local";
 
   it("normalizes relative and same-origin absolute pagination links", () => {
-    expect(sameOriginPath("/api/workouts/?page=2", origin)).toBe("/api/workouts/?page=2");
-    expect(sameOriginPath("https://edge-athlete.local/api/workouts/?page=3", origin)).toBe("/api/workouts/?page=3");
+    expect(sameOriginPath("/api/training-blocks/?page=2", origin)).toBe("/api/training-blocks/?page=2");
+    expect(sameOriginPath("https://edge-athlete.local/api/training-blocks/?page=3", origin)).toBe("/api/training-blocks/?page=3");
   });
 
   it("rejects cross-origin, credentialed, and malformed pagination links", () => {
-    expect(sameOriginPath("https://example.com/api/workouts/?page=2", origin)).toBeNull();
-    expect(sameOriginPath("https://user:pass@edge-athlete.local/api/workouts/?page=2", origin)).toBeNull();
+    expect(sameOriginPath("https://example.com/api/training-blocks/?page=2", origin)).toBeNull();
+    expect(sameOriginPath("https://user:pass@edge-athlete.local/api/training-blocks/?page=2", origin)).toBeNull();
     expect(sameOriginPath("http://[invalid", origin)).toBeNull();
     expect(sameOriginPath(null, origin)).toBeNull();
   });

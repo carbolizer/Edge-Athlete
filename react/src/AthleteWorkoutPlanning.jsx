@@ -73,10 +73,10 @@ export default function AthleteWorkoutPlanning({ athlete, accessToken, onLogout 
     setSelectedWorkoutId("");
     Promise.all([
       // Deployed plans — what an athlete can actually be put on. NOT
-      // /api/workout-programs/, which lists templates nobody trains.
+      // /api/training-blocks/, which lists templates nobody trains.
       fetch("/api/training-programs/", { headers, signal: controller.signal })
         .then((response) => parseResponse(response, "Plans could not be loaded.")),
-      fetch(`/api/athletes/${athlete.id}/workout-assignment/`, { headers, signal: controller.signal })
+      fetch(`/api/athletes/${athlete.id}/program/`, { headers, signal: controller.signal })
         .then((response) => parseResponse(response, "Athlete assignment could not be loaded.")),
     ]).then(([nextPrograms, body]) => {
       setPrograms(Array.isArray(nextPrograms) ? nextPrograms : nextPrograms?.results || []);
@@ -92,7 +92,7 @@ export default function AthleteWorkoutPlanning({ athlete, accessToken, onLogout 
     setAssignmentErrors([]);
     setAssignmentStatus("");
     try {
-      const response = await fetch(`/api/athletes/${athlete.id}/workout-assignment/`, {
+      const response = await fetch(`/api/athletes/${athlete.id}/program/`, {
         method: "PUT",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(buildAthleteAssignmentPayload(programId)),
@@ -116,7 +116,7 @@ export default function AthleteWorkoutPlanning({ athlete, accessToken, onLogout 
     setAssignmentErrors([]);
     setAssignmentStatus("");
     try {
-      const response = await fetch(`/api/athletes/${athlete.id}/workout-assignment/`, { method: "DELETE", headers });
+      const response = await fetch(`/api/athletes/${athlete.id}/program/`, { method: "DELETE", headers });
       const body = await parseResponse(response, "Athlete assignment could not be removed.");
       if (body === null) return;
       applyAssignment(body);
@@ -139,7 +139,7 @@ export default function AthleteWorkoutPlanning({ athlete, accessToken, onLogout 
     setOverrideStatus("");
     try {
       const draft = overrideDrafts[row.id] || {};
-      const response = await fetch(`/api/athletes/${athlete.id}/workout-exercises/${row.id}/override/`, {
+      const response = await fetch(`/api/athletes/${athlete.id}/program-exercises/${row.id}/override/`, {
         method,
         headers: { ...headers, "Content-Type": "application/json" },
         ...(method === "PATCH" ? { body: JSON.stringify(buildOverrideFields(draft)) } : {}),

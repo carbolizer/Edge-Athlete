@@ -18,7 +18,7 @@ const OPEN_GETS = [
     what: 'List every sensor node and its latest status — battery, signal, and which rack it is on.' },
   { key: 'athletes', path: '/api/athletes/',
     what: 'List every lifter in the system.' },
-  { key: 'programs', path: '/api/programs/?athlete=2',
+  { key: 'programs', path: '/api/prescriptions/?athlete=2',
     what: "Get one athlete's training plan — the targets plus the speed zone the tablet uses to color reps green / yellow / red." },
   { key: 'racknumber', path: '/api/racks/racknumber/?device_id=coach_test_dev',
     what: 'Ask which rack a tablet is assigned to — the poll a waiting tablet runs every few seconds.' },
@@ -47,7 +47,7 @@ const REFERENCE = [
   { group: 'Reads', items: [
     { m: 'GET', p: '/api/nodes/', a: 'open', w: 'List all sensor nodes.' },
     { m: 'GET', p: '/api/athletes/', a: 'open', w: 'List all lifters.' },
-    { m: 'GET', p: '/api/programs/?athlete={id}', a: 'open', w: "An athlete's training plans (targets + speed zone)." },
+    { m: 'GET', p: '/api/prescriptions/?athlete={id}', a: 'open', w: "An athlete's training plans (targets + speed zone)." },
   ]},
   { group: 'Coach — manage', items: [
     { m: 'POST/PATCH', p: '/api/athletes/ · /api/athletes/{id}/', a: 'coach', w: 'Add or edit a lifter.' },

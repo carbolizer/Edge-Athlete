@@ -11,7 +11,7 @@ models.py — the Edge Athlete database tables.
 ------------------------------------------------------
 Each class below is one table; each attribute is one column. This file is the
 whole data model for the base station: the hardware (Node), the tablet screens
-(RackScreen), the athlete training data (Session → Set → Rep), and the Training*
+(RackScreen), the athlete training data (TrainingSession → Set → Rep), and the Training*
 planning hierarchy.
 
 That hierarchy, biggest idea to smallest — this is CONCEPTUAL WEIGHT, not
@@ -96,7 +96,7 @@ class Athlete(models.Model):
     notes = models.TextField(blank=True)
     is_simulated = models.BooleanField(default=False)
     # Every group this athlete CURRENTLY trains with. Many-to-many on purpose: a
-    # football player can also sit in a speed squad, and each group runs its own
+    # football player can also sit in a speed TrainingGroup, and each group runs its own
     # program. Which of those programs applies on a given day is answered by the
     # session itself — whichever of their groups is participating in it (see
     # SessionParticipation). Membership is current-state only: adding or removing
@@ -318,7 +318,7 @@ class AthleteWorkoutExerciseOverride(models.Model):
         return f"Override for {self.athlete.name} on program exercise {self.training_program_exercise_id}"
 
 
-class Session(models.Model):
+class TrainingSession(models.Model):
     """One training session in the gym — a window of time containing many sets
     across the athletes who took part.
 
@@ -347,7 +347,7 @@ class SessionParticipation(models.Model):
     lives in Set/Rep, and what was prescribed gets frozen for the whole session
     by DailyReport at end-of-day. Storing a third copy here would be two write
     paths for one guarantee (see merge canon D14)."""
-    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='participations')
+    session = models.ForeignKey(TrainingSession, on_delete=models.CASCADE, related_name='participations')
     training_program = models.ForeignKey(TrainingProgram, on_delete=models.PROTECT,
                                          related_name='session_participations')
     training_program_workout = models.ForeignKey(TrainingProgramWorkout, on_delete=models.PROTECT, null=True,
@@ -373,7 +373,7 @@ class Set(models.Model):
     # is refused while any lifting exists, which turns a silent, unrecoverable
     # loss into an error message. Ending a day is `ended_at`, not a delete; a
     # session with real work in it is not supposed to be removable.
-    session = models.ForeignKey(Session, on_delete=models.PROTECT, related_name='sets')
+    session = models.ForeignKey(TrainingSession, on_delete=models.PROTECT, related_name='sets')
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='sets')
     node = models.ForeignKey(Node, on_delete=models.SET_NULL, null=True, blank=True, related_name='sets')
     exercise = models.ForeignKey(Exercise, on_delete=models.PROTECT, related_name='sets')
@@ -448,7 +448,7 @@ class AthleteReferenceMax(models.Model):
     reference_weight_lbs = models.FloatField()
     rep_basis = models.IntegerField(default=1)  # the N in an N-rep effort (1 = true 1RM)
     source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
-    source_session = models.ForeignKey(Session, on_delete=models.SET_NULL, null=True, blank=True,
+    source_session = models.ForeignKey(TrainingSession, on_delete=models.SET_NULL, null=True, blank=True,
                                        related_name='produced_reference_maxes')
     recorded_at = models.DateTimeField(auto_now_add=True)
 
@@ -492,7 +492,7 @@ class RackCheckIn(models.Model):
     fast re-pick shortcut on the check-in screen) reads from — the athletes whose
     newest check-in is that rack. Nothing here is meant to outlive the session.
     """
-    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name='checkins')
+    session = models.ForeignKey(TrainingSession, on_delete=models.CASCADE, related_name='checkins')
     athlete = models.ForeignKey(Athlete, on_delete=models.CASCADE, related_name='checkins')
     rack_number = models.IntegerField()
     checked_in_at = models.DateTimeField(auto_now_add=True)
@@ -524,7 +524,7 @@ class DailyReport(models.Model):
     on the live tables it came from. `schema_version` lets an older stored
     snapshot still be read correctly after the shape evolves.
     """
-    session = models.OneToOneField(Session, on_delete=models.PROTECT, related_name='daily_report')
+    session = models.OneToOneField(TrainingSession, on_delete=models.PROTECT, related_name='daily_report')
     schema_version = models.PositiveIntegerField(default=1)
     generated_at = models.DateTimeField(auto_now_add=True)
     snapshot = models.JSONField()
