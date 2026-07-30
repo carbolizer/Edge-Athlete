@@ -92,7 +92,19 @@ running.
 | Control | Today | Proposed |
 |---|---|---|
 | Log out | Top-level button (`Dashboard.jsx:507`) | Under the **Edge Athlete logo** — click the logo to reveal |
-| Change device | Top-level button (`Dashboard.jsx:508`) | **Settings → rack setup only** (already exists there, `Dashboard.jsx:193`) |
+| Change device | Top-level button (`Dashboard.jsx:508`) | **Remove.** Room Layout already has it — `CoachTablet.jsx:426` |
+
+> **There are three "change device role" buttons today**, which is the real
+> clutter:
+>
+> | Where | Keep? |
+> |---|---|
+> | `CoachTablet.jsx:426` — Room Layout header | ✅ Keep — the natural home |
+> | `Dashboard.jsx:508` — coach topbar | ❌ Remove (this vision) |
+> | `Dashboard.jsx:193` — **wall display** header | ❓ Separate screen, separate call |
+>
+> An earlier draft of this table cited `Dashboard.jsx:193` as the rack-setup
+> button. Wrong — that one is the wall display's.
 
 ### 4. "Rack N is ready" — **verdict: delete it**
 
