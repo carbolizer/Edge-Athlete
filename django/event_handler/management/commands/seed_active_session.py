@@ -115,7 +115,21 @@ class Command(BaseCommand):
         # The template, written once — then deployed for the group. Deploying
         # copies the rows down, which is why editing the template later can't
         # rewrite what this group already trained.
+        # Cadence and duration are set so the demo block actually SCHEDULES.
+        # They were both blank before P14, which was harmless while nothing read
+        # them — now it would mean a deployed program with an empty calendar and
+        # no obvious reason why.
         block, _ = TrainingBlock.objects.get_or_create(name=BLOCK_NAME, coach=coach)
+        # Set rather than passed as `defaults`: defaults only apply when the row
+        # is CREATED, so on any database that already held this block from before
+        # P14 the cadence would have stayed blank and the demo would show a
+        # deployed program with an empty calendar and no obvious reason why. A
+        # seeder should converge on the state it promises, not depend on running
+        # first.
+        if not block.cadence_days_of_week or not block.duration_weeks:
+            block.cadence_days_of_week = "Mon,Wed,Fri"
+            block.duration_weeks = 4
+            block.save(update_fields=["cadence_days_of_week", "duration_weeks"])
         if not block.workouts.exists():
             workout = TrainingBlockWorkout.objects.create(
                 training_block=block, name=WORKOUT_NAME, position=1)
@@ -127,7 +141,11 @@ class Command(BaseCommand):
                     target_percent=row["percent"],
                     velocity_zone_min=row["zone_min"], velocity_zone_max=row["zone_max"])
 
-        program = instantiate_block(block, group, start_date=timezone.now().date())
+        # localdate(), not now().date(): a calendar date should be the date in the
+        # gym, not in UTC. Identical while TIME_ZONE is UTC, and wrong by a day
+        # every evening the moment anyone sets a real one. room_state.py already
+        # uses localdate() for the same reason.
+        program = instantiate_block(block, group, start_date=timezone.localdate())
 
         # Close anything still open before opening a new day. Re-running the
         # seeder used to stack another open session every time, which is exactly

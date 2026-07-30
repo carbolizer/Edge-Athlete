@@ -6,7 +6,7 @@
 # that an athlete's CURRENT reference max (and only that) comes back, and that
 # every exercise now resolves through the shared catalog.
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import models
@@ -24,7 +24,7 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
                      TrainingBlockExercise, BlockCategory, TrainingGroupCoach)
 from .services.plan_resolution import movements_for_athlete
-from .services.planning import instantiate_block, touch_block
+from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
 
 
@@ -1826,6 +1826,200 @@ class OneOpenSessionTests(APITestCase):
         progress = self.client.get(f"/api/sessions/active/athlete/{self.athlete.id}/progress/")
         self.assertEqual(progress.status_code, 200)
         self.assertNotEqual(current.id, stray.id)
+
+
+class ScheduleGenerationTests(APITestCase):
+    """Laying a block's days onto real dates (P14 step 2).
+
+    This is the first code that has ever read `cadence_days_of_week` or
+    `duration_weeks` — before P14 the block builder wrote them and nothing looked.
+    Date arithmetic fails quietly and plausibly, so the awkward cases get their
+    own tests: starting mid-week, a cadence with more days than the block has, and
+    a block that cannot be scheduled at all.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.group = TrainingGroup.objects.create(name="Varsity")
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        # 2026-08-03 is a Monday. Every expectation below is anchored to that.
+        self.monday = date(2026, 8, 3)
+
+    def _block(self, *, cadence="Mon,Wed,Fri", weeks=2, days=3):
+        block = TrainingBlock.objects.create(
+            name="Fall Strength", coach=self.coach,
+            cadence_days_of_week=cadence, duration_weeks=weeks)
+        for position in range(1, days + 1):
+            workout = TrainingBlockWorkout.objects.create(
+                training_block=block, name=f"Day {position}", position=position)
+            TrainingBlockExercise.objects.create(
+                training_block_workout=workout, exercise=self.squat,
+                position=1, sets=5, reps=3, target_percent=80)
+        return block
+
+    def _deploy(self, block, start=None):
+        return instantiate_block(block, self.group, start_date=start or self.monday)
+
+    # ── the dates ────────────────────────────────────────────────────────────
+
+    def test_deploying_generates_one_slot_per_training_day(self):
+        program = self._deploy(self._block())
+        # Mon/Wed/Fri for 2 weeks = 6 slots.
+        self.assertEqual(program.scheduled_sessions.count(), 6)
+
+    def test_the_slots_land_on_the_right_weekdays(self):
+        program = self._deploy(self._block())
+        dates = list(program.scheduled_sessions.values_list("date", flat=True))
+        self.assertEqual(dates, [
+            date(2026, 8, 3), date(2026, 8, 5), date(2026, 8, 7),    # Mon Wed Fri
+            date(2026, 8, 10), date(2026, 8, 12), date(2026, 8, 14),
+        ])
+
+    def test_weeks_are_counted_from_the_start_date_not_the_calendar(self):
+        """Starting on a Wednesday, week one is that Wed + Fri — then it resumes
+        on Monday. Counting calendar weeks would hand the coach a short first
+        week without saying so."""
+        wednesday = date(2026, 8, 5)
+        program = self._deploy(self._block(weeks=1), start=wednesday)
+        dates = list(program.scheduled_sessions.values_list("date", flat=True))
+        self.assertEqual(dates, [date(2026, 8, 5), date(2026, 8, 7),
+                                 date(2026, 8, 10)])
+
+    def test_duration_weeks_is_what_stops_it(self):
+        """Cadence alone cannot say when to stop — the user's decision."""
+        program = self._deploy(self._block(weeks=4))
+        self.assertEqual(program.scheduled_sessions.count(), 12)
+
+    # ── which day runs in which slot ─────────────────────────────────────────
+
+    def test_the_days_are_dealt_out_in_block_order(self):
+        program = self._deploy(self._block())
+        names = [slot.training_program_workout.name
+                 for slot in program.scheduled_sessions.all()[:3]]
+        self.assertEqual(names, ["Day 1", "Day 2", "Day 3"])
+
+    def test_the_days_repeat_across_weeks(self):
+        program = self._deploy(self._block())
+        names = [slot.training_program_workout.name
+                 for slot in program.scheduled_sessions.all()]
+        self.assertEqual(names, ["Day 1", "Day 2", "Day 3"] * 2)
+
+    def test_a_two_day_block_on_a_three_day_cadence_keeps_cycling(self):
+        """The rotation follows the DAY ORDER, not the weekday. Following the
+        weekday instead would leave every Friday empty."""
+        program = self._deploy(self._block(weeks=1, days=2))
+        names = [slot.training_program_workout.name
+                 for slot in program.scheduled_sessions.all()]
+        self.assertEqual(names, ["Day 1", "Day 2", "Day 1"])
+
+    def test_the_slots_point_at_the_PROGRAM_days_not_the_block_days(self):
+        """A slot must reference the program's own copy, or editing the deployed
+        program would leave the calendar pointing at the template."""
+        program = self._deploy(self._block())
+        slot = program.scheduled_sessions.first()
+        self.assertEqual(slot.training_program_workout.training_program_id, program.id)
+
+    # ── nothing to schedule is not a failure ─────────────────────────────────
+
+    def test_a_block_with_no_cadence_deploys_with_an_empty_schedule(self):
+        """Refusing would block a perfectly good one-off program."""
+        program = self._deploy(self._block(cadence=""))
+        self.assertEqual(program.scheduled_sessions.count(), 0)
+        self.assertEqual(program.workouts.count(), 3)   # the program itself is fine
+
+    def test_a_block_with_no_duration_deploys_with_an_empty_schedule(self):
+        program = self._deploy(self._block(weeks=None))
+        self.assertEqual(program.scheduled_sessions.count(), 0)
+
+    def test_a_block_with_no_days_generates_nothing(self):
+        program = self._deploy(self._block(days=0))
+        self.assertEqual(program.scheduled_sessions.count(), 0)
+
+    def test_a_standalone_program_with_no_block_generates_nothing(self):
+        program = TrainingProgram.objects.create(
+            training_group=self.group, name="One-off", start_date=self.monday)
+        self.assertEqual(generate_schedule(program), [])
+
+    # ── slots start unlinked and independent ─────────────────────────────────
+
+    def test_a_fresh_slot_has_no_session_yet(self):
+        """The slot is a plan. The session fills in when a coach creates it."""
+        program = self._deploy(self._block())
+        self.assertTrue(all(slot.session_id is None
+                            for slot in program.scheduled_sessions.all()))
+
+    def test_editing_the_blocks_cadence_afterwards_moves_no_existing_slot(self):
+        """Same independence rule as the prescription rows: once a program is an
+        instance it is its own thing."""
+        block = self._block()
+        program = self._deploy(block)
+        before = list(program.scheduled_sessions.values_list("date", flat=True))
+
+        block.cadence_days_of_week = "Tue,Thu"
+        block.save(update_fields=["cadence_days_of_week"])
+
+        after = list(program.scheduled_sessions.values_list("date", flat=True))
+        self.assertEqual(before, after)
+
+    def test_regenerating_cannot_double_a_calendar(self):
+        """One slot per program per day, so a re-run is a no-op rather than a
+        duplicated schedule."""
+        block = self._block()
+        program = self._deploy(block)
+        generate_schedule(program, block)
+        self.assertEqual(program.scheduled_sessions.count(), 6)
+
+    def test_two_programs_can_train_on_the_same_date(self):
+        """The constraint is per PROGRAM — two groups training Monday is normal."""
+        other_group = TrainingGroup.objects.create(name="Freshmen")
+        block = self._block()
+        self._deploy(block)
+        second = instantiate_block(block, other_group, start_date=self.monday)
+        self.assertEqual(second.scheduled_sessions.count(), 6)
+
+
+class CadenceValidationTests(APITestCase):
+    """The cadence field is now READ by the generator, so it gets validated.
+
+    The coach UI is seven checkboxes and already emits canonical week-ordered
+    tokens — nobody types this. But the column was a bare CharField the API would
+    accept anything into, and a generator that has to guess at its input is the
+    thing being avoided.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+
+    def _post(self, **fields):
+        return self.client.post("/api/training-blocks/",
+                                {"name": "Fall Strength", **fields}, format="json")
+
+    def test_the_checkbox_output_is_accepted_unchanged(self):
+        res = self._post(cadence_days_of_week="Mon,Wed,Fri")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["cadence_days_of_week"], "Mon,Wed,Fri")
+
+    def test_days_are_stored_in_week_order_whatever_order_they_arrive_in(self):
+        """One canonical form in the column, so "Fri,Mon" and "Mon,Fri" cannot
+        both exist meaning the same thing."""
+        res = self._post(cadence_days_of_week="Fri,Mon")
+        self.assertEqual(res.data["cadence_days_of_week"], "Mon,Fri")
+
+    def test_an_unknown_day_is_refused(self):
+        res = self._post(cadence_days_of_week="Mon,Funday")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Funday", str(res.data))
+
+    def test_an_empty_cadence_is_fine(self):
+        """A template a coach has not finished describing is allowed."""
+        self.assertEqual(self._post(cadence_days_of_week="").status_code, 201)
+
+    def test_zero_or_negative_weeks_is_refused(self):
+        """It would generate an empty calendar and look like a broken generator."""
+        self.assertEqual(self._post(duration_weeks=0).status_code, 400)
+        self.assertEqual(self._post(duration_weeks=-3).status_code, 400)
 
 
 class UnstartedSessionTests(APITestCase):

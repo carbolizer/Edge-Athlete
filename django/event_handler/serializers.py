@@ -12,6 +12,7 @@ from datetime import timedelta
 from django.utils import timezone
 from rest_framework import serializers
 
+from .services.cadence import CADENCE_DAYS
 from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise,
@@ -230,8 +231,8 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
     """The reusable template itself.
 
     `duration_weeks` and `cadence_days_of_week` describe how it is meant to be
-    run. Nothing reads them yet — they are here so a future calendar feature can
-    lay a block onto dates without a schema change.
+    run, and since P14 the schedule generator READS them: cadence picks which
+    weekdays get a slot, duration_weeks says when to stop.
 
     `updated_at` is exposed because the catalog sorts by most-recently-edited
     (`?sort=recent`). The column is maintained server-side whenever a coach
@@ -251,6 +252,39 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
                   "workouts", "created_at", "updated_at"]
         read_only_fields = ["id", "coach", "category_names", "workouts",
                             "created_at", "updated_at"]
+
+    def validate_cadence_days_of_week(self, value):
+        """Only real weekday tokens, stored in week order.
+
+        The coach UI is a row of seven checkboxes and already emits exactly this
+        ("Mon,Wed,Fri", always in week order) — nobody types it. But the field
+        was a bare CharField that the API would accept anything into, and the P14
+        generator now READS it to build a calendar. Constraining it here means the
+        generator can trust it instead of guessing at whatever arrived, which is
+        the same trade as offering a dropdown of valid times rather than
+        validating typed ones.
+
+        Re-sorting into week order rather than trusting the caller keeps one
+        canonical form in the column, so "Fri,Mon" and "Mon,Fri" cannot both
+        exist meaning the same thing.
+        """
+        if not value:
+            return ""
+
+        tokens = [token.strip().title() for token in value.split(",") if token.strip()]
+        unknown = [token for token in tokens if token not in CADENCE_DAYS]
+        if unknown:
+            raise serializers.ValidationError(
+                f"unknown day{'s' if len(unknown) > 1 else ''}: {', '.join(unknown)}. "
+                f"Use any of {', '.join(CADENCE_DAYS)}.")
+        return ",".join(day for day in CADENCE_DAYS if day in tokens)
+
+    def validate_duration_weeks(self, value):
+        """A block that runs for zero or negative weeks would generate an empty
+        calendar and look like the generator was broken."""
+        if value is not None and value < 1:
+            raise serializers.ValidationError("a block runs for at least one week")
+        return value
 
 
 class TrainingProgramExerciseSerializer(serializers.ModelSerializer):

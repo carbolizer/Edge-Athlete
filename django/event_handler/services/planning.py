@@ -16,8 +16,9 @@ TrainingGroup changes; either way, what already happened stays true.
 from django.db import transaction
 from django.utils import timezone
 
-from ..models import (TrainingBlock, TrainingBlockWorkout, TrainingProgram,
-                      TrainingProgramExercise, TrainingProgramWorkout)
+from ..models import (ScheduledSession, TrainingBlock, TrainingBlockWorkout,
+                      TrainingProgram, TrainingProgramExercise, TrainingProgramWorkout)
+from .cadence import training_dates
 
 
 # ─────────────────────── editing a template ───────────────────────
@@ -105,4 +106,54 @@ def instantiate_block(block, group, name=None, start_date=None, end_date=None):
             ) for row in source_workout.exercises.order_by("position")
         ])
 
+    generate_schedule(program, block)
     return program
+
+
+def generate_schedule(program, block=None):
+    """Lay this program's days onto real dates. Returns the slots created.
+
+    WHAT THIS IS FOR: a coach deploys an 8-week block that trains Mon/Wed/Fri and
+    wants to see it on a calendar. This is the first thing that has ever READ
+    `cadence_days_of_week` and `duration_weeks` — until P14 both were written by
+    the block builder and read by nothing.
+
+    Days are dealt out in the block's own order and then REPEATED. A three-day
+    block on a Mon/Wed/Fri cadence gives Day 1 Monday, Day 2 Wednesday, Day 3
+    Friday, then Day 1 again the next Monday — which is what a coach means by
+    "this block runs for eight weeks". The rotation follows the DAY ORDER, not the
+    weekday, so a block with two days on a three-day cadence keeps cycling
+    properly instead of leaving Fridays empty.
+
+    ⚠️ Generates NOTHING, silently, when the block has no cadence, no
+    duration_weeks, or no days. That is not a failure: it is a template a coach
+    has not finished describing, and refusing to deploy it would block a
+    perfectly good one-off program. The schedule simply stays empty until they
+    fill those in and deploy again.
+
+    ⚠️ SLOTS ARE FROZEN once written. Nothing re-runs this for an existing
+    program — editing the block's cadence later moves no existing slot, the same
+    independence rule as the prescription rows copied above. `ignore_conflicts`
+    covers the one-slot-per-program-per-day constraint so a re-deploy of the same
+    program cannot double a calendar.
+    """
+    block = block or program.training_block
+    if block is None:
+        return []
+
+    dates = training_dates(program.start_date, block.cadence_days_of_week,
+                           block.duration_weeks)
+    days = list(program.workouts.order_by("position"))
+    if not dates or not days:
+        return []
+
+    slots = [
+        ScheduledSession(
+            training_program=program,
+            training_program_workout=days[index % len(days)],
+            date=date,
+        )
+        for index, date in enumerate(dates)
+    ]
+    ScheduledSession.objects.bulk_create(slots, ignore_conflicts=True)
+    return program.scheduled_sessions.order_by("date", "id")
