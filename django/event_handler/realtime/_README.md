@@ -50,7 +50,7 @@ delete it; don't spend an afternoon debugging a message that was never sent.
 The listener is a compose service (`mqtt-listener`), not something you start by
 hand. The publisher worker is `manage.py publish_monitoring_events`. To generate
 traffic without hardware, use `manage.py simulate_node` — see
-[`../management/commands/_README.md`](../management/commands/_README.md).
+[`../management/_README.md`](../management/_README.md).
 
 > ⚠️ The broker is `allow_anonymous true` on both listeners. Anything on the gym
 > network can publish to any topic, including fake rep data. Phase 16.

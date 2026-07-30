@@ -5,13 +5,17 @@ Five commands. Two are services that run themselves in Docker; three you type.
 Everything below assumes the stack is up (`docker compose up -d`).
 
 ```
-commands/
-├── seed_active_session.py      Build a realistic fake gym. The one you'll use most
-├── simulate_node.py            Fake a rack sensor — pulses + reps over MQTT
-├── ensure_demo_coach.py        Create the coach / coachpass login if missing
-├── run_mqtt_subscriber.py      The inbound listener (runs as the mqtt-listener service)
-└── publish_monitoring_events.py The outbound worker draining room invalidations
+management/
+└── commands/                       Django requires this exact nesting
+    ├── seed_active_session.py      Build a realistic fake gym. The one you'll use most
+    ├── simulate_node.py            Fake a rack sensor — pulses + reps over MQTT
+    ├── ensure_demo_coach.py        Create the coach / coachpass login if missing
+    ├── run_mqtt_subscriber.py      The inbound listener (the mqtt-listener service)
+    └── publish_monitoring_events.py  The outbound worker draining room invalidations
 ```
+
+> The `commands/` nesting is Django's, not a choice — `manage.py` only discovers
+> commands inside `<app>/management/commands/`. Nothing else goes in either folder.
 
 ## Seed a demo gym
 
