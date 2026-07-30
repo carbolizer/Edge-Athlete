@@ -94,42 +94,65 @@ running.
 | Log out | Top-level button (`Dashboard.jsx:507`) | Under the **Edge Athlete logo** — click the logo to reveal |
 | Change device | Top-level button (`Dashboard.jsx:508`) | **Settings → rack setup only** (already exists there, `Dashboard.jsx:193`) |
 
-### 4. "Rack N is ready" — traced to source
+### 4. "Rack N is ready" — **verdict: delete it**
 
-Devin's hunch: *this looks like leftover from Braydon's version.* **Correct.**
+First, a naming trap that made two earlier answers here confusing:
 
-| Question | Answer |
+> **`Dashboard.jsx` is not "the dashboard screen".** It is one file exporting
+> `Dashboard({ mode = "wall" })` and rendering **both** roles — the wall display
+> (`wall-monitor`, lines 171–187) and the coach tablet (`coach-monitor`, lines
+> 488+). There are **two different "ready" strings** in it:
+>
+> | Line | Screen | String |
+> |---|---|---|
+> | 177 | **Wall display** | "The room is ready" |
+> | 495 | **Coach tablet** | "Rack N is ready" |
+>
+> Only the second one is in scope here. Splitting this file is probably its own
+> cleanup item, since the two screens are meant to be separate.
+
+**Does it serve the coach?** No. Here is the actual render order:
+
+```
+coach-detail-workspace
+ ├─ no rack selected → StatePanel "No racks assigned"
+ └─ rack selected:
+     ├─ <RackSelectionControls/>   ← "Rack observation" — ALWAYS renders
+     └─ no completed set → StatePanel "Rack N is ready"   ← the thing in question
+        otherwise      → set hero + charts + hardware
+```
+
+`RackSelectionControls` renders **unconditionally, directly above it**, and already
+shows a grid containing:
+
+| Field | What it says when there is no set |
 |---|---|
-| Where did it come from? | `origin/braydons-dev-branch:Dashboard.jsx:566` — **byte-identical** |
-| How did it get here? | Commit `fa88b6d`, P7 "land the coach frontend" |
-| Is the state it renders still reachable? | **Yes** — `room_state.py:171` sets `latest_set: None`, filled only when a set exists |
+| Movement / Load / Progress | `--` |
+| Rack state | the server's `rack.status` |
+| **Latest result** | **"No persisted result"** |
+| **Hardware** | node id · **"No node assigned"** · **"Node pulse overdue"** |
 
-So two things are true at once, and they point opposite ways.
+So the StatePanel restates one field from the panel one line above it — and does it
+worse. "Rack 1 is ready" asserts readiness the code never checked, while the
+observation grid immediately above can be simultaneously reporting **"Node pulse
+overdue"**. The two can contradict each other on screen.
 
-**The panel still has a job.** A rack that is assigned but where nobody has lifted
-yet is a real state — every session starts there. It is what separates *"rack is
-fine, nobody's lifted"* from *"no rack assigned"*, which is a different panel.
+**Why it made sense on Braydon's branch:** there, `RackSelectionControls` was an
+**assignment form** — an "Assign" control and athlete dropdowns — not an
+observation grid. "Rack N is ready" meant *"ready for you to assign someone"*,
+which was true and actionable. D8 removed forward rack-assignment (athletes bind
+themselves by checking in), the component became read-only observation, and the
+empty state was left restating a field that the replacement already covers.
 
-**But the word "ready" is genuinely vestigial.** On Braydon's branch the component
-wrapping it, `RackSelectionControls`, contained **assignment UI** — an "Assign"
-control and athlete dropdowns. In that world "Rack N is ready" meant *"ready for
-you to assign someone."* It pointed at an action.
+**Decision: delete the `StatePanel` at `Dashboard.jsx:495`.** Nothing is lost — the
+observation panel above it answers the same question more accurately. No wording
+fix needed, because the line should not exist.
 
-**D8 deleted that workflow.** Forward rack-assignment is gone; athletes bind
-themselves by checking in. Today's `RackSelectionControls` is a read-only "Rack
-observation" panel with no assign control anywhere. So "ready" is the tail end of
-a sentence whose verb the merge removed — it now points at nothing a coach can do.
-
-**Decision: keep the panel, drop the word.** Something like *"No sets logged at
-Rack N yet"* states what is true. "Ready" additionally implies a hardware check
-the code never performs — the absence of a set says nothing about whether the
-sensor is alive.
-
-> **The general lesson for this redesign:** P7 adopted Braydon's coach frontend
-> deliberately, so "it came from his branch" is not by itself a reason to delete
-> something. The test is whether the *workflow it was written for* still exists.
-> Here it does not. Worth applying the same test to the other nine `StatePanel`
-> empty states before assuming they still make sense.
+> **The test that produced this answer**, worth reusing on the other nine
+> `StatePanel` empty states: not *"did this come from Braydon's branch?"* — P7
+> adopted his frontend deliberately, so most of the coach screen did. The question
+> is **does the component it was written to sit beside still do the same job?**
+> Here it does not.
 
 ---
 
@@ -190,13 +213,16 @@ Append as we go. Date each entry.
   deliberately appears in both SESSION (add) and ANALYTICS (review).
 - **2026-07-30** — **Session quick-notes APPROVED** for the SESSION state. Name
   still to be chosen; "mid-floor" rejected.
-- **2026-07-30** — **"Rack N is ready" traced.** Came verbatim from
-  `braydons-dev-branch` via P7. The empty state is still reachable and still
-  useful, but the WORD is vestigial: on his branch it sat beside rack-assignment
-  UI and meant "ready to assign someone". D8 deleted forward assignment, so it now
-  points at no available action. **Decision: keep the panel, reword it.** Apply the
-  same test — does the workflow it was written for still exist? — to the other
-  nine `StatePanel` empty states.
+- **2026-07-30** — **"Rack N is ready": DELETE.** Traced verbatim to
+  `braydons-dev-branch` via P7, where it sat beside an assignment form and meant
+  "ready to assign someone". D8 removed forward assignment; the component above it
+  is now a read-only observation grid that already reports "No persisted result"
+  and real hardware state. The panel restates one field worse, and can contradict
+  the grid above it ("ready" vs "Node pulse overdue"). I first said keep-and-reword
+  — wrong, because I had not checked what renders above it.
+- **2026-07-30** — Noted that `Dashboard.jsx` renders BOTH the wall display and the
+  coach tablet from one file, with two separate "ready" strings. Splitting it is
+  likely its own cleanup item.
 - **2026-07-30** — **Session timer needs no API.** `started_at` is already in the
   room-state payload; compute elapsed client-side. No backend change anywhere in
   this redesign.
