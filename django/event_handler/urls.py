@@ -97,6 +97,18 @@ urlpatterns = [
     # shared between several TrainingGroups on different plans.
     path('sessions/<int:session_id>/participation/', views.session_participation_view,
          name='session_participation'),
+    # Starting is its own route, not a PATCH: `PATCH sessions/{id}/` with an empty
+    # body already means "END the day now", and start/end are opposites — one
+    # call's meaning should not rest on subtle body differences.
+    path('sessions/<int:session_id>/start/', views.session_start, name='session_start'),
+
+    # The calendar (P14). Slots are generated when a block is deployed and frozen
+    # after that, so there is deliberately no POST to the list route.
+    path('scheduled-sessions/', views.scheduled_sessions_view, name='scheduled_sessions'),
+    path('scheduled-sessions/<int:slot_id>/', views.scheduled_session_detail,
+         name='scheduled_session_detail'),
+    path('scheduled-sessions/<int:slot_id>/session/',
+         views.scheduled_session_create_session, name='scheduled_session_create_session'),
 
     # what one athlete is training. Reads as "this athlete's program"; underneath
     # it is TrainingGroup membership, because a plan belongs to a TrainingGroup (D12/D13). Writes

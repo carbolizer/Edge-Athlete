@@ -29,6 +29,7 @@ import json
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.utils.dateparse import parse_date
 from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
@@ -41,7 +42,8 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
                      Exercise, RackCheckIn, DailyReport, TrainingGroup, TrainingBlock,
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
-                     AthleteWorkoutExerciseOverride, BlockCategory, TrainingGroupCoach)
+                     AthleteWorkoutExerciseOverride, BlockCategory, TrainingGroupCoach,
+                     ScheduledSession)
 
 # Coaches are Django users; there is no separate coach table. See SPEC.md.
 User = get_user_model()
@@ -51,7 +53,8 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
                           TrainingBlockExerciseSerializer, TrainingProgramSerializer,
-                          BlockCategorySerializer, TrainingGroupCoachSerializer)
+                          BlockCategorySerializer, TrainingGroupCoachSerializer,
+                          ScheduledSessionSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.active_session import active_session, open_sessions
 from .services.athlete_analytics import athlete_analytics
@@ -1544,6 +1547,186 @@ def training_programs_view(request):
     form = TrainingProgramSerializer(data=request.data)
     form.is_valid(raise_exception=True)
     return Response(TrainingProgramSerializer(form.save()).data, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def scheduled_sessions_view(request):
+    """Coach-only: the calendar — planned training slots.
+
+    A slot says "this program's Day 2, on the 14th". It is a PLAN: `session` is
+    null until a coach creates that day (see `scheduled_session_create_session`).
+
+      GET /api/scheduled-sessions/                     -> every slot
+      GET /api/scheduled-sessions/?training_program=3  -> one program's calendar
+      GET /api/scheduled-sessions/?training_group=2    -> one group's
+      GET /api/scheduled-sessions/?from=2026-08-01&to=2026-08-31  -> a date window
+      GET /api/scheduled-sessions/?unrun=true          -> only slots with no session
+
+    Slots are generated when a block is deployed and are FROZEN after that (canon
+    D20) — there is deliberately no POST here. A calendar you can hand-append to
+    would drift from the block that produced it, and "where did this extra
+    Tuesday come from" is not a question worth creating.
+    """
+    slots = ScheduledSession.objects.select_related(
+        "training_program__training_group", "training_program_workout", "session")
+
+    program_id = request.query_params.get("training_program")
+    if program_id:
+        if not program_id.isdigit():
+            return Response({"error": "training_program must be an id"}, status=400)
+        slots = slots.filter(training_program_id=int(program_id))
+
+    group_id = request.query_params.get("training_group")
+    if group_id:
+        if not group_id.isdigit():
+            return Response({"error": "training_group must be an id"}, status=400)
+        slots = slots.filter(training_program__training_group_id=int(group_id))
+
+    # A calendar screen asks for the month it is showing; without a window it
+    # would pull every slot of every program ever deployed.
+    for param, lookup in (("from", "date__gte"), ("to", "date__lte")):
+        raw = request.query_params.get(param)
+        if raw:
+            parsed = parse_date(raw)
+            if parsed is None:
+                return Response({"error": f"{param} must be a date (YYYY-MM-DD)"},
+                                status=400)
+            slots = slots.filter(**{lookup: parsed})
+
+    if request.query_params.get("unrun", "").lower() in {"1", "true", "yes"}:
+        slots = slots.filter(session__isnull=True)
+
+    return Response(ScheduledSessionSerializer(slots.order_by("date", "id"), many=True).data)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsCoach])
+def scheduled_session_detail(request, slot_id):
+    """Coach-only: read a slot, or MOVE it to another date.
+
+    Moving is a single `date` write and regenerates nothing — that is the whole
+    design (canon D20). The rest of a slot is decided when the schedule is
+    generated and is read-only here.
+
+    ⚠️ A slot whose session has already been created can still be moved, and that
+    is deliberate: the coach is correcting the calendar, and the session keeps its
+    own real start time regardless. The plan and the record are separate things.
+    """
+    slot = ScheduledSession.objects.filter(id=slot_id).select_related(
+        "training_program__training_group", "training_program_workout", "session").first()
+    if slot is None:
+        return Response({"error": "scheduled session not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(ScheduledSessionSerializer(slot).data)
+
+    form = ScheduledSessionSerializer(slot, data=request.data, partial=True)
+    form.is_valid(raise_exception=True)
+
+    # One slot per program per day is a database constraint, so a clash would
+    # otherwise surface as a 500. Saying which date is taken is more useful than
+    # "integrity error".
+    new_date = form.validated_data.get("date", slot.date)
+    clash = (ScheduledSession.objects
+             .filter(training_program_id=slot.training_program_id, date=new_date)
+             .exclude(id=slot.id).first())
+    if clash is not None:
+        return Response({
+            "error": "that program already trains on that date",
+            "detail": f"{clash.training_program_workout.name} is already scheduled "
+                      f"for {new_date.isoformat()}.",
+        }, status=409)
+
+    return Response(ScheduledSessionSerializer(form.save()).data)
+
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+def scheduled_session_create_session(request, slot_id):
+    """Coach-only: turn a planned slot into a real training session.
+
+    ⚠️ CREATE IS NOT START. The session comes back with `started_at: null` — it
+    exists, it is linked to the slot, its roster and participation are set up, and
+    it holds no racks and captures no check-ins until someone starts it. That is
+    the point of P14: a coach can set Thursday up on Tuesday.
+
+    The roster is the group's current members, and a SessionParticipation row
+    points the group at the day this slot runs — the two things that were being
+    done by hand in the seed command and by no UI at all.
+
+    Idempotent: a slot that already has a session returns it rather than making a
+    second one. Two taps on a calendar must not produce two Thursdays.
+    """
+    slot = ScheduledSession.objects.filter(id=slot_id).select_related(
+        "training_program__training_group", "training_program_workout", "session").first()
+    if slot is None:
+        return Response({"error": "scheduled session not found"}, status=404)
+
+    if slot.session_id is not None:
+        return Response(ScheduledSessionSerializer(slot).data, status=200)
+
+    group = slot.training_program.training_group
+    athletes = list(group.athletes.all())
+
+    with transaction.atomic():
+        session = TrainingSession.objects.create(
+            # Named for the day it runs, not for a weekday — a slot can be moved.
+            label=request.data.get("label") or f"{slot.training_program_workout.name} · {slot.date.isoformat()}",
+            started_at=None,   # created, NOT started — see the docstring
+        )
+        if athletes:
+            session.athletes.set(athletes)
+        SessionParticipation.objects.create(
+            session=session,
+            training_program=slot.training_program,
+            training_program_workout=slot.training_program_workout,
+        )
+        slot.session = session
+        slot.save(update_fields=["session"])
+
+    slot.refresh_from_db()
+    return Response(ScheduledSessionSerializer(slot).data, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+def session_start(request, session_id):
+    """Coach-only: start a session that was created ahead of time.
+
+    Its own route rather than a PATCH, deliberately. `PATCH /api/sessions/{id}/`
+    with an empty body already means "END the day now" (canon R2), so making start
+    another PATCH would leave one call's meaning resting on subtle differences in
+    the body — for two actions that are opposites. Ending is still the PATCH;
+    starting is this.
+
+    Refuses (409) while another day is already running, for exactly the reasons in
+    `sessions_view`: the racks follow the active session, so a second one silently
+    captures check-ins.
+    """
+    session = TrainingSession.objects.filter(id=session_id).first()
+    if session is None:
+        return Response({"error": "session not found"}, status=404)
+
+    if session.ended_at is not None:
+        return Response({"error": "that training day has already ended"}, status=409)
+
+    if session.started_at is not None:
+        # Idempotent: already running is the state the caller wanted.
+        return Response(TrainingSessionSerializer(session).data, status=200)
+
+    running = active_session()
+    if running is not None:
+        return Response({
+            "error": "a training day is already open",
+            "open_session": {"id": running.id, "label": running.label,
+                             "started_at": running.started_at},
+            "detail": f"End '{running.label}' before starting another day.",
+        }, status=409)
+
+    session.started_at = timezone.now()
+    session.save(update_fields=["started_at"])
+    return Response(TrainingSessionSerializer(session).data)
 
 
 @api_view(["GET", "POST", "DELETE"])

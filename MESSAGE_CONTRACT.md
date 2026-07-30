@@ -351,6 +351,77 @@ panel could redraw looking identical — ending the top of several stacked sessi
 instantly promoted the next — so the button appeared to do nothing while working
 perfectly every time (canon D18).
 
+### `GET /api/scheduled-sessions/` — the calendar (coach)
+
+A **slot** is a plan: "this program's Day 2, on the 14th". Slots are generated
+when a block is deployed — cadence picks the weekdays, `duration_weeks` says when
+to stop — and are **frozen** after that.
+
+```jsonc
+{ "id": 25, "date": "2026-08-05",
+  "training_program": 3, "program_name": "Varsity — Base Strength",
+  "training_group": 2, "group_name": "Varsity",
+  "training_program_workout": 7, "workout_name": "Day 1 — Lower + Push",
+  "workout_position": 1,
+  "session": null,              // null = planned, nobody has created this day
+  "session_label": null, "session_started_at": null, "session_ended_at": null,
+  "created_at": "..." }
+```
+
+`session` is the field a UI reads to choose between "Create" and "Open".
+
+| Param | Effect |
+|---|---|
+| `?training_program={id}` | one program's calendar |
+| `?training_group={id}` | one group's |
+| `?from=YYYY-MM-DD&to=YYYY-MM-DD` | a date window — a month view should not pull every slot ever deployed |
+| `?unrun=true` | only slots with no session yet |
+
+> **No POST.** Slots come from deploying a block. A calendar you can hand-append
+> to drifts from the block that produced it, and "where did this extra Tuesday
+> come from" is not a question worth creating.
+
+### `GET|PATCH /api/scheduled-sessions/{id}/` — move a day (coach)
+
+`date` is the **only** writable field: moving a slot is one date write and
+regenerates nothing. Which day runs in a slot is decided when the schedule is
+generated.
+
+Moving onto a date that program already trains on is a **409** naming the clash —
+one slot per program per day is a database constraint, so it would otherwise
+surface as a 500.
+
+A slot whose session already exists can still be moved. The coach is correcting
+the calendar; the session keeps its own real start time. The plan and the record
+are separate things.
+
+### `POST /api/scheduled-sessions/{id}/session/` — turn a plan into a real day (coach)
+
+Creates the session, sets its roster from the group's current members, and writes
+the `SessionParticipation` row that points the group at the day this slot runs.
+Optional body: `{"label": "..."}` — otherwise the label is the day name plus the
+date.
+
+> ⚠️ **CREATE IS NOT START.** The session comes back with `started_at: null`. It
+> holds no racks and captures no check-ins until someone starts it — that is the
+> whole point: a coach can set Thursday up on Tuesday. Several future days can be
+> prepared at once and none of them conflict.
+
+Idempotent — a slot that already has a session returns it (`200`) rather than
+making a second one. Two taps on a calendar must not produce two Thursdays.
+
+### `POST /api/sessions/{id}/start/` — start a prepared day (coach)
+
+> **Why a route and not a PATCH:** `PATCH /api/sessions/{id}/` with an empty body
+> already means "END the day now". Start and end are opposites, and one call's
+> meaning should not rest on subtle differences in the body. Ending stays the
+> PATCH; starting is this.
+
+- Refuses (**409**) while another day is running, naming it — same reason as
+  `POST /api/sessions/`: the racks follow the active session.
+- Already started → **200**, unchanged. The caller wanted it running.
+- Already ended → **409**. Its report is frozen; reopening would make that a lie.
+
 ### `POST /api/sessions/` — start a training day (coach)
 
 Body: `{ "label": "Monday — Upper", "athletes": [4, 7, 9] }`. **`athletes` is

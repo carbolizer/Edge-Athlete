@@ -249,7 +249,21 @@ RackScreen — device_id (CharField, unique, client-generated at first setup),
 Athlete    — name, nfc_tag_id (unique, nullable), created_at (auto), notes (Text, blank)
 Program    — athlete (FK→Athlete), exercise (FK→Exercise), target_sets (Int), target_reps (Int),
              target_weight_lbs (Float), velocity_zone_min (Float), velocity_zone_max (Float)
-TrainingSession    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
+TrainingSession    — label, started_at (NULLABLE since merge P14), ended_at (nullable),
+                athletes (M2M→Athlete), notes
+                ⚠️ started_at NULL means created-but-not-started: a day a coach
+                set up ahead of time. So "the active session" means STARTED and
+                not ended, never merely un-ended. One place decides that:
+                services/active_session.py. Never order sessions by -started_at
+                without excluding nulls — Postgres sorts NULLs FIRST descending,
+                so an unstarted future day would read as the newest thing.
+ScheduledSession — training_program (FK), training_program_workout (FK),
+                date, session (FK→TrainingSession, NULLABLE), created_at
+                unique(training_program, date). The calendar. A slot is a PLAN;
+                `session` fills in when a coach creates that day. Generated when
+                a block is deployed (cadence picks weekdays, duration_weeks
+                stops it) and FROZEN after — editing the block's cadence later
+                moves no existing slot. Moving a slot is one `date` write.
 Set        — session (FK→TrainingSession), athlete (FK→Athlete), node (FK→Node, nullable),
              exercise (FK→Exercise), set_number (Int), weight_lbs (Float, nullable), started_at, ended_at (nullable),
              reps_completed (Int, default 0), avg_velocity (Float, nullable),
@@ -318,8 +332,14 @@ Athlete  EXTENDED — group (FK→TrainingGroup, nullable, SET_NULL). Current
            group only; reassigning it never rewrites historical TrainingSession/Set
            data, which stays attached to whatever Block/TrainingSession it actually
            happened under.
-TrainingSession  EXTENDED — block (FK→Block, nullable), schedule_date (DateTime,
-           nullable — planning only, decoupled from started_at/ended_at).
+TrainingSession  EXTENDED — ❌ SUPERSEDED, DO NOT BUILD. This proposed
+           `block` FK + `schedule_date` on TrainingSession. The merge chose the
+           opposite shape (canon D20, built in P14): the schedule lives in its
+           OWN table, `ScheduledSession`, so no model is asked to mean two
+           things — a TrainingSession stays "a day that is real". The decoupling
+           this line wanted is achieved by the slot's nullable `session` FK plus
+           TrainingSession.started_at being nullable. Building both would give
+           two answers to "when is this day".
 Set      EXTENDED — is_makeup (Bool, default False) — excluded from
            team_completion_time calculations.
 ```

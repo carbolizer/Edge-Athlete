@@ -16,7 +16,7 @@ from .services.cadence import CADENCE_DAYS
 from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise,
-                     BlockCategory, TrainingGroupCoach)
+                     BlockCategory, TrainingGroupCoach, ScheduledSession)
 
 
 class RepInputSerializer(serializers.Serializer):
@@ -82,7 +82,11 @@ class AthleteSerializer(serializers.ModelSerializer):
 
 
 class TrainingSessionSerializer(serializers.ModelSerializer):
-    """One training session. started_at is set for us; a coach sets ended_at to
+    """One training session.
+
+    `started_at` is read-only here and set by whichever route STARTS the day — it
+    stopped being automatic in P14, when a session became something that can exist
+    before it runs. Null means created-but-not-started. A coach sets `ended_at` to
     finish it.
 
     A coach may pass a REAL `ended_at` rather than "now", which matters after a
@@ -110,7 +114,8 @@ class TrainingSessionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "a training day cannot end in the future")
 
-        # On create there is no instance yet and started_at is auto_now_add, so
+        # No instance on create, and since P14 `started_at` can legitimately be
+        # null on an existing one (a day set up but not yet started) — either way
         # there is nothing to compare against.
         started_at = getattr(self.instance, "started_at", None)
         if started_at is not None and value < started_at:
@@ -285,6 +290,42 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
         if value is not None and value < 1:
             raise serializers.ValidationError("a block runs for at least one week")
         return value
+
+
+class ScheduledSessionSerializer(serializers.ModelSerializer):
+    """One planned slot on a program's calendar.
+
+    Everything a calendar row needs to render without a second request: which day
+    runs, for which group, and whether it has happened yet.
+
+    `session` is the whole point of the shape — null means "planned, nobody has
+    created this day", an id means "this slot became a real session". A UI reads
+    that one field to decide between "Create" and "Open".
+    """
+    workout_name = serializers.CharField(source="training_program_workout.name", read_only=True)
+    workout_position = serializers.IntegerField(source="training_program_workout.position", read_only=True)
+    program_name = serializers.CharField(source="training_program.name", read_only=True)
+    training_group = serializers.IntegerField(source="training_program.training_group_id", read_only=True)
+    group_name = serializers.CharField(source="training_program.training_group.name", read_only=True)
+    # Read-only rather than a writable nested field: a slot becomes a session
+    # through its own endpoint, which has real work to do (roster, participation).
+    # Letting a caller PATCH an arbitrary session id onto a slot would let the
+    # calendar claim a day that belongs to another program.
+    session_label = serializers.CharField(source="session.label", read_only=True, default=None)
+    session_started_at = serializers.DateTimeField(source="session.started_at", read_only=True, default=None)
+    session_ended_at = serializers.DateTimeField(source="session.ended_at", read_only=True, default=None)
+
+    class Meta:
+        model = ScheduledSession
+        fields = ["id", "date", "training_program", "program_name",
+                  "training_group", "group_name",
+                  "training_program_workout", "workout_name", "workout_position",
+                  "session", "session_label", "session_started_at", "session_ended_at",
+                  "created_at"]
+        # `date` is the ONLY writable field: moving a slot is a date change and
+        # regenerates nothing (canon D20). Everything else about a slot is
+        # decided when the schedule is generated.
+        read_only_fields = [f for f in fields if f != "date"]
 
 
 class TrainingProgramExerciseSerializer(serializers.ModelSerializer):

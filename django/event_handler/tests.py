@@ -1979,6 +1979,235 @@ class ScheduleGenerationTests(APITestCase):
         self.assertEqual(second.scheduled_sessions.count(), 6)
 
 
+class ScheduleRouteTests(APITestCase):
+    """The calendar endpoints (P14 step 3).
+
+    Three things a coach does with a schedule: look at it, move a day, and turn a
+    planned day into a real one. The third is where the care is — creating a
+    session must NOT start it, or a slot for next Thursday takes the racks.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.group = TrainingGroup.objects.create(name="Varsity")
+        self.jordan = Athlete.objects.create(name="Jordan Lee")
+        self.sam = Athlete.objects.create(name="Sam Rivera")
+        self.jordan.training_groups.add(self.group)
+        self.sam.training_groups.add(self.group)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.monday = date(2026, 8, 3)
+
+        block = TrainingBlock.objects.create(
+            name="Fall Strength", coach=self.coach,
+            cadence_days_of_week="Mon,Wed,Fri", duration_weeks=1)
+        for position in (1, 2, 3):
+            workout = TrainingBlockWorkout.objects.create(
+                training_block=block, name=f"Day {position}", position=position)
+            TrainingBlockExercise.objects.create(
+                training_block_workout=workout, exercise=self.squat,
+                position=1, sets=5, reps=3, target_percent=80)
+        self.program = instantiate_block(block, self.group, start_date=self.monday)
+        self.slots = list(self.program.scheduled_sessions.order_by("date"))
+
+    # ── reading the calendar ─────────────────────────────────────────────────
+
+    def test_the_schedule_lists_slots_in_date_order(self):
+        res = self.client.get("/api/scheduled-sessions/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([row["date"] for row in res.data],
+                         ["2026-08-03", "2026-08-05", "2026-08-07"])
+
+    def test_a_slot_carries_what_a_calendar_row_needs(self):
+        row = self.client.get("/api/scheduled-sessions/").data[0]
+        self.assertEqual(row["workout_name"], "Day 1")
+        self.assertEqual(row["group_name"], "Varsity")
+        self.assertEqual(row["program_name"], self.program.name)
+        # Null session is what tells the UI to offer "Create" rather than "Open".
+        self.assertIsNone(row["session"])
+
+    def test_the_calendar_can_be_filtered_to_one_program(self):
+        other = TrainingGroup.objects.create(name="Freshmen")
+        block = TrainingBlock.objects.create(
+            name="Intro", coach=self.coach,
+            cadence_days_of_week="Tue", duration_weeks=1)
+        TrainingBlockWorkout.objects.create(training_block=block, name="Day 1", position=1)
+        instantiate_block(block, other, start_date=self.monday)
+
+        res = self.client.get(f"/api/scheduled-sessions/?training_program={self.program.id}")
+        self.assertEqual(len(res.data), 3)
+
+    def test_the_calendar_can_be_filtered_to_one_group(self):
+        res = self.client.get(f"/api/scheduled-sessions/?training_group={self.group.id}")
+        self.assertEqual(len(res.data), 3)
+
+    def test_the_calendar_can_be_windowed_to_a_date_range(self):
+        """A month view should not pull every slot ever deployed."""
+        res = self.client.get("/api/scheduled-sessions/?from=2026-08-05&to=2026-08-05")
+        self.assertEqual([row["date"] for row in res.data], ["2026-08-05"])
+
+    def test_a_bad_date_window_is_refused_not_ignored(self):
+        res = self.client.get("/api/scheduled-sessions/?from=not-a-date")
+        self.assertEqual(res.status_code, 400)
+
+    def test_unrun_shows_only_slots_with_no_session_yet(self):
+        self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/", format="json")
+        res = self.client.get("/api/scheduled-sessions/?unrun=true")
+        self.assertEqual([row["date"] for row in res.data], ["2026-08-05", "2026-08-07"])
+
+    def test_there_is_no_way_to_hand_append_a_slot(self):
+        """Slots come from deploying a block and are frozen after. A calendar you
+        can append to drifts from the block that produced it."""
+        res = self.client.post("/api/scheduled-sessions/",
+                               {"date": "2026-08-04"}, format="json")
+        self.assertEqual(res.status_code, 405)
+
+    # ── moving a day ─────────────────────────────────────────────────────────
+
+    def test_a_slot_can_be_moved_to_another_date(self):
+        slot = self.slots[0]
+        res = self.client.patch(f"/api/scheduled-sessions/{slot.id}/",
+                                {"date": "2026-08-04"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        slot.refresh_from_db()
+        self.assertEqual(slot.date, date(2026, 8, 4))
+
+    def test_moving_a_slot_regenerates_nothing(self):
+        """The whole point of the design: a move is one date write."""
+        self.client.patch(f"/api/scheduled-sessions/{self.slots[0].id}/",
+                          {"date": "2026-08-04"}, format="json")
+        self.assertEqual(self.program.scheduled_sessions.count(), 3)
+
+    def test_moving_a_slot_onto_an_occupied_date_is_refused_by_name(self):
+        """The database constraint would otherwise surface as a 500."""
+        res = self.client.patch(f"/api/scheduled-sessions/{self.slots[0].id}/",
+                                {"date": "2026-08-05"}, format="json")
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("2026-08-05", str(res.data))
+
+    def test_a_slots_workout_cannot_be_reassigned_through_the_move_route(self):
+        """`date` is the only writable field — which day runs in a slot is decided
+        when the schedule is generated."""
+        slot = self.slots[0]
+        other_day = self.program.workouts.order_by("position").last()
+        self.client.patch(f"/api/scheduled-sessions/{slot.id}/",
+                          {"training_program_workout": other_day.id}, format="json")
+        slot.refresh_from_db()
+        self.assertNotEqual(slot.training_program_workout_id, other_day.id)
+
+    def test_a_missing_slot_is_404(self):
+        self.assertEqual(
+            self.client.patch("/api/scheduled-sessions/99999/",
+                              {"date": "2026-08-04"}, format="json").status_code, 404)
+
+    # ── turning a plan into a real day ───────────────────────────────────────
+
+    def test_creating_a_session_from_a_slot_does_NOT_start_it(self):
+        """⚠️ The heart of P14. A session created for next Thursday must hold no
+        racks — otherwise this is canon D18 with a calendar attached."""
+        res = self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/",
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+        session = TrainingSession.objects.get(id=res.data["session"])
+        self.assertIsNone(session.started_at)
+        self.assertIsNone(self.client.get("/api/sessions/active/").data["session_id"])
+
+    def test_the_created_session_gets_the_groups_roster(self):
+        res = self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/",
+                               format="json")
+        session = TrainingSession.objects.get(id=res.data["session"])
+        self.assertEqual(set(session.athletes.values_list("name", flat=True)),
+                         {"Jordan Lee", "Sam Rivera"})
+
+    def test_the_created_session_knows_which_day_it_runs(self):
+        """SessionParticipation was being set by hand in the seed command and by
+        no UI at all. Without it the group has a roster and nothing to lift."""
+        res = self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/",
+                               format="json")
+        participation = SessionParticipation.objects.get(session_id=res.data["session"])
+        self.assertEqual(participation.training_program_id, self.program.id)
+        self.assertEqual(participation.training_program_workout.name, "Day 1")
+
+    def test_the_slot_then_points_at_its_session(self):
+        res = self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/",
+                               format="json")
+        self.slots[0].refresh_from_db()
+        self.assertEqual(self.slots[0].session_id, res.data["session"])
+
+    def test_creating_twice_returns_the_same_session(self):
+        """Two taps on a calendar must not produce two Thursdays."""
+        first = self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/",
+                                 format="json")
+        second = self.client.post(f"/api/scheduled-sessions/{self.slots[0].id}/session/",
+                                  format="json")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data["session"], second.data["session"])
+        self.assertEqual(TrainingSession.objects.count(), 1)
+
+    def test_several_future_days_can_be_set_up_at_once(self):
+        """None of them are running, so none of them conflict."""
+        for slot in self.slots:
+            res = self.client.post(f"/api/scheduled-sessions/{slot.id}/session/",
+                                   format="json")
+            self.assertEqual(res.status_code, 201)
+        self.assertEqual(TrainingSession.objects.count(), 3)
+        self.assertIsNone(self.client.get("/api/sessions/active/").data["session_id"])
+
+    # ── starting one ─────────────────────────────────────────────────────────
+
+    def _create_session(self, slot):
+        return self.client.post(f"/api/scheduled-sessions/{slot.id}/session/",
+                                format="json").data["session"]
+
+    def test_starting_a_prepared_session_makes_it_the_active_one(self):
+        session_id = self._create_session(self.slots[0])
+        res = self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNotNone(res.data["started_at"])
+        self.assertEqual(self.client.get("/api/sessions/active/").data["session_id"],
+                         session_id)
+
+    def test_starting_a_second_day_is_refused_while_one_runs(self):
+        first = self._create_session(self.slots[0])
+        second = self._create_session(self.slots[1])
+        self.client.post(f"/api/sessions/{first}/start/", format="json")
+
+        res = self.client.post(f"/api/sessions/{second}/start/", format="json")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data["open_session"]["id"], first)
+
+    def test_starting_an_already_started_day_is_a_no_op(self):
+        session_id = self._create_session(self.slots[0])
+        self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+        started = TrainingSession.objects.get(id=session_id).started_at
+
+        res = self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(TrainingSession.objects.get(id=session_id).started_at, started)
+
+    def test_an_ended_day_cannot_be_restarted(self):
+        """Its report is already frozen; reopening it would make that a lie."""
+        session_id = self._create_session(self.slots[0])
+        self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+        self.client.patch(f"/api/sessions/{session_id}/", {}, format="json")
+
+        res = self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+        self.assertEqual(res.status_code, 409)
+
+    def test_starting_a_missing_session_is_404(self):
+        self.assertEqual(
+            self.client.post("/api/sessions/99999/start/", format="json").status_code, 404)
+
+    def test_a_started_slot_session_can_still_capture_check_ins(self):
+        """End to end: the prepared day, once started, behaves like any other."""
+        session_id = self._create_session(self.slots[0])
+        self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+
+        res = self.client.post("/api/racks/1/checkin/", {"athlete": self.jordan.id},
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+
+
 class CadenceValidationTests(APITestCase):
     """The cadence field is now READ by the generator, so it gets validated.
 

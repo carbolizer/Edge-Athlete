@@ -367,9 +367,15 @@ class ScheduledSession(models.Model):
     """
     training_program = models.ForeignKey(TrainingProgram, on_delete=models.CASCADE,
                                          related_name='scheduled_sessions')
-    # Which day of the program runs in this slot. PROTECT: deleting a day that
-    # the calendar still points at should fail loudly, not silently blank a slot.
-    training_program_workout = models.ForeignKey(TrainingProgramWorkout, on_delete=models.PROTECT,
+    # Which day of the program runs in this slot.
+    #
+    # CASCADE, not PROTECT. PROTECT was the first instinct — "don't let a day the
+    # calendar points at disappear" — but it protected nothing and broke
+    # something: no route deletes a program day directly, while PROTECT here made
+    # the whole PROGRAM undeletable, because deleting it cascades to its days and
+    # the slots then blocked their own parent's cleanup. A slot for a day that no
+    # longer exists is meaningless, so it should go with it.
+    training_program_workout = models.ForeignKey(TrainingProgramWorkout, on_delete=models.CASCADE,
                                                  related_name='scheduled_sessions')
     date = models.DateField()
     # Null until a coach creates the day. SET_NULL rather than CASCADE: deleting a

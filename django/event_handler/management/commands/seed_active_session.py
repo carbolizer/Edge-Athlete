@@ -29,13 +29,17 @@ from event_handler.models import (Athlete, AthleteReferenceMax, DailyReport, Exe
                                   Node, Rep, TrainingSession, SessionParticipation, Set,
                                   TrainingBlock, TrainingBlockExercise, TrainingBlockWorkout,
                                   TrainingGroup, TrainingGroupCoach, TrainingProgram)
-from event_handler.services.planning import instantiate_block
+from event_handler.services.planning import generate_schedule, instantiate_block
 
 SESSION_LABEL = "Thursday — Lower + Push"
 NODE_ID = "rack_1"
 GROUP_NAME = "Varsity"
 BLOCK_NAME = "Base Strength"
-WORKOUT_NAME = "Thursday — Lower + Push"
+# A day INSIDE a block is timeless — it gets scheduled onto whatever date the
+# cadence lands on, so naming it after a weekday reads as a contradiction the
+# moment the calendar puts "Thursday" on a Friday. The SESSION label above is a
+# different thing and can name a real day, because a session IS one.
+WORKOUT_NAME = "Day 1 — Lower + Push"
 
 ATHLETES = ["Jordan Lee", "Sam Rivera", "Alex Kim", "Taylor Fox"]
 
@@ -130,6 +134,10 @@ class Command(BaseCommand):
             block.cadence_days_of_week = "Mon,Wed,Fri"
             block.duration_weeks = 4
             block.save(update_fields=["cadence_days_of_week", "duration_weeks"])
+        # Same convergence problem as the cadence above: a block from an earlier
+        # run keeps its day names, so renaming WORKOUT_NAME here would never reach
+        # an existing demo database. Day 1 is the one this seeder owns.
+        block.workouts.filter(position=1).exclude(name=WORKOUT_NAME).update(name=WORKOUT_NAME)
         if not block.workouts.exists():
             workout = TrainingBlockWorkout.objects.create(
                 training_block=block, name=WORKOUT_NAME, position=1)
@@ -145,7 +153,27 @@ class Command(BaseCommand):
         # gym, not in UTC. Identical while TIME_ZONE is UTC, and wrong by a day
         # every evening the moment anyone sets a real one. room_state.py already
         # uses localdate() for the same reason.
-        program = instantiate_block(block, group, start_date=timezone.localdate())
+        # Reuse this group's existing deployment instead of adding another. Every
+        # run used to create a fresh program, which was invisible before P14 and
+        # is not any more: each program brings its own calendar, so three reseeds
+        # showed three overlapping slots on every training day. The seeder should
+        # describe one gym, not a pile of history.
+        program = (TrainingProgram.objects
+                   .filter(training_group=group, training_block=block)
+                   .order_by("id").first())
+        if program is None:
+            program = instantiate_block(block, group, start_date=timezone.localdate())
+        else:
+            # A program deployed before P14 has no calendar, and reusing it would
+            # leave the demo with a schedule-shaped hole. generate_schedule is
+            # idempotent (one slot per program per day), so calling it on an
+            # already-scheduled program is a no-op rather than a duplicate.
+            generate_schedule(program, block)
+        # And converge the PROGRAM's own copy of the day name. Renaming the block
+        # deliberately does NOT rename a deployed program's days — that
+        # independence is the point of snapshot-copying — so a demo database keeps
+        # showing the old name on its calendar until this says otherwise.
+        program.workouts.filter(position=1).exclude(name=WORKOUT_NAME).update(name=WORKOUT_NAME)
 
         # Close anything still open before opening a new day. Re-running the
         # seeder used to stack another open session every time, which is exactly
