@@ -116,6 +116,13 @@
 .coach-labeled-button span { font-size:10px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
 /* No racks assigned: this button is the only way forward, so it stops being quiet. */
 .coach-button-attention { border-color:var(--lime); color:var(--lime); }
+/* The brand mark doubles as the account menu — log out lives under it now. */
+.coach-brand-menu { position:relative; }
+.coach-brand-button { align-items:center; background:transparent; border:0; color:inherit; cursor:pointer; display:flex; font:inherit; gap:inherit; padding:0; }
+.coach-brand-button span { font:inherit; }
+.coach-brand-dropdown { background:var(--panel); border:1px solid var(--line); left:0; min-width:150px; padding:5px; position:absolute; top:calc(100% + 7px); z-index:20; }
+.coach-brand-dropdown button { background:transparent; border:0; color:var(--muted); cursor:pointer; font-size:11px; padding:8px 11px; text-align:left; width:100%; }
+.coach-brand-dropdown button:hover { color:var(--lime); }
 .coach-summary-strip { border-bottom:1px solid var(--line); display:grid; grid-template-columns:repeat(5,1fr); padding:0 24px; }
 .coach-summary-strip>div { border-right:1px solid var(--line); display:grid; gap:4px; padding:13px 18px; }
 .coach-summary-strip>div:first-child { border-left:1px solid var(--line); }

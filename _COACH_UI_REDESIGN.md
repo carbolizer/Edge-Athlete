@@ -156,6 +156,8 @@ which was true and actionable. D8 removed forward rack-assignment (athletes bind
 themselves by checking in), the component became read-only observation, and the
 empty state was left restating a field that the replacement already covers.
 
+**✅ DONE 2026-07-30 — deleted.** (Decided here, but not actually removed until later the same day; the first pass cut the *other* rack panel, #12.)
+
 **Decision: delete the `StatePanel` at `Dashboard.jsx:495`.** Nothing is lost — the
 observation panel above it answers the same question more accurately. No wording
 fix needed, because the line should not exist.
@@ -263,9 +265,26 @@ This is why "wall should surpass and absorb coach features" mostly cannot happen
 the wall's payload deliberately withholds the ids those features need. The detail
 level *is* the privilege boundary (§6.4).
 
-**File split: deferred.** Low value now — they are already separate components,
-and splitting costs shared-hook wiring for tidiness alone. Revisit after the state
-machine lands, when the coach side has actually changed shape.
+**Where the file came from — checked, because memory said otherwise.**
+`Dashboard.jsx` did **not** exist before the merge. On `SprintBranch` at
+`4b6bfb9`, `/dashboard` was a placeholder:
+
+```jsx
+if (pathname === '/dashboard') return <StubRole role="dashboard" />   // App.jsx:168
+```
+
+— commented *"base-station display (stub until a later phase)"*. No pre-merge
+branch of Devin's had the file at all. Both screens arrived together in P7 from
+Braydon's branch, where it **already** carried `mode = "wall"`.
+
+So one-file-two-screens is his structure, adopted wholesale — not something the
+merge broke. What Devin remembered was SPEC **Phase 12** (*Team Dashboard Kiosk*,
+owner: Devin), which was never built until the merge delivered it.
+
+**File split: deferred**, and now on the merits rather than as a restoration.
+The components are already fully separate; only the `useLiveRoomState` hook is
+shared, which is a real reason to co-locate. Revisit after the state machine
+lands.
 
 ---
 
@@ -336,6 +355,10 @@ Append as we go. Date each entry.
 - **2026-07-30** — Noted that `Dashboard.jsx` renders BOTH the wall display and the
   coach tablet from one file, with two separate "ready" strings. Splitting it is
   likely its own cleanup item.
+- **2026-07-30** — **Built:** log out moved under the brand mark (click the logo);
+  "Change device" removed from the coach topbar; the four "Choose an athlete"
+  guards collapsed into one at the athlete-tab boundary; "Rack N is ready"
+  finally deleted. Verified in a browser on all four tabs.
 - **2026-07-30** — **Athlete selector decided:** SESSION (stripped) + ANALYTICS
   (full). Not in PLANNING, which is group-scoped.
 - **2026-07-30** — **Wall/coach rule written down:** `include_details` is the
