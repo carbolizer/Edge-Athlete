@@ -62,7 +62,9 @@ Everything below the "Data Models" heading that carries a **§ number** came fro
 the merge canon and is current. The **Phase 1–18 plan further down is historical**
 — it was the original build order and is kept for provenance, not as a to-do list.
 
-Verified against the repo, not from memory:
+**The full timeline — original phases and the merge interleaved, with what is
+genuinely left — is in "The build, in the order it actually happened" below.**
+Short version, verified against the repo rather than from memory:
 
 | Original phase | State |
 |---|---|
@@ -91,6 +93,7 @@ These are real gaps, not stretch goals — they were deliberately deferred to ge
 - **Batch-POST failure/retry (affects Phase 11, hardens in Phase 16/18):** if `POST /api/sets/{id}/complete/` fails (e.g. an AP drop at the exact moment a set ends), there is currently no defined retry/backoff — the buffer only clears on success, but nothing describes what happens on failure. Fine for a controlled demo; needs a real answer before unattended/production use.
 - **Live cross-rack progress refresh (RESOLVED — retired 2026-07-20):** was deferred as "2b" — pushing a live update to a rack already displaying an athlete when that same athlete completes a set at a *different* rack. **Retired** by the Phase 11 Step 2 **single-rack ownership rule**: an athlete can only be checked in at one rack at a time (checking in elsewhere transfers ownership via a newer `RackCheckIn`), so their progress can't change anywhere else while they're displayed here. Fetch-on-check-in is sufficient; no live cross-rack push is needed. Kept here as a record of the decision.
 - ✅ **RESOLVED for the athlete route (merge P13, 2026-07-29): Analytics response contract.** `.../athlete/{id}/` now has an exact field list in `MESSAGE_CONTRACT.md` — athlete, summary, per-exercise aggregates, and per-set reps. The worry recorded here was real and came true in the other direction: the coach front end was written against a shape nobody had pinned down, and it broke on arrival. **`GET /api/analytics/session/{id}/` is still prose-only** — same trap, still unsprung.
+- ⚠️ **The `edgeathlete/coach/state` channel is unused at both ends (found 2026-07-30).** `MESSAGE_CONTRACT.md` documents the topic, and `publish_coach_state()` exists in `realtime/broadcast/publisher.py` — but **nothing ever calls it**, and no client subscribes to it. The coach view takes its live updates from `edgeathlete/dashboard/state` like the wall does. This is plausibly deliberate headroom: the contract reserves the topic for fatigue alerts, which are Phase 15 and not built. **The decision to make:** wire it up when Phase 15 lands, or delete the helper and the contract entry. Leaving a documented topic that no code path reaches is how someone later spends an afternoon debugging a message that was never sent.
 - **No rack "unassign" path (affects Phase 14):** only registration + assignment exist; there's no way to free a rack number back to the unassigned pool if a screen is retired or replaced.
 - **Clock reliability on the offline Pi (affects Phase 1/RUNBOOK, Phase 18):** the base station never touches the internet, so there's no NTP sync. If it lacks a hardware RTC, a cold boot could start with a wrong system clock, silently corrupting every `timestamp` field. Needs either an RTC module or a manual time-set step documented in the boot procedure.
 - **Stale `RackScreen` rows (affects Phase 16):** if a screen's `localStorage` is ever wiped, it registers a brand-new `device_id` and the old row is orphaned at its old rack number with no cleanup.
@@ -1086,6 +1089,47 @@ Edge-Athlete/
 ```
 
 ---
+---
+
+# The build, in the order it actually happened
+
+Two numbering systems exist and both are real. **Phases 1–18** were the original
+build order, written up front. **The merge (P0–P15)** was a fifteen-phase piece of
+work that happened later and rebuilt a large part of the middle. It is recorded
+below as **Phase 15.5**, with its own sub-phases, so this document contains one
+timeline rather than sending you to another file to find out what happened.
+
+| | Phase | State | Notes |
+|---|---|---|---|
+| **Sprint 1** | 1 · Repo bootstrap, broker, RUNBOOK | ✅ done | |
+| | 2 · Data models & migrations | ✅ done | Superseded in shape by Phase 15.5 — see §4 |
+| | 3 · MQTT pulse pipeline & simulator | ✅ done | |
+| **Sprint 2** | 4 · REST API + batch set-complete | ✅ done | Set-complete contract is **frozen**, §2.2 |
+| | 5 · Group/Block/Session hierarchy, catalog, maxes | ✅ done | **Rebuilt** by Phase 15.5 · P1/P5 |
+| | 6 · CSV import pipeline | ✅ done | **Rebuilt** by Phase 15.5 · P5 |
+| | 7 · Session status, roster, makeup flow | ✅ done | |
+| | 8 · Wire insights generation | ⛔ **stub** | `generate_insights` still returns `[]` |
+| **Sprint 3** | 9 · Django broadcast publisher | ✅ done | Folded into one backbone by 15.5 · P2 |
+| | 10 · Rack screen PWA shell | ✅ done | **FROZEN**, §2.1 |
+| **Sprint 4** | 11 · Rack screen end-to-end | ✅ done | **FROZEN**, §2.1 |
+| | 12 · Team dashboard kiosk | ✅ done | `/dashboard` |
+| | 13 · Real ESP32 firmware v1 | ⛔ **not in this repo** | No `firmware/` directory exists |
+| **Sprints 5–6** | 14 · Coach tablet | ⚠️ **built, but not as written** | Delivered by Phase 15.5 — read the correction in that section |
+| | 15 · Fatigue scaffold | ⛔ not built | Still coherent as written |
+| | **15.5 · THE MERGE (P0–P15)** | ✅ **done** | Coach frontend onto the real API, plus planning, reports, scheduling, analytics |
+| | 16 · Security hardening | ⚠️ **rewritten** | Its original premise was overturned by the merge — see that section |
+| | 17 · Firmware hardening & mounts | ⛔ not built | Still coherent as written |
+| | 18 · Full integration test & demo prep | ⛔ not done | Still coherent as written |
+
+**What is genuinely left:** Phase 8 (insights), 13 (firmware), 15 (fatigue),
+16 (security), 17 (firmware hardening), 18 (integration + demo). Everything else
+is built.
+
+⚠️ **Phases 1–15 below are kept for provenance.** They are the original prompts,
+and where the merge rebuilt something the phase text can be out of date. Where
+that is true it is said so in the phase itself. **§2–§10 above are current and
+authoritative; a phase prompt is not.**
+
 
 # SPRINT 1 — Foundation
 
@@ -2282,7 +2326,21 @@ This is the gate before Devin exits. All of it must pass.
 
 # SPRINTS 5–6 — Team Alone
 
-## Phase 14 — Coach Tablet · Owner: Braydon
+## Phase 14 — Coach Tablet · Owner: Braydon · ⚠️ BUILT, BUT NOT AS WRITTEN
+
+> **Delivered by Phase 15.5 (the merge), which diverged from this prompt.** The
+> deliverable exists and works; the prompt below is the original design and is
+> kept for provenance. Where the two disagree, **the built product wins** — read
+> [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md) P7/P10/P11/P13/P14.
+>
+> | This prompt says | What was built |
+> |---|---|
+> | "no multi-page tabs for this section" | **Eight tabs**: room · workouts · schedule · reports · athlete · history · programs · notes |
+> | Subscribe to `edgeathlete/coach/state` | The coach view subscribes to `edgeathlete/dashboard/state`. ⚠️ The `coach/state` channel is **unused at both ends** — see Known Open Items |
+> | Group/block/session browsing | Became the `Training*` hierarchy (§4) plus the schedule tab (P14) |
+> | CSV upload with stub confirmation | Built, and extended with the in-preview repair loop (D17) |
+> | `GET /api/racks/unassigned/`, Room Layout drag-and-drop | ✅ accurate — both exist, at `/coach/setup` |
+> | Athlete max entry, max progression chart | Max entry exists; the progression chart was **not** built |
 
 ### Goal
 Build the coach tablet: PWA shell (`manifest.coach.json`, route `/coach`, JWT
@@ -2391,9 +2449,105 @@ trigger points — do not merge them into one function or one call site.
 **STOP. Review before moving to Phase 16.**
 
 ---
+---
 
-## Phase 16 — Security Hardening · Owner: whole team
-Verify JWT covers all coach-only endpoints (should already be true from Phase 4 and the Phase 5–8/14 coach-only additions). Move Mosquitto off `allow_anonymous true` to ACLs/auth on both listeners. Rate-limit login. Confirm no coach-only path is reachable unauthenticated.
+## Phase 15.5 — THE MERGE · Owner: Devin · ✅ COMPLETE
+
+**Numbered 15.5 because it sits here in the document, not because Phase 15 ran
+first.** Phase 15 is still unbuilt. The merge happened after the Sprint 4 handoff
+and rebuilt a large part of Phases 5–8 and delivered Phase 14.
+
+### Goal
+Merge Braydon's coach frontend onto the base station API without touching the rack
+experience, and leave the backend reading as one documented system.
+
+The two things that could not be lost, and did not:
+
+1. **The rack screen** — athlete-facing, frozen, ships today and works.
+2. **The percentage-of-max idea** — a prescription is a percent of each athlete's
+   own tested max, never a number of pounds. See §6.1.
+
+| | |
+|---|---|
+| Files changed | 82 · +10,655 / −659 |
+| Tests | 280 backend · 131 frontend |
+| Migrations | `0008` → `0017` |
+| Tags | `p1-complete` … `p15-complete` |
+| Frozen-file check | clean at all fifteen gates |
+
+> **Detail lives in [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md)** — each sub-phase
+> with the files it touched and a click path to see it working. It is not repeated
+> here; two copies would drift.
+
+### Sub-phases
+
+| | Sub-phase | What it did | Left behind |
+|---|---|---|---|
+| **P0** | Cold-build smoke test | Proved the tree built and the rack loop ran *before* anything changed | The baseline every "visually unchanged" claim is measured against |
+| **P1** | Models + migrations | The `Training*` hierarchy (`0008`), movement catalog seeded by hand (`0009`) | §4, §5.4 |
+| **P2** | Realtime backbone | One publisher; every rack topic byte-identical; dropped the ntfy/motion cruft | nginx caches upstream IPs — restart it after a rebuild |
+| **P3** | Derived reads | `room-state/` with **no state table**; wall and coach behind one `?details=` flag | §6.4 · the detail level *is* the privilege boundary |
+| **P4** | Reports + finalization | `DailyReport` immutable snapshot (`0010`), reports family, PDF, reference-max recalc | D10 · the one exception to derive-don't-store |
+| **P5** | Planning + `% × max` | Target resolution behind the frozen seam, planning CRUD, three CSV importers, the repair loop | §6.1 · D16/D17 |
+| **P6** | Retirement + the delete fix | Dropped the legacy `Program` table; `Set.session` → `PROTECT` (`0011`) | A `Set` is the only permanent record an athlete trained |
+| **P7** | Coach frontend on the real API | Rewired his screens; folded 6 of his routes, dropped 3; `ErrorBoundary`; router race fixed | **Seven bugs found by clicking, none by a green suite** |
+| **P8** | Verify on a fresh database | Cold build, rack loop end to end, replaced invented test fixtures with live payloads | |
+| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`NAMING_CHANGES.md`](NAMING_CHANGES.md) · a blunt sed shadows model imports |
+| **P10** | Catalog editing + reordering | Rename/reorder/delete days and rows; `updated_at` (`0013`) | Reorder sends the **whole list** — non-deferrable unique constraint |
+| **P11** | Multi-coach | `?coach=me` lens, block categories M2M (`0014`), `TrainingGroupCoach` join (`0015`) | **Filter, not fence** — see the Phase 16 rewrite below |
+| **P12** | One open training day | 409 on a second open day; end-time correction after a power cut | D18 |
+| **P13** | Athlete analytics read | Summary, per-movement aggregates, per-set reps | D19 |
+| **P14** | Scheduling | `ScheduledSession` calendar; `started_at` nullable (`0016`, `0017`) | D20 · **"active" means STARTED**, and NULLs sort first descending |
+| **P15** | Promote a program into a block | Copies days and rows **up** into a new block | D21 · pointing the FK alone leaves an empty block |
+
+### What this phase deliberately did not do
+
+- **No permission boundary.** `IsCoach` still means "is authenticated" — a choice,
+  not an oversight. See the Phase 16 rewrite.
+- **No group-staff UI.** The API takes several coaches per group; adding an
+  assistant needs Django admin.
+- **No overnight auto-close policy.** A day left open has no defined behaviour;
+  auto-closing would write an immutable report with nobody watching.
+
+**STOP. This phase is closed.** Its remaining debts are in "Known Open Items".
+
+
+## Phase 16 — Security Hardening · Owner: whole team · ⛔ NOT BUILT
+
+> ⚠️ **Rewritten 2026-07-30.** The original prompt said "verify JWT covers all
+> coach-only endpoints (should already be true)". That is still true and is no
+> longer the interesting part — the merge made a deliberate decision that changes
+> what "hardening" means here, and verifying the old sentence would have someone
+> confirm something the team decided *not* to do.
+
+### What the merge decided, and why it matters here
+
+**Authentication is enforced. Authorization is not, on purpose.** `IsCoach` means
+"is a logged-in user" and nothing more. Any authenticated coach can read and edit
+any block, any group, and any program. This is the **filter-not-fence** decision
+(§9, P11): `?coach=me` is a lens so nobody scrolls a department-sized catalog, not
+a wall. It was chosen because a real boundary costs object-level checks on every
+write endpoint plus a who-can-do-what test matrix, and because the scenario it
+would guard is not reachable — there is no block DELETE and no way for one coach
+to destroy another's work.
+
+There are tests that assert the **non**-enforcement, so adding a boundary is a
+deliberate change rather than a mystery failure.
+
+### The actual work
+
+1. **Decide whether authorization is now wanted.** If the answer is yes, it is
+   additive on top of the filter — the filter does not have to be undone first.
+   If no, say so here and close it.
+2. **Move Mosquitto off `allow_anonymous true`** to ACLs/auth on both listeners
+   (1883 for hardware and Django, 9001 for the browsers). This is the largest real
+   hole: anything on the gym's network can currently publish to any topic,
+   including fake rep data.
+3. **Rate-limit login.**
+4. **Confirm no coach-only path is reachable unauthenticated** — still worth doing,
+   and it was never the same question as authorization.
+5. **Group-staff UI.** `TrainingGroupCoach` records who runs a group and nothing
+   reads it for permission. If step 1 says yes, this is where it starts being real.
 
 **STOP. Review before moving to Phase 17.**
 
