@@ -40,12 +40,12 @@ it probably belongs in `services/`.
 | | |
 |---|---|
 | **`IsCoach` means "is authenticated"** | Not "is a coach of *this* group". Coach assignment filters views; it enforces nothing. Deliberate — SPEC §9 |
-| **The container bakes the source** | No volume mount. `makemigrations` writes *inside* the container — copy it back or lose it. [`docs/MIGRATION_PLAYBOOK.md`](../../docs/MIGRATION_PLAYBOOK.md) |
+| **The container bakes the source** | No volume mount. `makemigrations` writes *inside* the container — copy it back or lose it. [`docs/_MIGRATION_PLAYBOOK.md`](../../docs/_MIGRATION_PLAYBOOK.md) |
 | **Derived, not stored** | There is no room-state table and no cached target weight. That is a rule, not an omission — `services/_README.md` |
 | **`Set.is_coach_adjustment`** | A coach-written row that looks exactly like a completed set. Every new query over `Set` must decide whether to include it — SPEC §6.5 |
 
 ## Where to start
 
-- New to the product? [`docs/DATABASE-OVERVIEW.md`](../../docs/DATABASE-OVERVIEW.md) — plain English, no Django needed.
-- Picking up the project? [`docs/HANDOFF.md`](../../docs/HANDOFF.md).
+- New to the product? [`docs/_DATABASE-OVERVIEW.md`](../../docs/_DATABASE-OVERVIEW.md) — plain English, no Django needed.
+- Picking up the project? [`docs/_HANDOFF.md`](../../docs/_HANDOFF.md).
 - Need an exact request shape? [`_MESSAGE_CONTRACT.md`](../../_MESSAGE_CONTRACT.md).

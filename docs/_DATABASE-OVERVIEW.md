@@ -345,7 +345,7 @@ confusion:
 | Old table | What happened |
 |---|---|
 | `Program` | The per-athlete plan, one typed weight per person per movement. Replaced by the block/program hierarchy: a plan now belongs to a **group** and stores a **percent**. Dropped in migration `0011`. |
-| `Session` | Renamed `TrainingSession` in migration `0012`, so the name says which of the four "session-ish" ideas it is. Full rename list in [`NAMING_CHANGES.md`](NAMING_CHANGES.md). |
+| `Session` | Renamed `TrainingSession` in migration `0012`, so the name says which of the four "session-ish" ideas it is. Full rename list in [`_NAMING_CHANGES.md`](_NAMING_CHANGES.md). |
 
 ---
 

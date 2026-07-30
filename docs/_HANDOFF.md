@@ -4,7 +4,7 @@ Written 2026-07-30, at the end of Sprint 3, on branch `merge-braydon`.
 
 This is the short list of things that are **not obvious from the code** and that
 cost real time to work out. Everything else is in [`../_SPEC.md`](../_SPEC.md) and
-[`PATCH_NOTES.md`](PATCH_NOTES.md).
+[`_PATCH_NOTES.md`](_PATCH_NOTES.md).
 
 ---
 
@@ -107,7 +107,7 @@ constant in the repo into one file makes things harder to find, not easier. Keep
 | **`default_weight_lbs` is a v1-report field only** | Reports read it for schema-version-1 snapshots. Nothing writes it any more. It is *not* a live plan field — the live plan stores `target_percent` |
 | **Coach adjustments look exactly like real sets** | `Set.is_coach_adjustment` marks a row a coach wrote to move an athlete's working weight. It has `ended_at` and `weight_lbs` like any completed set. **Every** new query over `Set` must consciously include or exclude it — SPEC §6.5 has the exhaustive list |
 | **NULLs sort FIRST descending in Postgres** | `started_at` is nullable now. Order by `-started_at` without excluding nulls and an unstarted future session comes back as "newest" |
-| **The containers bake their source** | No volume mounts. `makemigrations` writes *inside* the container — copy it back or it vanishes on rebuild. [`MIGRATION_PLAYBOOK.md`](MIGRATION_PLAYBOOK.md) |
+| **The containers bake their source** | No volume mounts. `makemigrations` writes *inside* the container — copy it back or it vanishes on rebuild. [`_MIGRATION_PLAYBOOK.md`](_MIGRATION_PLAYBOOK.md) |
 
 ---
 

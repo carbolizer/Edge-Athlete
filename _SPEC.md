@@ -27,7 +27,7 @@ when it disagrees with a comment in the code, this wins and the comment gets fix
 |---|---|
 | **`_SPEC.md`** (this) | The system: architecture, hierarchy, schema, and the derivation rules |
 | `_MESSAGE_CONTRACT.md` | Exact request/response shapes for every endpoint |
-| `docs/PATCH_NOTES.md` | What changed on the merge branch, by phase, with a click path each |
+| `docs/_PATCH_NOTES.md` | What changed on the merge branch, by phase, with a click path each |
 | `_RUNBOOK.md` | Operating the base station |
 
 > **The merge canon was folded into this document on 2026-07-30** and its files
@@ -61,7 +61,7 @@ Phases 1–4 are complete. Phases 5–13 (through the Sprint 4 handoff gate) are
 **This document is now the single authority for the system.** The merge canon was
 folded into it on 2026-07-30 and its files were removed. The two companions stay
 separate on purpose: `_MESSAGE_CONTRACT.md` holds
-exact request/response shapes, and `docs/PATCH_NOTES.md` holds what changed on the
+exact request/response shapes, and `docs/_PATCH_NOTES.md` holds what changed on the
 merge branch with a click path for each thing.
 
 Everything below the "Data Models" heading that carries a **§ number** came from
@@ -78,7 +78,7 @@ Short version, verified against the repo rather than from memory:
 | 2 Data models & migrations | ✅ built — and since extended; see §4/§5 |
 | 3 MQTT pulse pipeline & simulator | ✅ built (`realtime/`) |
 | 4 REST API + batch set-complete | ✅ built |
-| 5–10 Planning, groups, CSV, reports | ✅ built — **reshaped by the merge**, see §4 and `docs/PATCH_NOTES.md` |
+| 5–10 Planning, groups, CSV, reports | ✅ built — **reshaped by the merge**, see §4 and `docs/_PATCH_NOTES.md` |
 | 11 Rack screen end-to-end | ✅ built · **FROZEN**, see §2.1 |
 | 12 Team dashboard kiosk | ✅ built (`/dashboard`) |
 | 13 Real ESP32 firmware v1 | ⛔ **not in this repo** — no `firmware/` directory exists |
@@ -488,7 +488,7 @@ Set      EXTENDED — is_makeup (Bool, default False) — excluded from
 > | Left behind | Where it lives now |
 > |---|---|
 > | Branch mechanics, `git show`/checkout recipes | The merge is done; git history |
-> | The P0–P15 phase plan and its gates | [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md) |
+> | The P0–P15 phase plan and its gates | [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md) |
 > | Endpoint reconciliation (which of his routes we kept) | [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md) has the real shapes |
 > | Migration plan (`0008`→`0017`) | The migration files themselves |
 
@@ -1181,7 +1181,7 @@ The two things that could not be lost, and did not:
 | Tags | `p1-complete` … `p15-complete` |
 | Frozen-file check | clean at all fifteen gates |
 
-> **Detail lives in [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md)** — each sub-phase
+> **Detail lives in [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md)** — each sub-phase
 > with the files it touched and a click path to see it working. It is not repeated
 > here; two copies would drift.
 
@@ -1198,7 +1198,7 @@ The two things that could not be lost, and did not:
 | **P6** | Retirement + the delete fix | Dropped the legacy `Program` table; `Set.session` → `PROTECT` (`0011`) | A `Set` is the only permanent record an athlete trained |
 | **P7** | Coach frontend on the real API | Rewired his screens; folded 6 of his routes, dropped 3; `ErrorBoundary`; router race fixed | **Seven bugs found by clicking, none by a green suite** |
 | **P8** | Verify on a fresh database | Cold build, rack loop end to end, replaced invented test fixtures with live payloads | |
-| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`NAMING_CHANGES.md`](docs/NAMING_CHANGES.md) · a blunt sed shadows model imports |
+| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`_NAMING_CHANGES.md`](docs/_NAMING_CHANGES.md) · a blunt sed shadows model imports |
 | **P10** | Catalog editing + reordering | Rename/reorder/delete days and rows; `updated_at` (`0013`) | Reorder sends the **whole list** — non-deferrable unique constraint |
 | **P11** | Multi-coach | `?coach=me` lens, block categories M2M (`0014`), `TrainingGroupCoach` join (`0015`) | **Filter, not fence** — see the Phase 16 rewrite below |
 | **P12** | One open training day | 409 on a second open day; end-time correction after a power cut | D18 |
@@ -2448,7 +2448,7 @@ This is the gate before Devin exits. All of it must pass.
 > **Delivered by THE MERGE (P0–P15), which diverged from this prompt.** The
 > deliverable exists and works; the prompt below is the original design and is
 > kept for provenance. Where the two disagree, **the built product wins** — read
-> [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md) P7/P10/P11/P13/P14.
+> [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md) P7/P10/P11/P13/P14.
 >
 > | This prompt says | What was built |
 > |---|---|
@@ -2798,7 +2798,7 @@ the endpoint returns the athlete, a summary, per-exercise aggregates and per-set
 reps, with the exact field list in `_MESSAGE_CONTRACT.md`. ⚠️ The same trap is still
 unsprung on `GET /api/analytics/session/{id}/`, which remains prose-only.
 
-**D20 — scheduling.** See §"The training calendar" below and `docs/PATCH_NOTES.md`
+**D20 — scheduling.** See §"The training calendar" below and `docs/_PATCH_NOTES.md`
 P14. The load-bearing consequence: **"active" means STARTED and not ended**, never
 merely un-ended, because `started_at` is now nullable so a session can exist before
 it runs. Postgres sorts NULLs *first* in a descending order, so without that filter

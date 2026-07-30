@@ -12,24 +12,24 @@ describes is finished and on the branch.
 
 | File | What it is |
 |---|---|
-| [`HANDOFF.md`](HANDOFF.md) | **Read first.** The things that are not obvious from the code — why a prescribed weight can go *down*, where the formulas live, and what is deliberately unfinished |
+| [`_HANDOFF.md`](_HANDOFF.md) | **Read first.** The things that are not obvious from the code — why a prescribed weight can go *down*, where the formulas live, and what is deliberately unfinished |
 
 ## What changed, and how to see it
 
 | File | What it is |
 |---|---|
-| [`PATCH_NOTES.md`](PATCH_NOTES.md) | Everything that changed on `merge-braydon`, by phase, with the files touched and a click path to see each one working |
-| [`NAMING_CHANGES.md`](NAMING_CHANGES.md) | The P9 rename reference — old name → new name → why |
+| [`_PATCH_NOTES.md`](_PATCH_NOTES.md) | Everything that changed on `merge-braydon`, by phase, with the files touched and a click path to see each one working |
+| [`_NAMING_CHANGES.md`](_NAMING_CHANGES.md) | The P9 rename reference — old name → new name → why |
 
 ## How things work
 
 | File | What it is |
 |---|---|
-| [`DATABASE-OVERVIEW.md`](DATABASE-OVERVIEW.md) | A plain-English tour of all 24 tables — no engineering background needed |
+| [`_DATABASE-OVERVIEW.md`](_DATABASE-OVERVIEW.md) | A plain-English tour of all 24 tables — no engineering background needed |
 | [`../django/event_handler/_README.md`](../django/event_handler/_README.md) | The backend, folder by folder. Every subfolder has its own `_README.md` too |
 | [`../django/event_handler/services/tuning.py`](../django/event_handler/services/tuning.py) | **The training math.** Every tunable number in one file — the 1RM formula's divisor, the trusted rep window, bar rounding, the resting window. The formulas themselves are beside it in `lifting_math.py` |
-| [`MIGRATION_PLAYBOOK.md`](MIGRATION_PLAYBOOK.md) | How to change the schema safely. **Read before touching `models.py`** — the container bakes its source, and that has already cost us a migration |
-| [`IMPORTING_SPREADSHEETS.md`](IMPORTING_SPREADSHEETS.md) | The coach-facing guide to the CSV importers — roster, maxes, workout plans |
+| [`_MIGRATION_PLAYBOOK.md`](_MIGRATION_PLAYBOOK.md) | How to change the schema safely. **Read before touching `models.py`** — the container bakes its source, and that has already cost us a migration |
+| [`_IMPORTING_SPREADSHEETS.md`](_IMPORTING_SPREADSHEETS.md) | The coach-facing guide to the CSV importers — roster, maxes, workout plans |
 | [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md) | Exact request/response shapes for every endpoint and MQTT topic |
 
 ---

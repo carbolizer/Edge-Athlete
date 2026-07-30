@@ -1,5 +1,5 @@
 <!--
-MIGRATION_PLAYBOOK.md — how to change the database safely in this repo.
+_MIGRATION_PLAYBOOK.md — how to change the database safely in this repo.
 Written as a handoff so schema changes aren't blocked on any one person. If you
 are about to touch django/event_handler/models.py, read this first.
 -->

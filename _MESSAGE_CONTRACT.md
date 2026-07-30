@@ -589,7 +589,7 @@ out per athlete from their reference max at read time (§4).
 > **Route names lag the model names.** `training-blocks/` is the template and
 > `workouts/` is a day inside one, because these URLs were bent to fit the coach
 > client that already existed rather than reshaping its code. Scheduled for
-> renaming in P9; see [`NAMING_CHANGES.md`](docs/NAMING_CHANGES.md).
+> renaming in P9; see [`_NAMING_CHANGES.md`](docs/_NAMING_CHANGES.md).
 
 ### `GET|POST /api/training-groups/` — TrainingGroups (coach)
 

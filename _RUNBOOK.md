@@ -81,7 +81,7 @@ reverses if someone wrote its reverse step — otherwise it's one-way.
 | `0015` | Each group's single coach → the staff table | Puts the head coach back |
 
 Anything you add from here needs the same treatment — see
-[`docs/MIGRATION_PLAYBOOK.md`](docs/MIGRATION_PLAYBOOK.md), which is the full
+[`docs/_MIGRATION_PLAYBOOK.md`](docs/_MIGRATION_PLAYBOOK.md), which is the full
 guide to changing this schema safely.
 
 ## Config files and where they live
