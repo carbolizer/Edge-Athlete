@@ -94,41 +94,42 @@ running.
 | Log out | Top-level button (`Dashboard.jsx:507`) | Under the **Edge Athlete logo** — click the logo to reveal |
 | Change device | Top-level button (`Dashboard.jsx:508`) | **Settings → rack setup only** (already exists there, `Dashboard.jsx:193`) |
 
-### 4. The rack-status banners — **what they actually are**
+### 4. "Rack N is ready" — traced to source
 
-Checked against the code 2026-07-30, because the earlier description here was
-written from memory and was wrong in two ways.
+Devin's hunch: *this looks like leftover from Braydon's version.* **Correct.**
 
-`"Rack N is ready"` is `Dashboard.jsx:495`:
+| Question | Answer |
+|---|---|
+| Where did it come from? | `origin/braydons-dev-branch:Dashboard.jsx:566` — **byte-identical** |
+| How did it get here? | Commit `fa88b6d`, P7 "land the coach frontend" |
+| Is the state it renders still reachable? | **Yes** — `room_state.py:171` sets `latest_set: None`, filled only when a set exists |
 
-```jsx
-{!workoutSet
-  ? <StatePanel title={`Rack ${selectedRack.rack_number} is ready`}
-               body="No completed set saved for this rack." />
-  : /* the set hero, charts, hardware */}
-```
+So two things are true at once, and they point opposite ways.
 
-**It is not a banner, and it is not on every tab.** It is an **empty state** in
-the Room view's detail pane, shown when you select a rack that has no completed
-set yet. It is one of ten `StatePanel` uses across the coach screen — the same
-component behind "Choose an athlete", "No completed training days", "The room is
-ready".
+**The panel still has a job.** A rack that is assigned but where nobody has lifted
+yet is a real state — every session starts there. It is what separates *"rack is
+fine, nobody's lifted"* from *"no rack assigned"*, which is a different panel.
 
-**So my earlier guess was wrong.** I suggested it was the same category as the
-dev-only top bar. It is not: the dev bar is diagnostics, while this one is
-answering a real question a coach has — *"is this rack broken, or has nobody
-lifted yet?"* It distinguishes **rack assigned, waiting** from **no rack
-assigned** (which is a different panel entirely).
+**But the word "ready" is genuinely vestigial.** On Braydon's branch the component
+wrapping it, `RackSelectionControls`, contained **assignment UI** — an "Assign"
+control and athlete dropdowns. In that world "Rack N is ready" meant *"ready for
+you to assign someone."* It pointed at an action.
 
-**Revised recommendation:** keep the behaviour, fix the wording. "Ready" reads
-like a hardware status claim — and the system genuinely cannot know whether the
-sensor is alive from the absence of a set. Something closer to *"No sets logged
-at Rack N yet"* says exactly what is true without implying a health check the
-code never did.
+**D8 deleted that workflow.** Forward rack-assignment is gone; athletes bind
+themselves by checking in. Today's `RackSelectionControls` is a read-only "Rack
+observation" panel with no assign control anywhere. So "ready" is the tail end of
+a sentence whose verb the merge removed — it now points at nothing a coach can do.
 
-Still open: whether the *other* `StatePanel` empty states survive the regrouping
-unchanged, since several of them ("Choose an athlete") may become unreachable once
-athlete selection moves.
+**Decision: keep the panel, drop the word.** Something like *"No sets logged at
+Rack N yet"* states what is true. "Ready" additionally implies a hardware check
+the code never performs — the absence of a set says nothing about whether the
+sensor is alive.
+
+> **The general lesson for this redesign:** P7 adopted Braydon's coach frontend
+> deliberately, so "it came from his branch" is not by itself a reason to delete
+> something. The test is whether the *workflow it was written for* still exists.
+> Here it does not. Worth applying the same test to the other nine `StatePanel`
+> empty states before assuming they still make sense.
 
 ---
 
@@ -189,11 +190,13 @@ Append as we go. Date each entry.
   deliberately appears in both SESSION (add) and ANALYTICS (review).
 - **2026-07-30** — **Session quick-notes APPROVED** for the SESSION state. Name
   still to be chosen; "mid-floor" rejected.
-- **2026-07-30** — **"Rack N is ready" investigated.** Not a banner and not
-  per-tab — it is an empty state in the Room detail pane (`Dashboard.jsx:495`),
-  one of ten `StatePanel` uses. My guess that it was dev-only diagnostics was
-  **wrong**; it answers a real coach question. Recommend keeping the behaviour and
-  rewording, since "ready" implies a hardware check the code never performs.
+- **2026-07-30** — **"Rack N is ready" traced.** Came verbatim from
+  `braydons-dev-branch` via P7. The empty state is still reachable and still
+  useful, but the WORD is vestigial: on his branch it sat beside rack-assignment
+  UI and meant "ready to assign someone". D8 deleted forward assignment, so it now
+  points at no available action. **Decision: keep the panel, reword it.** Apply the
+  same test — does the workflow it was written for still exist? — to the other
+  nine `StatePanel` empty states.
 - **2026-07-30** — **Session timer needs no API.** `started_at` is already in the
   room-state payload; compute elapsed client-side. No backend change anywhere in
   this redesign.
