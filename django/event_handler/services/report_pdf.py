@@ -1,3 +1,14 @@
+"""Turns a stored DailyReport into a PDF a coach can print or email.
+
+Reads the frozen snapshot only — never the live tables. That is the whole point:
+a report printed in March must still say what March said, even after plans change
+and athletes' maxes move. If this file ever needs a live query, something has gone
+wrong upstream.
+
+The page and byte ceilings below are guards, not preferences: a season's worth of
+athletes can generate a document big enough to exhaust the base station's memory,
+and a Pi serving a live session is a bad place to find that out.
+"""
 from html import escape
 from io import BytesIO
 
