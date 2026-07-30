@@ -110,6 +110,12 @@
 /* Square icon button, sized to match the height of the text buttons beside it. */
 .coach-icon-button { align-items:center; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; height:31px; justify-content:center; padding:0; width:31px; }
 .coach-icon-button:hover { border-color:var(--lime); color:var(--lime); }
+/* A labelled variant of the icon button — the cog alone was not discoverable
+   enough to be the only route to Room Layout. */
+.coach-labeled-button { gap:7px; padding:0 11px; width:auto; }
+.coach-labeled-button span { font-size:10px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+/* No racks assigned: this button is the only way forward, so it stops being quiet. */
+.coach-button-attention { border-color:var(--lime); color:var(--lime); }
 .coach-summary-strip { border-bottom:1px solid var(--line); display:grid; grid-template-columns:repeat(5,1fr); padding:0 24px; }
 .coach-summary-strip>div { border-right:1px solid var(--line); display:grid; gap:4px; padding:13px 18px; }
 .coach-summary-strip>div:first-child { border-left:1px solid var(--line); }

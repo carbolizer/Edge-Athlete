@@ -209,30 +209,21 @@ guard.
 
 This is the redesign paying for itself in deleted code rather than added code.
 
-#### "No racks assigned" (#12)
+#### "No racks assigned" (#12) — ✅ **DONE 2026-07-30: cut it**
 
-The statement is accurate — `selectedRack` falls back to `racks[0]`
-(`Dashboard.jsx:490`), so this only fires when there are genuinely **zero** racks.
-No false-positive bug.
+Decision: delete the panel, make the cog carry the weight instead. Room Layout
+already holds *both* jobs a coach needs here — change device role
+(`CoachTablet.jsx:426`) and assign rack numbers — so the panel was a signpost to a
+door that should simply be easier to see.
 
-But it fails the test on a different axis: the body says *"Assign room hardware
-before monitoring sets"* and **gives you no way to go do that.** Rack assignment
-lives at `/coach/setup`, behind the topbar cog. On Braydon's branch assignment was
-partly inline in this pane; now it is a separate route, and the instruction was
-left pointing nowhere.
+Shipped:
 
-`StatePanel` already takes `action` and `actionLabel` (`Dashboard.jsx:~150`, used
-by #2 and #11 for retry). So this is a one-line fix:
-
-```jsx
-<StatePanel title="No racks assigned"
-            body="Assign room hardware before monitoring sets."
-            action={() => navigate("/coach/setup")}
-            actionLabel="Open room layout" />
-```
-
-A dead-end empty state on the **first screen a new gym sees** is the worst place
-to have one — see open question 6.
+- **Panel removed.** `!selectedRack` now renders nothing.
+- **Cog labelled.** It reads **⚙ ROOM LAYOUT**, not a bare icon — new
+  `.coach-labeled-button`.
+- **It shouts when it matters.** With zero racks the button turns lime
+  (`.coach-button-attention`), because that is the one case where it is the only
+  way forward.
 
 ---
 
