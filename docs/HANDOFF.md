@@ -3,7 +3,7 @@
 Written 2026-07-30, at the end of Sprint 3, on branch `merge-braydon`.
 
 This is the short list of things that are **not obvious from the code** and that
-cost real time to work out. Everything else is in [`../SPEC.md`](../SPEC.md) and
+cost real time to work out. Everything else is in [`../_SPEC.md`](../_SPEC.md) and
 [`PATCH_NOTES.md`](PATCH_NOTES.md).
 
 ---
@@ -118,7 +118,7 @@ Not bugs — decisions nobody made yet, or work that stopped at a sensible line.
 - **No group-staff UI.** The API takes several coaches per group
   (`TrainingGroupCoach`); adding an assistant needs Django admin. The backend is
   done; the screen is not.
-- **`GET /api/analytics/session/{id}/` is prose-only** in `MESSAGE_CONTRACT.md`.
+- **`GET /api/analytics/session/{id}/` is prose-only** in `_MESSAGE_CONTRACT.md`.
   Every other route has an exact shape. This one still needs writing up.
 - **Overnight-open-day policy is undecided.** A day left open has no defined
   behaviour. Auto-closing it would write an immutable `DailyReport` with nobody
@@ -131,9 +131,18 @@ Not bugs — decisions nobody made yet, or work that stopped at a sensible line.
 
 ## 5. Ship prep that is NOT done
 
-- `SprintBranch` has not been fast-forwarded to `merge-braydon`.
-- The config union (superset of `package.json`, Dockerfiles, compose, nginx)
-  hasn't been reconciled.
+- `SprintBranch` has not been fast-forwarded to `merge-braydon`. It is a **strict
+  fast-forward** — `SprintBranch` is 0 ahead, 75 behind — so there is no config
+  union to reconcile and no conflict possible. An earlier note here said otherwise;
+  that assumed the branches had diverged, and they never did.
+- **`.env.example` ships `DEBUG=True`.** That is the template every deployment
+  copies, and with DEBUG on Django serves full stack traces *and* the
+  `/api/dev/seed-session/` endpoint goes live — an endpoint that wipes data. The
+  guard in `dev_views.py` is written correctly; the shipped default disarms it.
+- **Dev tooling is still wired in:** `dev_views.py`, the `/api/dev/` route, and
+  `<DevPanel/>` in `CoachTablet.jsx`. All three carry removal instructions.
+- `requests==2.31.0` is a dead dependency — its own comment says it was for Ntfy,
+  which P2 removed.
 - **The rack screen has not been walked through on real hardware since the
   merge.** The frozen-file check passed at all fifteen gates and the loop works in
   a browser — but boot a real tablet and run splash → setup → check-in → set →

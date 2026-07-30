@@ -23,7 +23,7 @@ Grouped by who uses them:
     - manage athletes, programs, sessions, and nodes; assign racks; and pull
       the analytics summaries.
 
-Open vs coach-only follows SPEC.md; shapes live in MESSAGE_CONTRACT.md.
+Open vs coach-only follows _SPEC.md; shapes live in _MESSAGE_CONTRACT.md.
 """
 import json
 from datetime import timedelta
@@ -45,7 +45,7 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
                      AthleteWorkoutExerciseOverride, BlockCategory, TrainingGroupCoach,
                      ScheduledSession)
 
-# Coaches are Django users; there is no separate coach table. See SPEC.md.
+# Coaches are Django users; there is no separate coach table. See _SPEC.md.
 User = get_user_model()
 from .permissions import IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,

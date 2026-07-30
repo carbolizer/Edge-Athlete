@@ -101,14 +101,14 @@ Two deliberate exclusions, both explained in `tuning.py`:
 
 | | |
 |---|---|
-| [`SPEC.md`](SPEC.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
-| [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
-| [`RUNBOOK.md`](RUNBOOK.md) | Services, start/stop, operational notes. |
+| [`_SPEC.md`](_SPEC.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
+| [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
+| [`_RUNBOOK.md`](_RUNBOOK.md) | Services, start/stop, operational notes. |
 | [`docs/HANDOFF.md`](docs/HANDOFF.md) | The non-obvious things, for whoever picks this up. Start here if you are new. |
 | [`docs/`](docs/) | Write-ups of finished work — patch notes, the database tour, the migration playbook, the import guide. |
 
-**Two documents are authoritative and everything else defers to them:** `SPEC.md`
-for *why the system is shaped this way*, `MESSAGE_CONTRACT.md` for *what a request
+**Two documents are authoritative and everything else defers to them:** `_SPEC.md`
+for *why the system is shaped this way*, `_MESSAGE_CONTRACT.md` for *what a request
 looks like*. If another file disagrees with those two, those two are right.
 
 ---
@@ -133,7 +133,7 @@ About fifty routes, grouped:
 | **Analytics** | per-session summary, per-athlete history |
 | **Imports** | preview then commit — roster, maxes, and workout-plan CSVs |
 
-> **Route-by-route detail is in [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md), not
+> **Route-by-route detail is in [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md), not
 > here.** This README used to list every endpoint and quietly went out of date;
 > one copy is the fix.
 
@@ -142,7 +142,7 @@ About fifty routes, grouped:
 `IsCoach` currently means **"is authenticated"** — not "is a coach of *this*
 group". Coach assignment is recorded and used to *filter* views, and it is not
 enforced as a permission. That is a deliberate choice for a single-gym offline
-box, written up in `SPEC.md` §9 and Phase 16. Don't mistake it for an oversight,
+box, written up in `_SPEC.md` §9 and Phase 16. Don't mistake it for an oversight,
 and don't assume a group-coach row protects anything.
 
 ---

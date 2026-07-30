@@ -294,7 +294,7 @@ function ConnectionTest() {
         </Card>
 
         <p style={{ color: C.ink3, fontSize: 12, marginTop: 28, textAlign: 'center' }}>
-          Full docs: README.md · SPEC.md · MESSAGE_CONTRACT.md · docs/
+          Full docs: README.md · _SPEC.md · _MESSAGE_CONTRACT.md · docs/
         </p>
       </div>
     </div>

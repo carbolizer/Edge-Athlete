@@ -3,8 +3,6 @@
 ._*
 .env
 
-# Local planning scratch — kept out of the repo on purpose (personal working notes)
-PHASE11-BUILD-BRIEF.md
 
 # django
 venv/

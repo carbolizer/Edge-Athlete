@@ -48,4 +48,4 @@ it probably belongs in `services/`.
 
 - New to the product? [`docs/DATABASE-OVERVIEW.md`](../../docs/DATABASE-OVERVIEW.md) — plain English, no Django needed.
 - Picking up the project? [`docs/HANDOFF.md`](../../docs/HANDOFF.md).
-- Need an exact request shape? [`MESSAGE_CONTRACT.md`](../../MESSAGE_CONTRACT.md).
+- Need an exact request shape? [`_MESSAGE_CONTRACT.md`](../../_MESSAGE_CONTRACT.md).

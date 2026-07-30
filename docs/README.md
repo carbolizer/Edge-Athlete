@@ -4,7 +4,7 @@ Write-ups of work that is **done**, and guides for doing common things. One file
 per topic.
 
 This is not the place for plans, designs, or open questions — those live in
-[`../SPEC.md`](../SPEC.md), the single authority for the system. (The merge canon
+[`../_SPEC.md`](../_SPEC.md), the single authority for the system. (The merge canon
 was folded into it on 2026-07-30.) A document only arrives here once the work it
 describes is finished and on the branch.
 
@@ -30,13 +30,7 @@ describes is finished and on the branch.
 | [`../django/event_handler/services/tuning.py`](../django/event_handler/services/tuning.py) | **The training math.** Every tunable number in one file — the 1RM formula's divisor, the trusted rep window, bar rounding, the resting window. The formulas themselves are beside it in `lifting_math.py` |
 | [`MIGRATION_PLAYBOOK.md`](MIGRATION_PLAYBOOK.md) | How to change the schema safely. **Read before touching `models.py`** — the container bakes its source, and that has already cost us a migration |
 | [`IMPORTING_SPREADSHEETS.md`](IMPORTING_SPREADSHEETS.md) | The coach-facing guide to the CSV importers — roster, maxes, workout plans |
-| [`../MESSAGE_CONTRACT.md`](../MESSAGE_CONTRACT.md) | Exact request/response shapes for every endpoint and MQTT topic |
-
-## Team history
-
-| | |
-|---|---|
-| [`sprints/`](sprints/) | Scrum planning artifacts from past sprints |
+| [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md) | Exact request/response shapes for every endpoint and MQTT topic |
 
 ---
 

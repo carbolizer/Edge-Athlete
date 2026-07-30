@@ -1,5 +1,5 @@
 <!--
-RUNBOOK.md — the operator's manual for the base station.
+_RUNBOOK.md — the operator's manual for the base station.
 This is the "what do I actually type to run this thing" guide for a human sitting
 in front of the Pi. It grows across the project: started here in Phase 1 with the
 services and start/stop steps, and completed by the Sprint 3 handoff with failure
