@@ -171,6 +171,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [newBlockCategories, setNewBlockCategories] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [categoryErrors, setCategoryErrors] = useState([]);
+  // Deployed programs, and turning one back into a reusable block.
+  const [deployedPrograms, setDeployedPrograms] = useState([]);
+  const [promoteNames, setPromoteNames] = useState({});
+  const [promoting, setPromoting] = useState("");
+  const [promoteStatus, setPromoteStatus] = useState("");
+  const [promoteErrors, setPromoteErrors] = useState([]);
   const [programUrl, setProgramUrl] = useState(blockCatalogUrl("mine", []));
   const [retryProgramUrl, setRetryProgramUrl] = useState(blockCatalogUrl("mine", []));
   const [programPagination, setProgramPagination] = useState({ previous: null, next: null });
@@ -208,6 +214,47 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     } catch (errors) {
       setProgramCatalogErrors(Array.isArray(errors) ? errors : [{ detail: "Workout programs could not be loaded." }]);
       setProgramCatalogState("error");
+    }
+  }
+
+  // ⚠️ `programs` above holds BLOCKS — a pre-existing naming muddle in this file.
+  // These are the actual deployed TrainingPrograms, which is a different thing.
+  async function loadDeployedPrograms() {
+    try {
+      const response = await fetch(DEPLOY_URL, { headers });
+      const body = await response.json().catch(() => []);
+      setDeployedPrograms(Array.isArray(body) ? body : body.results || []);
+    } catch {
+      setDeployedPrograms([]);
+    }
+  }
+
+  // Turn a deployed program back into a reusable block.
+  //
+  // This COPIES the program's days and rows up into a new block. It is worth
+  // knowing that the obvious-looking shortcut — just pointing the program's
+  // training_block at a new row — produces a block with no days in it, and the
+  // failure only shows up later when someone deploys it and gets an empty plan.
+  async function promoteProgram(program) {
+    setPromoting(program.id);
+    setPromoteErrors([]);
+    setPromoteStatus("");
+    try {
+      const response = await fetch(`${DEPLOY_URL}${program.id}/promote/`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(promoteNames[program.id]?.trim()
+          ? { name: promoteNames[program.id].trim() } : {}),
+      });
+      const body = await parseResponse(response, "The program could not be made into a block.");
+      if (body === null) return;
+      setPromoteNames((current) => ({ ...current, [program.id]: "" }));
+      setPromoteStatus(`“${body.name}” is now in the catalog with ${body.workouts?.length || 0} day${body.workouts?.length === 1 ? "" : "s"}. Deploy it to any group.`);
+      await Promise.all([loadPrograms(programUrl), loadDeployedPrograms()]);
+    } catch (errors) {
+      setPromoteErrors(Array.isArray(errors) ? errors : [{ detail: "The program could not be made into a block." }]);
+    } finally {
+      setPromoting("");
     }
   }
 
@@ -279,6 +326,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   useEffect(() => {
     loadPrograms(blockCatalogUrl("mine", []));
     loadCategories();
+    loadDeployedPrograms();
     // The two pickers. Both are small, rarely-changing lists, so they load once
     // and are not paginated. A failure here leaves an empty dropdown rather than
     // breaking the screen — the panels that need them disable themselves.
@@ -456,6 +504,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       setDeployStart("");
       setDeployEnd("");
       setDeployStatus(`${body.name || deployName.trim()} is now running for ${body.group_name || "the selected group"}.`);
+      await loadDeployedPrograms();
     } catch (errors) {
       setDeployErrors(Array.isArray(errors) ? errors : [{ detail: "The block could not be deployed." }]);
     } finally {
@@ -727,6 +776,37 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           <ErrorList errors={deployErrors} />
           {deployStatus && <p className="workout-status" role="status">{deployStatus}</p>}
         </form>
+      </section>
+
+      {/* Deployed programs, and the way back up to a reusable block.
+
+          This closes the loop the other three panels open: build a block, add
+          days, deploy it — and now, once a coach has tuned that deployment into
+          something better than the template it came from, lift it back out so
+          anyone can run it. */}
+      <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
+        <ErrorList errors={promoteErrors} title="That program could not be made into a block:" />
+        {promoteStatus && <p className="workout-status" role="status">{promoteStatus}</p>}
+        {deployedPrograms.length === 0
+          ? <p className="monitor-empty">No programs are deployed yet. Deploy a block above to start one.</p>
+          : <div className="deployed-program-list">{deployedPrograms.map((program) => <article key={program.id}>
+              <div className="deployed-program-main">
+                <span>{program.group_name || "Unknown group"}{program.start_date ? ` · from ${program.start_date}` : ""}</span>
+                <h4>{program.name}</h4>
+                <p>{program.workouts?.length || 0} day{program.workouts?.length === 1 ? "" : "s"}{program.training_block ? " · deployed from a block" : " · written directly for this group"}</p>
+              </div>
+              <div className="deployed-program-actions">
+                <label>New block name
+                  <input value={promoteNames[program.id] || ""} maxLength="255"
+                    placeholder={program.name}
+                    onChange={(event) => setPromoteNames((current) => ({ ...current, [program.id]: event.target.value }))}
+                    disabled={Boolean(promoting)} />
+                </label>
+                <button type="button" onClick={() => promoteProgram(program)} disabled={Boolean(promoting) || !(program.workouts?.length)}>
+                  {promoting === program.id ? "Making a block..." : "Make a block from this"}
+                </button>
+              </div>
+            </article>)}</div>}
       </section>
 
       <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>

@@ -1132,7 +1132,34 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 > on create (cadence stayed blank), every run created a fresh program (each with
 > its own calendar, so three reseeds showed three overlapping slots per day), and
 > `now().date()` was used where a calendar date wants `localdate()`.
-| **P15 — Promote a program into a block (D21)** | Turn any `TrainingProgram` — one written by hand, or one edited after deployment — into a new reusable `TrainingBlock`. | A program with days and prescription rows becomes a block holding the same days and rows; the program's `training_block` then points at it; the program itself is unchanged. |
+| ✅ **P15 — Promote a program into a block (D21)** — DONE 2026-07-30 | Turn any `TrainingProgram` — one written by hand, or one edited after deployment — into a new reusable `TrainingBlock`. | A program with days and prescription rows becomes a block holding the same days and rows ✅; the program's `training_block` then points at it ✅; the program itself is unchanged ✅. 280 backend / 131 frontend. **NO schema change**, as predicted. |
+
+> **P15 as built (2026-07-30).** `promote_program_to_block()` in
+> services/planning.py — `instantiate_block()` run backwards, deliberately
+> mirroring it so the two read side by side. Route
+> `POST training-programs/{id}/promote/`, plus a "Deployed programs" panel in the
+> catalog that closes the loop: build a block → deploy it → lift it back out.
+> - **The false claim is dead.** The last docstring saying promotion is "just
+>   adding a TrainingBlock row and pointing this FK at it" is gone from
+>   `models.py`, replaced by an explanation of why it was wrong. Sabotage-checked:
+>   implementing the false version fails **7** tests, including
+>   `test_the_new_block_is_not_empty` and the redeploy round trip.
+> - **Cadence and duration are carried over** from the program's original block,
+>   so a promoted block still generates a calendar. Categories are not — filing is
+>   a decision about the new block.
+> - **Accepted loss:** if the program came from another block, that link is
+>   overwritten. The FK answers "what is this a copy of", and after promotion the
+>   honest answer is the new block.
+>
+> ⚠️ **P15 also found a P14 bug that 260 passing tests did not.** Deploying a
+> block **through the API** returned a 500: dates arrive as strings, Django only
+> coerces them on the way into the database, so `program.start_date` was still
+> `"2026-08-03"` when the schedule generator did arithmetic on it. Every P14 test
+> passed a real `date` object into `instantiate_block()` directly, so none of them
+> ever took the HTTP path. The view now parses dates (and a bad one is a 400, not
+> a 500); `training_dates()` tolerates a string as well. **Found by deploying from
+> the browser — the eighth bug this project has found by clicking rather than by
+> a green suite.**
 
 **⚠️ D21 — "promotion" does not exist, and this canon has been WRONG about it.** Two docstrings and this
 document say a one-off program *"can be promoted into a template later — just adding a TrainingBlock row and

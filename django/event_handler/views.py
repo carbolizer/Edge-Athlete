@@ -65,7 +65,7 @@ from .services.reports import (AthleteNotInReport, reports_for_athlete, report_l
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import (movements_for_athlete as plan_movements_for_athlete,
                                        plans_by_athlete, resolve_target_weight)
-from .services.planning import apply_order, instantiate_block, touch_block
+from .services.planning import apply_order, instantiate_block, promote_program_to_block, touch_block
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 
 def _require_coach(request):
@@ -1515,9 +1515,10 @@ def training_programs_view(request):
       without "training_block" — a one-off plan authored directly for the TrainingGroup,
                                  no template involved.
 
-    ⚠️ There is no way yet to turn a one-off back INTO a template. Pointing
-    training_block at a new block would only record provenance — the block would
-    contain no days. See P15.
+    Turning a program back INTO a reusable template is
+    `POST training-programs/{id}/promote/` — and it copies the days and rows up,
+    because pointing `training_block` at a new block would only record provenance
+    and leave the block empty.
     """
     if request.method == "GET":
         programs = TrainingProgram.objects.select_related("training_group") \
@@ -1536,17 +1537,77 @@ def training_programs_view(request):
         block = TrainingBlock.objects.filter(id=block_id).first()
         if block is None:
             return Response({"error": "training block not found"}, status=404)
+        # ⚠️ PARSE THE DATES HERE. They arrive as strings, and Django only coerces
+        # them on the way into the database — the in-memory instance keeps the
+        # string. That was invisible until P14, when the schedule generator
+        # started doing arithmetic on `program.start_date` and got
+        # "can only concatenate str to str" on every deploy through the API.
+        # Every P14 test passed real `date` objects, so none of them caught it.
+        dates = {}
+        for field in ("start_date", "end_date"):
+            raw = request.data.get(field)
+            if raw in (None, ""):
+                dates[field] = None
+                continue
+            parsed = parse_date(raw) if isinstance(raw, str) else raw
+            if parsed is None:
+                return Response({"error": f"{field} must be a date (YYYY-MM-DD)"},
+                                status=400)
+            dates[field] = parsed
+
+        if dates["start_date"] is None:
+            return Response({"error": "start_date is required to deploy a block"},
+                            status=400)
+
         program = instantiate_block(
             block, group,
             name=request.data.get("name"),
-            start_date=request.data.get("start_date"),
-            end_date=request.data.get("end_date"),
+            start_date=dates["start_date"],
+            end_date=dates["end_date"],
         )
         return Response(TrainingProgramSerializer(program).data, status=201)
 
     form = TrainingProgramSerializer(data=request.data)
     form.is_valid(raise_exception=True)
     return Response(TrainingProgramSerializer(form.save()).data, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsCoach])
+def training_program_promote(request, program_id):
+    """Coach-only: turn this program into a new reusable TrainingBlock.
+
+    For the plan a coach tuned until it was better than the template it came
+    from — or wrote from scratch for one group and now wants to run again.
+
+    Body: `{ "name": "Fall Strength v2" }` — optional, defaults to the program's
+    own name.
+
+    ⚠️ This COPIES the days and prescription rows up into the new block. It is not
+    a matter of pointing `training_block` at a fresh row: that records provenance
+    and copies nothing, so the block would come out empty and deploying it would
+    hand a group a plan with no movements in it.
+
+    The program itself is unchanged apart from its `training_block` now naming
+    the block it is a deployment of.
+    """
+    program = (TrainingProgram.objects
+               .filter(id=program_id)
+               .prefetch_related("workouts__exercises").first())
+    if program is None:
+        return Response({"error": "training program not found"}, status=404)
+
+    if not program.workouts.exists():
+        # A block with no days is the exact failure this endpoint exists to
+        # prevent, so refusing here is more honest than creating one.
+        return Response({
+            "error": "this program has no days to promote",
+            "detail": "Add at least one day to the program before making a block from it.",
+        }, status=400)
+
+    name = (request.data.get("name") or "").strip() or None
+    block = promote_program_to_block(program, coach=request.user, name=name)
+    return Response(TrainingBlockSerializer(block).data, status=201)
 
 
 @api_view(["GET"])

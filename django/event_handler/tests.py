@@ -1828,6 +1828,196 @@ class OneOpenSessionTests(APITestCase):
         self.assertNotEqual(current.id, stray.id)
 
 
+class ProgramPromotionTests(APITestCase):
+    """Turning a program back into a reusable block (canon D21, P15).
+
+    ⚠️ The thing these tests exist to prevent was written down as fact in this
+    codebase for weeks: that promotion is "just pointing training_block at a new
+    row". It is not. That records provenance and copies nothing, so the block
+    comes out EMPTY and deploying it hands a group a plan with no movements —
+    which reads as a data-loss bug rather than a misunderstanding. Half of what
+    follows checks the copy actually happened.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.group = TrainingGroup.objects.create(name="Varsity")
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
+        self.monday = date(2026, 8, 3)
+
+    def _program(self, *, from_block=True, days=2):
+        """A program with real days and rows, deployed or hand-written."""
+        if from_block:
+            block = TrainingBlock.objects.create(
+                name="Fall Strength", coach=self.coach,
+                cadence_days_of_week="Mon,Wed,Fri", duration_weeks=4)
+            for position in range(1, days + 1):
+                workout = TrainingBlockWorkout.objects.create(
+                    training_block=block, name=f"Day {position}", position=position)
+                TrainingBlockExercise.objects.create(
+                    training_block_workout=workout, exercise=self.squat,
+                    position=1, sets=5, reps=3, target_percent=80,
+                    velocity_zone_min=0.5, velocity_zone_max=0.8)
+            return instantiate_block(block, self.group, start_date=self.monday)
+
+        program = TrainingProgram.objects.create(
+            training_group=self.group, name="One-off", start_date=self.monday)
+        for position in range(1, days + 1):
+            workout = TrainingProgramWorkout.objects.create(
+                training_program=program, name=f"Day {position}", position=position)
+            TrainingProgramExercise.objects.create(
+                training_program_workout=workout, exercise=self.bench,
+                position=1, sets=4, reps=5, target_percent=75)
+        return program
+
+    def _promote(self, program, **body):
+        return self.client.post(f"/api/training-programs/{program.id}/promote/",
+                                body, format="json")
+
+    # ── the copy actually happens ────────────────────────────────────────────
+
+    def test_the_new_block_is_not_empty(self):
+        """The single most important assertion in this class."""
+        program = self._program()
+        res = self._promote(program)
+        self.assertEqual(res.status_code, 201)
+
+        block = TrainingBlock.objects.get(id=res.data["id"])
+        self.assertEqual(block.workouts.count(), 2)
+        self.assertTrue(all(w.exercises.exists() for w in block.workouts.all()))
+
+    def test_every_day_is_copied_with_its_name_and_position(self):
+        program = self._program(days=3)
+        block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
+        self.assertEqual(
+            [(w.name, w.position) for w in block.workouts.order_by("position")],
+            [("Day 1", 1), ("Day 2", 2), ("Day 3", 3)])
+
+    def test_every_prescription_row_is_copied_field_for_field(self):
+        """A promoted block that loses the velocity zones or the percentage would
+        deploy something subtly different from what the coach tuned."""
+        program = self._program(from_block=False)
+        block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
+
+        row = block.workouts.order_by("position").first().exercises.first()
+        self.assertEqual(row.exercise_id, self.bench.id)
+        self.assertEqual((row.sets, row.reps, row.target_percent), (4, 5, 75))
+
+    def test_zones_survive_the_copy(self):
+        program = self._program()
+        block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
+        row = block.workouts.order_by("position").first().exercises.first()
+        self.assertEqual((row.velocity_zone_min, row.velocity_zone_max), (0.5, 0.8))
+
+    # ── the round trip ───────────────────────────────────────────────────────
+
+    def test_the_promoted_block_can_be_deployed_again_and_carries_the_training(self):
+        """The point of the whole feature: promote, then deploy to another group
+        and get the same training. This is what would have silently produced an
+        empty plan under the old, false description."""
+        program = self._program(days=2)
+        block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
+
+        other = TrainingGroup.objects.create(name="Freshmen")
+        redeployed = instantiate_block(block, other, start_date=self.monday)
+
+        self.assertEqual(redeployed.workouts.count(), 2)
+        row = redeployed.workouts.order_by("position").first().exercises.first()
+        self.assertEqual((row.sets, row.reps, row.target_percent), (5, 3, 80))
+
+    def test_a_promoted_block_still_schedules(self):
+        """Cadence and duration are carried across, so the redeployment gets a
+        calendar rather than an empty one."""
+        program = self._program()
+        block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
+        self.assertEqual(block.cadence_days_of_week, "Mon,Wed,Fri")
+
+        other = TrainingGroup.objects.create(name="Freshmen")
+        redeployed = instantiate_block(block, other, start_date=self.monday)
+        self.assertGreater(redeployed.scheduled_sessions.count(), 0)
+
+    # ── the source program is left alone ─────────────────────────────────────
+
+    def test_the_program_keeps_its_own_days_and_rows(self):
+        program = self._program(days=2)
+        before = list(program.workouts.values_list("id", "name", "position"))
+
+        self._promote(program)
+        program.refresh_from_db()
+        self.assertEqual(list(program.workouts.values_list("id", "name", "position")),
+                         before)
+
+    def test_the_program_now_points_at_the_block_it_is_a_deployment_of(self):
+        program = self._program(from_block=False)
+        self.assertIsNone(program.training_block)
+
+        block_id = self._promote(program).data["id"]
+        program.refresh_from_db()
+        self.assertEqual(program.training_block_id, block_id)
+
+    def test_editing_the_promoted_block_does_not_touch_the_program(self):
+        """Snapshot independence runs in this direction too."""
+        program = self._program()
+        block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
+
+        block.workouts.filter(position=1).update(name="Renamed in the template")
+        self.assertEqual(program.workouts.get(position=1).name, "Day 1")
+
+    # ── naming and ownership ─────────────────────────────────────────────────
+
+    def test_the_block_takes_the_programs_name_by_default(self):
+        program = self._program(from_block=False)
+        self.assertEqual(self._promote(program).data["name"], "One-off")
+
+    def test_a_name_can_be_given(self):
+        program = self._program()
+        self.assertEqual(self._promote(program, name="Fall Strength v2").data["name"],
+                         "Fall Strength v2")
+
+    def test_a_blank_name_falls_back_rather_than_creating_an_unnamed_block(self):
+        program = self._program(from_block=False)
+        self.assertEqual(self._promote(program, name="   ").data["name"], "One-off")
+
+    def test_the_promoting_coach_owns_the_new_block(self):
+        other = User.objects.create_user(username="other", password="pw")
+        self.client.force_authenticate(user=other)
+        program = self._program()
+        self.assertEqual(self._promote(program).data["coach"], other.id)
+
+    # ── guards ───────────────────────────────────────────────────────────────
+
+    def test_a_program_with_no_days_is_refused(self):
+        """Refusing is more honest than creating the empty block this endpoint
+        exists to prevent."""
+        program = TrainingProgram.objects.create(
+            training_group=self.group, name="Empty", start_date=self.monday)
+        res = self._promote(program)
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(TrainingBlock.objects.filter(name="Empty").count(), 0)
+
+    def test_a_missing_program_is_404(self):
+        self.assertEqual(
+            self.client.post("/api/training-programs/99999/promote/",
+                             {}, format="json").status_code, 404)
+
+    def test_a_coach_login_is_required(self):
+        program = self._program()
+        self.client.force_authenticate(user=None)
+        self.assertIn(self._promote(program).status_code, (401, 403))
+
+    def test_promoting_twice_makes_two_independent_blocks(self):
+        """Each promotion is a snapshot of the program at that moment."""
+        program = self._program()
+        first = self._promote(program).data["id"]
+        second = self._promote(program, name="Second take").data["id"]
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(TrainingBlock.objects.get(id=first).workouts.count(), 2)
+        self.assertEqual(TrainingBlock.objects.get(id=second).workouts.count(), 2)
+
+
 class ScheduleGenerationTests(APITestCase):
     """Laying a block's days onto real dates (P14 step 2).
 
@@ -1935,6 +2125,46 @@ class ScheduleGenerationTests(APITestCase):
     def test_a_block_with_no_days_generates_nothing(self):
         program = self._deploy(self._block(days=0))
         self.assertEqual(program.scheduled_sessions.count(), 0)
+
+    # ── deploying through the API, not just the service ──────────────────────
+
+    def test_deploying_through_the_api_generates_a_schedule(self):
+        """⚠️ This is the test that was missing. Every other test in this class
+        calls instantiate_block() directly with a real `date` object. The API
+        passes a STRING, Django only coerces it on the way into the database, and
+        the in-memory instance keeps the string — so the generator did
+        `str + timedelta` and every deploy through the API was a 500. Found by
+        deploying from the browser, not by 260 passing tests."""
+        block = self._block()
+        res = self.client.post("/api/training-programs/", {
+            "training_group": self.group.id,
+            "training_block": block.id,
+            "name": "Deployed over HTTP",
+            "start_date": "2026-08-03",
+        }, format="json")
+
+        self.assertEqual(res.status_code, 201)
+        program = TrainingProgram.objects.get(id=res.data["id"])
+        self.assertEqual(program.scheduled_sessions.count(), 6)
+
+    def test_a_bad_start_date_is_a_400_not_a_500(self):
+        block = self._block()
+        res = self.client.post("/api/training-programs/", {
+            "training_group": self.group.id,
+            "training_block": block.id,
+            "start_date": "the third of August",
+        }, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_deploying_without_a_start_date_is_refused(self):
+        """A program with no start date can never be scheduled, and start_date is
+        non-null on the model — so this was a 500 waiting to happen too."""
+        block = self._block()
+        res = self.client.post("/api/training-programs/", {
+            "training_group": self.group.id,
+            "training_block": block.id,
+        }, format="json")
+        self.assertEqual(res.status_code, 400)
 
     def test_a_standalone_program_with_no_block_generates_nothing(self):
         program = TrainingProgram.objects.create(

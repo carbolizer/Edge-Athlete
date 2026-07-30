@@ -313,9 +313,19 @@ class TrainingProgram(models.Model):
     from a TrainingBlock (its prescription gets snapshot-copied down at creation
     time), but training_block is NULLABLE — a coach can also build a standalone
     one-off program with its own prescription and no template behind it. Both
-    are permanent, first-class paths, not a migration shim. Promoting a one-off
-    into a reusable template later is just adding a TrainingBlock row and
-    pointing this FK at it — no data migration, no rewrite."""
+    are permanent, first-class paths, not a migration shim.
+
+    ⚠️ This docstring used to claim that promoting a one-off into a reusable
+    template was "just adding a TrainingBlock row and pointing this FK at it".
+    **That was false**, and it was repeated in several places before anyone
+    checked. Setting `training_block` records where a program CAME FROM; it
+    copies nothing. Pointing it at a fresh block would produce a block claiming
+    to be the source of this program while containing zero days — and deploying
+    that block would hand a group an empty plan.
+
+    Promotion is `instantiate_block()` run backwards: create the block, copy
+    every day and prescription row UP into it, and only then point the FK. That
+    is `promote_program_to_block()` in services/planning.py (P15)."""
     training_group = models.ForeignKey(TrainingGroup, on_delete=models.CASCADE, related_name='programs')
     training_block = models.ForeignKey(TrainingBlock, on_delete=models.PROTECT, null=True, blank=True,
                                        related_name='programs')

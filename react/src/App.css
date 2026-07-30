@@ -423,6 +423,23 @@
 .training-day-conflict-actions { display:flex; gap:8px; }
 .training-day-conflict-actions button { min-height:42px; padding:9px 15px; }
 
+/* Deployed programs, and promoting one back into a reusable block. */
+.deployed-program-list { display:flex; flex-direction:column; gap:10px; }
+.deployed-program-list article { align-items:flex-end; border:1px solid var(--line); display:flex; gap:14px; justify-content:space-between; padding:12px 14px; }
+.deployed-program-main span { color:var(--muted); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+.deployed-program-main h4 { font-size:14px; margin:3px 0; }
+.deployed-program-main p { color:var(--muted); font-size:11px; margin:0; }
+.deployed-program-actions { align-items:flex-end; display:flex; flex:none; gap:8px; }
+.deployed-program-actions label { color:var(--muted); display:flex; flex-direction:column; font-size:9px; gap:4px; letter-spacing:.1em; text-transform:uppercase; }
+.deployed-program-actions input { background:var(--panel,#0d1410); border:1px solid var(--line); color:var(--ink); font-size:12px; letter-spacing:0; min-height:38px; padding:7px 9px; text-transform:none; width:190px; }
+.deployed-program-actions button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:38px; padding:7px 14px; }
+.deployed-program-actions button:disabled { cursor:not-allowed; opacity:.45; }
+
+@media (max-width:720px) {
+  .deployed-program-list article { align-items:stretch; flex-direction:column; }
+  .deployed-program-actions input { width:100%; }
+}
+
 /* ── the training calendar ─────────────────────────────────────────────────
    Each slot's STATE is the thing a coach is reading, so it carries the colour:
    planned is quiet, ready is amber (waiting on you), running is lime (live),

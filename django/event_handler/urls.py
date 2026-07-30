@@ -85,6 +85,10 @@ urlpatterns = [
     path('training-blocks/<int:block_id>/workouts/<int:workout_id>/exercises/<int:exercise_id>/',
          views.training_block_exercise_detail, name='training_block_exercise_detail'),
     path('training-programs/', views.training_programs_view, name='training_programs'),
+    # Turn a program back into a reusable template. COPIES its days and rows up
+    # into the new block — pointing the FK alone would leave the block empty.
+    path('training-programs/<int:program_id>/promote/', views.training_program_promote,
+         name='training_program_promote'),
 
     # spreadsheet import. ONE pair of routes for all three kinds of sheet (roster,
     # max sheet, workout plan) — which one you uploaded is worked out from its

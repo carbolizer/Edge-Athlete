@@ -16,7 +16,7 @@ TrainingGroup changes; either way, what already happened stays true.
 from django.db import transaction
 from django.utils import timezone
 
-from ..models import (ScheduledSession, TrainingBlock, TrainingBlockWorkout,
+from ..models import (ScheduledSession, TrainingBlock, TrainingBlockExercise, TrainingBlockWorkout,
                       TrainingProgram, TrainingProgramExercise, TrainingProgramWorkout)
 from .cadence import training_dates
 
@@ -108,6 +108,81 @@ def instantiate_block(block, group, name=None, start_date=None, end_date=None):
 
     generate_schedule(program, block)
     return program
+
+
+@transaction.atomic
+def promote_program_to_block(program, coach, name=None):
+    """Turn a program into a NEW reusable TrainingBlock. Returns the block.
+
+    WHAT THIS IS FOR: a coach writes a one-off plan for a group, or deploys a
+    block and then edits the deployment until it is genuinely better than the
+    template it came from. Either way they now have a good week of training
+    trapped inside a single group's program. This lifts it back out so it can be
+    run again next season, for anyone.
+
+    ⚠️ THIS IS NOT "POINT THE FK AT A NEW BLOCK". That claim lived in this
+    codebase and in the canon for weeks and was simply wrong: `training_block`
+    records where a program came FROM and copies nothing, so pointing it at a
+    fresh block yields a block with zero days. Deploying it would hand a group an
+    empty plan — and it would look like a data-loss bug rather than a
+    misunderstanding. The rows have to be copied UP first, which is what this
+    does.
+
+    It is `instantiate_block()` in reverse and deliberately mirrors it, so the
+    two stay readable side by side. Same all-or-nothing rule: a block that got
+    only half its days would look complete in the catalog and short-change
+    whoever deployed it next.
+
+    Works on ANY program, hand-written or edited-after-deploy, because the source
+    rows are the same shape either way.
+    """
+    source_block = program.training_block
+
+    block = TrainingBlock.objects.create(
+        name=name or program.name,
+        coach=coach,
+        # Carried across when the program came from a block: cadence and duration
+        # are what make a block SCHEDULABLE, and the program was actually built on
+        # them. A promoted block without them would generate an empty calendar.
+        # Categories are deliberately NOT copied — filing is a decision the coach
+        # makes about the new block, not a property of the training.
+        cadence_days_of_week=source_block.cadence_days_of_week if source_block else "",
+        duration_weeks=source_block.duration_weeks if source_block else None,
+    )
+
+    for source_workout in (program.workouts
+                           .prefetch_related("exercises")
+                           .order_by("position")):
+        copied = TrainingBlockWorkout.objects.create(
+            training_block=block,
+            name=source_workout.name,
+            position=source_workout.position,
+        )
+        TrainingBlockExercise.objects.bulk_create([
+            TrainingBlockExercise(
+                training_block_workout=copied,
+                exercise_id=row.exercise_id,
+                position=row.position,
+                sets=row.sets,
+                reps=row.reps,
+                target_percent=row.target_percent,
+                velocity_zone_min=row.velocity_zone_min,
+                velocity_zone_max=row.velocity_zone_max,
+            ) for row in source_workout.exercises.order_by("position")
+        ])
+
+    # Point the program at what it is now a deployment of.
+    #
+    # ⚠️ ACCEPTED LOSS, stated so it stays a choice: if this program came from
+    # another block, that link is overwritten and "originally deployed from Fall
+    # Strength" is no longer recorded anywhere. The alternative is a program
+    # whose training_block names a template its contents no longer match, which
+    # is worse — the FK's whole job is to answer "what is this a copy of", and
+    # after promotion the honest answer is the new block.
+    program.training_block = block
+    program.save(update_fields=["training_block"])
+
+    return block
 
 
 def generate_schedule(program, block=None):

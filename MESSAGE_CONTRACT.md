@@ -351,6 +351,33 @@ panel could redraw looking identical — ending the top of several stacked sessi
 instantly promoted the next — so the button appeared to do nothing while working
 perfectly every time (canon D18).
 
+### `POST /api/training-programs/{id}/promote/` — turn a program into a block (coach)
+
+For a plan a coach tuned until it beat the template it came from, or wrote from
+scratch for one group and now wants to run again. Returns the new `TrainingBlock`
+(`201`).
+
+Body: `{ "name": "Fall Strength v2" }` — optional, defaults to the program's name.
+
+> ⚠️ **This COPIES the days and prescription rows up into the new block.** It is
+> not a matter of pointing `training_block` at a fresh row — that records
+> provenance and copies nothing, so the block would come out with **zero days**
+> and deploying it would hand a group an empty plan. That false description lived
+> in this codebase for weeks; the tests now fail if anyone reimplements it.
+
+- The source program is unchanged, except `training_block` now names the block it
+  is a deployment of.
+- `cadence_days_of_week` and `duration_weeks` are carried over from the program's
+  original block when it had one, so the promoted block still **schedules**.
+  Categories are not copied — filing is a decision about the new block.
+- A program with **no days** is a `400`, not an empty block.
+- Promoting twice makes two independent blocks; each is a snapshot of the program
+  at that moment.
+
+**Accepted loss:** if the program came from another block, that link is
+overwritten. The FK's job is to answer "what is this a copy of", and after
+promotion the honest answer is the new block.
+
 ### `GET /api/scheduled-sessions/` — the calendar (coach)
 
 A **slot** is a plan: "this program's Day 2, on the 14th". Slots are generated

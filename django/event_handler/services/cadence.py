@@ -12,7 +12,7 @@ second list of day names that drifts from the first is the kind of bug that only
 shows up on a Wednesday.
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 # Week order, and the ONLY accepted tokens. Index matters: it lines up with
 # Python's date.weekday(), where Monday is 0.
@@ -53,6 +53,16 @@ def training_dates(start_date, cadence, duration_weeks):
     weekdays = cadence_weekdays(cadence)
     if not start_date or not weekdays or not duration_weeks or duration_weeks < 1:
         return []
+
+    # ⚠️ A date can still arrive here as a STRING. Django coerces a date on its
+    # way into the database but leaves the in-memory attribute exactly as it was
+    # assigned, so a program created straight from request data holds
+    # "2026-08-03" rather than a date — and the arithmetic below fails with
+    # "can only concatenate str to str". The caller should parse first; this
+    # accepts it anyway, because a calendar refusing to generate is a worse
+    # outcome than being tolerant about one input.
+    if isinstance(start_date, str):
+        start_date = date.fromisoformat(start_date)
 
     # Inclusive of the start date, exclusive of the day the last week ends.
     last_date = start_date + timedelta(weeks=duration_weeks) - timedelta(days=1)
