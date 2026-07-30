@@ -156,6 +156,74 @@ fix needed, because the line should not exist.
 
 ---
 
+### 4b. The other thirteen `StatePanel` uses — test results
+
+There are **14** in total, not 10. Applying the test — *does the component it was
+written to sit beside still do the same job?*
+
+First, the result that kills the shortcut: **every one of these strings exists on
+`braydons-dev-branch` verbatim, at identical counts.** Origin discriminates
+nothing. The whole coach screen came from there by design (P7).
+
+| # | Line | Panel | Screen | Verdict |
+|---|---|---|---|---|
+| 1 | 171 | "Opening the weight room" | Wall | ✅ Keep — out of scope |
+| 2 | 174 | "Live scoreboard unavailable" | Wall | ✅ Keep — out of scope |
+| 3 | 177 | "The room is ready" | Wall | ✅ Keep — the wall's *legitimate* ready: no session started. Not the same bug as §4 |
+| 4 | 325 | `No {what} yet` | Coach | ✅ Keep — **ours**, added in P13, replacing one of his. Distinguishes "never trained" from "loading" |
+| 5 | 330 | "Choose an athlete" | Coach · athlete | ⚠️ **Collapse** — see below |
+| 6 | 386 | "Choose an athlete" | Coach · history | ⚠️ **Collapse** |
+| 7 | 391 | "No completed training days" | Coach · history | ✅ Keep — real empty state, distinct from #6 |
+| 8 | 403 | "Choose an athlete" | Coach · programs | ⚠️ **Collapse** |
+| 9 | 411 | "Choose an athlete" | Coach · notes | ⚠️ **Collapse** |
+| 10 | 488 | "Loading coach workspace" | Coach | ✅ Keep — whole-screen, sibling-independent |
+| 11 | 489 | "Coach view unavailable" | Coach | ✅ Keep — has a retry action |
+| 12 | 491 | "No racks assigned" | Coach · room | ⚠️ **Keep, add the missing action** — see below |
+| 13 | 510 | "Loading athlete context" | Coach | ✅ Keep |
+| 14 | 510 | "Athlete context unavailable" | Coach | ✅ Keep |
+| — | 495 | "Rack N is ready" | Coach · room | ❌ **Delete** — §4 |
+
+#### The four "Choose an athlete" panels (#5, #6, #8, #9)
+
+Not vestigial — the topbar `<select className="coach-athlete-select">` still does
+its job. But they exist **four times because there are four sibling tabs**, each
+having to guard independently since any of them can be the landing tab.
+
+The state machine removes that reason. Once ANALYTICS owns athlete selection, the
+guard belongs **once, at the state boundary**: no athlete chosen → the state shows
+the picker, and the sub-views behind it never render unguarded. Four copies become
+one, and it stops being possible to add a fifth athlete view that forgets the
+guard.
+
+This is the redesign paying for itself in deleted code rather than added code.
+
+#### "No racks assigned" (#12)
+
+The statement is accurate — `selectedRack` falls back to `racks[0]`
+(`Dashboard.jsx:490`), so this only fires when there are genuinely **zero** racks.
+No false-positive bug.
+
+But it fails the test on a different axis: the body says *"Assign room hardware
+before monitoring sets"* and **gives you no way to go do that.** Rack assignment
+lives at `/coach/setup`, behind the topbar cog. On Braydon's branch assignment was
+partly inline in this pane; now it is a separate route, and the instruction was
+left pointing nowhere.
+
+`StatePanel` already takes `action` and `actionLabel` (`Dashboard.jsx:~150`, used
+by #2 and #11 for retry). So this is a one-line fix:
+
+```jsx
+<StatePanel title="No racks assigned"
+            body="Assign room hardware before monitoring sets."
+            action={() => navigate("/coach/setup")}
+            actionLabel="Open room layout" />
+```
+
+A dead-end empty state on the **first screen a new gym sees** is the worst place
+to have one — see open question 6.
+
+---
+
 ## The principle underneath all of it
 
 **Only show what is possible right now.**
@@ -223,6 +291,10 @@ Append as we go. Date each entry.
 - **2026-07-30** — Noted that `Dashboard.jsx` renders BOTH the wall display and the
   coach tablet from one file, with two separate "ready" strings. Splitting it is
   likely its own cleanup item.
+- **2026-07-30** — **Ran the test on all 14 `StatePanel` uses.** One delete (§4),
+  four to collapse into a single state-level guard, one missing its action link,
+  eight fine. Confirmed origin is useless as a signal: all 14 exist verbatim on
+  `braydons-dev-branch` at identical counts.
 - **2026-07-30** — **Session timer needs no API.** `started_at` is already in the
   room-state payload; compute elapsed client-side. No backend change anywhere in
   this redesign.
