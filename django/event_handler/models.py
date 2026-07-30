@@ -346,6 +346,56 @@ class TrainingProgramWorkout(models.Model):
         return f"{self.name} (program {self.training_program_id})"
 
 
+class ScheduledSession(models.Model):
+    """One planned training slot: this program's day N, on this date.
+
+    WHAT THIS IS FOR, plainly: a coach deploys an 8-week block that trains
+    Mon/Wed/Fri and wants to see it on a calendar. Before this, nothing turned
+    `start_date` + cadence into actual dates — `cadence_days_of_week` and
+    `duration_weeks` were written and never read by anything.
+
+    ⚠️ THE SLOT IS A PLAN; THE SESSION IS THE REAL THING. `session` is nullable
+    and stays null until a coach actually creates that day. This separation is
+    why the change is small: no model is asked to mean two things, and a
+    `TrainingSession` still only exists when someone means to run it.
+
+    ⚠️ SLOTS ARE FROZEN ONCE GENERATED. Editing the block's cadence afterwards
+    moves no existing slot — the same independence rule as a deployed program.
+    Once a program is an instance it is its own thing; a coach who wants the new
+    cadence deploys the block again. Moving a single slot is one `date` write and
+    regenerates nothing.
+    """
+    training_program = models.ForeignKey(TrainingProgram, on_delete=models.CASCADE,
+                                         related_name='scheduled_sessions')
+    # Which day of the program runs in this slot. PROTECT: deleting a day that
+    # the calendar still points at should fail loudly, not silently blank a slot.
+    training_program_workout = models.ForeignKey(TrainingProgramWorkout, on_delete=models.PROTECT,
+                                                 related_name='scheduled_sessions')
+    date = models.DateField()
+    # Null until a coach creates the day. SET_NULL rather than CASCADE: deleting a
+    # session should leave its slot on the calendar as an unrun plan, not erase
+    # the fact that training was scheduled.
+    # Quoted because TrainingSession is defined further down this file.
+    session = models.ForeignKey('TrainingSession', on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='scheduled_slots')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['date', 'id']
+        constraints = [
+            # One slot per program per day. Stops a double-run of the generator
+            # from quietly doubling a coach's calendar. ⚠️ It also means moving a
+            # slot ONTO an occupied date is refused rather than stacking two
+            # days on one date — which is the intended answer, but it makes
+            # SWAPPING two slots' dates a two-step operation.
+            models.UniqueConstraint(fields=['training_program', 'date'],
+                                    name='one_slot_per_program_per_day'),
+        ]
+
+    def __str__(self):
+        return f"{self.training_program.name} · {self.date}"
+
+
 class TrainingProgramExercise(models.Model):
     """The editable copy of a TrainingBlockExercise — the runtime prescription
     row. The absolute target is always DERIVED at read time (target_percent ×
@@ -413,13 +463,22 @@ class TrainingSession(models.Model):
     its own SessionParticipation row pointing at that group's program and the day
     they are running. The session itself belongs to nobody.
 
-    ⚠️ `started_at` is auto_now_add, so a session EXISTS ONLY ONCE IT STARTS —
-    there is currently no way to represent "Thursday's session, not yet run".
-    That is what P14 (scheduling) changes: a schedule of future slots lives in
-    its own table, and this field becomes nullable so a session can be created
-    ahead of time and started later."""
+    ⚠️ `started_at` IS NULLABLE, and that is the whole of P14's schema change:
+    **a session can exist before it runs.** Null means "created, not started yet"
+    — Thursday's session, set up on Tuesday. It is set when a coach actually
+    starts the day.
+
+    Because of that, "the active session" means STARTED and not ended, never
+    merely existing — see services/active_session.py. A future session that could
+    capture check-ins is exactly the D18 failure, and nullable `started_at` is
+    what makes it structurally impossible rather than merely guarded against.
+
+    ⚠️ Never order sessions by `-started_at` without excluding nulls: Postgres
+    sorts NULLs FIRST descending, so an unstarted future session would come back
+    as the newest thing in the room."""
     label = models.CharField(max_length=255)
-    started_at = models.DateTimeField(auto_now_add=True)
+    # Not auto_now_add — see above. Creating a session no longer starts it.
+    started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     athletes = models.ManyToManyField(Athlete, related_name='sessions')
     notes = models.TextField(blank=True)

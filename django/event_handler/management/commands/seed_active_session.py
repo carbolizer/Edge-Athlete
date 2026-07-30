@@ -141,7 +141,10 @@ class Command(BaseCommand):
             self.stdout.write(f"  closed {closed} session(s) that were still open")
 
         # The live session, roster = all four athletes.
-        session = TrainingSession.objects.create(label=SESSION_LABEL)
+        # started_at is explicit since P14 — a session can now exist unstarted,
+        # and the whole point of this seeder is a day that is actually running.
+        session = TrainingSession.objects.create(label=SESSION_LABEL,
+                                                 started_at=timezone.now())
         session.athletes.set(athletes.values())
 
         # Put the group ON the session, pointed at the day's workout. Without

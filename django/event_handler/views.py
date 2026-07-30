@@ -338,7 +338,13 @@ def sessions_view(request):
 
     form = TrainingSessionSerializer(data=request.data)
     form.is_valid(raise_exception=True)
-    return Response(TrainingSessionSerializer(form.save()).data, status=201)
+    # `started_at` stopped being auto_now_add in P14 so a session can be created
+    # before it runs. THIS route still means "start the day now" — it is the
+    # coach panel's button, and a coach pressing it expects the room open. A
+    # session created from a calendar slot is the one that starts out unstarted.
+    return Response(
+        TrainingSessionSerializer(form.save(started_at=timezone.now())).data,
+        status=201)
 
 
 @api_view(["PATCH"])

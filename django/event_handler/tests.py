@@ -96,7 +96,8 @@ class ActiveSessionEndpointTests(APITestCase):
         return m
 
     def test_no_active_session_returns_empty_envelope(self):
-        TrainingSession.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
+        TrainingSession.objects.create(label="Done", started_at=timezone.now(),
+                                      ended_at=timezone.now())  # ended → not active
         res = self.client.get(self.URL)
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["session_id"], None)
@@ -104,14 +105,19 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertEqual(res.data["session_exercises"], [])
 
     def test_picks_most_recent_unended_session(self):
-        TrainingSession.objects.create(label="Older")
-        newer = TrainingSession.objects.create(label="Newer")
+        # Explicitly staggered. `started_at` stopped being auto_now_add in P14, so
+        # two sessions created in one test now share a timestamp unless told
+        # otherwise — and this test is specifically about which is NEWER, not
+        # about the id tie-break that would otherwise decide it.
+        TrainingSession.objects.create(label="Older",
+                                       started_at=timezone.now() - timedelta(hours=2))
+        newer = TrainingSession.objects.create(label="Newer", started_at=timezone.now())
         res = self.client.get(self.URL)
         self.assertEqual(res.data["session_id"], newer.id)
         self.assertEqual(res.data["label"], "Newer")
 
     def test_roster_has_data_reflects_completed_sets(self):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         lifted = Athlete.objects.create(name="Lifted")
         idle = Athlete.objects.create(name="Idle")
@@ -127,7 +133,7 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertFalse(by_name["Idle"]["has_data"])
 
     def test_returns_current_max_and_omits_missing_ones(self):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")  # in the catalog, but no max for this athlete
         athlete = Athlete.objects.create(name="Max Tester")
@@ -144,7 +150,7 @@ class ActiveSessionEndpointTests(APITestCase):
     def test_reference_max_can_go_down(self):
         # A reference max is "what they can do now", not a lifetime best: a newer,
         # LOWER row must supersede an older, higher one.
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         athlete = Athlete.objects.create(name="Bad Week")
         session.athletes.add(athlete)
@@ -155,7 +161,7 @@ class ActiveSessionEndpointTests(APITestCase):
         self.assertEqual(res.data["roster"][0]["maxes"][squat.id], 285.0)
 
     def test_targets_and_exercises_come_from_programs(self):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         athlete = Athlete.objects.create(name="Planned")
         session.athletes.add(athlete)
@@ -200,18 +206,18 @@ class AthleteProgressEndpointTests(APITestCase):
         self.assertEqual(res.data["movements"], [])
 
     def test_unknown_athlete_is_404(self):
-        TrainingSession.objects.create(label="Live")
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
         res = self.client.get(self._url(999999))
         self.assertEqual(res.status_code, 404)
 
     def test_athlete_not_on_roster_is_404(self):
-        TrainingSession.objects.create(label="Live")
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
         outsider = Athlete.objects.create(name="Outsider")
         res = self.client.get(self._url(outsider.id))
         self.assertEqual(res.status_code, 404)
 
     def test_derives_progress_in_program_order(self):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")
         athlete = Athlete.objects.create(name="Lifter")
@@ -240,7 +246,7 @@ class AthleteProgressEndpointTests(APITestCase):
         self.assertEqual(bn["status"], "not_started")
 
     def test_completed_movement_advances_current(self):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")
         athlete = Athlete.objects.create(name="Lifter")
@@ -259,7 +265,7 @@ class AthleteProgressEndpointTests(APITestCase):
         # The day-view default for the next set follows what the athlete LAST
         # actually lifted this session (so an on-the-fly weight change carries
         # forward), never the prescribed target, and a false attempt doesn't count.
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         squat = self._exercise("Back Squat")
         bench = self._exercise("Bench Press")
         athlete = Athlete.objects.create(name="Lifter")
@@ -286,7 +292,7 @@ class RackCheckInEndpointTests(APITestCase):
     rack (one athlete = one rack), and the guards."""
 
     def _session_with(self, *names):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         athletes = [Athlete.objects.create(name=n) for n in names]
         session.athletes.add(*athletes)
         return session, athletes
@@ -311,7 +317,8 @@ class RackCheckInEndpointTests(APITestCase):
         self.assertEqual([a["name"] for a in self._hot_list(2).data["athletes"]], ["Jordan"])
 
     def test_no_active_session_checkin_is_400(self):
-        TrainingSession.objects.create(label="Done", ended_at=timezone.now())  # ended → not active
+        TrainingSession.objects.create(label="Done", started_at=timezone.now(),
+                                      ended_at=timezone.now())  # ended → not active
         athlete = Athlete.objects.create(name="Nobody")
         self.assertEqual(self._checkin(1, athlete).status_code, 400)
 
@@ -335,7 +342,7 @@ class SessionStatusEndpointTests(APITestCase):
     rides along for the lifting/resting/ready cases."""
 
     def _live(self, *names):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         athletes = [Athlete.objects.create(name=n) for n in names]
         session.athletes.add(*athletes)
         return session, athletes
@@ -445,7 +452,7 @@ class RoomStateEndpointTests(APITestCase):
     """
 
     def _room(self):
-        session = TrainingSession.objects.create(label="Live")
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
         athlete = Athlete.objects.create(name="Jordan Lee")
         session.athletes.add(athlete)
         squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -550,7 +557,7 @@ class SessionCompletionTests(APITestCase):
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw")
         self.client.force_authenticate(user=self.coach)
-        self.session = TrainingSession.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -640,7 +647,7 @@ class ReportsEndpointTests(APITestCase):
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw")
         self.client.force_authenticate(user=self.coach)
-        self.session = TrainingSession.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -748,7 +755,7 @@ class PlanResolutionTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw")
-        self.session = TrainingSession.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -877,7 +884,7 @@ class CoachWeightAdjustmentTests(APITestCase):
     """
 
     def setUp(self):
-        self.session = TrainingSession.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -1013,7 +1020,7 @@ class PlanningEndpointTests(APITestCase):
         athlete = Athlete.objects.create(name="Jordan Lee")
         AthleteReferenceMax.objects.create(athlete=athlete, exercise=self.squat,
                                            reference_weight_lbs=315, rep_basis=1)
-        session = TrainingSession.objects.create(label="Thursday")
+        session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         session.athletes.add(athlete)
 
         block = self._template_with_a_day()
@@ -1038,7 +1045,7 @@ class PlanningEndpointTests(APITestCase):
     def test_a_workout_cannot_be_scheduled_under_the_wrong_program(self):
         """Guards against a coach's UI sending mismatched ids and silently
         scheduling a TrainingGroup onto another TrainingGroup's day."""
-        session = TrainingSession.objects.create(label="Thursday")
+        session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         block = self._template_with_a_day()
         group_a = self.client.post("/api/training-groups/", {"name": "A"}, format="json").data
         group_b = self.client.post("/api/training-groups/", {"name": "B"}, format="json").data
@@ -1680,7 +1687,8 @@ class OneOpenSessionTests(APITestCase):
         self.assertEqual(res.status_code, 201)
 
     def test_an_ended_session_does_not_block_anything(self):
-        TrainingSession.objects.create(label="Last week", ended_at=timezone.now())
+        TrainingSession.objects.create(label="Last week", started_at=timezone.now(),
+                                      ended_at=timezone.now())
         res = self.client.post("/api/sessions/", {"label": "Monday", "athletes": [self.athlete.id]}, format="json")
         self.assertEqual(res.status_code, 201)
 
@@ -1703,8 +1711,8 @@ class OneOpenSessionTests(APITestCase):
     def test_ending_one_of_a_stack_says_another_is_still_open(self):
         """Data that predates the guard can still hold a stack. Reporting it is
         the difference between a confusing screen and an explained one."""
-        first = TrainingSession.objects.create(label="Stray")
-        second = TrainingSession.objects.create(label="Monday")
+        first = TrainingSession.objects.create(label="Stray", started_at=timezone.now())
+        second = TrainingSession.objects.create(label="Monday", started_at=timezone.now())
 
         res = self.client.patch(f"/api/sessions/{second.id}/", {}, format="json")
         self.assertEqual(res.data["ended"]["label"], "Monday")
@@ -1714,7 +1722,7 @@ class OneOpenSessionTests(APITestCase):
     def _day_that_survived_a_reboot(self):
         """A day still open from yesterday — what a coach finds after a power cut.
         started_at is auto_now_add, so it has to be backdated with an UPDATE."""
-        session = TrainingSession.objects.create(label="Yesterday's day")
+        session = TrainingSession.objects.create(label="Yesterday's day", started_at=timezone.now())
         session.athletes.add(self.athlete)
         TrainingSession.objects.filter(id=session.id).update(
             started_at=timezone.now() - timedelta(days=1))
@@ -1787,7 +1795,7 @@ class OneOpenSessionTests(APITestCase):
     def test_a_day_open_since_yesterday_is_flagged_as_stale(self):
         """So a coach booting the base station back up NOTICES, instead of being
         shown a day from yesterday labelled simply 'active'."""
-        session = TrainingSession.objects.create(label="Yesterday's day")
+        session = TrainingSession.objects.create(label="Yesterday's day", started_at=timezone.now())
         TrainingSession.objects.filter(id=session.id).update(
             started_at=timezone.now() - timedelta(days=1))
 
@@ -1807,8 +1815,8 @@ class OneOpenSessionTests(APITestCase):
         """P12 folded three hand-written copies of this query into one helper.
         The rack path and the coach path disagreeing about which session is live
         is the shape of the original bug, so it is worth pinning."""
-        stray = TrainingSession.objects.create(label="Stray")
-        current = TrainingSession.objects.create(label="Monday")
+        stray = TrainingSession.objects.create(label="Stray", started_at=timezone.now())
+        current = TrainingSession.objects.create(label="Monday", started_at=timezone.now())
         current.athletes.add(self.athlete)
 
         # `session_id`, not a nested object — this is the frozen rack contract.
@@ -1818,6 +1826,88 @@ class OneOpenSessionTests(APITestCase):
         progress = self.client.get(f"/api/sessions/active/athlete/{self.athlete.id}/progress/")
         self.assertEqual(progress.status_code, 200)
         self.assertNotEqual(current.id, stray.id)
+
+
+class UnstartedSessionTests(APITestCase):
+    """A session can now exist before it runs (P14).
+
+    This is the schema half of scheduling, and it is worth its own tests because
+    it changes the meaning of a word every screen depends on. "Active" now means
+    STARTED and not ended — never merely un-ended. Get that wrong and a session a
+    coach set up for next Thursday quietly becomes the one athletes check into.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+
+    def _unstarted(self, label="Thursday, not yet run"):
+        """A session that exists but has not been started."""
+        session = TrainingSession.objects.create(label=label, started_at=None)
+        session.athletes.add(self.athlete)
+        return session
+
+    def test_an_unstarted_session_is_not_the_active_one(self):
+        self._unstarted()
+        res = self.client.get("/api/sessions/active/")
+        self.assertIsNone(res.data["session_id"])
+
+    def test_an_unstarted_session_does_not_appear_in_room_state(self):
+        self._unstarted()
+        self.assertIsNone(self.client.get("/api/room-state/").data["session"])
+
+    def test_an_unstarted_session_cannot_capture_check_ins(self):
+        """The heart of it. A future session holding the racks is canon D18 with
+        a calendar bolted on: sets would attach to a day nobody is training."""
+        self._unstarted()
+        res = self.client.post("/api/racks/1/checkin/", {"athlete": self.athlete.id},
+                               format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_an_unstarted_session_does_not_block_starting_today(self):
+        """Setting up Thursday must not stop the room opening on Tuesday — the
+        P12 guard is about days that are RUNNING."""
+        self._unstarted()
+        res = self.client.post("/api/sessions/",
+                               {"label": "Tuesday", "athletes": [self.athlete.id]},
+                               format="json")
+        self.assertEqual(res.status_code, 201)
+
+    def test_an_unstarted_session_created_LATER_does_not_hijack_the_live_one(self):
+        """⚠️ The specific trap this guards: Postgres sorts NULLs FIRST in a
+        descending order. Ordering by `-started_at` without excluding nulls makes
+        the unstarted session sort ahead of the day actually being trained."""
+        live = self.client.post("/api/sessions/",
+                                {"label": "Today", "athletes": [self.athlete.id]},
+                                format="json")
+        self._unstarted("Next Thursday")
+
+        res = self.client.get("/api/sessions/active/")
+        self.assertEqual(res.data["session_id"], live.data["id"])
+        self.assertEqual(res.data["label"], "Today")
+
+    def test_starting_a_day_through_the_api_sets_a_real_start_time(self):
+        """`started_at` stopped being automatic; the create route has to set it,
+        or every day a coach opens would look unstarted."""
+        res = self.client.post("/api/sessions/",
+                               {"label": "Today", "athletes": [self.athlete.id]},
+                               format="json")
+        self.assertIsNotNone(TrainingSession.objects.get(id=res.data["id"]).started_at)
+
+    def test_an_ended_session_keeps_its_start_time(self):
+        """The migration dropped auto_now_add. If that had blanked existing rows,
+        every finished day would have lost when it began."""
+        opened = self.client.post("/api/sessions/",
+                                  {"label": "Today", "athletes": [self.athlete.id]},
+                                  format="json")
+        session = TrainingSession.objects.get(id=opened.data["id"])
+        started = session.started_at
+
+        self.client.patch(f"/api/sessions/{session.id}/", {}, format="json")
+        session.refresh_from_db()
+        self.assertEqual(session.started_at, started)
+        self.assertIsNotNone(session.ended_at)
 
 
 class AthleteAnalyticsTests(APITestCase):
@@ -1834,7 +1924,7 @@ class AthleteAnalyticsTests(APITestCase):
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
-        self.session = TrainingSession.objects.create(label="Monday — Lower")
+        self.session = TrainingSession.objects.create(label="Monday — Lower", started_at=timezone.now())
 
     def _url(self, athlete_id=None):
         return f"/api/analytics/athlete/{athlete_id or self.athlete.id}/"
@@ -2477,7 +2567,7 @@ class SessionDeleteProtectionTests(APITestCase):
     """
 
     def setUp(self):
-        self.session = TrainingSession.objects.create(label="Thursday")
+        self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
 
