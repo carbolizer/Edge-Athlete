@@ -2213,7 +2213,34 @@ Every file opens with a WHY comment.
 - [ ] Rest timer works; set_number increments; athlete/exercise selection persists across sets in the same rotation
 - [ ] Every file has a WHY comment
 
-### Built — Phase 11 minimal-path corrections (authoritative; supersedes the prompt above where they conflict)
+> ## ⚠️ The four "Built —" blocks below say **authoritative**. They were, in July 2026. They are not now.
+>
+> They describe the **minimal** build that existed before THE MERGE, and they are
+> kept because they record how the rack screen actually got made — decision by
+> decision, including the ones later overturned. Read them as history.
+>
+> **What they say that is no longer true:**
+>
+> | They say | Now |
+> |---|---|
+> | Targets come from `Program` | `Program` was **dropped** (migration `0011`). Plans belong to a group and store a **percent** |
+> | "`maxes` is informational only" | The reference max is now **load-bearing** — it is the number every percent multiplies against |
+> | "`Set` has NO `is_makeup` column" | Added in migration `0006`, exactly as the block instructs |
+> | "`NodeSerializer` doesn't expose the pk" | It does — `"id"` was added, the recommended option |
+> | "no `SessionExercise` table (deferred)" | The idea landed as `SessionParticipation`, with a different shape |
+> | "no maxes endpoint under any name" | `GET/POST /api/reference-maxes/` exists |
+>
+> **What survived, and matters more than any of the above:** the *seam*. These
+> blocks decided that the tablet **reads** a resolved weight and never computes
+> `percent × max`, so that a future percent-of-max system could compute the same
+> number server-side and leave the tablet untouched. That is exactly what
+> happened — the rack contract never changed. The rule is now **§6.3**, and it is
+> the reason `react/src/rack/` is frozen. This is where it was decided and why.
+>
+> For what is true today: **§6** (the derivation rules) and
+> [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md).
+
+### Built — Phase 11 minimal-path corrections (authoritative *as of July 2026* — see the banner above)
 The Phase 11 prompt above was written against the FULL Phase 5 contract (SessionExercise + percent×max + an athlete-maxes endpoint). The vertical slice was built on the MINIMAL models instead (see the design memory + the exercise-identity note in Data Models), so several steps above are stale. Build to THIS:
 
 - **Target weight — READ, don't compute.** The tablet reads `roster[athlete].targets[exercise_id]` — an already-resolved absolute weight (from the athlete's `Program`) — and never computes `percent × max`. `session_exercises[]` has NO `target_weight_percent`. (Supersedes §1412–1414. Resolution is server-side; a future percent×max swap leaves the tablet unchanged — the settled "seam".)
@@ -2226,7 +2253,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 - **Blueprint extras are OUT of minimal scope:** the "suggested next set" insight card (insights are Phase 8/15), the "3 of 5" sets-progress dots, the rep-by-rep velocity breakdown, and the elapsed/duration timer. Keep only: idle picker → countdown (3-2-1) → active (rep count + velocity color) → summary (`reps_completed`, avg/peak) → rest (countdown).
 - **`GET /api/sessions/active/` exact shape** is pinned in MESSAGE_CONTRACT.md §3.
 
-### Built — Phase 11 Step 2 redesign: athlete-centric day view (authoritative; expands the idle/picker step above)
+### Built — Phase 11 Step 2 redesign: athlete-centric day view (authoritative *as of July 2026* — see the banner above)
 
 **Why this changed.** The idle/picker was originally a bare athlete+exercise dropdown read off the one-shot session snapshot. Real training is fluid — athletes rotate between stations, superset across racks, and don't finish one movement before touching another — and the rack is a **vertical tablet read at a glance**, so density is the enemy. Step 2 is therefore rebuilt around the athlete's *live, server-derived progress*, shown the same way at every rack. This deliberately borrows the good ideas from Braydon's athlete-driven screen (`braydons-dev-branch`) **without his extra tables** — everything below derives from the existing `Program` + `Set` rows.
 
@@ -2275,7 +2302,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 9. **On-the-fly working weight + session carry-forward (authoritative; SUPERSEDES the "missing target → inline starting weight" fallback).** `Program.target_weight_lbs` is `NOT NULL` and the day view only lists a lifter's `Program` movements, so the old "missing target" case is unreachable — that inline-entry fallback is retired. In its place, a general edit: a **pencil beside LOAD** opens a full-screen themed numpad (`rack/WeightPad.jsx`) where the athlete sets what they're ACTUALLY loading. **Storage — no schema change:** the entered value becomes the set's `weight_lbs` at create (the "actual load lifted" column), a DIFFERENT slot from `Program.target_weight_lbs` (the prescription, never touched). It feeds weight-PR + future-target math downstream; the plan stays clean.
    - **Next-set default = `last_weight_lbs ?? target_weight_lbs`.** The progress endpoint returns `last_weight_lbs` — the actual load of the athlete's newest **non-false** set of that movement **this session** (null before their first). So a weight change carries forward across sets, tablet reloads, and rack moves — but is **session-scoped**: a prior session's loads are never read (the endpoint only queries the active session), so every session opens at the prescription. A local numpad edit (client `weightOverrides`, per exercise, reset on athlete change) takes precedence until the set is created. The LOAD reads lime whenever it differs from the prescribed target.
 
-### Built — Phase 11 Steps 3–5 + room state (authoritative)
+### Built — Phase 11 Steps 3–5 + room state (authoritative *as of July 2026* — see the banner above)
 
 The full set lifecycle + rotation, on branch `phase-11-set-lifecycle`. State machine: `idle → countdown → active → summary → rest`.
 
