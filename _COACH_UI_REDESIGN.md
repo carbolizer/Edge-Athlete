@@ -229,16 +229,33 @@ Shipped:
 
 ---
 
-### 5. The athlete selector — ✅ decided 2026-07-30
+### 5. The athlete selector — ANALYTICS only · ✅ revised 2026-07-30
 
-Lives in **both** SESSION and ANALYTICS, in two forms:
+**Supersedes the earlier "stripped version in SESSION" decision.**
 
-| State | Form |
-|---|---|
-| **SESSION** | Stripped down — pick a person fast, mid-floor. Pairs with quick-notes |
-| **ANALYTICS** | Full selector — this is where you comb through a person's record |
+The selector is **local to ANALYTICS**. It does not appear in SESSION or PLANNING.
 
-Not in PLANNING: planning is group- and program-scoped, not per-athlete.
+**Why SESSION does not need it:** picking a rack already picks the athlete.
+`CoachRackButton`'s handler is:
+
+```jsx
+onSelect={()=>{ setSelectedRackNumber(r.rack_number);
+                const athleteId=r.athlete?.id;
+                if(athleteId) chooseAthlete(athleteId); }}
+```
+
+So during a session the room view *is* the athlete picker, and it picks the way a
+coach actually thinks mid-floor — "who is at that rack", not "find a name in a
+list". A second selector in the toolbar would be a redundant path to the same
+state.
+
+**Why PLANNING does not need it:** planning is group- and program-scoped.
+
+**Consequence to decide:** under this model, an athlete who has **not checked in
+at any rack** is unreachable during a session — so quick-notes only covers people
+on the floor. Probably correct (that is who you have thoughts about), but it means
+"note about someone who didn't show" has no home until ANALYTICS. Flagging rather
+than solving.
 
 ### 6. Wall vs coach — the rule, for when it comes up again
 
@@ -359,8 +376,11 @@ Append as we go. Date each entry.
   "Change device" removed from the coach topbar; the four "Choose an athlete"
   guards collapsed into one at the athlete-tab boundary; "Rack N is ready"
   finally deleted. Verified in a browser on all four tabs.
-- **2026-07-30** — **Athlete selector decided:** SESSION (stripped) + ANALYTICS
-  (full). Not in PLANNING, which is group-scoped.
+- **2026-07-30** — **Athlete selector: ANALYTICS only.** Revises the earlier
+  SESSION-stripped + ANALYTICS-full split. Rack selection already calls
+  `chooseAthlete()`, so in SESSION the room view is the picker, and it matches how
+  a coach thinks mid-floor. Open consequence: an athlete not checked in anywhere is
+  unreachable during a session.
 - **2026-07-30** — **Wall/coach rule written down:** `include_details` is the
   boundary — ids and roster are coach-only, so anything clickable is structurally
   coach-only. File split deferred; the components are already separate.
