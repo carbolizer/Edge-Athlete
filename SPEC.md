@@ -20,13 +20,69 @@ This document is the single source of truth for what Edge Athlete is and how it 
 
 ## How to Use This Document
 
-Work through each phase in order. **Do not proceed to the next phase until the current one is complete and its exit checklist passes.** Each phase ends with an explicit STOP and a checklist. Paste only the prompt for the current phase into a fresh Claude conversation — do not share future phases ahead of time.
+**This is the single authority for the system.** Read it before changing anything;
+when it disagrees with a comment in the code, this wins and the comment gets fixed.
+
+| Document | What it holds |
+|---|---|
+| **`SPEC.md`** (this) | The system: architecture, hierarchy, schema, and the derivation rules |
+| `MESSAGE_CONTRACT.md` | Exact request/response shapes for every endpoint |
+| `docs/PATCH_NOTES.md` | What changed on the merge branch, by phase, with a click path each |
+| `RUNBOOK.md` | Operating the base station |
+
+> **The merge canon was folded into this document on 2026-07-30.**
+> `_START_HERE_MERGE_CANON.md` is now a pointer here and holds nothing you need.
+> Sections carrying a **§ number** (§2 … §10) came from it and are current.
+
+**⚠️ The Phase 1–18 plan below is historical.** It was the original build order,
+kept for provenance. For what is actually built, read "Where the build actually is"
+just below. Do not work through those phases as a to-do list.
+
+The original instruction, which still applies if you are running a phase from that
+plan: work through each phase in order, do not proceed until the current one's exit
+checklist passes, and paste only the current phase into a fresh conversation.
 
 When a prompt says "read the reference project," that means use your file tools to inspect the Privacy-Dots-V2 repo's contents before writing any code. Do not guess at structure or config — derive it from what you actually find. The reference lives beside this repo (upstream: `git@github.com:devi-walto/Privacy-Dots-V2.git`); it stays **read-only**.
 
 Phases 1–4 are complete. Phases 5–13 (through the Sprint 4 handoff gate) are written at full paste-ready depth. Phases 14–18 (team-alone work) are also now at full depth — Phase 14 (Coach Tablet) in particular was expanded early because it absorbed the new group/block/session/CSV work, rather than being left light and revisited later as originally planned.
 
 ---
+
+---
+
+## ⚑ Where the build actually is (2026-07-30)
+
+**This document is now the single authority for the system.** The merge canon was
+folded into it on 2026-07-30 and `_START_HERE_MERGE_CANON.md` is a pointer to
+here. The two companions stay separate on purpose: `MESSAGE_CONTRACT.md` holds
+exact request/response shapes, and `docs/PATCH_NOTES.md` holds what changed on the
+merge branch with a click path for each thing.
+
+Everything below the "Data Models" heading that carries a **§ number** came from
+the merge canon and is current. The **Phase 1–18 plan further down is historical**
+— it was the original build order and is kept for provenance, not as a to-do list.
+
+Verified against the repo, not from memory:
+
+| Original phase | State |
+|---|---|
+| 1 Repo bootstrap · broker · RUNBOOK | ✅ built |
+| 2 Data models & migrations | ✅ built — and since extended; see §4/§5 |
+| 3 MQTT pulse pipeline & simulator | ✅ built (`realtime/`) |
+| 4 REST API + batch set-complete | ✅ built |
+| 5–10 Planning, groups, CSV, reports | ✅ built — **reshaped by the merge**, see §4 and `docs/PATCH_NOTES.md` |
+| 11 Rack screen end-to-end | ✅ built · **FROZEN**, see §2.1 |
+| 12 Team dashboard kiosk | ✅ built (`/dashboard`) |
+| 13 Real ESP32 firmware v1 | ⛔ **not in this repo** — no `firmware/` directory exists |
+| 14 Coach tablet | ✅ built — this is what the merge landed |
+| 15 Fatigue scaffold | ⛔ not built — still a stub, deliberately |
+| 16 Security hardening | ⚠️ **partial** — `IsCoach` still means "is authenticated". See D-filter-not-fence in §9 |
+| 17 Firmware hardening & mounts | ⛔ not built |
+| 18 Full integration test & demo prep | ⛔ not done |
+
+**The merge's own phases (P0–P15) are all complete**, tagged `p1-complete` …
+`p15-complete`. 280 backend tests, 131 frontend, migrations `0008`→`0017`.
+
 
 ## Known Open Items (read before starting the phase they touch)
 
@@ -38,11 +94,12 @@ These are real gaps, not stretch goals — they were deliberately deferred to ge
 - **No rack "unassign" path (affects Phase 14):** only registration + assignment exist; there's no way to free a rack number back to the unassigned pool if a screen is retired or replaced.
 - **Clock reliability on the offline Pi (affects Phase 1/RUNBOOK, Phase 18):** the base station never touches the internet, so there's no NTP sync. If it lacks a hardware RTC, a cold boot could start with a wrong system clock, silently corrupting every `timestamp` field. Needs either an RTC module or a manual time-set step documented in the boot procedure.
 - **Stale `RackScreen` rows (affects Phase 16):** if a screen's `localStorage` is ever wiped, it registers a brand-new `device_id` and the old row is orphaned at its old rack number with no cleanup.
-- **Group reassignment mid-flight (affects Phase 5/14):** if an athlete's `group` changes while a `TrainingSession` tied to their old group is still in progress (not yet green/marked done), no rule is defined for whether they still appear on that session's roster. Current design snapshots roster at CSV-upload time, so this is likely fine by construction but untested against a live reassignment mid-session.
+- ✅ **RESOLVED (merge D12/D13): Group reassignment mid-flight.** Athlete↔TrainingGroup is a many-to-many, an athlete can be in several groups at once, and what they train is the MERGED plan of the groups participating in the session — see §6.2. Membership is current-state only and never rewrites history: past sessions and sets stay attached to whatever they ran under. Original note:  if an athlete's `group` changes while a `TrainingSession` tied to their old group is still in progress (not yet green/marked done), no rule is defined for whether they still appear on that session's roster. Current design snapshots roster at CSV-upload time, so this is likely fine by construction but untested against a live reassignment mid-session.
 - **Exercise catalog editing after confirmation (affects Phase 6):** once an `Exercise` is confirmed (`is_stub=False`), there's no defined path to later edit its tags or fix a name typo — only the stub-confirmation flow touches the catalog today.
 - **Insights model itself (affects Phase 5/8):** `generate_insights` is a stub returning `[]`. Choosing/training the actual local model and defining what "notable" means for `flagged_for_review` is explicitly out of scope here, same as the fatigue-model stub.
 - **Retroactive max entry vs. already-completed Sets (affects Phase 5/7/11):** if an athlete's first-ever AthleteReferenceMax gets entered mid-session (via the Phase 11 inline prompt) AFTER they've already completed earlier sets in that same session using no calculated target (or a stale one), those earlier Sets are not recalculated or flagged — the new reference only affects target-weight display going forward from the moment it's entered. No retroactive recomputation is in scope for this spec. (See the finalization-gate item below, which is the intended long-term home for recomputation.)
-- **Coach publish/finalization gate + outlier-robust reference recalc (affects Phase 7/8; UI in Phase 14):** today `AthleteReferenceMax` rows are written only by direct entry (`source=manual`). The intended finalization flow is deferred: a coach reviews a session's data in a filterable/searchable summary, hits "Publish" (an application-level Python service run in a transaction — NOT a Postgres trigger — reusing the `mark-done` hook), and only then are velocity-`estimated` reference maxes computed and written (each linked via `source_session`). Two questions ride on it: (1) the estimation must be robust to a single anomalous set skewing the fit — e.g. drop reps outside the velocity zone or use an outlier-resistant method — since one bad rep could otherwise poison the reference; (2) a coach striking an anomalous set AFTER publish should re-run that service and APPEND corrected rows (append-only supersede, never a mutation). No stored "published" state, no set-strikethrough flag, and no recalc service exist yet — this is the designed-for future, captured so Phase 7/8 build toward it rather than around it.
+- ⚠️ **PARTLY RESOLVED (merge P4): Coach publish/finalization gate + outlier-robust reference recalc.** Ending a training day now recalculates reference maxes from what athletes actually lifted and writes them with `source=estimated` and a `source_session` link (canon D10) — so the "written only by direct entry" half of this item is no longer true. **What is still open:** there is no coach *review-then-publish* gate (recalculation happens on end-of-day, unreviewed), no outlier-robust fitting, and no way to strike an anomalous set and re-run. The original note follows, still accurate on those points.
+  - today `AthleteReferenceMax` rows are written only by direct entry (`source=manual`). The intended finalization flow is deferred: a coach reviews a session's data in a filterable/searchable summary, hits "Publish" (an application-level Python service run in a transaction — NOT a Postgres trigger — reusing the `mark-done` hook), and only then are velocity-`estimated` reference maxes computed and written (each linked via `source_session`). Two questions ride on it: (1) the estimation must be robust to a single anomalous set skewing the fit — e.g. drop reps outside the velocity zone or use an outlier-resistant method — since one bad rep could otherwise poison the reference; (2) a coach striking an anomalous set AFTER publish should re-run that service and APPEND corrected rows (append-only supersede, never a mutation). No stored "published" state, no set-strikethrough flag, and no recalc service exist yet — this is the designed-for future, captured so Phase 7/8 build toward it rather than around it.
 
 ---
 
@@ -137,6 +194,66 @@ Fatigue detection gets a real interface (`ml/inference.py`) and a real call site
 
 ### Fresh start in the Edge-Athlete repo
 Do **not** rename or port Privacy-Dots-V2's git history. Privacy-Dots-V2 stays untouched as a read-only reference; Edge Athlete is bootstrapped clean, pulling **patterns (not history)** from the reference.
+
+---
+
+---
+
+## §2. Hard constraints (never violated)
+
+### §2.1 Frozen files — do not edit, reformat, or "clean up"
+
+```
+react/src/rack/RackScreen.jsx      react/src/rack/Idle.jsx
+react/src/rack/CheckInList.jsx     react/src/rack/RackSetup.jsx
+react/src/rack/WeightPad.jsx       react/src/rack/velocity.js
+react/src/db/repBuffer.js          react/src/device.js
+react/src/ (service worker + manifest.* + icons)
+```
+
+**Verify you haven't touched them** before every commit:
+```bash
+# Use origin/SprintBranch — a fresh clone has no LOCAL SprintBranch branch (only the remote-tracking one).
+git diff --name-only origin/SprintBranch -- react/src/rack react/src/db/repBuffer.js react/src/device.js
+```
+That command must print **nothing**. If it prints a file, your change is wrong — find another way.
+
+### §2.2 Frozen API contracts
+These endpoints keep their **exact response shape** (key names, nesting, types). Their *internals* may be
+rewritten and their *coverage* may widen, but a rack tablet must not be able to tell the difference:
+`/sessions/active/`, `/sessions/active/status/`, `/sessions/active/athlete/{id}/progress/`, `/sets/`,
+`/sets/{id}/complete/`, `/racks/{n}/checkin/`. The exact frozen shape of the progress endpoint is written out
+in §6.3 — that one is the highest-risk seam in the merge.
+
+### §2.3 Other hard constraints
+- **The role splash / device-role picker stays.** The boot screen every role lands on is ours and remains the
+  entry point (it must survive the `App.jsx` reconciliation in P7).
+- **Braydon's root-level `react/src/RackScreen.jsx` is dropped from the run path.** It is his own separate
+  file; it does **not** replace ours, and ours does not move.
+- **Carl's dashboard page stays near-untouched**, preserved as `/coach/setup`. Integration may *reach* it
+  (§6.4); its internals are not rewritten.
+
+If a resolution would change any of the above, **the resolution is wrong.**
+
+---
+
+---
+
+## §3. Governing principles (apply in order when a case isn't spelled out)
+
+1. **Protected set (§2) always wins.** No exceptions.
+2. **Rack / athlete-facing runtime → ours.** Adopt none of his rack-side reimplementation.
+3. **Coach / dashboard / reports / planning front end → his.** Bend our backend to serve it rather than
+   reshaping his UI.
+4. **Derived over stored.** If a coach screen needs data we can *compute* from tables we already own, build a
+   **derived endpoint in `services/`** — do **not** add a table to store it. New tables are only for data that
+   is genuinely *authored* and not derivable.
+5. **Backend style & docs → ours.** Refactor his features to our conventions and document every new route in
+   `SPEC.md` + `MESSAGE_CONTRACT.md`.
+6. **Database → additive union.** Tack columns onto existing tables; where two tables collide, keep whichever
+   is least work and drop the other. One table at a time.
+7. **Still tied → keep the canon** (clean / documented / reusable). Prefer deleting *duplicated* effort over
+   deleting *distinct* capability.
 
 ---
 
@@ -343,6 +460,453 @@ TrainingSession  EXTENDED — ❌ SUPERSEDED, DO NOT BUILD. This proposed
 Set      EXTENDED — is_makeup (Bool, default False) — excluded from
            team_completion_time calculations.
 ```
+
+---
+
+> ## 📐 The training model — folded in from the merge canon (2026-07-30)
+>
+> Everything from here to the end of the Decision Log was the authority for the
+> `merge-braydon` merge and is now the authority for the system. It is here
+> because it is **durable**: how the training hierarchy fits together, and how a
+> prescribed percentage becomes a weight on a bar.
+>
+> **Section numbers (§4, §6.3, …) are preserved deliberately.** The text below
+> cross-references them constantly, and renumbering would break every reference
+> for no gain. They are the merge canon's numbers.
+>
+> What was *not* folded in, and why:
+>
+> | Left behind | Where it lives now |
+> |---|---|
+> | Branch mechanics, `git show`/checkout recipes | The merge is done; git history |
+> | The P0–P15 phase plan and its gates | [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md) |
+> | Endpoint reconciliation (which of his routes we kept) | [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md) has the real shapes |
+> | Migration plan (`0008`→`0017`) | The migration files themselves |
+
+## §4. The `Training*` hierarchy
+
+### §4.1 Conceptual weight (this is NOT ownership, NOT lifespan)
+
+```
+TrainingBlock   →   TrainingProgram   →   TrainingGroup   →   TrainingSession
+  template            instance             squad               one shared timeslot
+```
+
+This arrow only means "bigger idea → smaller idea." **It is not the foreign-key direction.** Read every name
+by *this* definition, not by outside strength-and-conditioning convention:
+
+| Name | Means | Note |
+|---|---|---|
+| `TrainingGroup` | A **named subset of athletes** who train together and share one `TrainingProgram`. ⚠️ **NOT the list of all registered athletes** — that's the `Athlete` table. A gym has many groups at once, each on its own program. | Long-lived; carries no dates and no workouts itself. |
+| `TrainingBlock` | The reusable **TEMPLATE** a coach designs once and redeploys. | ⚠️ **Inverted from common usage on purpose** — here the *block is the template*, not a dated phase. |
+| `TrainingProgram` | A scheduled **INSTANCE** for a group, placed in time. | Instantiated from a block (snapshot-copied), or standalone with a NULL block link. |
+| `TrainingSession` | One **shared** timeslot when lifting happens. | Owned by nobody; **many groups can be on it** via `SessionParticipation`. |
+
+### §4.2 Actual foreign keys (what really points at what)
+
+Arrows below point **from the table holding the FK → to the table it references.** Compare with §4.1 — they
+deliberately do not match.
+
+```
+   User (coach)
+     │ owns                    ┌──────────────── Exercise (catalog) ◄──┐
+     ├──────────────► TrainingGroup                                    │ (every *Exercise
+     │                   ▲   │ owns                                    │  row references it,
+     │                   │   └──────────► TrainingProgram              │  PROTECT)
+     │          M2M      │                   │ owns                    │
+     │      Athlete ─────┘                   ├──► TrainingProgramWorkout
+     │         │                             │        └──► TrainingProgramExercise ──┤
+     │         │ owns                        │                    ▲                  │
+     │         ├──► AthleteReferenceMax      │ PROTECT, NULLABLE  │ CASCADE          │
+     │         ├──► Set ──► Rep              ▼                    │                  │
+     │         └──► RackCheckIn        TrainingBlock         AthleteOverride ─────────┤
+     │                                       │ owns                                   │
+     └──────────────────────────────────────►├──► TrainingBlockWorkout                │
+                                             │        └──► TrainingBlockExercise ─────┘
+   TrainingSession (root, owned by nobody)
+        │ owns
+        └──► SessionParticipation ──► TrainingProgram (+ the day's workout)
+```
+
+**Three non-obvious calls — intentional, do not "fix" them:**
+1. **`Athlete ↔ TrainingGroup` is many-to-many, not ownership** (D12). An athlete can be in several groups at
+   once (football *and* speed squad), each with its own program; the session decides which one applies (§6.2
+   step 2). Membership is current-state only — adding or removing a group **never** rewrites past sessions or
+   sets, because history stays attached to what was actually created at the time.
+2. **`TrainingSession` is a root owned by nobody.** The group link lives on `SessionParticipation` — that is
+   precisely what lets one shared session host many groups at once.
+3. **`TrainingProgram.training_block` is nullable** (D6). NULL means a standalone one-off program that was
+   never built from a template. This is a permanent supported path, not a migration shim.
+
+### §4.3 Master vs. copy (why the same columns appear twice)
+`TrainingBlock*` rows are the **master** prescription. Creating a `TrainingProgram` from a block
+**snapshot-copies** those rows into `TrainingProgramWorkout` / `TrainingProgramExercise` — the **editable
+copy**, which is what actually runs.
+
+- Editing the **block** changes *future* instances only.
+- Editing the **program** changes *only that instance*.
+- History therefore stays pinned to what actually ran.
+- For a **standalone one-off** (NULL block) there is nothing to copy — the coach authors the program rows
+  directly and the program simply *is* the master.
+
+**Promoting a one-off into a template later** = create a `TrainingBlock` row and point the existing FK at it.
+No data migration, no rewrite. That is the entire reason the FK is nullable.
+
+### §4.4 The rack stays group-blind
+A session hosts many groups. The rack reads a **flat union roster** (every athlete across every participating
+group), resolves each athlete's plan **per athlete**, and renders exactly as today. All multi-group logic lives
+**behind** the frozen §2.2 seam — response shapes don't change, only their coverage widens:
+- `/sessions/active/` roster = union of every participating group's athletes.
+- Check-in validation = "athlete is in *any* participating group of the active session."
+- `/sessions/active/status/` and `/progress/` are per-athlete and group-blind already.
+
+### §4.5 Deferred but schema-ready (NOT built in this merge)
+The **calendar generator** (drag a block onto a date → auto-create/attach sessions). We keep it *possible*:
+the block carries `duration_weeks` + `cadence_days_of_week`, the program carries `start_date`. That's all.
+**Do not build the generator.**
+
+---
+
+
+---
+
+## §5. Schema rules that are easy to get wrong
+
+> Numbering starts at §5.3 on purpose. §5.1 was a merge-time disposition table
+> (what happened to each of the old models) and §5.5 was the migration plan
+> `0008`→`0017`. Both described work that is finished; the migration files are
+> their own record.
+
+### §5.3 What we deliberately do NOT create a table for (§3.4)
+
+| Coach need | Derived from | Endpoint |
+|---|---|---|
+| Room / wall live state | `RackCheckIn` (who's here) + per-athlete derived progress | `services/` room-state (D8) |
+| Per-athlete day progress | `Set` / `Rep` rows for the active session | `services/` day-progress (D3) |
+| Which athlete is at rack N | Newest `RackCheckIn` for that session | derived (D2) |
+| Athlete reports list/detail | `DailyReport` rows filtered by athlete id | `reports/?athlete={id}` (R6) |
+| **Athlete notes** | **The existing `Athlete.notes` TextField** — no new table *and* no new route | **`athletes/{id}/` PATCH** (R1) |
+
+**Justifying the two stored tables we DO add** (they look like exceptions to §3.4, so here's why they aren't):
+- **`DailyReport`** — could technically be recomputed from `Set`/`Rep`, but must **not** be: it has to stay
+  correct even after a coach edits the program it reported on. Recomputing later would silently rewrite
+  history. Immutability *is* the feature. It also replaces `SessionParticipation.snapshot` (D14).
+- **`MonitoringEvent`** — an outbox exists precisely so a change survives a dropped connection. Deriving it
+  would defeat its purpose.
+
+**And the two copy tables** (`TrainingProgramWorkout` / `…Exercise`) are not avoidable: a **standalone one-off
+program has no block to derive from** (D6), so these rows are the only prescription that exists for it.
+Making them conditional on having a block would be more complexity, not less.
+
+### §5.4 Seed data (D1)
+The migration that establishes the catalog seeds these starter movements so there is always something to build
+against (names are the canonical spelling; `is_stub=False`):
+
+`Back Squat`, `Front Squat`, `Bench Press`, `Deadlift`, `Overhead Press`, `Hang Clean`, `Power Clean`,
+`Push Press`, `Barbell Row`, `Romanian Deadlift`
+
+**No backfill of existing rows** — all current data is disposable dev/seed data.
+
+> **Two different "seed" mechanisms — do not confuse them** (this trips people up):
+>
+> | | `0009_seed_exercise_catalog` (RunPython migration) | `seed_active_session` (management command) |
+> |---|---|---|
+> | Seeds | the **10 canonical `Exercise` rows** above | demo fixtures: athletes, `Program`s, a session, sets/reps, reference maxes |
+> | Runs | **automatically** on every `migrate` (incl. the test DB) | **only when invoked by hand** |
+> | Is | canonical reference data, part of the migration lineage | dev/demo convenience, predates the migration |
+>
+> **After `docker compose down -v`:** the exercise catalog returns **by itself**; the demo fixtures do **not** —
+> re-run `docker exec edgeathlete-django python manage.py seed_active_session` (and `ensure_demo_coach` for the
+> `coach`/`coachpass` login). Until then the rack screen shows an empty movement list, because `athlete_progress`
+> still reads the legacy `Program` rows (until the P5 `% × max` swap).
+>
+> ⚠️ **Keep the names in sync.** `seed_active_session` does `Exercise.objects.get_or_create(name=…)` with
+> `"Back Squat"` / `"Bench Press"` — spellings that **must** match §5.4 exactly, or it silently creates a second
+> near-duplicate movement (the exact drift D1's canonical catalog exists to prevent). Verified aligned
+> 2026-07-24; re-check if either list changes.
+
+> ⚠️ **Seed data is present in the TEST database too.** Django applies every migration — including
+> the `0009` seed — when it builds the test DB, so a test must **not** assume `Exercise` (or any seeded
+> reference table) starts empty. This bit `test_lists_catalog_by_name` in P1 (it created `Bench Press`,
+> already a seeded row → `UniqueViolation`); the fix asserts the *name-sorted* invariant robustly instead
+> of hard-coding the catalog contents. **Default rule for any new test: account for seeded rows.**
+
+### §5.6 Two "colors" — do not conflate
+- **(a) Per-rep velocity-zone color** (`Rep.velocity_color`) — how fast a rep moved vs. its target band.
+  **Already alive in both branches, untouched by this merge.** Nothing to build.
+- **(b) Rollup health-status** (red = nobody started, green = whole roster has data, yellow = partial).
+  **Not built anywhere. OUT OF SCOPE.** Do not build it, do not re-anchor it onto the new hierarchy.
+
+They only ever shared a color palette. The per-rack `status` (idle/active/complete/false-set) is a **third**,
+separate thing (live execution state) and is likewise unaffected.
+
+---
+
+
+## §6. The derivation rules (the part that must not be guessed) ⭐
+
+Everything in §4–5 is inert until something turns a *percentage* into a *number on a bar*. This section is the
+algorithm. **If you find yourself inventing a rule here, stop — it belongs in this doc first.**
+
+### §6.1 Resolving an athlete's target weight
+
+Given an athlete and a `TrainingProgramExercise`, compute `target_weight_lbs`:
+
+1. **Find the athlete's current reference max** for that exercise: the **newest** `AthleteReferenceMax` row for
+   `(athlete, exercise)` by `recorded_at`. The table is add-only, newest-wins — never edit an old row.
+2. **Normalize it to a 1-rep basis.** If `rep_basis == 1`, use `reference_weight_lbs` unchanged. Otherwise
+   convert with the **Epley formula** (D11):
+   `one_rep_max = reference_weight_lbs × (1 + rep_basis / 30)`
+3. **Apply the prescribed percentage:** `raw = one_rep_max × (target_percent / 100)`
+4. **Apply a per-athlete override if one exists** (`AthleteWorkoutExerciseOverride` for this athlete +
+   program-exercise): a non-null `target_percent` on the override **replaces** the program's percent at step 3;
+   non-null `sets` / `reps` replace the program's. Null fields on the override change nothing. *(The override
+   endpoint isn't built until P5, but the resolution logic should account for it from the start.)*
+5. **Round to the nearest 5 lb** — gyms load in 5 lb increments (2.5 lb plates in pairs). Return the rounded
+   value in `target_weight_lbs` as a float. **Do not add a second "raw" field** — that would change the frozen
+   response shape (§2.2).
+6. **If the athlete has NO reference max for that exercise**, `target_weight_lbs = null`. Do **not** guess, do
+   **not** substitute zero, do **not** error the request. Null is already a legal value in the frozen contract,
+   and the rack tablet's existing `WeightPad` lets the athlete enter a load manually. **Fail soft.**
+
+**Worked example:** athlete's newest reference for Back Squat is `225 lb @ rep_basis 3`; prescription is 80%.
+→ `one_rep_max = 225 × (1 + 3/30) = 247.5` → `raw = 247.5 × 0.80 = 198.0` → **`target_weight_lbs = 200.0`**.
+
+#### 6.1a The three weights — which lever moves which (memorize this)
+
+There are **three** distinct "weights" in this system, they move by **three different levers**, and confusing
+any two of them is the single most expensive mistake on this project (it derailed a prior attempt). A cold dev
+hits this exact fork, so it's spelled out here:
+
+| # | Weight | Where it lives | Moved by | Notes |
+|---|---|---|---|---|
+| a | **Reference / working max** | `AthleteReferenceMax` (stored, add-only, newest-wins) | the **reference-max write** endpoint (§7.2, manual coach entry) **or** the D10 auto-recalc on session end | The anchor. Not a lifetime PR — can go down. |
+| b | **Prescribed target** | **nowhere — DERIVED** as `% × (a)` per §6.1 | move (a), or the P5 per-athlete override (`AthleteWorkoutExerciseOverride`) | Never stored. This is what `target_weight_lbs` in the frozen contract returns. |
+| c | **Actual / working load** | `Set.weight_lbs` (stored per set) | the athlete's **WeightPad** on the rack, **or** a **coach weight adjustment (D15)** | This is what `last_weight_lbs` in the frozen contract returns — the load the tablet defaults the *next* set to. |
+
+**The rule:** to change the *prescription*, move **(a)** (or override). To change only what an athlete is
+*loading right now*, move **(c)** via D15. **(b) is always derived and never written.** A coach who "changes an
+athlete's weight" must know which of the two they mean — the canon offers a lever for each and they do not
+compete: (a) rewrites future targets up or down; (c) nudges today's working load without touching the plan.
+
+> **D11 — Epley is the canon formula, and it lives in exactly one function.** Any rep-basis conversion goes
+> through a single helper in `services/` so swapping it (Brzycki, Lombardi, a coach-tuned curve) is a one-line
+> change. Do not inline this math at call sites. This is *separate from* D10's deferred question of how to
+> *estimate a new max from session data* — that's a different problem, still deferred.
+
+### §6.2 Resolving "what is this athlete doing today"
+
+Given an athlete and the active session, produce their ordered movement list:
+
+1. **Groups:** `athlete.training_groups.all()` (M2M — an athlete may be in several, D12). If they're in
+   **none** → the athlete has no plan; return an **empty movements list** (valid, not an error — the frozen
+   contract already handles an empty list).
+2. **Programs — INTERSECT their groups with the session** *(true AND logic)*. Take the `SessionParticipation`
+   rows on the active session whose `training_program.training_group` is one of the athlete's groups. This is
+   the whole point of the M2M: an athlete in both "Varsity Football" and "Speed Squad" gets the football
+   program at a football session and the speed program at a speed session, with nothing to configure.
+   - **Zero matches** → none of their groups is on this session → empty movements list.
+   - **Exactly one match** → that's their program. **This is the normal case.**
+   - **More than one** → they train **all of them, merged** (step 4). Do not discard any.
+3. **Workout-of-the-day:** for each matched participation, `SessionParticipation.training_program_workout`.
+   If **NULL** → that participation contributes nothing (the coach hasn't picked its workout yet — a planning
+   gap, not a runtime error). If *every* matched participation is NULL → empty movements list.
+4. **Movements — UNION the workouts, deduped by exercise** *(OR logic + collapse)*.
+
+   > ⚠️ **Two different set operations, one chain — don't conflate them.** Step 2 is an **intersection**
+   > (which *programs* apply = your groups AND the session's groups). Step 4 is a **union** (the *movement
+   > list* = everything those programs prescribe, OR'd, duplicates collapsed). A receiver on the football
+   > session trains the team lift **plus** their position work — not just the overlap between them.
+
+   **4a. Order the matched programs (the "primary" comes first).** Sort by the size of their
+   `training_group` — **most athletes first**, i.e. the most general group leads. Tie-break deterministically:
+   **latest `start_date`** → **latest `created_at`** → **lowest `id`**. Rationale: the big team lift is the
+   main work and position/accessory work follows it, which is also the order a coach runs the session in — and
+   this matters because `current_exercise_id` points the athlete at the first incomplete movement. Cost is one
+   annotated count, so it stays cheap.
+   *(Group **join order** was considered and rejected: Django's auto-created M2M table has no timestamp, so
+   "which group did they join first" isn't reliably available and would silently change if a membership were
+   ever re-added.)*
+
+   **4b. Concatenate** each program's `TrainingProgramExercise` rows for its workout-of-the-day, **ordered by
+   `position` within each program**, in the 4a program order.
+   ⚠️ Within a single program this replaces the old ordering (`Program.id`) — see §6.3.
+
+   **4c. Dedupe by `exercise_id` — this is mandatory, not cosmetic.** The frozen contract derives
+   `completed_sets`, `false_sets`, `last_weight_lbs`, and `next_set_number` from `Set` rows keyed by
+   `exercise_id`. If one exercise appeared twice in `movements`, both entries would read the **same** tallies —
+   3 finished squat sets would show as `3/5 in_progress` on one row and `3/3 complete` on the other, and both
+   would hand back the same `next_set_number`. That corrupts the set counter the rack depends on.
+   **Exactly one entry per `exercise_id`, always.** Keep the position of its **first** occurrence in 4b order.
+
+   **4d. Resolve a collision — LOWER `target_percent` wins.** When two programs prescribe the same exercise,
+   keep the row with the lower percent. Coaches overwhelmingly adjust a specific group's plan *downward* to
+   take load off, so the lower number is the deliberate one and the safer default. **Take the winning row
+   whole** — its `sets`, `reps`, and velocity zones travel with its percent. **Never mix fields across rows**:
+   one plan's percent with another's rep scheme is a prescription nobody actually wrote.
+   If the percents are **equal**, the row from the earlier program in 4a order wins.
+   *Escape hatch: if this default is ever wrong for a given athlete, the coach can adjust the load directly —
+   the rack's existing weight-entry path already lets the actual lifted load differ from the target, and P5's
+   per-athlete override (§5.2) covers the durable case. We are not adding schema for this.*
+5. **Hardware filter (D9):** resolve the athlete's current rack from their newest `RackCheckIn` for this
+   session, then drop any movement whose exercise is **not** in that `Node`'s `allowed_exercises`. **Empty
+   `allowed_exercises` = unrestricted** (the normal case — costs nothing). **Fail open:** if the rack can't be
+   resolved yet (the check-in write hasn't landed before the progress fetch), treat it as unrestricted. Never
+   fail closed and block a legitimate lift over a timing gap.
+6. **Per-movement targets:** run §6.1 for each.
+
+**Worked example (the multi-group case, end to end).** Athlete is in **Varsity Football** (60 athletes) and
+**Receivers** (8 athletes). Both groups are on tonight's session.
+
+| | Football program | Receivers program |
+|---|---|---|
+| Workout-of-the-day | Back Squat 5×3 @ **80%**, Bench 3×5 @ 75%, Power Clean 4×2 @ 70% | Back Squat 3×5 @ **70%**, Sled Push 3×1 @ 0%, Nordic Curl 3×6 @ 0% |
+
+- **Step 2:** both participations match → two programs, neither discarded.
+- **Step 4a:** Football (60) leads Receivers (8) — most general first.
+- **Step 4b/4c:** concatenate, then collapse the duplicate Back Squat.
+- **Step 4d:** Back Squat collides → **70% wins (lower)**, and it brings its own `3×5` with it — *not* `5×3`.
+
+**Result — 5 movements, in order:**
+`Back Squat 3×5 @70%` · `Bench 3×5 @75%` · `Power Clean 4×2 @70%` · `Sled Push 3×1` · `Nordic Curl 3×6`
+
+The athlete does the team lift **and** their position work; the one shared movement appears once, at the
+lighter prescription. Then §6.1 turns each percent into a rounded weight.
+
+### §6.3 ⚠️ The frozen progress contract — `/sessions/active/athlete/{id}/progress/`
+
+This is the highest-risk seam in the merge. Today `athlete_progress` in `views.py` loops over
+`Program.objects.filter(athlete_id=...)`. In **P5** that loop is replaced by the §6.2 chain and §6.1 targets.
+**The response shape must not change by even one key.** It is, and must remain, exactly:
+
+```jsonc
+{
+  "session_id": 12,                     // null when no active session
+  "athlete": { "id": 3, "name": "..." },
+  "current_exercise_id": 7,             // first movement not yet "complete"; null if all done
+  "movements": [
+    {
+      "exercise_id": 7,
+      "name": "Back Squat",
+      "planned_sets": 5,                // ← was Program.target_sets, now TrainingProgramExercise.sets
+      "target_reps": 3,                 // ← now .reps
+      "target_weight_lbs": 200.0,       // ← now DERIVED per §6.1; null if no reference max
+      "last_weight_lbs": 195.0,         // unchanged: newest non-false completed set THIS session, else null
+      "velocity_zone_min": 0.5,
+      "velocity_zone_max": 0.8,
+      "completed_sets": 2,              // unchanged: non-false completed sets this session
+      "false_sets": 0,                  // unchanged: counted separately, never advance set number
+      "next_set_number": 3,             // unchanged: completed (non-false) + 1 — the SERVER owns this
+      "status": "in_progress"           // "not_started" | "in_progress" | "complete"
+    }
+  ]
+}
+```
+
+**Behaviors that must survive the swap unchanged:**
+- A set counts as completed once it has `ended_at`. False sets **never** advance `next_set_number`.
+- `status` = `complete` when `completed_sets >= planned_sets`; `in_progress` when `completed_sets > 0`; else
+  `not_started`.
+- `current_exercise_id` = the first movement whose status isn't `complete`.
+- `last_weight_lbs` is **session-scoped only** — never read a prior session's loads.
+- Empty-envelope convention: **no active session ⇒ HTTP 200** with nulls/empties, not an error.
+- Athlete not found ⇒ 404. Athlete not in the active session ⇒ 404.
+
+**How to prove you didn't break it:** capture the JSON before and after your change and diff the *keys*:
+```bash
+curl -s localhost/api/sessions/active/athlete/1/progress/ | python3 -m json.tool > /tmp/before.json
+# ...make the change, restart...
+curl -s localhost/api/sessions/active/athlete/1/progress/ | python3 -m json.tool > /tmp/after.json
+diff <(python3 -c "import json,sys;print(sorted(json.load(open('/tmp/before.json'))['movements'][0]))") \
+     <(python3 -c "import json,sys;print(sorted(json.load(open('/tmp/after.json'))['movements'][0]))")
+```
+That diff must be **empty**.
+
+### §6.4 The room-state contract (D8 rebuild)
+We are **rebuilding** his room-state, not renaming it. His version read `RackWorkoutState` (a rack holding a
+coach-*pre-selected* athlete + *pre-assigned* workout) plus `AthleteDayProgress`. Our rack is
+**athlete-centric and group-blind**: an athlete carries their plan via group membership, self-selects any rack
+via `RackCheckIn`, and their current movement is derived live. Different shapes — so the forward
+rack-assignment concept **dies entirely** (D8).
+
+**Rebuild it from:** the set of rack numbers seen on `Node` ∪ `RackScreen` ∪ `RackCheckIn` *(not his dropped
+`Set.rack_number` — D11)*, then for each rack the newest `RackCheckIn` athlete, then §6.2/§6.1 for what they're
+doing, then their newest `Set`/`Rep` for live `status` and `status_color`.
+
+**The response shape is defined by his consumer, not by us** — we're bending to his front end (§3.3). Before
+writing the endpoint, read what his dashboard actually destructures:
+```bash
+git show braydons-dev-branch:react/src/dashboardView.js
+git show braydons-dev-branch:react/src/useLiveRoomState.js
+git show braydons-dev-branch:react/src/roomMonitor.js
+```
+Reproduce those keys exactly, minus anything that depended on forward assignment. His
+`dashboardView.test.js` / `roomMonitor.test.js` come across too and are the acceptance check.
+
+### §6.5 Coach weight adjustment (D15)
+
+**What it is.** A coach can adjust an athlete's carried-forward **working weight** for a session — before their
+first set, or between sets, for one athlete or several — by writing through the **same `sets/` +
+`sets/{id}/complete/` path the rack's WeightPad uses** (the one path his rack-scoped `racks/{n}/sets/` folded
+into under D14), with the new field **`Set.is_coach_adjustment=True`**.
+
+**What it moves — and what it must NOT.** It moves **`last_weight_lbs`** (weight *(c)* in §6.1a — the working
+load the tablet defaults the next set to, which carries forward). It does **not** move `target_weight_lbs`
+(weight *(b)*, the `% × max` prescription). A coach who wants to change the *prescription* uses the
+reference-max write (weight *(a)*, §7.2) or the P5 override — **not** this. Keeping these separate is
+non-negotiable: conflating "nudge today's load" with "rewrite the plan" is exactly what derailed the earlier
+attempt.
+
+**Not a §2.2 violation — do not block on this.** `sets/` is frozen by *response shape*. `is_coach_adjustment`
+is an **optional request field defaulting to False**; the rack omits it and behaves byte-identically, and no
+response key changes. It touches no frozen *file* (§2.1) either — only view internals and the model.
+
+**Why the flag is mandatory (not just convenient).** In `athlete_progress` two outputs are computed on the
+*same* loop branch:
+
+```python
+for s in Set.objects.filter(session=session, athlete_id=athlete_id,
+                            ended_at__isnull=False).order_by("started_at", "id"):
+    if s.is_false_set:
+        false_by_exercise[s.exercise_id] += 1
+    else:
+        completed_by_exercise[s.exercise_id] += 1              # the set counter
+        if s.weight_lbs is not None:
+            last_weight_by_exercise[s.exercise_id] = s.weight_lbs   # the displayed weight
+```
+
+- The filter is `ended_at__isnull=False`, so an **uncompleted** "empty" set is invisible here and moves
+  nothing — a naive adjustment silently no-ops. So the adjustment **must be a completed set** (`ended_at` +
+  `weight_lbs`).
+- But `last_weight` is set in the **same `else` branch** that increments `completed`. So any set that moves the
+  weight also bumps `completed_sets` → `next_set_number = completed + 1` (the server-owned number sent at
+  `set_create`) → and can flip `status` to `complete` early and skip the movement via `current_exercise_id`.
+- `is_false_set=True` doesn't help: false sets never reach the `last_weight` line.
+
+**⇒ No `Set` shape moves the weight without also moving the set counter.** Hence the flag — it lets one read
+*include* these rows and every other read *exclude* them.
+
+**Mandatory include/exclude list (enumerated so it cannot drift). Verified against current code 2026-07-23:**
+
+| Read | Adjustment rows | Effect if you get it wrong |
+|---|---|---|
+| `athlete_progress` — `last_weight_lbs` | **INCLUDE** | (correct target) newest-wins ordering unchanged, so a real lift afterward still supersedes it |
+| `athlete_progress` — `completed_by_exercise` / `false_by_exercise` | **EXCLUDE** | keeps `completed_sets`, `false_sets`, `next_set_number`, `status`, `current_exercise_id` all unaffected |
+| `session_status` (line ~489) | **EXCLUDE** | else the adjusted athlete shows **"resting" with a ticking rest timer** having lifted nothing — visible on the rack *and* the coach dashboard |
+| `analytics_session` / `analytics_athlete` (lines ~650/676) | **EXCLUDE** | phantom sets skew every analytic (they filter `is_false_set=False` only, so an adjustment slips through today) |
+| `sessions_active` — `has_data` (line ~311) | **EXCLUDE** | ⚠️ **found in this audit, beyond the original list:** `has_data` drives `is_makeup`, so an adjustment before an athlete's first real set would silently mark that real set as a makeup |
+| `DailyReport` snapshot generation (P4, not built yet) | **EXCLUDE** | phantom sets in the immutable end-of-day record |
+
+**General rule — write it down so it survives new code:** *any* future read over `Set` rows must consciously
+decide include/exclude on `is_coach_adjustment`. The default assumption for a new read is **EXCLUDE** (it's an
+adjustment, not a lift); `last_weight_lbs` is the lone documented include.
+
+**Session scoping.** `last_weight_lbs` is session-scoped, so an adjustment only means anything against an
+existing session (the active/target one). "Before the session" means **before the athlete's first set in that
+session**, not before the session row exists.
+
+---
+
 
 ---
 
@@ -1853,6 +2417,206 @@ one deliberately "missing" athlete to demo the makeup flow and its effect
 required to run clean twice before demo day) should now also cover: CSV
 upload → stub confirm → run session → one athlete makeup → status dots
 updating correctly at all three hierarchy levels.
+
+---
+
+---
+
+## §9. Decision log
+
+- **D1 — Exercise catalog is canonical.** Keep `Exercise`(+`Tag`); his CharFields → `FK→Exercise`. No backfill;
+  seed starter movements in the migration (§5.4).
+- **D2 — Rack presence → keep `RackCheckIn`, drop `AthleteRackParticipation`.** Everything his table held
+  (current rack, first/last seen) is derivable from our append-only log.
+- **D3 — Day progress → derived; drop `AthleteDayProgress`.** Coach-shaped derived endpoint; all derivation
+  lives in `services/`.
+- **D4 — `is_simulated` → adopt (union)** on Node/Athlete/Session/Set/MonitoringEvent; simulators stamp it so
+  `clear_simulation_data` wipes demo data cleanly.
+- **D5 — MQTT → keep his `realtime/` + monitoring outbox; fold in our rack `broadcast/publisher`** without
+  changing any rack topic/route. Drop our inherited `notification_flow/` cruft. Webhooks untouched.
+- **D6 — `TrainingProgram.training_block` is NULLABLE** → one-off programs are a permanent first-class path.
+  ⚠️ **CORRECTED 2026-07-29:** this decision used to end "promotion to a template is just pointing the FK at a
+  new block row." That is wrong — the FK records provenance and copies nothing, so it would produce a block
+  with no days. Promotion has to copy the rows up first; see D21 / P15.
+- **D7 — CSV import survives at BOTH block and program level.** Block-level = reusable template;
+  program-level = immediate one-off. Only the old single fixed target shape retired. ⚠️ **The single-contract
+  framing here is SUPERSEDED by D16** (sheet-type detection); the both-levels requirement stands unchanged.
+- **D8 — Drop `RackWorkoutState`; rebuild room-state** from `RackCheckIn` + derived progress (§6.4). The
+  forward rack-assignment concept dies entirely.
+- **D9 — `Node.allowed_exercises`** — a static hardware fact, empty = unrestricted. **Filtered into the
+  movement list (§6.2 step 5), NEVER a `set_create` rejection**: `RackScreen.jsx` flips to the active lifting
+  screen *before* `set_create` resolves and swallows its error, so a rejection would strand an athlete on a
+  dead screen — and fixing that needs new UI inside a frozen file (§2.1). Fail open.
+- **D10 — Reference max recalculates on session completion, feeds forward only. No new schema.** Writes a new
+  `AthleteReferenceMax` row (`source=estimated`); never recomputes targets an athlete already trained against.
+  Lives in the same service as `DailyReport` generation. **The estimation method is deferred** — decide it when
+  that service is built.
+- **D11 — Epley for rep-basis conversion; rounding to 5 lb; `Set.rack_number` dropped.** See §6.1. The formula
+  lives in exactly one `services/` helper. Rack identity comes from `RackCheckIn` everywhere (D2), so his
+  `Set.rack_number` column is not needed and is dropped with the workout-link cleanup.
+- **D12 — `Athlete ↔ TrainingGroup` is MANY-TO-MANY.** An athlete can train with several groups at once
+  (e.g. "Varsity Football" *and* "Speed Squad"), each carrying its own `TrainingProgram`. Which program applies
+  on a given day is **not** stored or configured — it's the intersection of the athlete's groups with the
+  groups participating in that session (§6.2 step 2). A deterministic tie-break covers the rare case where two
+  of an athlete's groups are on the same session. Membership is current-state only and never rewrites history.
+  *(Decided 2026-07-23, replacing an earlier single-FK `training_group` that would have forced a
+  multi-program athlete into one squad.)*
+- **D13 — A multi-group athlete trains the MERGED plan: intersect programs, union movements, dedupe by
+  exercise, lower percent wins.** Two set operations at two levels (§6.2): *which programs apply* is an
+  **intersection** (athlete's groups AND the session's participating groups); *the movement list* is a
+  **union** of those programs' workouts with duplicates collapsed. A receiver on a football session trains the
+  team lift **plus** position work, not just the overlap. Dedupe by `exercise_id` is **mandatory** — the frozen
+  contract tallies progress per exercise, so a duplicated movement would corrupt `next_set_number` (§6.2 step
+  4c). Collisions resolve to the **lower `target_percent`**, taking that row whole (coaches adjust downward to
+  shed load, so the lower number is the deliberate one). Program order = **largest group first**, so the team
+  lift precedes accessory work. *(Decided 2026-07-23.)*
+- **D14 — Redundancy audit: 6 of his routes fold into existing ones, 3 are dropped outright** (§7.3/§7.4), and
+  `SessionParticipation.snapshot` is removed. Rule applied: *two routes must never do one job; when they tie,
+  keep OURS and change his FE.* Folds: `athletes/{id}/notes/`→`athletes/{id}/` PATCH (the serializer already
+  exposes `notes`); `sessions/{id}/end/`→`sessions/{id}/` PATCH (ours already ends sessions); `wall-state/`→
+  `room-state/?details=` (same function, one boolean apart); the athlete-scoped `reports/*` family→
+  `reports/?athlete=` (deletes 3 routes); `racks/{n}/sets/*`→`sets/*`. Dropped: `racks/{n}/athlete/`,
+  `racks/{n}/state/`, `racks/{n}/assignment/` — their only callers were his dropped rack screen and the
+  D8-deleted assign panel. Net: **~9 fewer endpoints to build and maintain.** *(Audited 2026-07-23.)*
+- **D15 — Coach weight adjustment rides the shared `sets/` path, flagged `Set.is_coach_adjustment`** (full
+  spec §6.5). It moves the **working load** (weight *(c)*, `last_weight_lbs`), never the prescription (weight
+  *(b)*) — that lever is the reference-max write or the P5 override. **Reuse, not a new route:** it writes
+  through the same set-creation path the WeightPad uses (the one `racks/{n}/sets/` folded into under D14).
+  **The flag is mandatory** because in `athlete_progress` the same `else` branch that sets `last_weight` also
+  increments the set counter — so no `Set` shape can move the displayed weight without also moving
+  `next_set_number`/`status` unless a flag lets reads separate them. **Include/exclude list** (verified against
+  code 2026-07-23): INCLUDE only in `athlete_progress`→`last_weight_lbs`; EXCLUDE from that view's set counts,
+  `session_status` (else the athlete shows "resting"), analytics, `sessions_active`'s `has_data` (else the
+  first real set is mis-flagged `is_makeup` — **caught in this audit, not in the original request**), and P4
+  `DailyReport` generation. Default for any new `Set` read = EXCLUDE. **Not a §2.2 break:** optional request
+  field, default False, response shape unchanged, no frozen file touched. *(Decided 2026-07-23.)*
+- **D16 — CSV import is SHEET-TYPE DETECTED, not one fixed contract.** A coach's spreadsheets are not all the
+  same thing, so the importer identifies which of three shapes a file is by **the column headers present**,
+  then routes it. This **supersedes D7's single-contract framing** while keeping its requirement (plan import
+  works at block *and* program level).
+
+  | sheet type | detected by | writes to | unknown names |
+  |---|---|---|---|
+  | **roster** | `athlete_name` + no `exercise` | `Athlete` | **creating is the point** |
+  | **reference max** | `athlete_name` + `exercise` + a weight column | `AthleteReferenceMax` | resolve, never auto-create |
+  | **plan** | `workout_name` + `exercise` + `target_percent` | `TrainingBlock*` **or** `TrainingProgram*` (D7) | resolve, or explicit `is_stub` |
+
+  Three rules bind all three shapes:
+
+  1. **`target_percent` REPLACES his `default_weight_lbs` column.** A pounds column is a second, contradictory
+     way to prescribe that bypasses the reference-max machinery entirely, and §6.1/`TrainingBlockExercise`
+     already say the plan stores percent and *"never an absolute weight."* Accept **1–150** (over-100 is real:
+     overload eccentrics); reject 0 and negative. **This is a deliberate break in his CSV contract** — the only
+     one — and it is why his sample files need one header renamed.
+  2. **A weight is only converted when its meaning is EXACT.** `AthleteReferenceMax.rep_basis` +
+     `lifting_math.normalize_to_single()` already handle "225x5" honestly, so three of four cases need no
+     guess at all: a bare max (`rep_basis=1`), rep-qualified work (`rep_basis=5`), and a stated percent
+     (exact back-solve).
+  3. **The fourth case — a bare weight with no reps and no percent — IS SKIPPED, never inferred.** Assuming a
+     percentage does not stay local to its row: `AthleteReferenceMax` is newest-wins, so a fabricated row
+     **outranks the athlete's real tested max** and skews every *other* movement's target for them, silently,
+     as a side effect of an upload. A *missing* max is by contrast an already-tested state (P5 exit criteria:
+     no reference max → `null` target, rack still works). Skipping trades a novel failure for a known-safe one.
+     Both preview and import report who was skipped and for what movement. *(Decided 2026-07-27.)*
+
+- **D17 — Import errors are REPAIRED IN PREVIEW, not rejected.** Hard-failing a 200-row file over one typo is
+  the wrong behavior, and the mechanism to avoid it is already built: preview exists, and every error already
+  carries `{row, field, code, detail}` which his `flattenApiErrors` walks. Four additions make it a repair loop.
+
+  **(a) Name resolution ladder** — cheapest and most certain first. `athlete_name` and `exercise` both use it:
+
+  | # | rule | outcome |
+  |---|---|---|
+  | 1 | `nfc_tag_id` column present and matches | exact, zero ambiguity |
+  | 2 | matches exactly one athlete **in the target squad** | resolved |
+  | 3 | matches exactly one gym-wide | resolved |
+  | 4 | matches several | `ambiguous_athlete` → candidates offered |
+  | 5 | matches none | `unknown_athlete` → suggestions + "create new" |
+
+  **Squad-scoping (step 2) is what collapses the ambiguity.** Two "Jordan Lee"s in a building is plausible; two
+  in one 30-person squad is not. Same trick as scoping workout-name uniqueness to the parent. Normalize before
+  matching — casefold, strip, collapse internal whitespace, flip a single `Lee, Jordan` → `Jordan Lee` — which
+  covers essentially all real spreadsheet drift. **No new column on `Athlete`**: a few hundred rows resolve in
+  memory (derived-over-stored, §3).
+
+  **(b) Errors carry `suggestions`.** `difflib.get_close_matches` against the catalog/roster. Stdlib, no
+  dependency. Any error with a `suggestions` array gets identical UI treatment — which is what makes this one
+  handler rather than three features.
+
+  **(c) Preview returns parsed rows EVEN WHEN THEY HAVE ERRORS.** His `preview_workout` returns only valid
+  workouts today, so a repair grid would have nothing to render. **This one change is what unblocks P7's UI**;
+  without it the frontend work is impossible.
+
+  **(d) The repair submits a name→id MAP, not corrected strings.** Resolve "Jordn Lee" once and all 14 of their
+  rows resolve. The map is what carries typo fixes, ambiguity picks, and create-new decisions uniformly.
+
+  **Auto-creation is never silent.** A typo'd ghost athlete sits in the roster forever shadowing the real one,
+  and a typo'd movement is one no rack's `allowed_exercises` covers (D9). So creation happens only on a roster
+  sheet, where it is the point, or by explicit coach action — for exercises that means `Exercise.is_stub`,
+  which **already exists for exactly this** ("a row auto-created from an unrecognized import that a coach
+  hasn't confirmed yet"). It is reached deliberately from preview, not automatically.
+
+  **Split across phases on purpose: every backend piece P7 needs ships in P5**, so the frontend work is pure
+  UI with no backend contract left to design. *(Decided 2026-07-27.)*
+
+- **NEW — reference-max write endpoint** (§7.2) — neither branch had one, yet §6.1 needs it; add a bulk
+  (list-of-athlete-ids) POST creating `AthleteReferenceMax` rows. No new schema. The prescription lever;
+  separate from D15.
+- **NEW — Athlete notes → the existing `Athlete.notes` field, no new table AND no new route** (R1).
+
+---
+
+### D18–D21 — the four found late, all now built
+
+These four were raised after the decision log above was written, while the merge
+was already running. All four are **built**; they are recorded here because the
+reasoning still governs the code.
+
+**D18 — the stacked-session trap.** Nothing stopped several sessions being open at
+once, and "the active session" was simply the most recent one with no `ended_at`.
+A stray second session therefore **silently captured check-ins**: athletes' sets
+attached to a day with no participants, the day's report came out wrong, and every
+tablet looked completely normal. It also made "End training day" look broken —
+ending the top of the stack instantly promoted the next one and the panel redrew
+identically. **Built in merge P12:** creating a second open day is a 409 naming the
+one already running, and ending a day says which day ended.
+
+**D19 — the analytics shape gap.** The coach front end's `athlete` and `history`
+tabs were written against an analytics payload nobody had ever pinned down;
+`analytics/athlete/{id}/` returned only a flat velocity trend, so selecting an
+athlete threw and took the whole coach view down with it. **Built in merge P13:**
+the endpoint returns the athlete, a summary, per-exercise aggregates and per-set
+reps, with the exact field list in `MESSAGE_CONTRACT.md`. ⚠️ The same trap is still
+unsprung on `GET /api/analytics/session/{id}/`, which remains prose-only.
+
+**D20 — scheduling.** See §"The training calendar" below and `docs/PATCH_NOTES.md`
+P14. The load-bearing consequence: **"active" means STARTED and not ended**, never
+merely un-ended, because `started_at` is now nullable so a session can exist before
+it runs. Postgres sorts NULLs *first* in a descending order, so without that filter
+a session created for next Thursday sorts ahead of the day being trained and the
+racks follow it. The rule lives in exactly one place,
+`services/active_session.py`.
+
+**D21 — promotion.** Turning a program back into a reusable block **copies its days
+and prescription rows up**. It is not a matter of pointing `training_block` at a
+new row: that records provenance and copies nothing, so the block comes out with
+zero days and deploying it hands a group an empty plan. ⚠️ This document and two
+docstrings asserted the false version for weeks before anyone checked. **Built in
+merge P15** as `promote_program_to_block()`.
+
+
+---
+
+## §10. Explicitly deferred / out of scope
+
+Do not build these. If you think one is needed, escalate (§11) rather than expanding scope.
+
+- **Calendar generator** (drag block → date → auto-create sessions). Schema-ready only (§4.5).
+- **`AthleteWorkoutExerciseOverride` mechanics debate.** The model is settled and the endpoint is scoped to P5
+  as a thin exception path. **Do not re-open its design** — that was the previous attempt's rabbit hole.
+- **Rollup health-status color (b)** (§5.6) — not built anywhere, not this merge.
+- **Ref-max estimation method** (D10) — *when* it fires is decided; *how* it estimates is not.
+- **Dashboard layout redesign** (§7.6) — theme kept, layout redo is separate.
 
 ---
 

@@ -396,7 +396,8 @@ catalog below, ready to deploy to another group.
 
 ## Known gaps
 
-Recorded rather than hidden. All four are in `_START_HERE_MERGE_CANON.md`.
+Recorded rather than hidden. All four are in [`../SPEC.md`](../SPEC.md) — §9
+(the decision log) and "Known Open Items".
 
 1. **Braydon needs telling** the CSV contract changed: `default_weight_lbs` →
    `target_percent`. The merge's one deliberate break.

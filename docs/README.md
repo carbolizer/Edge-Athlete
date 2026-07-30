@@ -3,8 +3,8 @@
 Short, factual write-ups of things that are **done**. One file per topic.
 
 This is not the place for plans, designs, or open questions — those live in
-`_START_HERE_MERGE_CANON.md` (the authority for the merge) and `SPEC.md` (the
-authority for the system). A document only arrives here once the work it
+[`../SPEC.md`](../SPEC.md), the single authority for the system. (The merge canon
+was folded into it on 2026-07-30.) A document only arrives here once the work it
 describes is finished and on the branch.
 
 | File | What it is |
