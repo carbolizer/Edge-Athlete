@@ -54,14 +54,21 @@ never the unit. Each state answers one question:
 Devin's framing: *"basically this is a glorified grouping of tabs."* Not a
 rebuild — a re-shelving. Worth holding onto, because it keeps the work small.
 
-**Notes appears in two states on purpose.** In SESSION it is optimised for
-*adding* — a quick thought about any athlete, mid-floor, fast. In ANALYTICS it is
-for *reviewing*. Same data, two affordances. Possibly a stripped-down athlete view
-rides along with the session variant (TBD).
+**Notes appears in two states on purpose.** ✅ **APPROVED 2026-07-30.** In SESSION
+it is optimised for *adding* — a quick thought about any athlete, fast, without
+leaving the floor view. In ANALYTICS it is for *reviewing*. Same data, two
+affordances. A stripped-down athlete view may ride along with the session variant
+(TBD).
+
+> **Name needed.** "Mid-floor notes" is a placeholder Devin does not like.
+> Candidates to react to: **Quick Note** · **Floor Note** · **Sideline Note** ·
+> **Jot**. The name should say *fast and provisional*, not *a different kind of
+> note* — it is the same `Athlete.notes` field either way, and calling it
+> something too distinct would imply a second store that does not exist.
 
 **The dev-only top bar** — "Last reconciled", "Active racks", etc. — is explicitly
-marked dev only. That likely answers the rack-banner question below too: same
-category of thing.
+marked dev only. ⚠️ I initially guessed this also covered the "Rack N is ready"
+panel. Checking the code showed it does not — see §4.
 
 ### 2. The active-session widget lives outside the machine
 
@@ -87,15 +94,41 @@ running.
 | Log out | Top-level button (`Dashboard.jsx:507`) | Under the **Edge Athlete logo** — click the logo to reveal |
 | Change device | Top-level button (`Dashboard.jsx:508`) | **Settings → rack setup only** (already exists there, `Dashboard.jsx:193`) |
 
-### 4. The rack-status banners
+### 4. The rack-status banners — **what they actually are**
 
-"Rack 1 is ready" and friends sit at the bottom of every tab.
+Checked against the code 2026-07-30, because the earlier description here was
+written from memory and was wrong in two ways.
 
-**Needs justification or removal.** Question to answer before deciding: does a
-coach ever act on that line, or is it just reassurance that the plumbing works?
-If it is a debugging artifact, it goes. If it is genuinely load-bearing during a
-session, it belongs in the Session state — not on the Planning and Analytics
-screens.
+`"Rack N is ready"` is `Dashboard.jsx:495`:
+
+```jsx
+{!workoutSet
+  ? <StatePanel title={`Rack ${selectedRack.rack_number} is ready`}
+               body="No completed set saved for this rack." />
+  : /* the set hero, charts, hardware */}
+```
+
+**It is not a banner, and it is not on every tab.** It is an **empty state** in
+the Room view's detail pane, shown when you select a rack that has no completed
+set yet. It is one of ten `StatePanel` uses across the coach screen — the same
+component behind "Choose an athlete", "No completed training days", "The room is
+ready".
+
+**So my earlier guess was wrong.** I suggested it was the same category as the
+dev-only top bar. It is not: the dev bar is diagnostics, while this one is
+answering a real question a coach has — *"is this rack broken, or has nobody
+lifted yet?"* It distinguishes **rack assigned, waiting** from **no rack
+assigned** (which is a different panel entirely).
+
+**Revised recommendation:** keep the behaviour, fix the wording. "Ready" reads
+like a hardware status claim — and the system genuinely cannot know whether the
+sensor is alive from the absence of a set. Something closer to *"No sets logged
+at Rack N yet"* says exactly what is true without implying a health check the
+code never did.
+
+Still open: whether the *other* `StatePanel` empty states survive the regrouping
+unchanged, since several of them ("Choose an athlete") may become unreachable once
+athlete selection moves.
 
 ---
 
@@ -154,6 +187,13 @@ Append as we go. Date each entry.
 - **2026-07-30** — **States resolved.** Grouped by *when a coach needs the thing*
   (before / during / after), not by re-slicing the existing tabs. Notes
   deliberately appears in both SESSION (add) and ANALYTICS (review).
+- **2026-07-30** — **Session quick-notes APPROVED** for the SESSION state. Name
+  still to be chosen; "mid-floor" rejected.
+- **2026-07-30** — **"Rack N is ready" investigated.** Not a banner and not
+  per-tab — it is an empty state in the Room detail pane (`Dashboard.jsx:495`),
+  one of ten `StatePanel` uses. My guess that it was dev-only diagnostics was
+  **wrong**; it answers a real coach question. Recommend keeping the behaviour and
+  rewording, since "ready" implies a hardware check the code never performs.
 - **2026-07-30** — **Session timer needs no API.** `started_at` is already in the
   room-state payload; compute elapsed client-side. No backend change anywhere in
   this redesign.
