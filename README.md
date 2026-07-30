@@ -62,9 +62,38 @@ docker compose exec django python manage.py seed_active_session --reset
 1. **A plan stores a percent, not pounds.** A coach prescribes "Back Squat 5×3 at
    80%" once for a whole group; each athlete's bar weight is resolved at read time
    against their own current reference max. There is no target-weight column.
+   ⚠️ That reference max is what the athlete can do *now*, so it can go **down** —
+   and prescribed weights are meant to follow it down. That is the design, not a
+   bug. [`docs/HANDOFF.md`](docs/HANDOFF.md) §1 explains why, and what the tempting
+   wrong fix breaks.
 2. **The rack experience is frozen.** `react/src/rack/`, `react/src/db/repBuffer.js`
    and `react/src/device.js` are a fixed contract — they ship and they work. Don't
    edit them; build alongside.
+
+### Changing the training math
+
+Every number a coach or sports scientist might argue with lives in **one file**:
+[`django/event_handler/services/tuning.py`](django/event_handler/services/tuning.py).
+The functions that use those numbers sit beside it in `lifting_math.py`.
+
+| To change | Edit |
+|---|---|
+| How generous the 1RM estimate is | `tuning.EPLEY_DIVISOR` |
+| Which rep counts are trusted for an estimate | `tuning.MIN/MAX_REPS_FOR_ESTIMATE` |
+| Bar rounding (5 lb → 2.5 lb plates) | `tuning.LOADING_INCREMENT_LBS` |
+| How long "resting" lasts / when a sensor reads stale | `tuning.RESTING_WINDOW`, `tuning.NODE_STALE_AFTER` |
+| The 1RM formula itself (Epley → Brzycki) | `lifting_math.one_rep_max()` — one line |
+| **Rep colour (green/yellow/red)** | `react/src/rack/velocity.js` — **frozen**, see below |
+
+Two deliberate exclusions, both explained in `tuning.py`:
+
+- **Operational guards stay put** (`MAX_CSV_BYTES`, `MAX_PDF_PAGES`, `SET_LIMIT`).
+  They protect one piece of code rather than expressing a view about training, so
+  they live next to it. Keep `tuning.py` short or it stops being findable.
+- **The velocity-colour threshold can't move.** The tablet computes each rep's
+  colour and POSTs it — the server only stores what it was told, so there is no
+  second copy. Changing it means touching the frozen rack contract *and* accepting
+  that every colour already stored was computed under the old threshold.
 
 ---
 
