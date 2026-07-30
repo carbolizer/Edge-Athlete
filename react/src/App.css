@@ -423,6 +423,44 @@
 .training-day-conflict-actions { display:flex; gap:8px; }
 .training-day-conflict-actions button { min-height:42px; padding:9px 15px; }
 
+/* ── the training calendar ─────────────────────────────────────────────────
+   Each slot's STATE is the thing a coach is reading, so it carries the colour:
+   planned is quiet, ready is amber (waiting on you), running is lime (live),
+   complete is muted. */
+.schedule-workspace { display:flex; flex-direction:column; gap:16px; }
+.schedule-past-toggle button { min-height:38px; padding:7px 14px; }
+.schedule-past-toggle button.workout-secondary { background:transparent; border:1px solid var(--line); color:var(--muted); }
+.schedule-errors { border:1px solid var(--red,#e0574e); padding:12px; }
+.schedule-errors p { color:var(--red,#e0574e); font-size:11px; line-height:1.5; margin:0; }
+.schedule-day-list { display:flex; flex-direction:column; gap:14px; }
+.schedule-day { border:1px solid var(--line); }
+.schedule-day>header { align-items:baseline; border-bottom:1px solid var(--line); display:flex; gap:12px; justify-content:space-between; padding:12px 14px; }
+.schedule-day>header h4 { font-size:14px; margin:0; }
+.schedule-day>header span { color:var(--muted); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+.schedule-slot-list { display:flex; flex-direction:column; }
+.schedule-slot { align-items:center; border-top:1px solid var(--line); display:flex; gap:14px; justify-content:space-between; padding:12px 14px; }
+.schedule-slot:first-child { border-top:none; }
+.schedule-slot-main h5 { font-size:13px; margin:2px 0; }
+.schedule-slot-main p { color:var(--muted); font-size:11px; margin:0; }
+.schedule-slot-main small { color:var(--muted); font-size:10px; opacity:.8; }
+.schedule-slot-state { font-size:9px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
+.schedule-slot.is-planned .schedule-slot-state { color:var(--muted); }
+.schedule-slot.is-ready { border-left:3px solid var(--amber,#e0a33e); }
+.schedule-slot.is-ready .schedule-slot-state { color:var(--amber,#e0a33e); }
+.schedule-slot.is-running { border-left:3px solid var(--lime); }
+.schedule-slot.is-running .schedule-slot-state { color:var(--lime); }
+.schedule-slot.is-done { opacity:.62; }
+.schedule-slot-actions { align-items:center; display:flex; flex:none; gap:8px; }
+.schedule-slot-actions button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:38px; padding:7px 13px; }
+.schedule-slot-actions button.workout-secondary { background:transparent; border-color:var(--line); color:var(--muted); }
+.schedule-slot-actions button:disabled { cursor:not-allowed; opacity:.45; }
+.schedule-move { color:var(--muted); display:flex; flex-direction:column; font-size:9px; gap:3px; letter-spacing:.1em; text-transform:uppercase; }
+.schedule-move select { background:var(--panel,#0d1410); border:1px solid var(--line); color:var(--ink); font-size:12px; letter-spacing:0; min-height:38px; padding:6px 8px; text-transform:none; }
+
+@media (max-width:720px) {
+  .schedule-slot { align-items:flex-start; flex-direction:column; }
+}
+
 /* Report browsing */
 .reports-workspace { display:grid; gap:14px; }
 .reports-heading { align-items:end; background:linear-gradient(110deg,#18241e,#10171b 68%); border:1px solid #2b4034; display:flex; gap:20px; justify-content:space-between; padding:24px 28px; }
