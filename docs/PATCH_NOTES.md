@@ -1,19 +1,4 @@
 # Patch notes — `merge-braydon`
-
-What changed on this branch, phase by phase, and how to see each thing working.
-
-**Scope:** merging Braydon's coach frontend onto the base station API, plus the
-planning, reporting, scheduling and analytics the merged product needed. Fifteen
-phases, each tagged (`p1-complete` … `p15-complete`).
-
-| | |
-|---|---|
-| Files changed | 82 |
-| Lines | +10,655 / −659 |
-| Tests | 280 backend · 131 frontend |
-| Migrations | `0008` → `0017` |
-| Frozen | `react/src/rack/*`, `repBuffer.js`, `device.js` — untouched, checked every phase |
-
 ## How to read the click paths
 
 Every path starts at `http://localhost/` on a browser with no device role yet.
@@ -102,19 +87,48 @@ left-hand list.
 
 ## P4 · Freeze the day, roll maxes forward
 
-Ending a training day writes an **immutable** `DailyReport` snapshot and
-recalculates every athlete's reference max from what they actually lifted.
+Pressing **End training day** does two things in one transaction, and they are
+**two different records** pointing in opposite directions in time.
+
+| | `DailyReport` | `AthleteReferenceMax` |
+|---|---|---|
+| Answers | *What happened on Tuesday?* | *What can this athlete lift right now?* |
+| Scope | one **session** | one **athlete + one movement** |
+| How many | one per finished day, forever | one current row per athlete per movement |
+| Changes? | **never** — written once | often, and it can go **down** as well as up |
+| Shape | a JSON snapshot of the whole day | one number, plus where it came from |
+
+**The report looks backwards.** It is the one deliberate exception to this
+codebase's derive-don't-store rule: it has to keep saying what was true on the day
+it was generated. Recompute it on demand and a coach editing next week's program
+would silently rewrite last month's history.
+
+**The reference max looks forwards.** It is the anchor every future percentage
+multiplies against — "5×3 @ 80%" means 80% of *this* number.
+
+> ⚠️ **A reference max is not a personal best.** It tracks what an athlete can do
+> *now*, so a rough patch should pull prescribed weights back rather than keep
+> grinding them against a number from March. Lifetime bests are a separate thing:
+> `is_weight_pr` / `is_velocity_pr` are computed from `Set` history when a set is
+> completed (`_personal_records()` in `views.py`), not stored anywhere.
 
 | File | Change |
 |---|---|
 | `migrations/0010_daily_report.py` | The snapshot table |
-| `services/session_completion.py` | Ending a day, atomically |
+| `services/session_completion.py` | Ending a day, atomically — both records at once |
 | `services/reports.py`, `report_pdf.py` | The reports family and PDF |
-| `views.py`, `urls.py` | `reports/`, `reference-maxes/` |
+| `views.py`, `urls.py` (`reports/`) | Reading finished days |
+| `views.py`, `urls.py` (`reference-maxes/`) | Recording what an athlete can lift |
 
-**See it:** `localhost` > **Coach Admin** > log in > **End training day** > **Confirm
-end** — the finished report appears in place. Then **reports** tab > pick a day >
-**Download PDF**.
+**See the report:** `localhost` > **Coach Admin** > log in > **End training day** >
+**Confirm end** — the finished report appears in place. Then **reports** tab >
+pick a day > **Download PDF**.
+
+**See the reference max move:** before ending a day, note an athlete's target
+weight on the **programs** tab (*Recorded prescriptions*). End the day, then look
+again — the target has followed their new max, because the same percentage
+resolved against a different anchor. `source` records whether a number was entered by a coach or estimated from
+lifting, and `source_session` records which day produced it.
 
 > Ending is a `PATCH` on the session, not a separate `end/` route: "end the day"
 > **is** "set its end time", and a second route would be two ways to do one thing.
