@@ -41,24 +41,27 @@ The rack contract stays frozen. This work never touches `react/src/rack/`.
 Navigation between them via a **glassmorphism navbar**, colours matched to the
 existing UI pattern (`theme.js`).
 
-> **Open — the mapping is not 1:1.** There are eight tabs today and three states.
-> Some tabs are *phase* scoped and some are *athlete* scoped, which is a different
-> axis entirely. Working list, to be argued with:
->
-> | Today's tab | Guess at a home | Note |
-> |---|---|---|
-> | `workouts` | Planning | Block/program catalog |
-> | `schedule` | Planning | Calendar |
-> | `programs` | Planning? | But it is scoped to one athlete |
-> | `room` | Session | The live floor |
-> | `reports` | Analytics | |
-> | `history` | Analytics | Athlete-scoped |
-> | `athlete` | ? | Athlete summary — reads like all three |
-> | `notes` | ? | Coach memory, relevant in every state |
->
-> **The real question:** is "which athlete am I looking at" a *fourth* dimension
-> that cuts across all three states, rather than a set of tabs? If so, the athlete
-> tabs may become a panel or drill-down that any state can open, not destinations.
+**RESOLVED 2026-07-30 — the states are a grouping by WHEN, not a re-slicing of
+tabs.** The question was "which tab goes where"; the answer is that the tabs were
+never the unit. Each state answers one question:
+
+| State | The question | Holds |
+|---|---|---|
+| **PLANNING** | What is coming up? | TrainingBlock create + **promotion from a TrainingProgram** · TrainingProgram create + instantiation · Calendar · Groups |
+| **SESSION** | What is happening right now? | Room view · settings cog → `coach/setup` · quick athlete notes · dev-only top bar · the active-session widget |
+| **ANALYTICS** | What happened? | History · Athlete · Notes · Reports |
+
+Devin's framing: *"basically this is a glorified grouping of tabs."* Not a
+rebuild — a re-shelving. Worth holding onto, because it keeps the work small.
+
+**Notes appears in two states on purpose.** In SESSION it is optimised for
+*adding* — a quick thought about any athlete, mid-floor, fast. In ANALYTICS it is
+for *reviewing*. Same data, two affordances. Possibly a stripped-down athlete view
+rides along with the session variant (TBD).
+
+**The dev-only top bar** — "Last reconciled", "Active racks", etc. — is explicitly
+marked dev only. That likely answers the rack-banner question below too: same
+category of thing.
 
 ### 2. The active-session widget lives outside the machine
 
@@ -66,6 +69,16 @@ Stays exactly where it is and how it looks — a persistent bar, not a state.
 
 Longer term this becomes the slot for **other important notifications** too, so
 design it as a general strip rather than a session-specific one.
+
+**Add: a derived timer counting up** — how long the current session has been
+running.
+
+> ✅ **This needs no new API.** Devin flagged it as the one place a backend change
+> might be required. It is not: `services/room_state.py:369` already returns
+> `session.started_at` in the room-state payload, unconditionally. The timer is
+> `now − started_at`, ticked locally — exactly the pattern the rack screen already
+> uses for its own per-second timers. **The zero-backend-change constraint holds
+> for the whole redesign.**
 
 ### 3. Less chrome on the main screen
 
@@ -120,7 +133,7 @@ behaviour, not assumed:
 
 ## Open questions
 
-1. Where do the four athlete-scoped tabs live? (See the mapping table.)
+1. ~~Where do the athlete-scoped tabs live?~~ **Answered — see the state table.**
 2. Is the state machine **global** (whole screen switches) or does the active
    session widget imply a persistent frame around it?
 3. Does entering SESSION require an open day — and if none is open, does the state
@@ -138,3 +151,9 @@ behaviour, not assumed:
 Append as we go. Date each entry.
 
 - **2026-07-30** — Doc created. Vision captured from Devin; nothing decided yet.
+- **2026-07-30** — **States resolved.** Grouped by *when a coach needs the thing*
+  (before / during / after), not by re-slicing the existing tabs. Notes
+  deliberately appears in both SESSION (add) and ANALYTICS (review).
+- **2026-07-30** — **Session timer needs no API.** `started_at` is already in the
+  room-state payload; compute elapsed client-side. No backend change anywhere in
+  this redesign.
