@@ -420,28 +420,32 @@ def sessions_active(request):
     session without asking again: who's on the roster, each athlete's current
     maxes, and the planned exercises with their targets + velocity zones.
 
-    MINIMAL-PATH SHAPE (documented seam — see the design note in models.py's
-    AthleteMax and the sprint brief). This mirror is built on the existing seven
-    models, so it differs from the full Phase 10/11 contract in three ways, all
-    intentional:
-      1. `exercise_id` is the Exercise catalog id (Program, Set, and reference
-         maxes all link to that one catalog now), with the display `name`
-         riding alongside it in session_exercises.
-      2. `session_exercises[]` omits `target_weight_percent` (that lives on the
-         not-yet-built SessionExercise model). It still carries the velocity
-         zone, which is where the tablet reads it from to color reps.
-      3. Each roster entry carries a RESOLVED absolute `targets` map
-         {exercise_id: target_weight_lbs}, sourced straight from the athlete's
-         Program. This is the minimal stand-in for the full contract's
-         "percent x max" math: later, that same number gets computed server-side
-         from `session_exercises[].target_weight_percent` x
-         `roster[].maxes[exercise_id]`, and the frontend that reads
-         `targets[exercise_id]` never changes.
+    THE SEAM, AND WHY THIS SHAPE NEVER CHANGED.
+    Each roster entry carries a RESOLVED absolute `targets` map
+    {exercise_id: target_weight_lbs}. The tablet READS that number; it has never
+    computed anything from a percent and a max, and it must not start.
 
-    `maxes` is real (from AthleteReferenceMax — each athlete's newest row per
-    exercise); an athlete/exercise with no reference simply has no key, which is
-    what triggers the Phase 11 inline "set your max" entry. (Wire key stays
-    `maxes` to match the Phase 10/11 contract; it carries reference maxes.)
+    That was a deliberate bet made while the plan still stored one typed weight
+    per athlete: keep the resolved number on the wire, and a future
+    percent-of-max system can compute the SAME field server-side without the
+    tablet noticing. The bet paid — plans now store `target_percent`, the pounds
+    are worked out in services/plan_resolution.py, and this response shape did
+    not move by a single field. That is why react/src/rack/ is frozen. See §6.3.
+
+      1. `exercise_id` is the Exercise catalog id — every plan row, Set, and
+         reference max links to that one catalog — with the display `name`
+         riding alongside it in session_exercises.
+      2. `session_exercises[]` carries the velocity zone, which is where the
+         tablet reads it from to color reps. It deliberately does NOT carry
+         `target_percent`: percentages are resolved here, not on the tablet.
+
+    `maxes` (from AthleteReferenceMax — each athlete's newest row per exercise)
+    rides along for coach-side callers. ⚠️ THE RACK SCREEN DOES NOT READ IT and
+    never has; it reads `targets`. Do not "fix" a weight bug by reaching for this
+    map on the tablet — the fix belongs in plan_resolution.py.
+
+    ⚠️ REFERENCE max, not a lifetime best. It is what the athlete can do NOW, so
+    it can go DOWN, and prescribed weights are supposed to follow it down.
 
     "Active" comes from `_active_session()` — the one definition every endpoint
     shares, so the rack and the coach tablet can never disagree about which
