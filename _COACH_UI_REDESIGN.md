@@ -227,6 +227,48 @@ Shipped:
 
 ---
 
+### 5. The athlete selector — ✅ decided 2026-07-30
+
+Lives in **both** SESSION and ANALYTICS, in two forms:
+
+| State | Form |
+|---|---|
+| **SESSION** | Stripped down — pick a person fast, mid-floor. Pairs with quick-notes |
+| **ANALYTICS** | Full selector — this is where you comb through a person's record |
+
+Not in PLANNING: planning is group- and program-scoped, not per-athlete.
+
+### 6. Wall vs coach — the rule, for when it comes up again
+
+They are **already separate components** (`WallView` / `CoachView`). Only the file
+is shared, because both are driven by one `useLiveRoomState` hook.
+
+**The rule lives in `services/room_state.py` — `include_details`:**
+
+| | Wall (`false`) | Coach (`true`) |
+|---|---|---|
+| Names, numbers | ✅ | ✅ |
+| **Database ids** | ❌ | ✅ |
+| **Participant roster** | ❌ | ✅ |
+
+So, to decide where anything belongs:
+
+1. **Needs to be clickable?** → Coach. The wall has no ids, so nothing on it *can*
+   link anywhere. This is structural, not a style choice.
+2. **Shows people who have not lifted yet?** → Coach. The roster is withheld from
+   the wall.
+3. **Glanceable across a room, no login, no input?** → Wall.
+
+This is why "wall should surpass and absorb coach features" mostly cannot happen:
+the wall's payload deliberately withholds the ids those features need. The detail
+level *is* the privilege boundary (§6.4).
+
+**File split: deferred.** Low value now — they are already separate components,
+and splitting costs shared-hook wiring for tidiness alone. Revisit after the state
+machine lands, when the coach side has actually changed shape.
+
+---
+
 ## The principle underneath all of it
 
 **Only show what is possible right now.**
@@ -294,6 +336,15 @@ Append as we go. Date each entry.
 - **2026-07-30** — Noted that `Dashboard.jsx` renders BOTH the wall display and the
   coach tablet from one file, with two separate "ready" strings. Splitting it is
   likely its own cleanup item.
+- **2026-07-30** — **Athlete selector decided:** SESSION (stripped) + ANALYTICS
+  (full). Not in PLANNING, which is group-scoped.
+- **2026-07-30** — **Wall/coach rule written down:** `include_details` is the
+  boundary — ids and roster are coach-only, so anything clickable is structurally
+  coach-only. File split deferred; the components are already separate.
+- **2026-07-30** — **BUG FOUND, not yet fixed:** `ProgramsTab` renders
+  `key={program.id}`, and `/api/prescriptions/` returns `"id": None` for every row
+  (the old `Program` table is gone; the replacement is derived). Every React key is
+  null — switching athletes can leave stale cards.
 - **2026-07-30** — **Ran the test on all 14 `StatePanel` uses.** One delete (§4),
   four to collapse into a single state-level guard, one missing its action link,
   eight fine. Confirmed origin is useless as a signal: all 14 exist verbatim on
