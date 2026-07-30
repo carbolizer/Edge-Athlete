@@ -1093,7 +1093,45 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 > ⚠️ **`GET /api/analytics/session/{id}/` is still prose-only. Same trap, still
 > unsprung.**
 
-| **P14 — Scheduling: a program lays its days onto dates (D20)** | A `TrainingProgram` has a `start_date` and its block has a cadence, but nothing ever turns those into dates. Add a schedule of slots, and let a coach create a session from one. | Deploying a block generates one slot per training day for `duration_weeks`; a coach can create a session from a slot and start it separately; moving a slot is a date change and regenerates nothing; editing the block's cadence afterwards moves no existing slot. |
+| ✅ **P14 — Scheduling: a program lays its days onto dates (D20)** — DONE 2026-07-30 | A `TrainingProgram` has a `start_date` and its block has a cadence, but nothing ever turns those into dates. Add a schedule of slots, and let a coach create a session from one. | Deploying a block generates one slot per training day for `duration_weeks` ✅; a coach can create a session from a slot and start it separately ✅ (clicked); moving a slot is a date change and regenerates nothing ✅ (clicked); editing the block's cadence afterwards moves no existing slot ✅. 260 backend / 131 frontend. |
+
+> **P14 as built (2026-07-30).** Four commits, migrations `0016` + `0017`.
+> - **Step 1 — `started_at` is nullable.** Null means created-but-not-started.
+>   ⚠️ The consequence matters more than the schema: **"active" now means STARTED
+>   and not ended.** Postgres sorts NULLs FIRST descending, so without that filter
+>   next Thursday's session sorts ahead of the day being trained and the racks
+>   follow it — D18 with a calendar bolted on. Because P12 had already folded four
+>   hand-written copies of that query into one helper, this really was the one-line
+>   change this document promised. Sabotage-checked: removing the filter fails 5 of
+>   7 tests.
+>   The migration is safe on existing data — dropping `auto_now_add` does not touch
+>   written rows. It broke **24 existing tests**, all fixtures expecting a session
+>   to be live; fixed by category, not one blunt sweep.
+> - **Step 2 — the generator.** First code ever to read `cadence_days_of_week` or
+>   `duration_weeks`. Rotation follows **day order, not weekday**, so a two-day
+>   block on a three-day cadence keeps cycling instead of leaving Fridays empty.
+>   Weeks count from the start date, so a Wednesday start gets that Wed + Fri.
+>   ⚠️ **Cadence is a CHECKBOX selector** and always emits week-ordered tokens —
+>   nobody types it. The gap was that the column was an unvalidated `CharField`;
+>   it is now validated at the boundary so the generator can trust it.
+> - **Step 3 — the routes.** Starting is `POST sessions/{id}/start/`, NOT a PATCH:
+>   `PATCH sessions/{id}/` with an empty body already means *end the day now*, and
+>   start/end are opposites.
+>   ⚠️ **A real error of mine:** I made `ScheduledSession.training_program_workout`
+>   PROTECT. It protected nothing (no route deletes a program day) and made the
+>   whole PROGRAM undeletable, breaking the seeder's `--reset`. `0017` makes it
+>   CASCADE. Found by using it, not by the 25 passing tests.
+> - **Step 4 — the schedule tab.** Four states, one next step each. Ending a day is
+>   deliberately NOT here — it stays next to the room it is ending.
+>   ⚠️ `new Date("2026-08-05")` is midnight **UTC**, an evening earlier in the
+>   Americas; the whole calendar would have rendered a day early. The label parses
+>   the parts as a local date.
+>
+> **Seeder fixes this phase, all the same shape — it must CONVERGE on the state it
+> promises, not depend on running first:** `get_or_create(defaults=…)` only applies
+> on create (cadence stayed blank), every run created a fresh program (each with
+> its own calendar, so three reseeds showed three overlapping slots per day), and
+> `now().date()` was used where a calendar date wants `localdate()`.
 | **P15 — Promote a program into a block (D21)** | Turn any `TrainingProgram` — one written by hand, or one edited after deployment — into a new reusable `TrainingBlock`. | A program with days and prescription rows becomes a block holding the same days and rows; the program's `training_block` then points at it; the program itself is unchanged. |
 
 **⚠️ D21 — "promotion" does not exist, and this canon has been WRONG about it.** Two docstrings and this
