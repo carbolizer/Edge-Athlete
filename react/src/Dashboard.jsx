@@ -315,22 +315,19 @@ function CoachHardware({ rack }) {
   );
 }
 
-// ⚠️ These two tabs need more than /api/analytics/athlete/{id}/ currently
-// returns. It sends a flat velocity trend; they were built against a payload
-// with a summary block, per-movement aggregates, and the individual reps behind
-// each set. The data exists in Set and Rep — the read was never written.
-//
-// Saying so is better than the alternatives: crashing took the whole coach view
-// down with it, and rendering anyway would show "0 reps" for an athlete who
-// lifted, which is worse than admitting the number isn't here.
-function AnalyticsMissing({ what }) {
-  return <StatePanel title={`${what} isn't available yet`}
-    body="This view needs a fuller performance history than the base station currently reports. The training data is all recorded — it just isn't being read back yet." />;
+// P13 wrote the read these two tabs were built against, so the "isn't available
+// yet" panel they used to show is gone. What replaces it is NOT a removed guard:
+// an athlete with no completed sets is an ordinary, permanent state — a new
+// signing, or someone who has only ever had false sets — and it needs its own
+// answer rather than an empty grid of dashes.
+function NothingRecordedYet({ what }) {
+  return <StatePanel title={`No ${what} yet`}
+    body="Completed sets will appear here once this athlete has trained. False sets and coach weight adjustments are deliberately left out." />;
 }
 
 function AthleteSummaryTab({ context }) {
   if (!context) return <StatePanel title="Choose an athlete" body="Select an athlete to load their saved performance context." />;
-  if (!context.summary || !context.exercise_summaries) return <AnalyticsMissing what="The performance summary" />;
+  if (!context.summary?.completed_sets) return <NothingRecordedYet what="recorded performance" />;
   return <div className="context-tab-content">
     <section className="context-athlete-hero"><div><span>Athlete overview</span><h2>{context.athlete.name}</h2><p>History since {new Date(context.athlete.created_at).toLocaleDateString()}</p></div><div className="context-summary-grid">
       <div><span>Completed sets</span><strong>{context.summary.completed_sets}</strong></div><div><span>Total reps</span><strong>{context.summary.completed_reps}</strong></div><div><span>Best set avg</span><strong>{velocity(context.summary.best_average)} <small>m/s</small></strong></div><div><span>Highest peak</span><strong>{velocity(context.summary.highest_peak)} <small>m/s</small></strong></div><div><span>Heaviest load</span><strong>{context.summary.heaviest_weight ?? "--"} <small>lbs</small></strong></div>
@@ -386,11 +383,7 @@ function HistorySetCard({ workoutSet, expanded, onToggle }) {
 function HistoryTab({ context }) {
   const [expandedSetId, setExpandedSetId] = useState(null);
   if (!context) return <StatePanel title="Choose an athlete" body="Select an athlete to review their set history." />;
-  // The trend we get back carries no session and no rep counts, so this would
-  // render every day as "Unlabeled workout · 0 reps" — confidently wrong.
-  if (!context.sets?.some((s) => s.session || s.reps_completed != null)) {
-    return <AnalyticsMissing what="Set history" />;
-  }
+  if (!context.sets?.length) return <NothingRecordedYet what="set history" />;
   const days = groupHistorySets(context.sets);
   return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>Open any set for a rep-by-rep velocity comparison.</p></header>
     {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}

@@ -1063,7 +1063,35 @@ Every gate implicitly includes: **backend tests green + §2.1 frozen-file check 
 > Auto-closing writes an immutable `DailyReport` with nobody watching, so it is not
 > obviously safer than requiring a human to end it.
 
-| **P13 — The athlete analytics read (D19)** | His `athlete` and `history` tabs were built on an analytics endpoint we never wrote. Widen `analytics/athlete/{id}/` to return the athlete, a summary, per-exercise aggregates, and per-set reps. | The athlete and history tabs load for a real athlete; the rep-by-rep comparison works; a coach with no completed sets sees an empty state rather than an error; documented in `SPEC.md` + `MESSAGE_CONTRACT.md`. |
+| ✅ **P13 — The athlete analytics read (D19)** — DONE 2026-07-29 | His `athlete` and `history` tabs were built on an analytics endpoint we never wrote. Widen `analytics/athlete/{id}/` to return the athlete, a summary, per-exercise aggregates, and per-set reps. | The athlete and history tabs load for a real athlete ✅ (clicked); the rep-by-rep comparison works ✅ (clicked); a coach with no completed sets sees an empty state rather than an error ✅ (clicked); documented in `SPEC.md` + `MESSAGE_CONTRACT.md` ✅. 207 backend / 108 frontend. |
+
+> **P13 as built (2026-07-29).** New `services/athlete_analytics.py`, derived per
+> request, no new tables. Two rules in it are load-bearing and easy to break:
+> - **The summary spans ALL history; only `sets` is truncated** (50 most recent,
+>   100 reps per set). The UI promises "summaries include all history", so totals
+>   taken from the truncated list would make the screen quietly lie. Aggregated in
+>   the database; a test pins it.
+> - **Every set carries a `measured` block, always** — with `null` inside it when
+>   there aren't two reps. The coach UI reads
+>   `measured.first_to_last_change_percent` with no optional chaining, so omitting
+>   it is a thrown TypeError, and React unmounts the whole root on a render error.
+>   That is a black screen, and it is the same failure mode as the seven bugs P7
+>   found. A test pins this too.
+>
+> **`Set` has no rack column** (D11 dropped it), so `rack_number` comes from the
+> set's NODE — where it was recorded — and is null when the node is gone.
+>
+> **The "isn't available yet" panels are gone, replaced by a genuine empty state.**
+> Not the same thing as deleting a guard: an athlete with no completed sets is a
+> permanent, ordinary condition (a new signing, or someone with only false sets),
+> and it needs its own answer rather than a grid of dashes.
+>
+> ✅ **This also closes a pre-merge open question** recorded in `SPEC.md` §"Known
+> gaps": the analytics response contract was prose-only, with the note "pin down
+> the actual JSON shape … so Phase 14 isn't guessing". It came true in the other
+> direction — the coach front end guessed first and broke on arrival.
+> ⚠️ **`GET /api/analytics/session/{id}/` is still prose-only. Same trap, still
+> unsprung.**
 
 | **P14 — Scheduling: a program lays its days onto dates (D20)** | A `TrainingProgram` has a `start_date` and its block has a cadence, but nothing ever turns those into dates. Add a schedule of slots, and let a coach create a session from one. | Deploying a block generates one slot per training day for `duration_weeks`; a coach can create a session from a slot and start it separately; moving a slot is a date change and regenerates nothing; editing the block's cadence afterwards moves no existing slot. |
 | **P15 — Promote a program into a block (D21)** | Turn any `TrainingProgram` — one written by hand, or one edited after deployment — into a new reusable `TrainingBlock`. | A program with days and prescription rows becomes a block holding the same days and rows; the program's `training_block` then points at it; the program itself is unchanged. |

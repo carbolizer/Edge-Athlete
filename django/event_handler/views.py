@@ -54,6 +54,7 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           BlockCategorySerializer, TrainingGroupCoachSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
 from .services.active_session import active_session, open_sessions
+from .services.athlete_analytics import athlete_analytics
 from .services.room_state import room_state_snapshot
 from .services.session_completion import end_session
 from .services.reports import (AthleteNotInReport, reports_for_athlete, report_list_item,
@@ -859,15 +860,28 @@ def analytics_session(request, session_id):
 @api_view(["GET"])
 @permission_classes([IsCoach])
 def analytics_athlete(request, athlete_id):
-    """Coach-only: an athlete's velocity trend across their sets (oldest first)."""
-    sets = Set.objects.filter(athlete_id=athlete_id, is_false_set=False,
-                              is_coach_adjustment=False).select_related("exercise").order_by("started_at")
-    trend = [{
-        "set_id": s.id, "exercise": s.exercise.name, "weight_lbs": s.weight_lbs,
-        "avg_velocity": s.avg_velocity, "peak_velocity": s.peak_velocity,
-        "ended_at": s.ended_at.isoformat() if s.ended_at else None,
-    } for s in sets]
-    return Response({"athlete_id": int(athlete_id), "sets": trend})
+    """Coach-only: everything the athlete and history tabs need (P13).
+
+    One call answers both of a coach's questions about a person: how are they
+    doing overall (`summary` and `exercise_summaries`), and what did they
+    actually do (`sets`, each with its reps). One request rather than three,
+    because these tabs sit side by side and a coach flips between them.
+
+    ⚠️ `summary` is aggregated across ALL history while `sets` is capped at the
+    50 most recent — the UI tells the coach exactly that, so totals computed from
+    the truncated list would make the screen lie. See services/athlete_analytics.py.
+
+    This WIDENED an older response that returned only `{athlete_id, sets:[...]}`
+    with a flat velocity trend. `athlete_id` is kept for anything still reading
+    it; the per-set key was `set_id` and is now `id`, matching every other set
+    payload we serve.
+    """
+    context = athlete_analytics(athlete_id)
+    if context is None:
+        return Response({"error": "athlete not found"}, status=404)
+    # Retained alongside the new `athlete` block so an older caller does not
+    # break on the widening.
+    return Response({"athlete_id": int(athlete_id), **context})
 
 
 # ─────────────────────────── room state (derived) ───────────────────────────

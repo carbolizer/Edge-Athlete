@@ -34,7 +34,7 @@ These are real gaps, not stretch goals — they were deliberately deferred to ge
 
 - **Batch-POST failure/retry (affects Phase 11, hardens in Phase 16/18):** if `POST /api/sets/{id}/complete/` fails (e.g. an AP drop at the exact moment a set ends), there is currently no defined retry/backoff — the buffer only clears on success, but nothing describes what happens on failure. Fine for a controlled demo; needs a real answer before unattended/production use.
 - **Live cross-rack progress refresh (RESOLVED — retired 2026-07-20):** was deferred as "2b" — pushing a live update to a rack already displaying an athlete when that same athlete completes a set at a *different* rack. **Retired** by the Phase 11 Step 2 **single-rack ownership rule**: an athlete can only be checked in at one rack at a time (checking in elsewhere transfers ownership via a newer `RackCheckIn`), so their progress can't change anywhere else while they're displayed here. Fetch-on-check-in is sufficient; no live cross-rack push is needed. Kept here as a record of the decision.
-- **Analytics response contract (affects Phase 4, consumed by Phase 14):** `GET /api/analytics/session/{id}/` and `.../athlete/{id}/` only have a prose description, not an exact field list like every other endpoint. Pin down the actual JSON shape before or during Phase 4 so Phase 14 isn't guessing at what it receives.
+- ✅ **RESOLVED for the athlete route (merge P13, 2026-07-29): Analytics response contract.** `.../athlete/{id}/` now has an exact field list in `MESSAGE_CONTRACT.md` — athlete, summary, per-exercise aggregates, and per-set reps. The worry recorded here was real and came true in the other direction: the coach front end was written against a shape nobody had pinned down, and it broke on arrival. **`GET /api/analytics/session/{id}/` is still prose-only** — same trap, still unsprung.
 - **No rack "unassign" path (affects Phase 14):** only registration + assignment exist; there's no way to free a rack number back to the unassigned pool if a screen is retired or replaced.
 - **Clock reliability on the offline Pi (affects Phase 1/RUNBOOK, Phase 18):** the base station never touches the internet, so there's no NTP sync. If it lacks a hardware RTC, a cold boot could start with a wrong system clock, silently corrupting every `timestamp` field. Needs either an RTC module or a manual time-set step documented in the boot procedure.
 - **Stale `RackScreen` rows (affects Phase 16):** if a screen's `localStorage` is ever wiped, it registers a brand-new `device_id` and the old row is orphaned at its old rack number with no cleanup.
@@ -364,7 +364,11 @@ POST  /api/sets/{id}/complete/         *** THE BATCH WRITE ***            (open)
       effect: one bulk_create of all Rep rows + one Set update, single transaction
 
 GET   /api/analytics/session/{id}/     summary stats                      (coach only)
-GET   /api/analytics/athlete/{id}/     trend data                         (coach only)
+GET   /api/analytics/athlete/{id}/     athlete + summary + per-exercise
+                                      aggregates + per-set reps          (coach only)
+                                      Exact shape: MESSAGE_CONTRACT.md (P13).
+                                      Summary spans ALL history; `sets` is the
+                                      50 most recent. 404 if no such athlete.
 ```
 
 **Open (no auth):** node/rack/dashboard reads, rack-screen self-registration + assignment polling, and the set-complete write.
@@ -802,7 +806,8 @@ Coach-only (IsCoach):
   POST  /api/prescriptions/
   POST  /api/sessions/  PATCH /api/sessions/{id}/   (end = set ended_at=now)
   GET   /api/analytics/session/{id}/  aggregate: total sets, reps, avg velocity per athlete
-  GET   /api/analytics/athlete/{id}/  velocity trend across that athlete's sets
+  GET   /api/analytics/athlete/{id}/  the coach athlete+history context (widened
+                                     in merge P13 from a flat velocity trend)
 
 ## The batch write — POST /api/sets/{id}/complete/
 Body:

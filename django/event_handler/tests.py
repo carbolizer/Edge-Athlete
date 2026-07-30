@@ -25,6 +25,7 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      TrainingBlockExercise, BlockCategory, TrainingGroupCoach)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import instantiate_block, touch_block
+from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
 
 
 def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
@@ -1817,6 +1818,229 @@ class OneOpenSessionTests(APITestCase):
         progress = self.client.get(f"/api/sessions/active/athlete/{self.athlete.id}/progress/")
         self.assertEqual(progress.status_code, 200)
         self.assertNotEqual(current.id, stray.id)
+
+
+class AthleteAnalyticsTests(APITestCase):
+    """The athlete + history read (canon D19, P13).
+
+    His two tabs were built against a payload nobody had written. These tests pin
+    the parts that could go wrong QUIETLY — a total computed from a truncated
+    list, or a missing `measured` block — rather than loudly.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
+        self.session = TrainingSession.objects.create(label="Monday — Lower")
+
+    def _url(self, athlete_id=None):
+        return f"/api/analytics/athlete/{athlete_id or self.athlete.id}/"
+
+    def _set(self, exercise=None, *, number=1, weight=225.0, avg=0.8, peak=0.9,
+             reps=3, false=False, adjustment=False, ended=True, athlete=None,
+             session=None, node=None):
+        return Set.objects.create(
+            session=session or self.session, athlete=athlete or self.athlete,
+            exercise=exercise or self.squat, set_number=number,
+            weight_lbs=weight, avg_velocity=avg, peak_velocity=peak,
+            reps_completed=reps, is_false_set=false,
+            is_coach_adjustment=adjustment, node=node,
+            ended_at=timezone.now() if ended else None)
+
+    def _reps(self, workout_set, speeds):
+        for index, speed in enumerate(speeds, start=1):
+            Rep.objects.create(set=workout_set, rep_number=index,
+                               timestamp=timezone.now(), mean_velocity=speed,
+                               peak_velocity=speed + 0.05, duration_ms=800,
+                               velocity_color="green")
+
+    # ── the shape the tabs read ──────────────────────────────────────────────
+
+    def test_it_returns_the_athlete_block_the_hero_renders(self):
+        self._set()
+        data = self.client.get(self._url()).data
+        self.assertEqual(data["athlete"]["name"], "Jordan Lee")
+        self.assertIsNotNone(data["athlete"]["created_at"])
+
+    def test_the_summary_carries_every_field_the_grid_shows(self):
+        self._set(weight=225.0, avg=0.8, peak=0.9, reps=3)
+        self._set(number=2, weight=275.0, avg=0.7, peak=1.1, reps=2)
+        summary = self.client.get(self._url()).data["summary"]
+        self.assertEqual(summary["completed_sets"], 2)
+        self.assertEqual(summary["completed_reps"], 5)
+        self.assertEqual(summary["best_average"], 0.8)
+        self.assertEqual(summary["highest_peak"], 1.1)
+        self.assertEqual(summary["heaviest_weight"], 275.0)
+
+    def test_sets_carry_the_session_so_history_can_name_the_workout(self):
+        """Without this every training day renders as 'Unlabeled workout'."""
+        self._set()
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertEqual(row["session"]["label"], "Monday — Lower")
+
+    def test_a_set_reports_the_rack_from_its_node(self):
+        """`Set` has no rack column — D11 dropped it — so this comes from the
+        node that recorded the set."""
+        node = Node.objects.create(node_id="node-a", rack_number=3)
+        self._set(node=node)
+        self.assertEqual(self.client.get(self._url()).data["sets"][0]["rack_number"], 3)
+
+    def test_a_set_with_no_node_reports_no_rack_rather_than_failing(self):
+        self._set(node=None)
+        self.assertIsNone(self.client.get(self._url()).data["sets"][0]["rack_number"])
+
+    def test_reps_come_back_for_the_rep_by_rep_comparison(self):
+        workout_set = self._set()
+        self._reps(workout_set, [0.85, 0.80, 0.74])
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertEqual([r["rep_number"] for r in row["reps"]], [1, 2, 3])
+        self.assertEqual(row["reps"][0]["mean_velocity"], 0.85)
+        self.assertIsNotNone(row["reps"][0]["duration_ms"])
+
+    # ── the `measured` block must ALWAYS exist ───────────────────────────────
+
+    def test_every_set_has_a_measured_block_even_with_no_reps(self):
+        """The UI reads `measured.first_to_last_change_percent` with no optional
+        chaining, so omitting the block is a thrown TypeError — and React
+        unmounts the whole coach view on a render error. A black screen."""
+        self._set()
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertIn("measured", row)
+        self.assertIsNone(row["measured"]["first_to_last_change_percent"])
+
+    def test_measured_is_negative_when_the_athlete_slowed_down(self):
+        workout_set = self._set()
+        self._reps(workout_set, [1.0, 0.9, 0.8])
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertAlmostEqual(row["measured"]["first_to_last_change_percent"], -20.0)
+
+    def test_measured_is_positive_when_they_finished_faster(self):
+        """Signed rather than a 'loss', so speeding up is not a negative loss."""
+        workout_set = self._set()
+        self._reps(workout_set, [0.8, 1.0])
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertAlmostEqual(row["measured"]["first_to_last_change_percent"], 25.0)
+
+    def test_a_single_rep_has_no_first_to_last_change(self):
+        workout_set = self._set()
+        self._reps(workout_set, [0.9])
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertIsNone(row["measured"]["first_to_last_change_percent"])
+
+    # ── what counts as work ──────────────────────────────────────────────────
+
+    def test_false_sets_are_excluded(self):
+        self._set()
+        self._set(number=2, false=True, reps=5)
+        summary = self.client.get(self._url()).data["summary"]
+        self.assertEqual(summary["completed_sets"], 1)
+        self.assertEqual(summary["completed_reps"], 3)
+
+    def test_coach_adjustments_are_excluded(self):
+        """An adjustment moves the working load; nobody lifted for it (canon §6.5)."""
+        self._set()
+        self._set(number=2, adjustment=True, reps=9)
+        self.assertEqual(self.client.get(self._url()).data["summary"]["completed_sets"], 1)
+
+    def test_unfinished_sets_are_excluded(self):
+        """They have no ended_at, and the history view groups by day — one would
+        render as an 'Invalid Date' training day."""
+        self._set()
+        self._set(number=2, ended=False)
+        self.assertEqual(len(self.client.get(self._url()).data["sets"]), 1)
+
+    def test_another_athletes_sets_are_not_counted(self):
+        other = Athlete.objects.create(name="Sam Rivera")
+        self._set()
+        self._set(number=2, athlete=other, reps=7)
+        self.assertEqual(self.client.get(self._url()).data["summary"]["completed_reps"], 3)
+
+    # ── per-movement aggregates ──────────────────────────────────────────────
+
+    def test_exercise_summaries_aggregate_per_movement(self):
+        self._set(self.squat, number=1, weight=225.0, avg=0.8, reps=3)
+        self._set(self.squat, number=2, weight=275.0, avg=0.7, reps=2)
+        self._set(self.bench, number=3, weight=185.0, avg=0.6, reps=5)
+        rows = {r["exercise"]: r for r in self.client.get(self._url()).data["exercise_summaries"]}
+        self.assertEqual(rows["Back Squat"]["completed_sets"], 2)
+        self.assertEqual(rows["Back Squat"]["completed_reps"], 5)
+        self.assertEqual(rows["Back Squat"]["heaviest_weight"], 275.0)
+        self.assertEqual(rows["Back Squat"]["best_average"], 0.8)
+        self.assertEqual(rows["Bench Press"]["completed_sets"], 1)
+
+    def test_the_most_trained_movement_comes_first(self):
+        self._set(self.bench, number=1)
+        self._set(self.squat, number=2)
+        self._set(self.squat, number=3)
+        rows = self.client.get(self._url()).data["exercise_summaries"]
+        self.assertEqual(rows[0]["exercise"], "Back Squat")
+
+    # ── truncation must not corrupt the totals ───────────────────────────────
+
+    def test_the_set_list_is_capped_but_the_totals_are_not(self):
+        """The screen says "summaries include all history". If the totals came
+        from the truncated list, the screen would be quietly lying."""
+        for n in range(1, SET_LIMIT + 11):
+            self._set(number=n, reps=2)
+
+        data = self.client.get(self._url()).data
+        self.assertEqual(len(data["sets"]), SET_LIMIT)
+        self.assertTrue(data["truncated"])
+        self.assertEqual(data["summary"]["completed_sets"], SET_LIMIT + 10)
+        self.assertEqual(data["summary"]["completed_reps"], (SET_LIMIT + 10) * 2)
+
+    def test_the_truncated_list_keeps_the_MOST_RECENT_sets(self):
+        """A coach in the room is asking about what just happened."""
+        for n in range(1, SET_LIMIT + 6):
+            self._set(number=n)
+        numbers = [row["set_number"] for row in self.client.get(self._url()).data["sets"]]
+        self.assertEqual(numbers[0], SET_LIMIT + 5)
+        self.assertNotIn(1, numbers)
+
+    def test_truncated_is_false_when_everything_fits(self):
+        self._set()
+        self.assertFalse(self.client.get(self._url()).data["truncated"])
+
+    def test_reps_are_capped_per_set_and_flagged(self):
+        workout_set = self._set(reps=REP_LIMIT + 5)
+        self._reps(workout_set, [0.8] * (REP_LIMIT + 5))
+        row = self.client.get(self._url()).data["sets"][0]
+        self.assertEqual(len(row["reps"]), REP_LIMIT)
+        self.assertTrue(row["reps_truncated"])
+
+    def test_reps_truncated_is_false_for_an_ordinary_set(self):
+        workout_set = self._set()
+        self._reps(workout_set, [0.85, 0.8])
+        self.assertFalse(self.client.get(self._url()).data["sets"][0]["reps_truncated"])
+
+    # ── empty and missing ────────────────────────────────────────────────────
+
+    def test_an_athlete_who_has_never_lifted_gets_an_empty_context_not_an_error(self):
+        """A new signing is an ordinary state, not a failure."""
+        res = self.client.get(self._url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["summary"]["completed_sets"], 0)
+        self.assertEqual(res.data["summary"]["completed_reps"], 0)
+        # Null, not 0.0 — nobody has a best velocity before their first rep, and
+        # "0.00 m/s" would read as a measurement.
+        self.assertIsNone(res.data["summary"]["best_average"])
+        self.assertEqual(res.data["sets"], [])
+        self.assertEqual(res.data["exercise_summaries"], [])
+
+    def test_an_unknown_athlete_is_404(self):
+        self.assertEqual(self.client.get(self._url(99999)).status_code, 404)
+
+    def test_it_still_carries_athlete_id_for_older_callers(self):
+        """The response was widened, not replaced."""
+        self._set()
+        self.assertEqual(self.client.get(self._url()).data["athlete_id"], self.athlete.id)
+
+    def test_a_coach_login_is_required(self):
+        self.client.force_authenticate(user=None)
+        self.assertIn(self.client.get(self._url()).status_code, (401, 403))
 
 
 class CsvImportTests(APITestCase):

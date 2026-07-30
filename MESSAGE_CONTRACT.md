@@ -375,6 +375,73 @@ required and must not be empty** — a training day with nobody in it is refused
 Auto-closing writes an immutable `DailyReport` with nobody watching, so it is not
 obviously safer than requiring a human to end it.
 
+### `GET /api/analytics/athlete/{id}/` — one athlete's performance context (coach)
+
+Answers both of a coach's questions about a person in one call: **how are they
+doing** (`summary`, `exercise_summaries`) and **what did they actually do**
+(`sets`, each with its reps). One request rather than three, because the athlete
+and history tabs sit side by side and a coach flips between them.
+
+`404` for an unknown athlete id.
+
+```jsonc
+{
+  "athlete_id": 4,                    // kept for older callers; prefer `athlete`
+  "athlete": { "id": 4, "name": "Jordan Lee", "created_at": "..." },
+
+  // Aggregated across ALL history — see the truncation note below.
+  "summary": {
+    "completed_sets": 128, "completed_reps": 384,
+    "best_average": 0.82,             // null until they have lifted, never 0.0
+    "highest_peak": 1.04,
+    "heaviest_weight": 315.0
+  },
+
+  // Most-trained movement first; name breaks ties so the order is stable.
+  "exercise_summaries": [
+    { "exercise": "Back Squat", "completed_sets": 64, "completed_reps": 192,
+      "best_average": 0.78, "heaviest_weight": 315.0 }
+  ],
+
+  "sets": [                           // newest first, 50 most recent
+    { "id": 901, "set_number": 3, "exercise": "Back Squat",
+      "weight_lbs": 255.0, "reps_completed": 3,
+      "avg_velocity": 0.71, "peak_velocity": 0.88,
+      "ended_at": "...",
+      "rack_number": 2,               // from the set's NODE — `Set` has no rack
+      "session": { "id": 12, "label": "Thursday — Lower + Push" },
+      "reps": [ { "rep_number": 1, "mean_velocity": 0.75,
+                  "peak_velocity": 0.9, "duration_ms": 700 } ],
+      "reps_truncated": false,        // true past 100 reps in one set
+      "measured": { "first_to_last_change_percent": -8.3 } }
+  ],
+  "truncated": true                   // older sets exist beyond the 50 returned
+}
+```
+
+**What counts as work** (canon §6.5): false sets and coach weight adjustments are
+excluded — a false set is a mis-record, and an adjustment moves the working load
+without anyone lifting. Unfinished sets are excluded too: they have no `ended_at`,
+and the history view groups by day, so one would render as an "Invalid Date" day.
+
+> ⚠️ **The summary covers all history; only `sets` is truncated.** The UI tells the
+> coach exactly that ("summaries include all history"), so computing totals from
+> the returned list would make the screen quietly lie. Totals are aggregated in
+> the database.
+
+> ⚠️ **`measured` is always present, even with no reps** — with `null` inside it.
+> The coach UI reads `measured.first_to_last_change_percent` without optional
+> chaining, so omitting the block is a thrown TypeError, and React unmounts the
+> whole coach view on an uncaught render error. A black screen, not a blank field.
+
+`first_to_last_change_percent` is **signed**: negative means they slowed across
+the set (ordinary fatigue), positive means they finished faster. Kept as a change
+rather than a "loss" so speeding up isn't a negative loss. Needs two reps and a
+non-zero first rep, else `null`.
+
+**An athlete who has never lifted** returns `200` with zeroed counts, `null`
+bests, and empty lists — a new signing is an ordinary state, not an error.
+
 ### `GET /api/reports/` — finished training days (coach)
 
 One family of routes. "This athlete's reports" is the same list **filtered**, not
