@@ -1,0 +1,35 @@
+# `docs/` — reports on finished work
+
+Short, factual write-ups of things that are **done**. One file per topic.
+
+This is not the place for plans, designs, or open questions — those live in
+`_START_HERE_MERGE_CANON.md` (the authority for the merge) and `SPEC.md` (the
+authority for the system). A document only arrives here once the work it
+describes is finished and on the branch.
+
+| File | What it is |
+|---|---|
+| [`PATCH_NOTES.md`](PATCH_NOTES.md) | Everything that changed on `merge-braydon`, by phase, with the files touched and a click path to see each one working |
+| [`../NAMING_CHANGES.md`](../NAMING_CHANGES.md) | The P9 rename reference — old name → new name → why |
+| [`../MESSAGE_CONTRACT.md`](../MESSAGE_CONTRACT.md) | Exact request/response shapes for every endpoint |
+
+## Before you read anything here
+
+Start the stack, then open `http://localhost/`:
+
+```bash
+docker compose up -d
+```
+
+The first screen is a **role picker** — this device has no role yet. Every click
+path in the patch notes starts from there.
+
+> **A device remembers its role.** Once you pick one, `localhost/` redirects
+> straight to it forever. To change it, press **Change device** in the top right
+> of the coach or wall screen.
+
+The demo login is `coach` / `coachpass`. To get a gym full of realistic data:
+
+```bash
+docker compose exec django python manage.py seed_active_session
+```
