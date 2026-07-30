@@ -67,6 +67,7 @@ from .services.plan_resolution import (movements_for_athlete as plan_movements_f
                                        plans_by_athlete, resolve_target_weight)
 from .services.planning import apply_order, instantiate_block, promote_program_to_block, touch_block
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
+from .services.tuning import RESTING_WINDOW
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -697,7 +698,7 @@ def session_status(request):
     # "resting" only counts as ACTIVELY between sets — a set that ended long ago
     # means they've moved on, not that they're resting for hours. Past this window
     # they fall through to "ready" (if still checked in) or "not_started".
-    RESTING_WINDOW = timedelta(minutes=20)
+    # The window itself is a tunable: services/tuning.py.
     now = timezone.now()
 
     out = []

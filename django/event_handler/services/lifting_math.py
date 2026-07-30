@@ -8,24 +8,19 @@ gets its own copy.
 
 Swapping the formula (Epley for Brzycki, or a coach-tuned curve) is a one-line
 change in this file. That is the whole reason the file exists.
+
+The NUMBERS these functions use live in tuning.py, alongside every other knob
+someone might want to turn. The shapes live here. Re-tuning is one edit there;
+changing the formula itself is one edit here.
 """
-
-# A rep count outside this window can't support an honest estimate: a single is
-# already a max attempt, and a 30-rep set is conditioning, where every one of
-# these formulas falls apart. Callers get None rather than a confident wrong
-# number.
-MIN_REPS_FOR_ESTIMATE = 1
-MAX_REPS_FOR_ESTIMATE = 12
-
-# Gyms load in 5 lb steps (2.5 lb plates in pairs), so a prescription of 198.3
-# is noise. Round to something an athlete can actually build on the bar.
-LOADING_INCREMENT_LBS = 5
+from .tuning import (EPLEY_DIVISOR, LOADING_INCREMENT_LBS,
+                     MAX_REPS_FOR_ESTIMATE, MIN_REPS_FOR_ESTIMATE)
 
 
 def one_rep_max(weight_lbs, reps):
     """"They lifted X for N reps" -> "their one-rep max is about Y".
 
-    Epley: 1RM = weight x (1 + reps/30).
+    Epley: 1RM = weight x (1 + reps / EPLEY_DIVISOR), divisor 30 by default.
 
     Returns None when the inputs can't support an estimate (no weight, or a rep
     count outside the honest window), so callers can skip rather than special-case.
@@ -34,7 +29,7 @@ def one_rep_max(weight_lbs, reps):
         return None
     if reps < MIN_REPS_FOR_ESTIMATE or reps > MAX_REPS_FOR_ESTIMATE:
         return None
-    return weight_lbs * (1 + reps / 30)
+    return weight_lbs * (1 + reps / EPLEY_DIVISOR)
 
 
 def normalize_to_single(reference_weight_lbs, rep_basis):

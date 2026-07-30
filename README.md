@@ -75,6 +75,7 @@ docker compose exec django python manage.py seed_active_session --reset
 | [`SPEC.md`](SPEC.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
 | [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
 | [`RUNBOOK.md`](RUNBOOK.md) | Services, start/stop, operational notes. |
+| [`docs/HANDOFF.md`](docs/HANDOFF.md) | The non-obvious things, for whoever picks this up. Start here if you are new. |
 | [`docs/`](docs/) | Write-ups of finished work — patch notes, the database tour, the migration playbook, the import guide. |
 
 **Two documents are authoritative and everything else defers to them:** `SPEC.md`

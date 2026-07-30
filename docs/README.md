@@ -8,6 +8,12 @@ This is not the place for plans, designs, or open questions — those live in
 was folded into it on 2026-07-30.) A document only arrives here once the work it
 describes is finished and on the branch.
 
+## Start here
+
+| File | What it is |
+|---|---|
+| [`HANDOFF.md`](HANDOFF.md) | **Read first.** The things that are not obvious from the code — why a prescribed weight can go *down*, where the formulas live, and what is deliberately unfinished |
+
 ## What changed, and how to see it
 
 | File | What it is |

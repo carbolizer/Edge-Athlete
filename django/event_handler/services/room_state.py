@@ -47,7 +47,9 @@ MAX_DASHBOARD_RACKS = 32
 MAX_DASHBOARD_LEADERS = 20
 
 # A node that has not sent a pulse within this window reads as stale hardware.
-NODE_STALE_AFTER = timedelta(seconds=15)
+# The window itself is a tunable — see tuning.py; imported rather than redeclared
+# so there is never a second answer to "how long until a sensor looks dead".
+from .tuning import NODE_STALE_AFTER  # noqa: E402  (kept beside the constants it joins)
 
 _REAL_COLORS = {"green", "yellow", "red"}
 
