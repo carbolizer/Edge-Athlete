@@ -26,6 +26,7 @@ describes is finished and on the branch.
 | File | What it is |
 |---|---|
 | [`DATABASE-OVERVIEW.md`](DATABASE-OVERVIEW.md) | A plain-English tour of all 24 tables — no engineering background needed |
+| [`../django/event_handler/_README.md`](../django/event_handler/_README.md) | The backend, folder by folder. Every subfolder has its own `_README.md` too |
 | [`../django/event_handler/services/tuning.py`](../django/event_handler/services/tuning.py) | **The training math.** Every tunable number in one file — the 1RM formula's divisor, the trusted rep window, bar rounding, the resting window. The formulas themselves are beside it in `lifting_math.py` |
 | [`MIGRATION_PLAYBOOK.md`](MIGRATION_PLAYBOOK.md) | How to change the schema safely. **Read before touching `models.py`** — the container bakes its source, and that has already cost us a migration |
 | [`IMPORTING_SPREADSHEETS.md`](IMPORTING_SPREADSHEETS.md) | The coach-facing guide to the CSV importers — roster, maxes, workout plans |
