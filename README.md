@@ -1,11 +1,37 @@
 # Edge Athlete — Base Station
 
-Velocity-based training for the whole gym, running on one offline Raspberry Pi.
+Velocity-based training for the whole gym, running on one offline base station.
 Sensors on the racks measure bar speed, tablets show live feedback, a wall display
 scoreboards the room, and everything is saved for history — with no internet.
 
 This repo is the **base station**: the Docker stack (Django API, PostgreSQL,
-Mosquitto broker, Nginx, React) that runs on the Pi.
+Mosquitto broker, Nginx, React) that runs the gym.
+
+---
+
+## Quick start
+
+```bash
+docker compose up -d --build
+```
+
+Then open `http://localhost/`. The first screen is a **role picker** — this device
+has no role yet. Pick one:
+
+| Role | What it is |
+|---|---|
+| **Rack Tablet** | The athlete-facing screen at a rack — check in, run a set, rest, repeat |
+| **Base Station Display** | The read-only wall scoreboard for the room |
+| **Coach Admin** | The coach's console — planning, roster, reports, schedule, analytics |
+
+> **A device remembers its role.** After you pick one, `localhost/` goes straight
+> there forever. Change it with **Change device** in the top right.
+
+The demo login is `coach` / `coachpass`. For a gym full of realistic data:
+
+```bash
+docker compose exec django python manage.py seed_active_session --reset
+```
 
 ---
 
@@ -31,85 +57,90 @@ Mosquitto broker, Nginx, React) that runs on the Pi.
   (`edgeathlete/node/+/pulse`). Reps are saved in **one batch** when a set
   finishes (`POST /api/sets/{id}/complete/`) — never streamed one at a time.
 
-**Database tables** (11): `Node`, `RackScreen`, `Athlete`, `Tag`, `Exercise`,
-`Program`, `Session`, `Set`, `AthleteReferenceMax`, `Rep`, `RackCheckIn`.
-(`RackScreen` = the tablet at a rack; `Node` = the sensor — they share a
-`rack_number` but are assigned independently.) A plain-English tour of every table
-is in [DATABASE-OVERVIEW.md](DATABASE-OVERVIEW.md).
+### The two ideas worth knowing before you read any code
+
+1. **A plan stores a percent, not pounds.** A coach prescribes "Back Squat 5×3 at
+   80%" once for a whole group; each athlete's bar weight is resolved at read time
+   against their own current reference max. There is no target-weight column.
+2. **The rack experience is frozen.** `react/src/rack/`, `react/src/db/repBuffer.js`
+   and `react/src/device.js` are a fixed contract — they ship and they work. Don't
+   edit them; build alongside.
 
 ---
 
-## Quick start
+## Where things are
 
-```bash
-docker compose up --build          # start the whole stack
+| | |
+|---|---|
+| [`SPEC.md`](SPEC.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
+| [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
+| [`RUNBOOK.md`](RUNBOOK.md) | Services, start/stop, operational notes. |
+| [`docs/`](docs/) | Write-ups of finished work — patch notes, the database tour, the migration playbook, the import guide. |
+
+**Two documents are authoritative and everything else defers to them:** `SPEC.md`
+for *why the system is shaped this way*, `MESSAGE_CONTRACT.md` for *what a request
+looks like*. If another file disagrees with those two, those two are right.
+
+---
+
+## The API
+
+Base path `/api/`. **Open** = no login (the rack tablet and wall display never log
+in). **Coach** = needs a JWT from `POST /api/auth/login/`.
+
+About fifty routes, grouped:
+
+| Group | Covers |
+|---|---|
+| **Auth** | login, refresh |
+| **Rack tablet** (open) | rack register/assign, check-ins, the one startup fetch, athlete day view, room status, start a set, complete a set |
+| **Room** (open) | `room-state/` — the wall display and the coach room view, same read behind a `?details=` flag |
+| **Roster** | athletes, exercise catalog, training groups, group athletes, group coaches |
+| **Planning** | training blocks + their days and prescription rows, block categories, reordering, training programs, promote a program into a block |
+| **Scheduling** | scheduled slots, move a slot, create the session for a slot |
+| **Per-athlete** | an athlete's program view, per-exercise overrides, reference maxes |
+| **Reports** | list, detail, PDF |
+| **Analytics** | per-session summary, per-athlete history |
+| **Imports** | preview then commit — roster, maxes, and workout-plan CSVs |
+
+> **Route-by-route detail is in [`MESSAGE_CONTRACT.md`](MESSAGE_CONTRACT.md), not
+> here.** This README used to list every endpoint and quietly went out of date;
+> one copy is the fix.
+
+### A note on access
+
+`IsCoach` currently means **"is authenticated"** — not "is a coach of *this*
+group". Coach assignment is recorded and used to *filter* views, and it is not
+enforced as a permission. That is a deliberate choice for a single-gym offline
+box, written up in `SPEC.md` §9 and Phase 16. Don't mistake it for an oversight,
+and don't assume a group-coach row protects anything.
+
+---
+
+## The database
+
+24 tables. The shape, in one line:
+
+```
+TrainingBlock (template) → TrainingProgram (deployed, dated) → TrainingGroup (who) → TrainingSession (the day) → Set → Rep
 ```
 
-Then open:
+A plain-English tour of every table — what it is, why it exists, and the two or
+three things that surprise people — is in
+[`docs/DATABASE-OVERVIEW.md`](docs/DATABASE-OVERVIEW.md). The source of truth is
+[`django/event_handler/models.py`](django/event_handler/models.py), which carries
+the reasoning in comments.
 
-| URL | What it is |
-|---|---|
-| `http://localhost/connection-test` | **API & architecture demo page** — click endpoints, see live data |
-| `http://localhost/admin/` | Django admin — browse the seven tables (needs a superuser) |
-| `http://localhost/api/...` | the REST API (below) |
-
-Create a superuser for the admin: `docker exec -it edgeathlete-django python manage.py createsuperuser`
-
----
-
-## REST API
-
-Base path: `/api/`. **Open** = no login. **Coach** = needs a JWT from `/api/auth/login/`.
-Request/response shapes for the real-time messages are in [MESSAGE_CONTRACT.md](MESSAGE_CONTRACT.md).
-
-### Auth
-| Method | Path | Access | What it does |
-|---|---|---|---|
-| POST | `/api/auth/login/` | open | Log in as a coach → returns `{access, refresh}` tokens. |
-| POST | `/api/auth/refresh/` | open | Exchange a refresh token for a fresh `access` token. |
-
-### Tablet — racks & sets
-| Method | Path | Access | What it does |
-|---|---|---|---|
-| POST | `/api/racks/register/` | open | A tablet introduces itself (`{device_id}`) so a coach can assign it a rack. |
-| GET | `/api/racks/racknumber/?device_id=` | open | A waiting tablet asks which rack it's been given → `{rack_number}`. |
-| GET | `/api/sessions/active/` | open | The rack's one startup fetch — roster, each athlete's maxes/targets, planned exercises + velocity zones. |
-| GET | `/api/sessions/active/athlete/{id}/progress/` | open | One athlete's day view — their movements + live per-set progress (derived from Program + Set). |
-| GET | `/api/sessions/active/status/` | open | Room state — each athlete's live status (lifting/resting/ready) + since-when, for the check-in timers (coach-reusable). |
-| POST | `/api/racks/{n}/checkin/` | open | Record an athlete checking in at a rack (newest-wins "hot list" ownership). |
-| GET | `/api/racks/{n}/checkins/` | open | The rack's hot list — the athletes it currently owns. |
-| POST | `/api/sets/` | open | Start a set — create the record when a lifter begins (`set_number`, `weight_lbs`, `is_makeup`, node pk). |
-| POST | `/api/sets/{id}/complete/` | open | Finish a set — save all reps + totals in one transaction. **The only way reps get saved.** Returns the set plus `is_velocity_pr` / `is_weight_pr`. |
-
-### Reads
-| Method | Path | Access | What it does |
-|---|---|---|---|
-| GET | `/api/nodes/` | open | List all sensor nodes and their status. |
-| GET | `/api/athletes/` | open | List all lifters. |
-| GET | `/api/exercises/` | open | The movement catalog (`Exercise` rows). |
-| GET | `/api/programs/?athlete={id}` | open | An athlete's training plans — targets + the speed zone used to color reps. |
-
-### Coach — manage
-| Method | Path | Access | What it does |
-|---|---|---|---|
-| POST · PATCH | `/api/athletes/` · `/api/athletes/{id}/` | coach | Add or edit a lifter. |
-| POST | `/api/programs/` | coach | Create a training plan for a lifter. |
-| POST · PATCH | `/api/sessions/` · `/api/sessions/{id}/` | coach | Start a session; a PATCH with no `ended_at` ends it now. |
-| PATCH | `/api/nodes/{node_id}/` | coach | Reassign a sensor to a different rack. |
-| GET | `/api/racks/unassigned/` | coach | List tablets still waiting for a rack. |
-| PATCH | `/api/racks/{device_id}/` | coach | Assign a rack number to a tablet. |
-
-### Coach — analytics
-| Method | Path | Access | What it does |
-|---|---|---|---|
-| GET | `/api/analytics/session/{id}/` | coach | Session summary — total sets, total reps, per-athlete average velocity. |
-| GET | `/api/analytics/athlete/{id}/` | coach | An athlete's velocity trend across their sets. |
+Changing the schema? Read [`docs/MIGRATION_PLAYBOOK.md`](docs/MIGRATION_PLAYBOOK.md)
+first — the Django container **bakes its source at build time**, which makes
+`makemigrations` behave in a way that has already cost this project a migration.
 
 ---
 
-## Docs
-- [SPEC.md](SPEC.md) — the single source of truth (phases, models, topics).
-- [MESSAGE_CONTRACT.md](MESSAGE_CONTRACT.md) — exact shapes of every MQTT / API message.
-- [DATABASE-OVERVIEW.md](DATABASE-OVERVIEW.md) — plain-English tour of every table + how they relate.
-- [DESIGN_NOTES.md](DESIGN_NOTES.md) — deliberate choices we may revisit.
-- [RUNBOOK.md](RUNBOOK.md) — services, start/stop, and operational notes.
+## Admin
+
+```bash
+docker exec -it edgeathlete-django python manage.py createsuperuser
+```
+
+Then `http://localhost/admin/` to browse the tables directly.

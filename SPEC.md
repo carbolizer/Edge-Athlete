@@ -30,9 +30,15 @@ when it disagrees with a comment in the code, this wins and the comment gets fix
 | `docs/PATCH_NOTES.md` | What changed on the merge branch, by phase, with a click path each |
 | `RUNBOOK.md` | Operating the base station |
 
-> **The merge canon was folded into this document on 2026-07-30.**
-> `_START_HERE_MERGE_CANON.md` is now a pointer here and holds nothing you need.
-> Sections carrying a **§ number** (§2 … §10) came from it and are current.
+> **The merge canon was folded into this document on 2026-07-30** and its files
+> were deleted. Sections carrying a **§ number** (§2 … §10) came from it and are
+> current.
+>
+> ⚠️ **Code comments say "the merge canon". They mean this document.** Roughly
+> eighty comments across `django/` and `react/` cite it by section (`canon §6.3`)
+> or by decision number (`merge canon D15`). Both numbering systems were preserved
+> verbatim in the fold precisely so those references still resolve — look them up
+> in §2–§10 and the decision log (§9) below.
 
 **⚠️ The Phase 1–18 plan below is historical.** It was the original build order,
 kept for provenance. For what is actually built, read "Where the build actually is"
@@ -53,8 +59,8 @@ Phases 1–4 are complete. Phases 5–13 (through the Sprint 4 handoff gate) are
 ## ⚑ Where the build actually is (2026-07-30)
 
 **This document is now the single authority for the system.** The merge canon was
-folded into it on 2026-07-30 and `_START_HERE_MERGE_CANON.md` is a pointer to
-here. The two companions stay separate on purpose: `MESSAGE_CONTRACT.md` holds
+folded into it on 2026-07-30 and its files were removed. The two companions stay
+separate on purpose: `MESSAGE_CONTRACT.md` holds
 exact request/response shapes, and `docs/PATCH_NOTES.md` holds what changed on the
 merge branch with a click path for each thing.
 
@@ -394,7 +400,7 @@ Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float
 
 **`Rep` rows are created ONLY via the batch set-complete endpoint, never one at a time.**
 **`RackScreen` is the physical screen's own identity — separate from `Node.rack_number`, which tracks which sensor is linked to a rack. A rack screen and its sensor node are assigned independently.**
-**Exercise-identity note (built early, sprint of 2026-07-17, branch `exercise-catalog`):** `Program.exercise`, `Set.exercise`, and `AthleteReferenceMax.exercise` are all `FK→Exercise` (the catalog below), not free text. This deliberately goes one step past canon, which introduced the catalog but left `Program`/`Set` on text — half-normalizing breaks the rack endpoint's id-vs-name lookup, so all three were converted together via a reversible backfill migration (`0005_link_models_to_exercise_catalog`). See `MINISPEC-exercise-catalog.md`.
+**Exercise-identity note (built early, sprint of 2026-07-17, branch `exercise-catalog`):** every movement reference is `FK→Exercise` (the catalog below), never free text. At the time that meant `Program.exercise`, `Set.exercise`, and `AthleteReferenceMax.exercise`, converted together via a reversible backfill migration (`0005_link_models_to_exercise_catalog`) — deliberately one step further than the original plan, which would have left `Program`/`Set` on text. Half-normalizing breaks the rack endpoint's id-vs-name lookup, so it was all three or none. `Program` has since been dropped (`0011`); the rule carried forward to every prescription row in the `Training*` hierarchy.
 
 ### Extended in Phase 5+ (Group/TrainingSession Hierarchy & Athlete Max Layer)
 
@@ -1192,7 +1198,7 @@ The two things that could not be lost, and did not:
 | **P6** | Retirement + the delete fix | Dropped the legacy `Program` table; `Set.session` → `PROTECT` (`0011`) | A `Set` is the only permanent record an athlete trained |
 | **P7** | Coach frontend on the real API | Rewired his screens; folded 6 of his routes, dropped 3; `ErrorBoundary`; router race fixed | **Seven bugs found by clicking, none by a green suite** |
 | **P8** | Verify on a fresh database | Cold build, rack loop end to end, replaced invented test fixtures with live payloads | |
-| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`NAMING_CHANGES.md`](NAMING_CHANGES.md) · a blunt sed shadows model imports |
+| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`NAMING_CHANGES.md`](docs/NAMING_CHANGES.md) · a blunt sed shadows model imports |
 | **P10** | Catalog editing + reordering | Rename/reorder/delete days and rows; `updated_at` (`0013`) | Reorder sends the **whole list** — non-deferrable unique constraint |
 | **P11** | Multi-coach | `?coach=me` lens, block categories M2M (`0014`), `TrainingGroupCoach` join (`0015`) | **Filter, not fence** — see the Phase 16 rewrite below |
 | **P12** | One open training day | 409 on a second open day; end-time correction after a power cut | D18 |

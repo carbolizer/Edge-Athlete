@@ -69,8 +69,20 @@ docker exec edgeathlete-django python manage.py showmigrations event_handler
 There are no separate "down" files — each migration reverses itself. Schema
 migrations (add/drop a table or column) roll back cleanly. The one thing to
 watch: a **data** migration (one that moves or backfills rows, `RunPython`) only
-reverses if someone wrote its reverse step — otherwise it's one-way. All
-migrations to date are schema-only, so all are reversible.
+reverses if someone wrote its reverse step — otherwise it's one-way.
+
+**There are four data migrations**, and all four roll back:
+
+| | What it moves | Reverse |
+|---|---|---|
+| `0005` | Text exercise names → catalog links | Writes the names back |
+| `0009` | Seeds the starter movement catalog | Deletes exactly the rows it added |
+| `0013` | Backfills "last edited" from "created" | `noop` — rolling back drops the column anyway |
+| `0015` | Each group's single coach → the staff table | Puts the head coach back |
+
+Anything you add from here needs the same treatment — see
+[`docs/MIGRATION_PLAYBOOK.md`](docs/MIGRATION_PLAYBOOK.md), which is the full
+guide to changing this schema safely.
 
 ## Config files and where they live
 

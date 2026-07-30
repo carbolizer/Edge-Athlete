@@ -232,7 +232,7 @@ Then `localhost` > **Rack Tablet** > run splash → setup → check-in → set �
 ## P9 · Names that match what things are
 
 Routes and models renamed to say what they actually serve. **No behaviour
-changed.** Full old → new table in [`../NAMING_CHANGES.md`](../NAMING_CHANGES.md).
+changed.** Full old → new table in [`NAMING_CHANGES.md`](NAMING_CHANGES.md).
 
 | File | Change |
 |---|---|
