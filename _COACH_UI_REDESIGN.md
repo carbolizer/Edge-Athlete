@@ -69,9 +69,14 @@ affordances. A stripped-down athlete view may ride along with the session varian
 **The dev-only strip** — "Active racks / Athletes with sets / Sets complete /
 Awaiting saved result / Last reconciled" — ✅ **DONE 2026-07-30.** Now hidden
 behind `isDevMode()` (`react/src/devMode.js`): always on under `npm run dev`,
-and switchable in a built container from **Room Layout → Dev tools → "Show coach
-instrumentation"**, next to the existing seed/session buttons. (Console still
-works: `localStorage.setItem('ea_dev','1')`.)
+and settable in a built container with `localStorage.setItem('ea_dev','1')`.
+
+> **PLANNED, not built — a switch in Room Layout's dev panel.** Console-only means
+> it is a feature only someone who has read `devMode.js` can use. Room Layout
+> already has a "Dev tools (temporary)" panel with *Seed demo gym* and *Start empty
+> session*; the switch belongs there as a third button. Needs a `setDevMode()`
+> setter, and the button should say a reload is required, because the coach screen
+> reads the flag at render rather than subscribing to it.
 Not tied to the coach login — "is a coach" and "is a developer" are different
 questions, and every coach in a real gym would otherwise see it. ⚠️ I initially guessed this also covered the "Rack N is ready"
 panel. Checking the code showed it does not — see §4.
@@ -378,8 +383,6 @@ Append as we go. Date each entry.
 - **2026-07-30** — Noted that `Dashboard.jsx` renders BOTH the wall display and the
   coach tablet from one file, with two separate "ready" strings. Splitting it is
   likely its own cleanup item.
-- **2026-07-30** — Dev flag got a switch in Room Layout's existing dev panel, so
-  it is not a console-only feature. Verified: toggle → reload coach → strip back.
 - **2026-07-30** — **Summary strip is dev-only now.** New `devMode.js` gate rather
   than deleting it; the five counters are still useful while building. Verified
   hidden by default in the container and restored by the localStorage toggle.
