@@ -79,6 +79,15 @@
   .slot.ready{border-color:var(--lime)} .slot.ready .state{color:var(--lime)}
   .slot.running{border-color:var(--mint);background:rgba(69,220,179,.07)} .slot.running .state{color:var(--mint)}
   .slot.done .state{color:var(--muted)} .slot.done{opacity:.55}
+  .scope{background:var(--panel2);border:1px solid var(--line);border-radius:999px;display:inline-flex;gap:3px;padding:3px}
+  .scope button{background:transparent;border:0;border-radius:999px;color:var(--muted);cursor:pointer;font:inherit;font-size:10px;font-weight:850;letter-spacing:.09em;padding:7px 15px;text-transform:uppercase}
+  .scope button.on{background:var(--lime);color:#071006}
+  table.grp{border-collapse:collapse;font-size:12px;margin-top:13px;width:100%}
+  table.grp th{color:var(--muted);font-size:9px;font-weight:900;letter-spacing:.11em;padding:8px 10px;text-align:left;text-transform:uppercase}
+  table.grp td{border-top:1px solid var(--line);padding:11px 10px}
+  table.grp tr.behind td{background:rgba(255,100,107,.07)}
+  .trend{font-weight:800} .up{color:var(--mint)} .flat{color:var(--muted)} .down{color:var(--coral)}
+  .tag{border:1px solid var(--coral);color:var(--coral);font-size:9px;font-weight:900;letter-spacing:.08em;padding:2px 7px;text-transform:uppercase}
 
   /* ── session / room ── */
   .room{display:grid;gap:16px;grid-template-columns:210px 1fr}
@@ -324,7 +333,45 @@
         <div><span>Heaviest load</span><b>315 lbs</b></div>
       </div></div>
   </div>
-  <div class="wrap" data-sub="analytics-1" hidden style="padding-top:0"><div class="card"><header><div><div class="lbl">History</div><h3>Set history</h3></div></header><p class="sub muted">Grouped by training day, newest first.</p><div class="obsgrid"><div><span>Jul 29 · Back Squat</span><b>5 × 3 · 0.74 m/s</b></div><div><span>Jul 27 · Bench Press</span><b>4 × 5 · 0.61 m/s</b></div><div><span>Jul 25 · Back Squat</span><b>5 × 3 · 0.72 m/s</b></div></div></div></div>
+  <div class="wrap" data-sub="analytics-1" hidden style="padding-top:0">
+    <div class="card">
+      <header>
+        <div><div class="lbl">History</div><h3>Set history</h3>
+          <p class="sub">Same question, two lenses. Group answers "who is falling behind" — a per-athlete view cannot.</p></div>
+        <div class="scope">
+          <button class="on" onclick="scope(this,'athlete')">Athlete</button>
+          <button onclick="scope(this,'group')">Group</button>
+        </div>
+      </header>
+
+      <div id="hist-athlete">
+        <div class="obsgrid">
+          <div><span>Jul 29 · Back Squat</span><b>5 × 3 · 0.74 m/s</b></div>
+          <div><span>Jul 27 · Bench Press</span><b>4 × 5 · 0.61 m/s</b></div>
+          <div><span>Jul 25 · Back Squat</span><b>5 × 3 · 0.72 m/s</b></div>
+        </div>
+        <p class="sub muted" style="margin-top:11px">Jordan Lee · grouped by training day, newest first.</p>
+      </div>
+
+      <div id="hist-group" hidden>
+        <div class="row" style="margin-bottom:4px">
+          <select><option>Varsity Football · 28 athletes</option><option>Freshman Speed · 14 athletes</option></select>
+          <select><option>Last 14 days</option><option>Last 30 days</option><option>This block</option></select>
+        </div>
+        <table class="grp">
+          <tr><th>Athlete</th><th>Last trained</th><th>Sets</th><th>Avg velocity</th><th>Trend</th><th></th></tr>
+          <tr><td>Jordan Lee</td><td>Today</td><td>142</td><td>0.74 m/s</td><td class="trend up">▲ +0.03</td><td></td></tr>
+          <tr><td>Alex Kim</td><td>Today</td><td>138</td><td>0.81 m/s</td><td class="trend up">▲ +0.05</td><td></td></tr>
+          <tr><td>Sam Rivera</td><td>2 days ago</td><td>121</td><td>0.69 m/s</td><td class="trend flat">— 0.00</td><td></td></tr>
+          <tr class="behind"><td>Taylor Fox</td><td>11 days ago</td><td>34</td><td>0.58 m/s</td><td class="trend down">▼ −0.07</td><td><span class="tag">Behind</span></td></tr>
+        </table>
+        <p class="sub muted" style="margin-top:11px">⚠️ Mockup only. Today this needs 1 + N requests
+          (group roster, then one analytics call per athlete). A <code>?group=</code> parameter would make it
+          one — but that is a backend change, so it is Phase H's explicit decision, not a quiet one.</p>
+      </div>
+    </div>
+  </div>
+
   <div class="wrap" data-sub="analytics-2" hidden style="padding-top:0"><div class="card"><header><div><div class="lbl">Reports</div><h3>Completed training days</h3></div><button class="btn">Download PDF</button></header><p class="sub muted">Frozen at end of day — never recalculated.</p></div></div>
   <div class="wrap" data-sub="analytics-3" hidden style="padding-top:0"><div class="card"><header><div><div class="lbl">Notes</div><h3>Coach memory · Jordan Lee</h3></div></header><p class="sub muted">Reviewing view of the same field Quick Note writes.</p></div></div>
 </section>
@@ -365,6 +412,12 @@
     document.querySelectorAll('[data-sub^="' + section + '-"]').forEach(function(pane){
       pane.hidden = (pane.dataset.sub !== section + '-' + idx);
     });
+  }
+
+  function scope(btn, which){
+    btn.parentElement.querySelectorAll('button').forEach(function(b){ b.classList.toggle('on', b === btn); });
+    document.getElementById('hist-athlete').hidden = (which !== 'athlete');
+    document.getElementById('hist-group').hidden   = (which !== 'group');
   }
 
   function toggleDay(){

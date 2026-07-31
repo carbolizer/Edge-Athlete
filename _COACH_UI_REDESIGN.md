@@ -627,6 +627,45 @@ A settings cog on the wall display, holding Change device role.
 - [ ] Cog on the wall header; `Dashboard.jsx:193` button removed
 - [ ] Wall still needs no login
 
+**Phase H — group history** *(new feature, not a re-shelving — after A–F)*
+
+A scope switch on ANALYTICS → History: **Athlete ▾ / Group ▾**. Same question,
+wider lens.
+
+**Why it belongs in History, not Reports.** A session can host several groups
+(`SessionParticipation` exists for exactly that), so a report is *day*-scoped, not
+group-scoped. Filtering reports by group would return days the group trained while
+each report still contained everyone else who trained that day — misleading, not
+useful. Reports stay per-day and frozen; History is the per-*subject* trend, and
+group is just a wider subject.
+
+**Why it matters more than it looks.** It is the direct answer to the scaling
+problem: at 100 athletes a coach is not asking *"what is Jordan doing"* — they are
+asking *"who is falling behind"*. No per-athlete view can answer that. This is
+arguably the highest-value analytics feature in the product.
+
+**⚠️ This is the one thing in this document that is not free.**
+
+| Approach | Cost |
+|---|---|
+| Client-side today | `GET /training-groups/{id}/athletes/` then **N ×** `GET /analytics/athlete/{id}/`. 28 requests for Varsity. No backend change, but it will feel bad at exactly the gym size that makes the feature worth having |
+| `?group={id}` on analytics | One request. **Breaks the no-backend-change rule** — which is why this is a separate phase, where that rule can be reconsidered on purpose rather than by accident |
+
+There is no batch route today: `/analytics/athlete/{id}/` takes one athlete, and
+`/api/reports/` filters only by `?athlete=`. The report *list* item carries no
+athlete list at all — only metadata and a summary — so reports cannot be grouped
+client-side without fetching every detail.
+
+**Recommendation:** build the client-side version first to prove the view is worth
+having, then add `?group=` if it is. Do not add the endpoint speculatively.
+
+- [ ] Scope switch on History: Athlete / Group
+- [ ] Group view lists members with last-trained, set count, average velocity, trend
+- [ ] A member who has not trained in the window is visibly distinct — that is the
+      whole point of the view
+- [ ] Decide, explicitly and in writing, whether `?group=` gets added
+- [ ] Reports tab unchanged — still per-day, still frozen
+
 ---
 
 ## The principle underneath all of it
