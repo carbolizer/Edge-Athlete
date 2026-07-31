@@ -380,16 +380,10 @@ affordance differs.
 
 **Lands in PLANNING.** It is the only state a gym with no data can do anything in.
 
-**Heading greets the account:** `Hello {name}!` or similar, on the PLANNING splash.
-
-> ⚠️ **Small gap to close first.** The coach's username is **not kept** after
-> login — `coach/api.js` stores only the access token (`coach_access_token`).
-> Options, both client-side, so the no-backend-change rule holds:
-> 1. Stash the username at login next to the token, or
-> 2. Decode it out of the JWT.
->
-> (1) is simpler and does not couple the UI to token internals. Either way this is
-> a real, if tiny, piece of work — not free.
+**No greeting.** ❌ Cancelled 2026-07-30. `Hello {name}` was assumed free; it is
+not — there is no user endpoint, and the JWT carries `user_id`, not a username.
+Every route to it is either a backend change or client-side bookkeeping at login.
+Not worth it for a heading.
 
 ### 10. Wall display settings — ✅ decided 2026-07-30
 
@@ -497,9 +491,15 @@ Append as we go. Date each entry.
   "Change device" removed from the coach topbar; the four "Choose an athlete"
   guards collapsed into one at the athlete-tab boundary; "Rack N is ready"
   finally deleted. Verified in a browser on all four tabs.
-- **2026-07-30** — **Fresh gym lands in PLANNING**, greeted by name. Noted that the
-  username is not currently stored at login, so the greeting needs a small
-  client-side addition.
+- **2026-07-30** — **Fresh gym lands in PLANNING.** The `Hello {name}` greeting is
+  **cancelled** — no user endpoint exists and the JWT carries only `user_id`, so it
+  is not the free win it looked like.
+- **2026-07-30** — **Programs tab: two bugs fixed** (outside this doc, commit
+  `1a9ef38`). Both had one root cause — it is Braydon's component, carried in by
+  P7, still written against the per-athlete `Program` table that P6 dropped. Its
+  `key={program.id}` and `{program.exercise}` were both correct on his branch and
+  both silently wrong here. **This is the sibling test again**, and the strongest
+  case for running it over the rest of the coach screen.
 - **2026-07-30** — **Wall gets its own "Dashboard Settings" cog**, holding Change
   device role. Resolves the ❓ in §3.
 - **2026-07-30** — **Navbar palette:** translucent; lime+black selected; grey/blue
