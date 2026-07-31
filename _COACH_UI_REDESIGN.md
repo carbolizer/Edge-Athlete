@@ -1,12 +1,38 @@
 # Coach Admin — State Machine Redesign
 
-> **STATUS: SPEC — ready to build.** §13–16 settle the layout, mechanics and build
-> order. Earlier sections record how each decision was reached. This is the
-> workbench we edit while talking the design through. When it settles, the
-> conclusions fold into [`_SPEC.md`](_SPEC.md) and this file goes away.
+> **STATUS: SPEC — ready to build.**
 >
-> Branch: `coach-admin-state-machine` (off `SprintBranch`)
-> Started: 2026-07-30 · Owner: Devin
+> Branch: `coach-admin-state-machine` (off `SprintBranch`) · Owner: Devin ·
+> Written 2026-07-30. Folds into [`_SPEC.md`](_SPEC.md) when the work lands, then
+> this file goes away.
+
+## How to read this
+
+| If you want | Read |
+|---|---|
+| **What to build** | **§13** the layout · **§14** mechanics · **§15** PLANNING's sub-tabs · **§16** the phases |
+| A picture of it | [`_COACH_UI_MOCKUP.html`](_COACH_UI_MOCKUP.html) — open in a browser |
+| *Why* something is the way it is | §1–§12, in the order the questions came up |
+
+§1–§12 are a record of reasoning, kept because several decisions reverse an
+obvious-looking answer and the reversal is the useful part. **Where §1–§12 and
+§13–§16 disagree, §13–§16 win** — they were written last.
+
+⚠️ **Line numbers are as of 2026-07-30 and have already shifted**, because some of
+this shipped. Treat them as landmarks, not addresses.
+
+### Already built on this branch
+
+Not part of the phases below — done while the spec was being written.
+
+| | Commit |
+|---|---|
+| "Rack N is ready" deleted | `916c208` |
+| "No racks assigned" deleted; cog labelled **⚙ ROOM LAYOUT** | `cb75c66` |
+| Log out moved under the logo; Change device removed from the topbar | `916c208` |
+| Four "Choose an athlete" guards collapsed to one | `916c208` |
+| Summary strip hidden behind `isDevMode()` | `41c5c8e` |
+| `ProgramsTab` null-key + exercise-id-as-name bugs fixed | `1a9ef38` |
 
 ---
 
@@ -46,11 +72,14 @@ existing UI pattern (`theme.js`).
 tabs.** The question was "which tab goes where"; the answer is that the tabs were
 never the unit. Each state answers one question:
 
-| State | The question | Holds |
-|---|---|---|
-| **PLANNING** | What is coming up? | TrainingBlock create + **promotion from a TrainingProgram** · TrainingProgram create + instantiation · Calendar · Groups |
-| **SESSION** | What is happening right now? | Room view · settings cog → `coach/setup` · quick athlete notes · dev-only top bar · the active-session widget |
-| **ANALYTICS** | What happened? | History · Athlete · Notes · Reports |
+| State | The question |
+|---|---|
+| **PLANNING** | What is coming up? |
+| **SESSION** | What is happening right now? |
+| **ANALYTICS** | What happened? |
+
+> **The contents of each state are in §13**, which supersedes the first-pass list
+> that used to sit here.
 
 Devin's framing: *"basically this is a glorified grouping of tabs."* Not a
 rebuild — a re-shelving. Worth holding onto, because it keeps the work small.
@@ -58,14 +87,16 @@ rebuild — a re-shelving. Worth holding onto, because it keeps the work small.
 **Notes appears in two states on purpose.** ✅ **APPROVED 2026-07-30.** In SESSION
 it is optimised for *adding* — a quick thought about any athlete, fast, without
 leaving the floor view. In ANALYTICS it is for *reviewing*. Same data, two
-affordances. A stripped-down athlete view may ride along with the session variant
-(TBD).
+affordances.
 
-> **Name needed.** "Mid-floor notes" is a placeholder Devin does not like.
-> Candidates to react to: **Quick Note** · **Floor Note** · **Sideline Note** ·
-> **Jot**. The name should say *fast and provisional*, not *a different kind of
-> note* — it is the same `Athlete.notes` field either way, and calling it
-> something too distinct would imply a second store that does not exist.
+> ❌ **The "stripped-down athlete view" once floated for SESSION is cancelled.**
+> The rack screen already shows an athlete their live day, and the coach wrote the
+> plan. That leaves **Quick Note as the only athlete-scoped thing SESSION needs.**
+> See open question 10.
+
+> ✅ **Named "Quick Note"** (§8). Same `Athlete.notes` field as the ANALYTICS notes
+> view — the name says *fast*, not *a different kind of note*, because a
+> too-distinct name would imply a second store that does not exist.
 
 **The dev-only strip** — "Active racks / Athletes with sets / Sets complete /
 Awaiting saved result / Last reconciled" — ✅ **DONE 2026-07-30.** Now hidden
@@ -78,9 +109,12 @@ and settable in a built container with `localStorage.setItem('ea_dev','1')`.
 > session*; the switch belongs there as a third button. Needs a `setDevMode()`
 > setter, and the button should say a reload is required, because the coach screen
 > reads the flag at render rather than subscribing to it.
+
 Not tied to the coach login — "is a coach" and "is a developer" are different
-questions, and every coach in a real gym would otherwise see it. ⚠️ I initially guessed this also covered the "Rack N is ready"
-panel. Checking the code showed it does not — see §4.
+questions, and every coach in a real gym would otherwise see it.
+
+⚠️ An earlier draft guessed this also covered the "Rack N is ready" panel. Checking
+the code showed it does not — see §4.
 
 ### 2. The active-session widget lives outside the machine
 
@@ -113,7 +147,7 @@ The two halves live in different states on purpose:
 
 | Act | Where | What it means |
 |---|---|---|
-| **Stage** a day | **PLANNING** | Create it; it does not run yet. Then **navigate the coach to SESSION** |
+| **Stage** a day | **PLANNING → Calendar**, on the slot | Create it; it does not run yet. Then **navigate the coach to SESSION**. See §15 — staging is a slot action, not a control on the program card |
 | **Start** it | **SESSION** | The day goes live |
 | **End** it | **the widget** | Available from any state, while it is running |
 
@@ -151,7 +185,7 @@ showing a staged day as if it were live.
 > |---|---|
 > | `CoachTablet.jsx:426` — Room Layout header | ✅ Keep — the natural home |
 > | `Dashboard.jsx:508` — coach topbar | ❌ Remove (this vision) |
-> | `Dashboard.jsx:193` — **wall display** header | ❓ Separate screen, separate call |
+> | `Dashboard.jsx:193` — **wall display** header | ✅ Resolved — moves into a "Dashboard Settings" cog, **Phase G** (§10) |
 >
 > An earlier draft of this table cited `Dashboard.jsx:193` as the rack-setup
 > button. Wrong — that one is the wall display's.
@@ -235,17 +269,17 @@ nothing. The whole coach screen came from there by design (P7).
 | 2 | 174 | "Live scoreboard unavailable" | Wall | ✅ Keep — out of scope |
 | 3 | 177 | "The room is ready" | Wall | ✅ Keep — the wall's *legitimate* ready: no session started. Not the same bug as §4 |
 | 4 | 325 | `No {what} yet` | Coach | ✅ Keep — **ours**, added in P13, replacing one of his. Distinguishes "never trained" from "loading" |
-| 5 | 330 | "Choose an athlete" | Coach · athlete | ⚠️ **Collapse** — see below |
-| 6 | 386 | "Choose an athlete" | Coach · history | ⚠️ **Collapse** |
+| 5 | 330 | "Choose an athlete" | Coach · athlete | ✅ **Collapsed** — `916c208` |
+| 6 | 386 | "Choose an athlete" | Coach · history | ✅ **Collapsed** — `916c208` |
 | 7 | 391 | "No completed training days" | Coach · history | ✅ Keep — real empty state, distinct from #6 |
-| 8 | 403 | "Choose an athlete" | Coach · programs | ⚠️ **Collapse** |
-| 9 | 411 | "Choose an athlete" | Coach · notes | ⚠️ **Collapse** |
+| 8 | 403 | "Choose an athlete" | Coach · programs | ✅ **Collapsed** — `916c208` |
+| 9 | 411 | "Choose an athlete" | Coach · notes | ✅ **Collapsed** — `916c208` |
 | 10 | 488 | "Loading coach workspace" | Coach | ✅ Keep — whole-screen, sibling-independent |
 | 11 | 489 | "Coach view unavailable" | Coach | ✅ Keep — has a retry action |
-| 12 | 491 | "No racks assigned" | Coach · room | ⚠️ **Keep, add the missing action** — see below |
+| 12 | 491 | "No racks assigned" | Coach · room | ✅ **Deleted** — `cb75c66`; the cog carries it instead |
 | 13 | 510 | "Loading athlete context" | Coach | ✅ Keep |
 | 14 | 510 | "Athlete context unavailable" | Coach | ✅ Keep |
-| — | 495 | "Rack N is ready" | Coach · room | ❌ **Delete** — §4 |
+| — | 495 | "Rack N is ready" | Coach · room | ✅ **Deleted** — `916c208` |
 
 #### The four "Choose an athlete" panels (#5, #6, #8, #9)
 
@@ -301,11 +335,10 @@ state.
 
 **Why PLANNING does not need it:** planning is group- and program-scoped.
 
-**Consequence to decide:** under this model, an athlete who has **not checked in
-at any rack** is unreachable during a session — so quick-notes only covers people
-on the floor. Probably correct (that is who you have thoughts about), but it means
-"note about someone who didn't show" has no home until ANALYTICS. Flagging rather
-than solving.
+**✅ Consequence accepted.** An athlete who has **not checked in at any rack** is
+unreachable during a session, so Quick Note only covers people on the floor. That
+is who a coach has thoughts about. A note on someone who did not show waits for
+ANALYTICS, where the full selector lives.
 
 ### 6. Wall vs coach — the rule, for when it comes up again
 
@@ -414,7 +447,7 @@ already shared by all three screens, so the navbar should not introduce a new on
 > *you can go here*, dimmed means *you cannot yet* — and that difference is the
 > whole navigational teaching.
 
-### 12. `ProgramsTab` shows pounds and calls them the prescription — OPEN
+### 12. `ProgramsTab` shows pounds and calls them the prescription — ✅ RESOLVED by deletion
 
 Found 2026-07-30 while testing `AthleteWorkoutPlanning`. Both render the same
 prescription, on the same screen, one above the other:
@@ -444,8 +477,13 @@ sets, reps, resolved `target_weight_lbs`, and the velocity zone. Options:
    shows the same information, more correctly, immediately below it. Worth asking
    whether the tab needs both.
 
-Option 3 deserves real consideration — this is the "does the sibling still do the
-same job?" test pointing at a duplicate rather than a stale field.
+**✅ Option 3 chosen.** The card grid is deleted (see open question 10), so the
+problem goes with it — `AthleteWorkoutPlanning` already shows percent *and*
+resolved pounds together, which is the correct model. No fetch to lift, no field
+to add.
+
+This is the "does the sibling still do the same job?" test pointing at a duplicate
+rather than a stale field — and the duplicate losing.
 
 > Related and still unanswered: **where does the per-athlete `programs` tab live**
 > in the three-state grouping? See open question 7.
@@ -702,31 +740,38 @@ behaviour, not assumed:
 
 ## Open questions
 
-1. ~~Where do the athlete-scoped tabs live?~~ **Answered — see the state table.**
-2. ~~Global vs framed?~~ **Framed** — navbar + (conditional) widget persist; the
-   body swaps.
-3. ~~Does SESSION require an open day?~~ **Answered** — see §7.
-4. ~~Persist across reload?~~ **Yes.**
-5. ~~Does the navbar dim?~~ **Yes** — SESSION only, and only when no day is set.
-6. ~~What does a brand-new gym see?~~ **Answered** — see §9.
-7. ~~Where does the per-athlete `programs` tab live?~~ **Resolved — it stops
-   existing.** Its card grid is deleted; `AthleteWorkoutPlanning` (assignment +
-   overrides) moves to PLANNING. See §13.
-7b. *(superseded)* **Where does the per-athlete `programs` tab live?** The state table gives
-   PLANNING "TrainingProgram create + instantiation" (group-scoped) and ANALYTICS
-   "History · Athlete · Notes · Reports". The existing **`programs` tab is neither**
-   — it is one athlete's *Recorded prescriptions*. It currently has no home.
-8. ~~`ProgramsTab` null-key bug?~~ **Fixed** outside this doc — commit `1a9ef38`.
-10. ~~Does `ProgramsTab` keep its card grid?~~ **No — deleted.** The rack screen
-   already shows an athlete their live day, the coach authored the plan, and at
-   100 athletes / 10 racks a per-person plan list answers the wrong question: a
-   coach wants *who is behind*, not *what is Jordan doing*. Consequence: the
-   "stripped-down athlete view" once floated for SESSION has no content left
-   either, so **Quick Note is the only athlete-scoped thing SESSION needs.**
-11. *(superseded)* Does `ProgramsTab` keep its card grid at all, given `AthleteWorkoutPlanning`
-   sits below it showing the same prescription with the percent included? See §12.
+Everything load-bearing is answered. What remains is listed so it is not mistaken
+for settled.
 
----
+**Answered**
+
+1. Where do the athlete-scoped tabs live? → §13
+2. Global vs framed? → **Framed.** Navbar and (conditional) widget persist; only the body swaps
+3. Does SESSION require an open day? → §7
+4. Persist across reload? → **Yes**, via routes (§14)
+5. Does the navbar dim? → **Yes**, SESSION only, when no day is set
+6. What does a brand-new gym see? → §9 — lands in PLANNING, no greeting
+7. Where does the per-athlete `programs` tab live? → **It stops existing.** Card grid deleted; `AthleteWorkoutPlanning` moves to PLANNING
+8. `ProgramsTab` null-key bug? → **Fixed**, `1a9ef38`
+9. Does `ProgramsTab` keep its card grid? → **No.** The rack screen already shows an athlete their live day, the coach wrote the plan, and at 100 athletes a per-person plan list answers the wrong question — a coach wants *who is behind*
+10. Does SESSION need a stripped athlete view? → **No**, for the same reason. Quick Note only
+
+**Still open — decide during the phase that hits them**
+
+- **Exact greys.** Unselected vs dimmed in the navbar must read as clearly
+  different: unselected means *you can go here*, dimmed means *not yet*. That
+  contrast is what teaches the order. **Phase A.**
+- **`/coach` with no prior state.** Confirmed to land in PLANNING; not yet decided
+  whether a returning device resumes its last state or always lands in PLANNING
+  when a day is running. **Phase A.**
+- **Animation shape.** The navbar glider slides (see the mockup). Whether the body
+  also crossfades is undecided — it changes whether panes need transition
+  wrappers. **Phase A.**
+- **`?group=` on analytics.** The one place the no-backend-change rule may be
+  broken, deliberately. **Phase H**, and only after the client-side version proves
+  the view is worth having.
+- **`Dashboard.jsx` file split.** Deferred on the merits — the components are
+  already separate and share one hook. Revisit after the state machine lands.
 
 ## Notes / decisions log
 
