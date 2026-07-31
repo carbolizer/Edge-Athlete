@@ -376,6 +376,49 @@ truth.
 **Quick Note.** Same `Athlete.notes` field as the ANALYTICS notes view; only the
 affordance differs.
 
+### 9. A brand-new gym — ✅ decided 2026-07-30
+
+**Lands in PLANNING.** It is the only state a gym with no data can do anything in.
+
+**Heading greets the account:** `Hello {name}!` or similar, on the PLANNING splash.
+
+> ⚠️ **Small gap to close first.** The coach's username is **not kept** after
+> login — `coach/api.js` stores only the access token (`coach_access_token`).
+> Options, both client-side, so the no-backend-change rule holds:
+> 1. Stash the username at login next to the token, or
+> 2. Decode it out of the JWT.
+>
+> (1) is simpler and does not couple the UI to token internals. Either way this is
+> a real, if tiny, piece of work — not free.
+
+### 10. Wall display settings — ✅ decided 2026-07-30
+
+The wall gets a **settings cog** mirroring the coach's, labelled **"Dashboard
+Settings"**. For now it holds only **Change device role**, moved off the header
+(`Dashboard.jsx:193`).
+
+This answers the ❓ left in §3: the wall keeps the capability, but stops spending
+permanent header space on it — the same trade as the coach screen. Room to add
+more later without redesigning anything.
+
+### 11. The glassmorphism navbar — ✅ decided 2026-07-30
+
+Translucent / clear, over the near-black background.
+
+| State | Colour |
+|---|---|
+| **Selected** | **Lime + black** — `--lime #a9f04d` on `#070b0e`-ish, the existing accent-on-dark pairing |
+| **Unselected** | A grey or blue from the palette — `--muted #89969d` or `--line #263239` |
+| **Dimmed** (SESSION with no day) | Same family, further back |
+
+Colours come from `theme.js` / the `:root` vars in `App.css` — the palette is
+already shared by all three screens, so the navbar should not introduce a new one.
+
+> **Open:** the exact grey vs blue for unselected, and how far "dimmed" sits from
+> plain "unselected". Those two need to be visually distinct — unselected means
+> *you can go here*, dimmed means *you cannot yet* — and that difference is the
+> whole navigational teaching.
+
 ---
 
 ## The principle underneath all of it
@@ -418,10 +461,12 @@ behaviour, not assumed:
 3. ~~Does SESSION require an open day?~~ **Answered** — see §7.
 4. ~~Persist across reload?~~ **Yes.**
 5. ~~Does the navbar dim?~~ **Yes** — SESSION only, and only when no day is set.
-6. What does a brand-new gym with zero data see? Still open — the honest test of a
-   state machine. PLANNING and ANALYTICS are always reachable, so a fresh gym lands
-   somewhere; what it *says* is undecided.
-7. Does the `ProgramsTab` null-key bug get fixed inside this work, or separately?
+6. ~~What does a brand-new gym see?~~ **Answered** — see §9.
+7. **Where does the per-athlete `programs` tab live?** The state table gives
+   PLANNING "TrainingProgram create + instantiation" (group-scoped) and ANALYTICS
+   "History · Athlete · Notes · Reports". The existing **`programs` tab is neither**
+   — it is one athlete's *Recorded prescriptions*. It currently has no home.
+8. Does the `ProgramsTab` null-key bug get fixed inside this work, or separately?
 
 ---
 
@@ -452,6 +497,14 @@ Append as we go. Date each entry.
   "Change device" removed from the coach topbar; the four "Choose an athlete"
   guards collapsed into one at the athlete-tab boundary; "Rack N is ready"
   finally deleted. Verified in a browser on all four tabs.
+- **2026-07-30** — **Fresh gym lands in PLANNING**, greeted by name. Noted that the
+  username is not currently stored at login, so the greeting needs a small
+  client-side addition.
+- **2026-07-30** — **Wall gets its own "Dashboard Settings" cog**, holding Change
+  device role. Resolves the ❓ in §3.
+- **2026-07-30** — **Navbar palette:** translucent; lime+black selected; grey/blue
+  unselected; dimmed further back. Open: unselected vs dimmed must stay visually
+  distinct, since that difference is what teaches the order.
 - **2026-07-30** — **Day lifecycle split across states:** stage in PLANNING (then
   auto-navigate to SESSION), start in SESSION, end from the widget. Verified this
   needs no API change — P14's nullable `started_at` plus
