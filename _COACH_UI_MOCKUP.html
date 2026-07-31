@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Edge Athlete — Coach Admin mockup</title>
+<!--
+  _COACH_UI_MOCKUP.html — LAYOUT REFERENCE ONLY. Nothing here is wired.
+  Same role edge_athlete_rack_ui.html played for the rack screen: a picture to
+  agree on, not code to lift. Every number on screen is fake.
+  Spec: _COACH_UI_REDESIGN.md §13-16. Colours: react/src/theme.js.
+-->
+<style>
+  :root{
+    --bg:#070b0e; --panel:#10171b; --panel2:#151e23; --line:#263239;
+    --ink:#f5f7f2; --muted:#89969d; --lime:#a9f04d; --mint:#45dcb3;
+    --amber:#ffb63e; --coral:#ff646b;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding-bottom:110px}
+  .lbl{color:var(--lime);font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase}
+  .muted{color:var(--muted)}
+
+  /* ── mockup-only control, not part of the design ── */
+  .demobar{background:#1a1206;border-bottom:1px solid #b45309;color:#ffb63e;display:flex;gap:14px;align-items:center;font-size:11px;padding:8px 18px}
+  .demobar button{background:transparent;border:1px solid #b45309;color:#ffb63e;cursor:pointer;font:inherit;padding:4px 10px}
+
+  /* ── persistent chrome ── */
+  header.top{align-items:center;border-bottom:1px solid var(--line);display:flex;gap:18px;justify-content:space-between;padding:12px 24px}
+  .brand{align-items:center;display:flex;gap:11px;position:relative;cursor:pointer}
+  .brand .mark{align-items:center;background:var(--panel2);border:1px solid var(--line);display:flex;height:38px;justify-content:center;width:38px}
+  .brand .mark i{background:var(--lime);border-radius:50% 50% 45% 45%;height:17px;width:14px;display:block}
+  .brand b{font-size:15px;font-weight:650}
+  .brandmenu{background:var(--panel);border:1px solid var(--line);display:none;left:0;min-width:150px;padding:5px;position:absolute;top:52px;z-index:30}
+  .brandmenu.open{display:block}
+  .brandmenu button{background:none;border:0;color:var(--muted);cursor:pointer;font:inherit;font-size:11px;padding:8px 11px;text-align:left;width:100%}
+  .brandmenu button:hover{color:var(--lime)}
+  .ctx{text-align:center}
+  .ctx h1{font-size:17px;margin:2px 0 0}
+  .live{align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:999px;display:flex;font-size:10px;font-weight:850;gap:7px;letter-spacing:.08em;padding:7px 12px;text-transform:uppercase}
+  .live i{background:var(--mint);border-radius:50%;height:8px;width:8px}
+  .cog{align-items:center;background:transparent;border:1px solid var(--line);color:var(--muted);cursor:pointer;display:flex;font:inherit;font-size:10px;font-weight:800;gap:7px;letter-spacing:.07em;padding:0 11px;height:31px;text-transform:uppercase}
+  .cog:hover{border-color:var(--lime);color:var(--lime)}
+
+  /* ── active-session widget (only while a day runs) ── */
+  .widget{align-items:center;border:1px solid rgba(169,240,77,.45);background:rgba(169,240,77,.05);display:flex;gap:20px;justify-content:space-between;margin:14px 24px;padding:15px 18px}
+  .widget h3{font-size:20px;margin:3px 0 0}
+  .widget .timer{color:var(--lime);font-size:26px;font-variant-numeric:tabular-nums;font-weight:800;letter-spacing:-.02em}
+  .endbtn{background:var(--lime);border:0;color:#071006;cursor:pointer;font:inherit;font-weight:850;padding:12px 20px}
+
+  /* ── sub-tabs ── */
+  .subtabs{border-bottom:1px solid var(--line);display:flex;gap:4px;padding:0 24px}
+  .subtabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:11px;font-weight:800;letter-spacing:.09em;padding:13px 14px;text-transform:uppercase}
+  .subtabs button[aria-selected=true]{border-bottom-color:var(--lime);color:var(--lime)}
+
+  /* ── panels ── */
+  .wrap{padding:20px 24px}
+  .card{background:var(--panel);border:1px solid var(--line);margin-bottom:16px;padding:17px}
+  .card>header{align-items:start;display:flex;gap:16px;justify-content:space-between;margin-bottom:13px}
+  .card h3{font-size:19px;margin:3px 0 0}
+  .card p.sub{color:var(--muted);font-size:12px;margin:5px 0 0}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  select,input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);font:inherit;font-size:12px;padding:8px 10px}
+  .btn{background:transparent;border:1px solid var(--line);color:var(--ink);cursor:pointer;font:inherit;font-size:11px;font-weight:800;letter-spacing:.05em;padding:8px 13px;text-transform:uppercase}
+  .btn:hover{border-color:var(--lime);color:var(--lime)}
+  .btn.primary{background:var(--lime);border-color:var(--lime);color:#071006}
+  .step{border-left:2px solid var(--line);margin-bottom:18px;padding-left:15px}
+  .step.on{border-left-color:var(--lime)}
+  .stepno{color:var(--muted);font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
+  .grid2{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+  .pill{background:var(--panel2);border:1px solid var(--line);font-size:11px;padding:4px 9px}
+
+  /* ── session / room ── */
+  .room{display:grid;gap:16px;grid-template-columns:210px 1fr}
+  .rackbtn{background:var(--panel);border:1px solid var(--line);cursor:pointer;display:block;margin-bottom:7px;padding:11px;text-align:left;width:100%;color:inherit;font:inherit}
+  .rackbtn.sel{border-color:var(--lime)}
+  .rackbtn b{display:block;font-size:13px}
+  .rackbtn span{color:var(--muted);font-size:10px}
+  .obsgrid{display:grid;gap:1px;grid-template-columns:repeat(3,1fr);background:var(--line);border:1px solid var(--line);margin-top:12px}
+  .obsgrid>div{background:var(--panel);padding:12px 14px}
+  .obsgrid span{color:var(--muted);display:block;font-size:9px;font-weight:900;letter-spacing:.11em;text-transform:uppercase}
+  .obsgrid b{font-size:13px;font-weight:650}
+  .hero{align-items:center;display:flex;gap:26px;justify-content:space-between;margin-top:14px}
+  .hero h2{font-size:24px;margin:3px 0 0}
+  .hero .big{color:var(--lime);font-size:34px;font-weight:800;letter-spacing:-.03em}
+  .chart{align-items:flex-end;display:flex;gap:6px;height:74px;margin-top:6px}
+  .chart i{background:var(--mint);display:block;flex:1}
+  .chart i.a{background:var(--amber)} .chart i.c{background:var(--coral)}
+
+  /* ── bottom glass navbar ── */
+  nav.states{backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);
+    background:rgba(21,30,35,.55);border:1px solid rgba(255,255,255,.10);border-radius:999px;
+    bottom:22px;box-shadow:0 10px 34px rgba(0,0,0,.5);display:flex;gap:4px;left:50%;padding:6px;
+    position:fixed;transform:translateX(-50%);z-index:50}
+  nav.states button{background:transparent;border:0;border-radius:999px;color:var(--muted);cursor:pointer;
+    font:inherit;font-size:11px;font-weight:850;letter-spacing:.1em;padding:11px 26px;text-transform:uppercase;
+    transition:color .28s ease}
+  nav.states button.on{color:#071006}
+  nav.states button:disabled{color:#3c4a52;cursor:not-allowed}
+  nav.states .glider{background:var(--lime);border-radius:999px;bottom:6px;left:6px;position:absolute;top:6px;
+    transition:transform .34s cubic-bezier(.4,0,.2,1),width .34s cubic-bezier(.4,0,.2,1);z-index:-1}
+  nav.states .inner{display:flex;gap:4px;position:relative}
+  .hint{bottom:4px;color:#3c4a52;font-size:9px;left:50%;letter-spacing:.1em;position:fixed;text-transform:uppercase;transform:translateX(-50%)}
+</style>
+</head>
+<body>
+
+<div class="demobar">
+  <b>MOCKUP</b>
+  <span>nothing is wired · fake data</span>
+  <button onclick="toggleDay()">Toggle: <span id="daylbl">day running</span></button>
+  <span class="muted" style="color:#8a6a3a">← shows the widget appearing and SESSION un-dimming</span>
+</div>
+
+<header class="top">
+  <div class="brand" onclick="document.getElementById('bm').classList.toggle('open')">
+    <div class="mark"><i></i></div>
+    <b>Edge Athlete</b>
+    <div class="brandmenu" id="bm"><button>Log out</button></div>
+  </div>
+  <div class="ctx">
+    <div class="lbl">Coach workspace</div>
+    <h1 id="ctxtitle">Day 1 — Lower + Push · 2026-08-01</h1>
+  </div>
+  <div class="row">
+    <div class="live"><i></i>Live</div>
+    <button class="cog">⚙ Room layout</button>
+  </div>
+</header>
+
+<!-- active-session widget: only while a day is running -->
+<div class="widget" id="widget">
+  <div>
+    <div class="lbl">Active training day</div>
+    <h3>Day 1 — Lower + Push</h3>
+    <p class="sub muted">4 athletes · Varsity Football</p>
+  </div>
+  <div style="text-align:right">
+    <div class="lbl">Elapsed</div>
+    <div class="timer" id="timer">01:24:36</div>
+  </div>
+  <button class="endbtn">End training day</button>
+</div>
+
+<!-- ══════════════ PLANNING ══════════════ -->
+<section id="planning" hidden>
+  <div class="subtabs">
+    <button aria-selected="true" onclick="sub('planning',this,0)">Design</button>
+    <button aria-selected="false" onclick="sub('planning',this,1)">Groups</button>
+    <button aria-selected="false" onclick="sub('planning',this,2)">Workout catalog</button>
+    <button aria-selected="false" onclick="sub('planning',this,3)">Calendar</button>
+  </div>
+
+  <div class="wrap" data-sub="planning-0">
+    <div class="step on">
+      <div class="stepno">Step 1 · the template</div>
+      <div class="card">
+        <header>
+          <div><div class="lbl">Training block</div><h3>Base Strength</h3>
+            <p class="sub">Reusable. No group, no dates — those appear when you deploy it.</p></div>
+          <div class="row">
+            <button class="btn primary">Deploy to a group →</button>
+            <button class="btn">Edit days</button>
+          </div>
+        </header>
+        <div class="row">
+          <select><option>Create block…</option><option>Blank block</option><option>Copy of Base Strength</option></select>
+          <span class="pill">4 days</span><span class="pill">Off-season</span><span class="pill">Football</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="stepno">Step 2 · placed in time</div>
+      <div class="card">
+        <header>
+          <div><div class="lbl">Training program</div><h3>Base Strength — Varsity</h3>
+            <p class="sub">Aug 1 – Sep 26 · Varsity Football · deployed from Base Strength</p></div>
+          <div class="row">
+            <button class="btn">Promote to block ↑</button>
+            <button class="btn primary">Stage a training day</button>
+          </div>
+        </header>
+        <p class="sub muted">Deploy and promote are actions on the thing itself — no separate panel.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="stepno">Step 3 · a one-off</div>
+      <div class="card">
+        <header><div><div class="lbl">Session design</div><h3>One-off session</h3>
+          <p class="sub">No template behind it. Promote later if it turns out to be worth keeping.</p></div></header>
+        <div class="row"><select><option>Create session…</option><option>Blank session</option></select></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap" data-sub="planning-1" hidden>
+    <div class="card"><header><div><div class="lbl">Group</div><h3>Varsity Football</h3>
+      <p class="sub">28 athletes · Sarah Kemp (head), Mike Ross</p></div><button class="btn">Open</button></header></div>
+    <div class="card"><header><div><div class="lbl">Group</div><h3>Freshman Speed</h3>
+      <p class="sub">14 athletes · Mike Ross (head)</p></div><button class="btn">Open</button></header></div>
+  </div>
+
+  <div class="wrap" data-sub="planning-2" hidden>
+    <div class="card">
+      <header><div><div class="lbl">Workout catalog</div><h3>All blocks &amp; programs</h3>
+        <p class="sub">Filter by category — Off-season, Football, Freshman.</p></div></header>
+      <div class="grid2">
+        <div class="card" style="margin:0"><div class="lbl">Block</div><h3 style="font-size:15px">Base Strength</h3><p class="sub">4 days · Off-season</p></div>
+        <div class="card" style="margin:0"><div class="lbl">Block</div><h3 style="font-size:15px">In-season Maintain</h3><p class="sub">3 days · Football</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap" data-sub="planning-3" hidden>
+    <div class="card">
+      <header><div><div class="lbl">Calendar</div><h3>August 2026</h3>
+        <p class="sub">Slots generated from each block's cadence. A slot is a plan until a day is staged.</p></div></header>
+      <div class="grid2">
+        <div class="pill">Mon 3 · Day 1 — ready</div><div class="pill">Wed 5 · Day 2 — planned</div>
+        <div class="pill">Fri 7 · Day 3 — planned</div><div class="pill">Mon 10 · Day 4 — planned</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ SESSION ══════════════ -->
+<section id="session" hidden>
+  <div class="subtabs">
+    <button aria-selected="true" onclick="sub('session',this,0)">Room</button>
+    <button aria-selected="false" onclick="sub('session',this,1)">Quick note</button>
+  </div>
+
+  <div class="wrap" data-sub="session-0">
+    <div class="room">
+      <aside>
+        <div class="row" style="justify-content:space-between;margin-bottom:9px">
+          <span class="lbl">Room</span><span class="muted" style="font-size:10px">4 racks</span>
+        </div>
+        <button class="rackbtn sel"><b>Rack 1</b><span>Jordan Lee · Back Squat</span></button>
+        <button class="rackbtn"><b>Rack 2</b><span>Sam Rivera · resting</span></button>
+        <button class="rackbtn"><b>Rack 3</b><span>Alex Kim · Bench Press</span></button>
+        <button class="rackbtn"><b>Rack 4</b><span class="muted">nobody checked in</span></button>
+      </aside>
+
+      <div>
+        <div class="card" style="margin:0">
+          <header><div><div class="lbl">Rack observation</div><h3>Jordan Lee</h3></div><b class="muted">Rack 1</b></header>
+          <div class="obsgrid">
+            <div><span>Movement</span><b>Back Squat</b></div>
+            <div><span>Load</span><b>225 lbs</b></div>
+            <div><span>Progress</span><b>Set 3 of 5</b></div>
+            <div><span>Rack state</span><b>lifting</b></div>
+            <div><span>Latest result</span><b>0.71 m/s · 3 reps</b></div>
+            <div><span>Hardware</span><b style="color:var(--mint)">rack_1</b></div>
+          </div>
+
+          <div class="hero">
+            <div><div class="lbl">Set 3 · Back Squat</div><h2>225 lbs × 3</h2></div>
+            <div style="text-align:right"><div class="big">0.71</div><span class="muted" style="font-size:11px">m/s average</span></div>
+          </div>
+          <div class="chart"><i style="height:96%"></i><i style="height:88%"></i><i class="a" style="height:66%"></i><i class="a" style="height:58%"></i><i class="c" style="height:34%"></i></div>
+          <p class="sub muted">Rep velocity · green on target, amber dropping, coral fatigued</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap" data-sub="session-1" hidden>
+    <div class="card">
+      <header><div><div class="lbl">Quick note</div><h3>Jordan Lee · Rack 1</h3>
+        <p class="sub">Fast and provisional. Same note field you review in Analytics.</p></div></header>
+      <input style="width:100%;padding:13px" placeholder="Bar speed dropping on the last two — check his sleep.">
+      <div class="row" style="margin-top:11px"><button class="btn primary">Save note</button><span class="muted" style="font-size:11px">Athlete comes from the selected rack</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ ANALYTICS ══════════════ -->
+<section id="analytics" hidden>
+  <div class="subtabs">
+    <button aria-selected="true" onclick="sub('analytics',this,0)">Summary</button>
+    <button aria-selected="false" onclick="sub('analytics',this,1)">History</button>
+    <button aria-selected="false" onclick="sub('analytics',this,2)">Reports</button>
+    <button aria-selected="false" onclick="sub('analytics',this,3)">Notes</button>
+  </div>
+
+  <div class="wrap">
+    <div class="card" style="padding:13px">
+      <div class="row"><span class="lbl">Athlete</span>
+        <select style="min-width:220px"><option>Jordan Lee</option><option>Sam Rivera</option><option>Alex Kim</option></select>
+        <span class="muted" style="font-size:11px">Selector lives here only — one guard for all sub-tabs</span></div>
+    </div>
+  </div>
+
+  <div class="wrap" data-sub="analytics-0" style="padding-top:0">
+    <div class="card"><header><div><div class="lbl">Athlete overview</div><h3>Jordan Lee</h3></div></header>
+      <div class="obsgrid" style="grid-template-columns:repeat(5,1fr)">
+        <div><span>Completed sets</span><b>142</b></div><div><span>Total reps</span><b>487</b></div>
+        <div><span>Best set avg</span><b>0.88 m/s</b></div><div><span>Highest peak</span><b>1.14 m/s</b></div>
+        <div><span>Heaviest load</span><b>315 lbs</b></div>
+      </div></div>
+  </div>
+  <div class="wrap" data-sub="analytics-1" hidden style="padding-top:0"><div class="card"><header><div><div class="lbl">History</div><h3>Set history</h3></div></header><p class="sub muted">Grouped by training day, newest first.</p><div class="obsgrid"><div><span>Jul 29 · Back Squat</span><b>5 × 3 · 0.74 m/s</b></div><div><span>Jul 27 · Bench Press</span><b>4 × 5 · 0.61 m/s</b></div><div><span>Jul 25 · Back Squat</span><b>5 × 3 · 0.72 m/s</b></div></div></div></div>
+  <div class="wrap" data-sub="analytics-2" hidden style="padding-top:0"><div class="card"><header><div><div class="lbl">Reports</div><h3>Completed training days</h3></div><button class="btn">Download PDF</button></header><p class="sub muted">Frozen at end of day — never recalculated.</p></div></div>
+  <div class="wrap" data-sub="analytics-3" hidden style="padding-top:0"><div class="card"><header><div><div class="lbl">Notes</div><h3>Coach memory · Jordan Lee</h3></div></header><p class="sub muted">Reviewing view of the same field Quick Note writes.</p></div></div>
+</section>
+
+<!-- ══════════════ bottom glass navbar ══════════════ -->
+<nav class="states">
+  <div class="inner">
+    <span class="glider" id="glider"></span>
+    <button id="b-planning"  onclick="go('planning')">Planning</button>
+    <button id="b-session"   onclick="go('session')">Session</button>
+    <button id="b-analytics" onclick="go('analytics')">Analytics</button>
+  </div>
+</nav>
+<div class="hint">bottom-centre · lime = selected · dimmed = no day set</div>
+
+<script>
+  var dayRunning = true, current = 'session';
+
+  function go(state){
+    if (state === 'session' && !dayRunning) return;   // dimmed = not selectable
+    current = state;
+    ['planning','session','analytics'].forEach(function(s){
+      document.getElementById(s).hidden = (s !== state);
+      document.getElementById('b-' + s).classList.toggle('on', s === state);
+    });
+    slide();
+  }
+
+  // The glider is what makes three routes read as one surface.
+  function slide(){
+    var btn = document.getElementById('b-' + current), g = document.getElementById('glider');
+    g.style.width = btn.offsetWidth + 'px';
+    g.style.transform = 'translateX(' + (btn.offsetLeft - 6) + 'px)';
+  }
+
+  function sub(section, btn, idx){
+    btn.parentElement.querySelectorAll('button').forEach(function(b){ b.setAttribute('aria-selected', b === btn); });
+    document.querySelectorAll('[data-sub^="' + section + '-"]').forEach(function(pane){
+      pane.hidden = (pane.dataset.sub !== section + '-' + idx);
+    });
+  }
+
+  function toggleDay(){
+    dayRunning = !dayRunning;
+    document.getElementById('daylbl').textContent = dayRunning ? 'day running' : 'no day set';
+    document.getElementById('widget').style.display = dayRunning ? 'flex' : 'none';
+    document.getElementById('b-session').disabled = !dayRunning;
+    document.getElementById('ctxtitle').textContent = dayRunning
+      ? 'Day 1 — Lower + Push · 2026-08-01' : 'No training day running';
+    if (!dayRunning && current === 'session') go('planning'); else slide();
+  }
+
+  // fake ticking clock, so the elapsed timer reads as live
+  var secs = 5076;
+  setInterval(function(){
+    secs++;
+    var h = String(Math.floor(secs/3600)).padStart(2,'0'),
+        m = String(Math.floor(secs%3600/60)).padStart(2,'0'),
+        s = String(secs%60).padStart(2,'0');
+    document.getElementById('timer').textContent = h + ':' + m + ':' + s;
+  }, 1000);
+
+  go('session');
+  window.addEventListener('resize', slide);
+</script>
+</body>
+</html>

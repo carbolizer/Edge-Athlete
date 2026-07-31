@@ -452,6 +452,13 @@ same job?" test pointing at a duplicate rather than a stale field.
 
 ### 13. The layout — settled 2026-07-30
 
+> 🖼 **Picture of it:** [`_COACH_UI_MOCKUP.html`](_COACH_UI_MOCKUP.html) — open it
+> in a browser. Nothing is wired; every number is fake. It exists to agree on
+> shape, the same job `edge_athlete_rack_ui.html` did for the rack screen. The
+> amber bar at the top is a mockup-only control that toggles "day running" so you
+> can see the widget appear and SESSION un-dim.
+
+
 **PERSISTENT** (outside the states)
 
 * Edge Athlete logo → log out
