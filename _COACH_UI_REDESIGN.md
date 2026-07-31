@@ -449,6 +449,55 @@ same job?" test pointing at a duplicate rather than a stale field.
 > Related and still unanswered: **where does the per-athlete `programs` tab live**
 > in the three-state grouping? See open question 7.
 
+### 13. The layout — settled 2026-07-30
+
+**PERSISTENT** (outside the states)
+
+* Edge Athlete logo → log out
+* Glassmorphism navbar — 3 states; SESSION dimmed when no day is set
+* Active-session widget — only while a day runs; elapsed timer; End training day
+* Dev strip — dev mode only
+
+**PLANNING**
+
+* Training blocks — create / edit (`WorkoutCatalog`)
+* **Deploy a block → program** for a group, with dates (already built:
+  `buildDeployPayload` → `POST /api/training-programs/`)
+* **Promote a program → block** (P15, already built)
+* Groups
+* Calendar / schedule (`ScheduleWorkspace`)
+* Athlete plan assignment + **per-athlete overrides** — this is the existing
+  *"INDIVIDUAL TARGETS · Exercise overrides"* block inside `AthleteWorkoutPlanning`,
+  moved here from the Programs tab
+* Stage a training day → navigates to SESSION
+
+**SESSION**
+
+* **The current ROOM tab, essentially as-is** — rack rail, rack observation, set
+  detail, charts, hardware. ✅ Devin: *"I really like the entire ROOM tab that is
+  currently there. This should be the shape of how session looks and we build
+  around that."* SESSION is not a new screen; it is the room view plus the two
+  items below.
+* Start training day
+* Quick Note
+* Settings cog → Room Layout (`/coach/setup`)
+
+**ANALYTICS**
+
+* Athlete selector
+* Athlete summary
+* History
+* Reports
+* Notes (review)
+
+**Deleted along the way:** the Programs card grid · "Rack N is ready" · "No racks
+assigned" · the four duplicate "Choose an athlete" guards · Change device from the
+coach topbar.
+
+**Round trip already exists.** Block → program (deploy) and program → block
+(promote) are both built and both live in `WorkoutCatalog`. PLANNING inherits them
+whole — nothing new to write.
+
 ---
 
 ## The principle underneath all of it
@@ -492,12 +541,21 @@ behaviour, not assumed:
 4. ~~Persist across reload?~~ **Yes.**
 5. ~~Does the navbar dim?~~ **Yes** — SESSION only, and only when no day is set.
 6. ~~What does a brand-new gym see?~~ **Answered** — see §9.
-7. **Where does the per-athlete `programs` tab live?** The state table gives
+7. ~~Where does the per-athlete `programs` tab live?~~ **Resolved — it stops
+   existing.** Its card grid is deleted; `AthleteWorkoutPlanning` (assignment +
+   overrides) moves to PLANNING. See §13.
+7b. *(superseded)* **Where does the per-athlete `programs` tab live?** The state table gives
    PLANNING "TrainingProgram create + instantiation" (group-scoped) and ANALYTICS
    "History · Athlete · Notes · Reports". The existing **`programs` tab is neither**
    — it is one athlete's *Recorded prescriptions*. It currently has no home.
 8. ~~`ProgramsTab` null-key bug?~~ **Fixed** outside this doc — commit `1a9ef38`.
-9. Does `ProgramsTab` keep its card grid at all, given `AthleteWorkoutPlanning`
+10. ~~Does `ProgramsTab` keep its card grid?~~ **No — deleted.** The rack screen
+   already shows an athlete their live day, the coach authored the plan, and at
+   100 athletes / 10 racks a per-person plan list answers the wrong question: a
+   coach wants *who is behind*, not *what is Jordan doing*. Consequence: the
+   "stripped-down athlete view" once floated for SESSION has no content left
+   either, so **Quick Note is the only athlete-scoped thing SESSION needs.**
+11. *(superseded)* Does `ProgramsTab` keep its card grid at all, given `AthleteWorkoutPlanning`
    sits below it showing the same prescription with the percent included? See §12.
 
 ---
@@ -538,6 +596,10 @@ Append as we go. Date each entry.
   it renders exercise names correctly, and it shows percent AND resolved pounds
   together. It is the counter-example to `ProgramsTab`: the merge rewired this one
   and missed that one.
+- **2026-07-30** — **LAYOUT SETTLED (§13).** SESSION is the existing ROOM tab plus
+  Start day, Quick Note and the settings cog. PLANNING gets the block/program round
+  trip it already has, plus the overrides block lifted out of the Programs tab.
+  ANALYTICS keeps the athlete-scoped reviewing. Programs tab dissolved.
 - **2026-07-30** — **New open item (§12):** `ProgramsTab` is headed "Recorded
   prescriptions" but shows only pounds, never the percent — presenting a derived
   number as the plan. Possibly a duplicate of the panel directly below it.
