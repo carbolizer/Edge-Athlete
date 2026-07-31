@@ -83,10 +83,18 @@ panel. Checking the code showed it does not — see §4.
 
 ### 2. The active-session widget lives outside the machine
 
-Stays exactly where it is and how it looks — a persistent bar, not a state.
+Outside the three states — a bar, not a state.
 
-Longer term this becomes the slot for **other important notifications** too, so
-design it as a general strip rather than a session-specific one.
+**✅ Revised 2026-07-30: it is NOT always visible.** It appears only while a day is
+actually running, and disappears when none is. (Earlier draft said always-on;
+this supersedes it.) An empty strip on a quiet morning is furniture.
+
+**Ending a day still happens from the widget.** Starting is in SESSION, ending is
+in the widget — because ending is something you do while looking at anything, and
+the widget is the only thing on screen in all three states.
+
+Longer term this is the slot for **other important notifications** too, so build
+it as a general strip that is currently showing a session — not a session bar.
 
 **Add: a derived timer counting up** — how long the current session has been
 running.
@@ -97,6 +105,36 @@ running.
 > `now − started_at`, ticked locally — exactly the pattern the rack screen already
 > uses for its own per-second timers. **The zero-backend-change constraint holds
 > for the whole redesign.**
+
+### 2b. Staging vs starting a day — ✅ decided 2026-07-30
+
+The two halves live in different states on purpose:
+
+| Act | Where | What it means |
+|---|---|---|
+| **Stage** a day | **PLANNING** | Create it; it does not run yet. Then **navigate the coach to SESSION** |
+| **Start** it | **SESSION** | The day goes live |
+| **End** it | **the widget** | Available from any state, while it is running |
+
+**This needs no backend change — the split already exists.** P14 made
+`TrainingSession.started_at` nullable precisely so a day can exist before it runs,
+and `POST /api/sessions/{id}/start/` is the route that starts a staged one (it
+409s if another day is already running). So:
+
+```
+PLANNING  POST /api/sessions/            → staged (started_at null)
+          → navigate to SESSION
+SESSION   POST /api/sessions/{id}/start/ → running
+widget    PATCH /api/sessions/{id}/      → ended
+```
+
+The UI is being reshaped to match a lifecycle the API already models. That is a
+good sign the grouping is right.
+
+⚠️ **Watch the D18 trap.** A staged day is deliberately NOT "active" — "active"
+means *started* and not ended. A future staged day must never capture rack
+check-ins. The backend already guarantees this; the UI must not imply otherwise by
+showing a staged day as if it were live.
 
 ### 3. Less chrome on the main screen
 
@@ -314,6 +352,30 @@ The components are already fully separate; only the `useLiveRoomState` hook is
 shared, which is a real reason to co-locate. Revisit after the state machine
 lands.
 
+### 7. Navigation rules — ✅ decided 2026-07-30
+
+| | |
+|---|---|
+| **PLANNING** | Always reachable |
+| **ANALYTICS** | Always reachable |
+| **SESSION** | **Not selectable unless a day is set.** Dimmed in the navbar otherwise |
+
+**Dim, do not hide.** A dimmed SESSION teaches the order — you can see the step
+exists and that something is missing. A hidden one just looks like a two-state app.
+
+**Do not build a hard guard.** If a coach somehow lands in SESSION with no day, it
+renders dimmed and the existing API errors remain the safety net. We are not
+adding UI-side enforcement the backend does not have — that is the second failure
+mode in "The principle" below, and it is how the UI becomes a competing source of
+truth.
+
+**State survives a reload**, the way the device role already does.
+
+### 8. Naming — ✅ decided 2026-07-30
+
+**Quick Note.** Same `Athlete.notes` field as the ANALYTICS notes view; only the
+affordance differs.
+
 ---
 
 ## The principle underneath all of it
@@ -351,15 +413,15 @@ behaviour, not assumed:
 ## Open questions
 
 1. ~~Where do the athlete-scoped tabs live?~~ **Answered — see the state table.**
-2. Is the state machine **global** (whole screen switches) or does the active
-   session widget imply a persistent frame around it?
-3. Does entering SESSION require an open day — and if none is open, does the state
-   show a "start one" affordance, or is the state itself unreachable?
-4. Do the three states persist across reload? (Device role already does.)
-5. Does the navbar show *where you can go* differently from *where you are* — e.g.
-   Analytics dimmed until a session has ever completed?
-6. What does a brand-new gym with zero data see? The empty state is the honest
-   test of a state machine.
+2. ~~Global vs framed?~~ **Framed** — navbar + (conditional) widget persist; the
+   body swaps.
+3. ~~Does SESSION require an open day?~~ **Answered** — see §7.
+4. ~~Persist across reload?~~ **Yes.**
+5. ~~Does the navbar dim?~~ **Yes** — SESSION only, and only when no day is set.
+6. What does a brand-new gym with zero data see? Still open — the honest test of a
+   state machine. PLANNING and ANALYTICS are always reachable, so a fresh gym lands
+   somewhere; what it *says* is undecided.
+7. Does the `ProgramsTab` null-key bug get fixed inside this work, or separately?
 
 ---
 
@@ -390,6 +452,16 @@ Append as we go. Date each entry.
   "Change device" removed from the coach topbar; the four "Choose an athlete"
   guards collapsed into one at the athlete-tab boundary; "Rack N is ready"
   finally deleted. Verified in a browser on all four tabs.
+- **2026-07-30** — **Day lifecycle split across states:** stage in PLANNING (then
+  auto-navigate to SESSION), start in SESSION, end from the widget. Verified this
+  needs no API change — P14's nullable `started_at` plus
+  `POST /api/sessions/{id}/start/` already model exactly this.
+- **2026-07-30** — **Widget is conditional, not permanent.** Supersedes the earlier
+  always-visible note; it shows only while a day is running.
+- **2026-07-30** — **Navigation:** PLANNING and ANALYTICS always reachable; SESSION
+  dimmed and unselectable with no day set. No hard guard — if you land there
+  anyway, the existing API errors stay the safety net. State survives reload.
+- **2026-07-30** — ANALYTICS sub-tabs approved. Quick Note is the name.
 - **2026-07-30** — **Athlete selector: ANALYTICS only.** Revises the earlier
   SESSION-stripped + ANALYTICS-full split. Rack selection already calls
   `chooseAthlete()`, so in SESSION the room view is the picker, and it matches how
