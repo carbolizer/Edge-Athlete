@@ -1,6 +1,7 @@
 # Coach Admin — State Machine Redesign
 
-> **STATUS: DRAFT / WORKING DOCUMENT.** Nothing here is decided. This is the
+> **STATUS: SPEC — ready to build.** §13–16 settle the layout, mechanics and build
+> order. Earlier sections record how each decision was reached. This is the
 > workbench we edit while talking the design through. When it settles, the
 > conclusions fold into [`_SPEC.md`](_SPEC.md) and this file goes away.
 >
@@ -497,6 +498,122 @@ coach topbar.
 **Round trip already exists.** Block → program (deploy) and program → block
 (promote) are both built and both live in `WorkoutCatalog`. PLANNING inherits them
 whole — nothing new to write.
+
+### 14. Mechanics — decided 2026-07-30
+
+**Routes, not internal state.** `/coach/planning`, `/coach/session`,
+`/coach/analytics`. `router.js` is a ~40-line custom router and nginx already
+serves `index.html` for any path, so this costs almost nothing and gives reload
+persistence and the back button for free.
+
+* `/coach` alone → redirect to the last state, or PLANNING on a fresh device.
+* ⚠️ **It must not feel like page navigation.** The navbar animates the selection
+  between states so it reads as one surface. Only the body swaps; navbar, logo and
+  widget never unmount.
+
+**Navbar sits bottom-centre.** Reachable with a thumb on a held tablet.
+
+**Dashboard Settings does not exist yet** — it is new work, not a move. Scope it
+as its own small phase, or a separate branch.
+
+### 15. PLANNING's sub-tabs — decided 2026-07-30
+
+Four sub-tabs. One builds, three view.
+
+| Sub-tab | Holds |
+|---|---|
+| **Design** | The creation flow, in the order a coach thinks |
+| **Groups** | View groups |
+| **Workout catalog** | View blocks / programs |
+| **Calendar** | View the schedule |
+
+**Inside "Design", vertical order follows the coach's own process:**
+
+```
+1. Block            ← the reusable template
+2. Program          ← the block placed in time for a group
+3. Session design   ← a one-off, no template behind it
+```
+
+**Two rules for this screen:**
+
+1. **Create is a dropdown, not a form page.** "Create block" and "create session"
+   are two dropdowns — compact controls, not full-page builders.
+2. **Promote and instantiate are BUTTONS INSIDE the block/program components** —
+   not separate panels. Today `WorkoutCatalog` has a standalone deploy panel with
+   its own block/group/name/date fields; that becomes an action on the thing
+   itself. You promote *this* program; you deploy *this* block.
+
+That second rule is the real change in PLANNING. Everything else is re-shelving.
+
+### 16. Build order — incremental, with exit criteria
+
+**Incremental, not big-bang.** `SprintBranch` stays demoable at every step; the
+old tab bar keeps working until the last phase removes it.
+
+Each phase below ends with a check that can be **verified by clicking**, not by a
+green test suite — this project has nine bugs on record that tests did not catch.
+
+---
+
+**Phase A — the shell**
+Routes + bottom navbar + animated selection. Each state renders the existing tab
+content unchanged inside it.
+
+- [ ] `/coach/planning`, `/coach/session`, `/coach/analytics` all load
+- [ ] `/coach` redirects; a reload keeps the state
+- [ ] Back button moves between states
+- [ ] Navbar animates; logo/widget do not unmount on a state change
+- [ ] SESSION dims when no day is set, and is not selectable
+- [ ] Frozen-file check clean
+
+**Phase B — SESSION**
+The current ROOM tab becomes SESSION's body, plus Start training day, Quick Note,
+settings cog.
+
+- [ ] Room view identical to today's ROOM tab
+- [ ] Start training day works; staged day → running
+- [ ] Quick Note saves against the athlete at the selected rack
+- [ ] Cog opens Room Layout
+
+**Phase C — ANALYTICS**
+Athlete selector + sub-tabs (summary, history, reports, notes).
+
+- [ ] Selector lives here only — gone from the global topbar
+- [ ] One "choose an athlete" guard at the state boundary, not per sub-tab
+- [ ] Every sub-tab renders for an athlete with data, and for one with none
+
+**Phase D — PLANNING**
+Four sub-tabs per §15; promote/deploy become in-component buttons.
+
+- [ ] Design tab ordered Block → Program → Session design
+- [ ] Create block / create session are dropdowns
+- [ ] Deploy is a button on a block; promote is a button on a program
+- [ ] The standalone deploy panel is gone
+- [ ] Stage a day → lands in SESSION
+- [ ] Groups / catalog / calendar reachable as view tabs
+
+**Phase E — the widget**
+Conditional active-session bar with the elapsed timer.
+
+- [ ] Hidden with no running day; appears when one starts
+- [ ] Timer counts up from `started_at`, client-side, no new API
+- [ ] End training day works from any state
+
+**Phase F — removals**
+Only after A–E are working.
+
+- [ ] Old 8-tab nav deleted
+- [ ] Programs card grid deleted
+- [ ] Change device gone from the coach topbar
+- [ ] No dead CSS left behind
+- [ ] Full click-through of all three states on a real tablet
+
+**Phase G — Dashboard Settings** *(new work, may be its own branch)*
+A settings cog on the wall display, holding Change device role.
+
+- [ ] Cog on the wall header; `Dashboard.jsx:193` button removed
+- [ ] Wall still needs no login
 
 ---
 
