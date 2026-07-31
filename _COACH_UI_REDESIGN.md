@@ -856,3 +856,19 @@ Append as we go. Date each entry.
 - **2026-07-30** — **Session timer needs no API.** `started_at` is already in the
   room-state payload; compute elapsed client-side. No backend change anywhere in
   this redesign.
+- **2026-07-31** — **Phase A built.** The three open Phase-A questions are now
+  answered, by building them:
+  - **Exact greys.** Unselected `#89969d` (theme `muted`), dimmed `#3c4a52`.
+    Unselected also lifts to near-white on hover, so *pressable* is signalled two
+    ways and *not yet* is signalled by neither.
+  - **`/coach` resume.** A returning device **resumes its last state**, remembered
+    per device in `localStorage.coach_state`. No special case for "a day is
+    running" — if the remembered state is SESSION and no day is open, the
+    ordinary SESSION guard handles it, so there is one rule rather than two.
+  - **Animation shape.** **The glider slides; the body does not crossfade.** A
+    crossfade would fade the live room's charts on every state change, and on a
+    Pi-served tablet that reads as lag rather than polish. Revisit only if the
+    swap looks abrupt on real hardware.
+  - Also decided: SESSION with no day **does not redirect**. Pulling a coach off
+    the screen they were reading — which is what a redirect does the moment a day
+    ends — is worse than a screen that says why it is empty.

@@ -1,0 +1,116 @@
+/*
+ * StateNavbar.css — the frosted bar that floats at the bottom of the coach app.
+ *
+ * Bottom-centre on purpose: a coach holds this tablet in two hands, and the
+ * bottom middle is the one place both thumbs reach without regripping. The top
+ * of the screen is the worst place for the control you press most.
+ *
+ * The "glass" is a real backdrop blur over whatever is behind it, not a flat
+ * grey. That is what stops the bar from reading as a separate page footer and
+ * makes it read as one surface floating above the work.
+ *
+ * Colours are the same values as react/src/theme.js. They are repeated here as
+ * literals because this is a stylesheet and cannot import the file — if the
+ * brand accent ever changes, both places change.
+ */
+
+.coach-states {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+
+  display: flex;
+  padding: 6px;
+  border-radius: 999px;
+
+  /* The glass itself. saturate() keeps the lime underneath from going grey. */
+  background: rgba(21, 30, 35, .55);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, .10);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .5);
+}
+
+/* The buttons and the glider share this positioning context, so the glider can
+   be measured and placed against the same origin the buttons sit in. */
+.coach-states-inner {
+  position: relative;
+  display: flex;
+  gap: 4px;
+}
+
+.coach-states button {
+  position: relative;
+  z-index: 1;          /* above the glider, so the selected label reads on lime */
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #89969d;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .1em;
+  padding: 11px 26px;
+  text-transform: uppercase;
+  transition: color .28s ease;
+}
+
+.coach-states button:hover:not(:disabled):not(.on) {
+  color: #f5f7f2;
+}
+
+/* Dark ink on the lime pill — near-white text on lime is unreadable. */
+.coach-states button.on {
+  color: #071006;
+}
+
+/* SESSION with no training day running. Dimmer than an unselected state and
+   visibly not pressable, because "you cannot go here yet" is different
+   information from "you are not here right now". */
+.coach-states button:disabled {
+  color: #3c4a52;
+  cursor: not-allowed;
+}
+
+/*
+ * The glider — the lime pill that slides between states.
+ *
+ * This is the whole reason the redesign does not feel like page navigation.
+ * Three separate screens with three URLs would normally flash and re-lay-out;
+ * one shape sliding under the labels reads as a single surface changing mode.
+ *
+ * Its position and width are measured from the real buttons in JS and written
+ * as inline styles, because the labels are different lengths and CSS has no way
+ * to know how wide "Analytics" renders in the tablet's font.
+ */
+.coach-states .coach-states-glider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 999px;
+  background: #a9f04d;
+  transition: transform .34s cubic-bezier(.4, 0, .2, 1),
+              width .34s cubic-bezier(.4, 0, .2, 1);
+  pointer-events: none;
+}
+
+/* Someone who has asked their device to stop animating gets an instant swap.
+   The bar still works; it just stops sliding. */
+@media (prefers-reduced-motion: reduce) {
+  .coach-states .coach-states-glider,
+  .coach-states button {
+    transition: none;
+  }
+}
+
+/*
+ * Room for the bar to float over. Without this the last card on every screen
+ * hides underneath the glass and cannot be scrolled to.
+ */
+.coach-states-clearance {
+  padding-bottom: 110px;
+}

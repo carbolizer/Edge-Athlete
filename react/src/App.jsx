@@ -4,7 +4,10 @@
 //   /                → role picker (only if this device has no role yet)
 //   /rack/setup      → rack registration + "waiting for a rack" screen (see rack/RackSetup)
 //   /rack/:n         → the live rack screen for rack n
-//   /coach           → the coach's main screen (live room, athletes, planning, reports)
+//   /coach           → bounces to whichever coach state this device was last in
+//   /coach/planning  → PLANNING — blocks, programs, groups, the calendar
+//   /coach/session   → SESSION — the live room, while a training day runs
+//   /coach/analytics → ANALYTICS — one athlete's summary, history, reports, notes
 //   /coach/setup     → coach admin Room Layout (JWT gate + dropdown assign)
 //   /dashboard       → base-station wall display
 //   /connection-test → the API/architecture demo kept from the scaffold
@@ -25,6 +28,7 @@ import WifiChangeOverlay from './WifiChangeOverlay.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
+import { coachStateFromPath, pathForCoachState, resumeCoachState } from './coach/coachState.js'
 import { applyRoleIdentity, getDeviceId } from './device.js'
 import { Centered } from './ui.jsx'
 import { T } from './theme.js'
@@ -54,6 +58,28 @@ class ErrorBoundary extends Component {
     // Kept where the next person will look. The stack is minified in a
     // production build, but the message alone usually names the field.
     console.error('Edge Athlete crashed:', error, info?.componentStack)
+  }
+
+  // Navigating away from a broken screen clears the error, so one bad route
+  // cannot hold the whole app hostage until someone reloads by hand.
+  //
+  // ⚠️ THIS USED TO BE `key={pathname}` ON THE BOUNDARY, and that was a real bug
+  // once the coach app became three routes. Changing a key does not just reset a
+  // component — it unmounts and rebuilds the entire subtree. So every move
+  // between PLANNING, SESSION and ANALYTICS tore down the whole coach app and
+  // built a new one: the navbar's sliding pill restarted from scratch instead of
+  // animating, and the room state, athlete list and movement catalog were all
+  // refetched. The three states are supposed to read as one surface changing
+  // mode; keyed that way they were three page loads wearing a costume.
+  //
+  // Comparing here instead does the same job without the teardown. When there is
+  // no error the children are untouched, so React reconciles /coach/planning and
+  // /coach/session as the same component — which is exactly what keeps the bar
+  // on screen and sliding.
+  componentDidUpdate(previous) {
+    if (this.state.error && previous.resetKey !== this.props.resetKey) {
+      this.setState({ error: null })
+    }
   }
 
   render() {
@@ -207,10 +233,18 @@ function route(pathname) {
   if (pathname === '/connection-test') return <ConnectionTest />
   if (pathname === '/rack/setup') return <RackSetup />
   if (pathname === '/coach/setup') return <CoachTablet />
-  // Two faces of one screen: the coach view is the working tool (login, athletes,
-  // planning, reports); the wall view is the read-only room display. Same file,
-  // same live room feed, different `mode`.
-  if (pathname === '/coach') return <Dashboard mode="coach" />
+
+  // The coach app is a three-position state machine, and the position lives in
+  // the URL — so a reload keeps it, Back moves between states, and a screen can
+  // be linked to. See coach/coachState.js for why. Two faces of one screen: the
+  // coach view is the working tool (login, athletes, planning, reports); the
+  // wall view is the read-only room display. Same file, same live room feed,
+  // different `mode`.
+  const coachState = coachStateFromPath(pathname)
+  if (coachState) return <Dashboard mode="coach" coachState={coachState} />
+  // A bare /coach names no state, so send this device back to the one it left.
+  if (pathname === '/coach') return <Redirect to={pathForCoachState(resumeCoachState())} />
+
   if (pathname === '/dashboard') return <Dashboard mode="wall" />
 
   if (pathname.startsWith('/rack/')) {
@@ -240,10 +274,9 @@ export default function App() {
   // copy-the-password flow, so it does not need this.
   const isBystanderScreen = role === 'rack' || role === 'dashboard'
   return (
-    // Keyed by pathname so navigating away from a broken screen clears the
-    // error — otherwise one bad route would hold the whole app hostage until a
-    // manual reload.
-    <ErrorBoundary key={pathname}>
+    // `resetKey`, NOT `key` — see the note on componentDidUpdate above. A key
+    // here would rebuild the whole app on every coach state change.
+    <ErrorBoundary resetKey={pathname}>
       {route(pathname)}
       {isRack && <RackCommandListener />}
       {isBystanderScreen && <WifiChangeOverlay />}

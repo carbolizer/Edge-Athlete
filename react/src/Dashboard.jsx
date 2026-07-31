@@ -17,8 +17,14 @@
 // says "look again". The two views ask the same endpoint for different amounts
 // of detail (?details=true for the coach, which needs the login).
 //
-// The coach view is a set of tabs across one selected athlete — summary,
-// history, programs, notes — plus workouts and reports, which stand alone.
+// The coach view is a THREE-POSITION STATE MACHINE — planning, session,
+// analytics — which is the order a coach's day actually runs in. The position
+// comes in as the `coachState` prop, read from the URL by App.jsx, so a reload
+// keeps it and the Back button moves between states. See coach/coachState.js.
+//
+// Inside each state the original tab bar still works; the states just decide
+// which tabs belong to them (STATE_TABS below). Later phases reshape what is
+// inside each state — this one only builds the frame.
 //
 // What is NOT here, on purpose: assigning athletes or workouts to a rack ahead
 // of time. See the D8 note further down.
@@ -38,6 +44,25 @@ import { sameOriginPath } from "./workoutCatalog.js";
 import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } from "./dashboardView.js";
 import { roleIconSrc } from "./roleIcon.js";
 import { isDevMode } from "./devMode.js";
+import StateNavbar from "./coach/StateNavbar.jsx";
+import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
+
+// Which of the old tabs belongs to which state. This is the whole of Phase A's
+// reorganization: nothing inside a tab changed, the tabs were just sorted into
+// the three moments of a coach's day.
+//
+//   PLANNING   what you set up before anyone lifts
+//   SESSION    the live room, while they do
+//   ANALYTICS  what you read afterwards, one athlete at a time
+//
+// Later phases dissolve most of these tabs into the layout in §13-15 of
+// _COACH_UI_REDESIGN.md. Until then this table is the map, and the first entry
+// in each list is that state's landing tab.
+const STATE_TABS = {
+  planning: ["workouts", "schedule"],
+  session: ["room"],
+  analytics: ["athlete", "history", "programs", "notes", "reports"],
+};
 
 function velocity(value) {
   return value === null || value === undefined ? "--" : Number(value).toFixed(2);
@@ -437,10 +462,10 @@ function RackSelectionControls({ rack }) {
   </section>;
 }
 
-function CoachView({ monitor, accessToken, onLogout }) {
+function CoachView({ monitor, accessToken, onLogout, coachState }) {
   const { roomState, requestState, connectionState, lastError, refresh } = monitor;
   const [brandMenuOpen,setBrandMenuOpen]=useState(false);
-  const [selectedRackNumber,setSelectedRackNumber]=useState(null),[activeTab,setActiveTab]=useState("room"),[athletes,setAthletes]=useState([]),[exerciseNames,setExerciseNames]=useState({}),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
+  const [selectedRackNumber,setSelectedRackNumber]=useState(null),[requestedTab,setRequestedTab]=useState("room"),[athletes,setAthletes]=useState([]),[exerciseNames,setExerciseNames]=useState({}),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
   useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
   // The movement catalog, purely so prescriptions can show a NAME. The
@@ -452,9 +477,22 @@ function CoachView({ monitor, accessToken, onLogout }) {
     .catch(()=>setExerciseNames({}));},[accessToken]);
   useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/prescriptions/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
+  // Where this device is, so a bare /coach can send it back here after a reboot.
+  // In an effect rather than in goToState below, because a state can also be
+  // reached by the Back button or by typing the URL, and those must count too.
+  useEffect(()=>{rememberCoachState(coachState);},[coachState]);
+  // The tab bar belongs to the state, so a tab the coach picked in one state is
+  // held but not shown in another — come back and it is still selected. If the
+  // held tab does not belong here, this state's first tab is the landing tab.
+  const stateTabs=STATE_TABS[coachState]||STATE_TABS.planning;
+  const activeTab=stateTabs.includes(requestedTab)?requestedTab:stateTabs[0];
   const dirty=note&&draft!==note.text;
   const chooseAthlete=id=>{if(dirty&&!window.confirm("Discard the unsaved note draft?"))return;setSelectedAthleteId(id?Number(id):null);};
-  const chooseTab=tab=>{if(activeTab==="notes"&&tab!=="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;setActiveTab(tab);};
+  const chooseTab=tab=>{if(activeTab==="notes"&&tab!=="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;setRequestedTab(tab);};
+  // Changing STATE can also walk away from an unsaved note, so it asks the same
+  // question the tab bar does — the coach should not be able to lose a draft by
+  // pressing a different part of the screen.
+  const goToState=key=>{if(key===coachState)return;if(activeTab==="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;navigate(pathForCoachState(key));};
   // Coach notes are a plain field on the athlete record, so saving one is a
   // PATCH to the athlete — there is no separate notes route (merge canon R1).
   //
@@ -494,7 +532,16 @@ function CoachView({ monitor, accessToken, onLogout }) {
   if(!roomState)return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body={lastError||"The base station could not be reached."} action={refresh} /></main>;
   const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set||null;
   const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?null:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?null:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}</>}</div></section>;
-  return <main className="monitor coach-monitor"><header className="coach-topbar">
+  // SESSION is the live room, and there is no live room until a training day is
+  // open. The navbar dims the button; this covers getting here anyway — typing
+  // the URL, or standing on SESSION at the moment the day ends. It deliberately
+  // does NOT redirect: pulling a coach off the screen they were reading, without
+  // being asked to, is worse than an empty screen that says why it is empty.
+  const dayRunning=Boolean(roomState.session);
+  const dayMissing=coachState==="session"&&!dayRunning;
+  // `coach-states-clearance` is room for the navbar to float over. Without it
+  // the last card on every screen sits under the glass and cannot be reached.
+  return <main className="monitor coach-monitor coach-states-clearance"><header className="coach-topbar">
     {/* The logo is the account menu. Log out is a once-a-day action and did not
         earn permanent space in the toolbar; "Change device" is gone entirely
         because Room Layout already owns it (CoachTablet.jsx). */}
@@ -527,10 +574,13 @@ function CoachView({ monitor, accessToken, onLogout }) {
     </div>
   </header>{/* Developer instrumentation, not coaching information: reconciliation
           time, queue depth, raw counters. Hidden unless isDevMode(). */}
-      {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}<TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{["room","workouts","schedule","reports","athlete","history","programs","notes"].map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav><div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} exerciseNames={exerciseNames} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
+      {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}<TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>{!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav>}<div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{dayMissing?<StatePanel title="No training day is running" body="The live room opens when a training day starts. Start one from Planning, and this screen fills in." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} exerciseNames={exerciseNames} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
+          object, not three copies of a bar. That is what makes three routes
+          read as one surface changing mode. */}
+    <StateNavbar current={coachState} onSelect={goToState} dayRunning={dayRunning}/></main>;
 }
 
-export default function Dashboard({ mode = "wall" }) {
+export default function Dashboard({ mode = "wall", coachState = "planning" }) {
   // The token is read from storage on mount, not started at null, so a refresh,
   // a tablet waking from sleep, or a browser reloading a backgrounded tab does
   // not throw the coach back to a login screen mid-session. It is the same
@@ -564,7 +614,7 @@ export default function Dashboard({ mode = "wall" }) {
     return <CoachLogin onLogin={login} error={loginError} busy={loginBusy} />;
   }
   if (mode === "coach") {
-    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} />;
+    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} coachState={coachState} />;
   }
   return <WallView monitor={monitor} />;
 }
