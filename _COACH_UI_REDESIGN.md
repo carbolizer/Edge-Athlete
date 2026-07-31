@@ -625,6 +625,27 @@ settings cog.
 - [ ] Start training day works; staged day → running
 - [ ] Quick Note saves against the athlete at the selected rack
 - [ ] Cog opens Room Layout
+- [ ] **The generated report no longer renders outside the states** — see below
+
+⚠️ **The end-of-day report escapes the machine.** Ending a day makes
+`TrainingDayPanel` render `GeneratedReport` inline, and `TrainingDayPanel` sits
+above the tab bar — so the report draws outside PLANNING, SESSION and ANALYTICS
+alike, floating over all three. It behaves like the active-day banner because it
+is rendered in the same place as the active-day banner.
+
+This is **pre-existing**, not something the states introduced: the panel has
+always been above the tab bar, where a single page made it look like "a thing
+appeared at the top". Three states make it read as what it is.
+
+**Nothing is lost when it goes.** `ReportsWorkspace` imports the same
+`GeneratedReport` component and reads the same frozen snapshot from
+`/api/reports/`, so the report is already in ANALYTICS → Reports before this is
+touched.
+
+**Decided fix:** ending a day navigates to ANALYTICS → Reports with that report
+open, and SESSION renders nothing after. The day is over, so SESSION has nothing
+left to show, and finished days already live in Reports. The deep-link into a
+specific report is Phase C's half of this.
 
 **Phase C — ANALYTICS**
 Athlete selector + sub-tabs (summary, history, reports, notes).
@@ -869,6 +890,14 @@ Append as we go. Date each entry.
     crossfade would fade the live room's charts on every state change, and on a
     Pi-served tablet that reads as lag rather than polish. Revisit only if the
     swap looks abrupt on real hardware.
+  - Also decided: the state a coach is **standing on is never dimmed**. A day can
+    end while SESSION is open, and dimming the button under them would put the
+    lime "you are here" pill and the grey "you cannot go here" on one button.
+    Found by the render test, not by clicking.
   - Also decided: SESSION with no day **does not redirect**. Pulling a coach off
     the screen they were reading — which is what a redirect does the moment a day
     ends — is worse than a screen that says why it is empty.
+- **2026-07-31** — **Devin found the report escaping the states.** Ending a day
+  draws `GeneratedReport` above the tab bar, so it floats over all three states
+  like the active-day banner does. Pre-existing; the states only made it legible.
+  Logged as a Phase B exit criterion with the fix decided there.
