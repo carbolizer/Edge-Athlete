@@ -413,6 +413,42 @@ already shared by all three screens, so the navbar should not introduce a new on
 > *you can go here*, dimmed means *you cannot yet* — and that difference is the
 > whole navigational teaching.
 
+### 12. `ProgramsTab` shows pounds and calls them the prescription — OPEN
+
+Found 2026-07-30 while testing `AthleteWorkoutPlanning`. Both render the same
+prescription, on the same screen, one above the other:
+
+| Component | Shows |
+|---|---|
+| `AthleteWorkoutPlanning` | `5 sets · 3 reps · 72%` → **`155 lbs`** |
+| `ProgramsTab` (directly above) | `5 × 3` → **`155 lbs`** |
+
+`ProgramsTab` is headed **"Recorded prescriptions"** and never shows the percent.
+But the percent **is** the prescription — the pounds are derived from it and move
+whenever the athlete's reference max moves. So the panel presents a derived,
+temporary number as though it were the plan.
+
+This is the exact confusion `docs/_HANDOFF.md` §1 exists to prevent: a coach
+watching that number fall after a bad testing block reads it as a bug, because
+nothing on screen says it is a percentage of something that changed.
+
+**Not free to fix.** `/api/prescriptions/` returns no `target_percent` — only
+sets, reps, resolved `target_weight_lbs`, and the velocity zone. Options:
+
+1. **Read it from a route already in use.** `AthleteWorkoutPlanning`, one component
+   lower on the same tab, already fetches `/api/athletes/{id}/program/`, which
+   *does* carry the percent. Lift that fetch up and share it. No API change.
+2. Add `target_percent` to `/api/prescriptions/` — additive, but a backend change.
+3. **Delete `ProgramsTab`'s card grid entirely.** `AthleteWorkoutPlanning` already
+   shows the same information, more correctly, immediately below it. Worth asking
+   whether the tab needs both.
+
+Option 3 deserves real consideration — this is the "does the sibling still do the
+same job?" test pointing at a duplicate rather than a stale field.
+
+> Related and still unanswered: **where does the per-athlete `programs` tab live**
+> in the three-state grouping? See open question 7.
+
 ---
 
 ## The principle underneath all of it
@@ -460,7 +496,9 @@ behaviour, not assumed:
    PLANNING "TrainingProgram create + instantiation" (group-scoped) and ANALYTICS
    "History · Athlete · Notes · Reports". The existing **`programs` tab is neither**
    — it is one athlete's *Recorded prescriptions*. It currently has no home.
-8. Does the `ProgramsTab` null-key bug get fixed inside this work, or separately?
+8. ~~`ProgramsTab` null-key bug?~~ **Fixed** outside this doc — commit `1a9ef38`.
+9. Does `ProgramsTab` keep its card grid at all, given `AthleteWorkoutPlanning`
+   sits below it showing the same prescription with the percent included? See §12.
 
 ---
 
@@ -494,6 +532,15 @@ Append as we go. Date each entry.
 - **2026-07-30** — **Fresh gym lands in PLANNING.** The `Hello {name}` greeting is
   **cancelled** — no user endpoint exists and the JWT carries only `user_id`, so it
   is not the free win it looked like.
+- **2026-07-30** — **`AthleteWorkoutPlanning` PASSES the sibling test.** Its routes
+  were properly rewired in the merge (his `/api/workouts/`,
+  `/api/workout-programs/`, `/workout-assignment/` → the current planning routes),
+  it renders exercise names correctly, and it shows percent AND resolved pounds
+  together. It is the counter-example to `ProgramsTab`: the merge rewired this one
+  and missed that one.
+- **2026-07-30** — **New open item (§12):** `ProgramsTab` is headed "Recorded
+  prescriptions" but shows only pounds, never the percent — presenting a derived
+  number as the plan. Possibly a duplicate of the panel directly below it.
 - **2026-07-30** — **Programs tab: two bugs fixed** (outside this doc, commit
   `1a9ef38`). Both had one root cause — it is Braydon's component, carried in by
   P7, still written against the per-athlete `Program` table that P6 dropped. Its
