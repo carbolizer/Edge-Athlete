@@ -66,8 +66,12 @@ affordances. A stripped-down athlete view may ride along with the session varian
 > note* — it is the same `Athlete.notes` field either way, and calling it
 > something too distinct would imply a second store that does not exist.
 
-**The dev-only top bar** — "Last reconciled", "Active racks", etc. — is explicitly
-marked dev only. ⚠️ I initially guessed this also covered the "Rack N is ready"
+**The dev-only strip** — "Active racks / Athletes with sets / Sets complete /
+Awaiting saved result / Last reconciled" — ✅ **DONE 2026-07-30.** Now hidden
+behind `isDevMode()` (`react/src/devMode.js`): always on under `npm run dev`,
+and toggleable in a built container with `localStorage.setItem('ea_dev','1')`.
+Not tied to the coach login — "is a coach" and "is a developer" are different
+questions, and every coach in a real gym would otherwise see it. ⚠️ I initially guessed this also covered the "Rack N is ready"
 panel. Checking the code showed it does not — see §4.
 
 ### 2. The active-session widget lives outside the machine
@@ -372,6 +376,9 @@ Append as we go. Date each entry.
 - **2026-07-30** — Noted that `Dashboard.jsx` renders BOTH the wall display and the
   coach tablet from one file, with two separate "ready" strings. Splitting it is
   likely its own cleanup item.
+- **2026-07-30** — **Summary strip is dev-only now.** New `devMode.js` gate rather
+  than deleting it; the five counters are still useful while building. Verified
+  hidden by default in the container and restored by the localStorage toggle.
 - **2026-07-30** — **Built:** log out moved under the brand mark (click the logo);
   "Change device" removed from the coach topbar; the four "Choose an athlete"
   guards collapsed into one at the athlete-tab boundary; "Rack N is ready"
