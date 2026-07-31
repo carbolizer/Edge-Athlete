@@ -477,7 +477,12 @@ same job?" test pointing at a duplicate rather than a stale field.
 * Athlete plan assignment + **per-athlete overrides** — this is the existing
   *"INDIVIDUAL TARGETS · Exercise overrides"* block inside `AthleteWorkoutPlanning`,
   moved here from the Programs tab
-* Stage a training day → navigates to SESSION
+* Stage a training day → navigates to SESSION.
+  ⚠️ **Staged FROM THE CALENDAR SLOT**, not from the program card. The calendar is
+  where a coach asks "what is Monday?", and the slot already carries the four
+  states `schedule.js` defines — `planned` / `ready` / `running` / `done`. "Ready"
+  IS the staged-but-not-started state P14 was built for, so staging is a slot
+  action, not a separate control.
 
 **SESSION**
 
@@ -532,7 +537,7 @@ Four sub-tabs. One builds, three view.
 | **Design** | The creation flow, in the order a coach thinks |
 | **Groups** | View groups |
 | **Workout catalog** | View blocks / programs |
-| **Calendar** | View the schedule |
+| **Calendar** | The schedule — and **where days get staged**. Slots carry the four states from `schedule.js`; staging is an action on a `planned` slot |
 
 **Inside "Design", vertical order follows the coach's own process:**
 

@@ -69,6 +69,16 @@
   .stepno{color:var(--muted);font-size:10px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
   .grid2{display:grid;gap:12px;grid-template-columns:1fr 1fr}
   .pill{background:var(--panel2);border:1px solid var(--line);font-size:11px;padding:4px 9px}
+  .slots{display:grid;gap:10px;grid-template-columns:repeat(4,1fr)}
+  .slot{background:var(--panel2);border:1px solid var(--line);padding:13px}
+  .slot .d{color:var(--muted);font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
+  .slot b{display:block;font-size:14px;margin:5px 0 9px}
+  .slot .state{font-size:10px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
+  .slot.planned{border-style:dashed}
+  .slot.planned .state{color:var(--muted)}
+  .slot.ready{border-color:var(--lime)} .slot.ready .state{color:var(--lime)}
+  .slot.running{border-color:var(--mint);background:rgba(69,220,179,.07)} .slot.running .state{color:var(--mint)}
+  .slot.done .state{color:var(--muted)} .slot.done{opacity:.55}
 
   /* ── session / room ── */
   .room{display:grid;gap:16px;grid-template-columns:210px 1fr}
@@ -215,12 +225,24 @@
 
   <div class="wrap" data-sub="planning-3" hidden>
     <div class="card">
-      <header><div><div class="lbl">Calendar</div><h3>August 2026</h3>
-        <p class="sub">Slots generated from each block's cadence. A slot is a plan until a day is staged.</p></div></header>
-      <div class="grid2">
-        <div class="pill">Mon 3 · Day 1 — ready</div><div class="pill">Wed 5 · Day 2 — planned</div>
-        <div class="pill">Fri 7 · Day 3 — planned</div><div class="pill">Mon 10 · Day 4 — planned</div>
+      <header><div><div class="lbl">Training calendar</div><h3>Scheduled days · August 2026</h3>
+        <p class="sub">Generated from each block's cadence. A slot is a PLAN — the day only exists once you stage it.</p></div>
+        <div class="row"><select><option>Varsity Football</option><option>Freshman Speed</option></select></div>
+      </header>
+      <div class="slots">
+        <div class="slot done"><div class="d">Mon 3</div><b>Day 1 — Lower + Push</b>
+          <div class="state">Done · report frozen</div></div>
+        <div class="slot running"><div class="d">Wed 5</div><b>Day 2 — Upper</b>
+          <div class="state">Running · holding the racks</div></div>
+        <div class="slot ready"><div class="d">Fri 7</div><b>Day 3 — Lower</b>
+          <div class="state">Ready · staged, not started</div>
+          <button class="btn" style="margin-top:9px">Open in session</button></div>
+        <div class="slot planned"><div class="d">Mon 10</div><b>Day 4 — Upper</b>
+          <div class="state">Planned · no day yet</div>
+          <button class="btn primary" style="margin-top:9px">Stage this day</button></div>
       </div>
+      <p class="sub muted" style="margin-top:13px">⚠️ Staging happens HERE, on the slot — this is where a coach
+        looks to ask "what is Monday?". Staged is not running: it holds no racks until started in Session.</p>
     </div>
   </div>
 </section>
