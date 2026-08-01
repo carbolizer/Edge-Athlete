@@ -31,3 +31,60 @@
 
 .groups-card h3 { font-size: 19px; margin: 3px 0 0; }
 .groups-card p { color: #89969d; font-size: 12px; margin: 5px 0 0; }
+
+.groups-card > button {
+  background: transparent;
+  border: 1px solid #263239;
+  color: #f5f7f2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  min-height: 40px;
+  padding: 8px 16px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.groups-card > button:hover { border-color: #a9f04d; color: #a9f04d; }
+
+/* ── one group opened ── */
+
+/* Outlined, matching the Open button it is the counterpart to. Left to inherit
+   `.workout-secondary` it came out as a filled grey slab — heavier than the
+   lime action beside it, which reads as "going back is the main thing here". */
+.groups-open > header button {
+  background: transparent;
+  border: 1px solid #263239;
+  color: #f5f7f2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  min-height: 40px;
+  padding: 8px 16px;
+  white-space: nowrap;
+}
+
+.groups-open > header button:hover { border-color: #a9f04d; color: #a9f04d; }
+
+/* The roster as a wrap of name buttons rather than a list: a coach is picking a
+   person they already have in mind, not reading down a column. At 28 athletes a
+   vertical list is a scroll; this is one glance. */
+.groups-roster { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.groups-roster button {
+  background: #0b1114;
+  border: 1px solid #263239;
+  color: #f5f7f2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  min-height: 40px;
+  padding: 8px 13px;
+}
+
+.groups-roster button:hover { border-color: #a9f04d; }
+.groups-roster button.is-on { background: #a9f04d; border-color: #a9f04d; color: #071006; font-weight: 800; }

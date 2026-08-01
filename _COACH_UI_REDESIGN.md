@@ -18,7 +18,7 @@ has to reconstruct the shape from 900 lines.
 | **B** | SESSION | The live room + starting a day. Split `TrainingDayPanel`: open-from-scratch → PLANNING, start-staged → SESSION | ✅ `cae4d6e` |
 | **E** | The widget | The strip above all three states: elapsed timer, End training day | ✅ absorbed into **B** — ending a day needed a home before B could ship |
 | **C** | ANALYTICS | Athlete selector moves here from the topbar; one "choose an athlete" guard instead of four | ⬜ next |
-| **D** | PLANNING | The four sub-tabs — Design · Groups · Workout catalog · Calendar. Deploy/promote become buttons on the thing itself. Calendar gains the mockup's card view | ⬜ |
+| **D** | PLANNING | The four sub-tabs — Design · Groups · Workout catalog · Calendar. Deploy/promote become buttons on the thing itself. Calendar gains the mockup's card view | ✅ D1–D4 |
 | **F** | Removals | Delete the old 8-tab bar and the Programs card grid. **Only after A–E work** | ⬜ |
 | **G** | Dashboard Settings | A cog on the *wall* display holding Change device role. Genuinely new; may be its own branch | ⬜ |
 | **H** | Group history | *"Who is falling behind?"* — a scope switch on History. The highest-value analytics feature, and **the only thing here that is not free** | ⬜ |
@@ -729,9 +729,21 @@ Built in four checkpoints, because it reshapes an 836-line file:
 | | | |
 |---|---|---|
 | **D1** | The four sub-tabs, Groups view, Calendar renamed | ✅ `7d1ddca` |
-| **D2** | The calendar's card view | ⬜ |
-| **D3** | Design tab surgery — dropdowns, in-component deploy/promote | ⬜ |
-| **D4** | `Open` a group → its athletes → `AthleteWorkoutPlanning` (§15b) | ⬜ |
+| **D2** | The calendar's card view | ✅ `481bb2b` |
+| **D3** | Design tab surgery — dropdowns, in-component deploy/promote | ✅ `dcc10a3` |
+| **D4** | `Open` a group → its athletes → `AthleteWorkoutPlanning` (§15b) | ✅ |
+
+⚠️ **`AthleteWorkoutPlanning` now renders in TWO places** — here, and still inside
+`ProgramsTab` in ANALYTICS. That is the transition working as §16 intends ("the
+old tab bar keeps working until the last phase removes it"), not a mistake — but
+it is a real duplicate-editor state, and **Phase F closing it is now unblocked.**
+
+**Correction, recorded because it changed what got built:** an earlier pass of D3
+claimed a one-off session could not be built because no route adds days to a
+program. That was wrong — Devin pushed back and was right. `_import_target`
+(`views.py:1925`) accepts `training_program` and returns `kind="program"`, and
+`services/csv_import.py` has carried a `"program"` branch in `_PLAN_TARGETS` all
+along. Nothing on the coach screen had ever asked for it. Step 3 is built.
 
 - [ ] Design tab ordered Block → Program → Session design
 - [ ] Create block / create session are dropdowns
