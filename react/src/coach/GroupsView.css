@@ -8,7 +8,72 @@
  * Colours match react/src/theme.js.
  */
 
-.groups-list { display: flex; flex-direction: column; gap: 12px; }
+.groups-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 18px; }
+
+/* ── creating a group, and the stranded-athlete nudge ── */
+
+.groups-create-open,
+.groups-stranded {
+  background: transparent;
+  border: 1px solid #263239;
+  color: #f5f7f2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.groups-create-open:hover { border-color: #a9f04d; color: #a9f04d; }
+
+/* Coral, because an athlete in no group gets no program and no calendar — they
+   are invisible everywhere else in PLANNING. Clicking filters to them. */
+.groups-stranded { border-color: #ff646b; color: #ff646b; }
+.groups-stranded:hover { background: rgba(255, 100, 107, .1); }
+
+.groups-create { display: flex; flex-wrap: wrap; gap: 8px; }
+.groups-create input {
+  background: #0b1114; border: 1px solid #263239; color: #f5f7f2;
+  font: inherit; font-size: 13px; min-height: 40px; min-width: 220px; padding: 8px 10px;
+}
+.groups-create input:focus-visible { border-color: #a9f04d; outline: none; }
+.groups-create button {
+  background: #a9f04d; border: 1px solid #a9f04d; color: #071006;
+  cursor: pointer; font: inherit; font-weight: 850; font-size: 12px; min-height: 40px; padding: 8px 14px;
+}
+.groups-create button.workout-secondary { background: transparent; border-color: #263239; color: #f5f7f2; }
+.groups-create button:disabled { cursor: not-allowed; opacity: .42; }
+
+/* ── the roster ── */
+
+.groups-roster-panel { margin-top: 4px; }
+.groups-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+.groups-filter button {
+  background: #151e23; border: 1px solid #263239; border-radius: 999px; color: #89969d;
+  cursor: pointer; font: inherit; font-size: 11px; font-weight: 800; padding: 7px 13px;
+}
+.groups-filter button:hover { color: #f5f7f2; }
+.groups-filter button.is-on { background: #a9f04d; border-color: #a9f04d; color: #071006; }
+
+.groups-roster-table tbody tr { cursor: default; }
+.groups-roster-table tbody tr:hover td { background: transparent; }
+/* Members of the selected group, tinted. Non-members stay on the list so they
+   can be added — the tint is what separates the two halves without hiding
+   either. */
+.groups-roster-table tbody tr.is-member td { background: rgba(169, 240, 77, .06); }
+.groups-chip {
+  background: #151e23; border: 1px solid #263239; color: #f5f7f2;
+  display: inline-block; font-size: 10px; margin-right: 5px; padding: 3px 8px;
+}
+.groups-none { color: #ff646b; font-size: 11px; font-weight: 700; }
+
+.groups-member-toggle {
+  background: transparent; border: 1px solid #263239; color: #f5f7f2;
+  cursor: pointer; font: inherit; font-size: 11px; font-weight: 800;
+  min-height: 34px; min-width: 78px; padding: 6px 12px;
+}
+.groups-member-toggle:hover:not(:disabled) { border-color: #a9f04d; color: #a9f04d; }
+.groups-member-toggle:disabled { cursor: not-allowed; opacity: .5; }
 
 .groups-card {
   align-items: start;
