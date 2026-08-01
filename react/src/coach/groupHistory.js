@@ -21,14 +21,20 @@ export const WINDOW_CHOICES = [
   { days: 90, label: "Last 90 days" },
 ];
 
-// "Behind" means a week without training, NOT "no training in the window".
+// "Behind" means TRENDING DOWN: at least 3 of an athlete's last 5 training days
+// were slower than the day before.
 //
-// The spec's wording was "has not trained in the window", but read literally
-// that flags nobody when the window is short and everybody when it is long —
-// the flag would say more about the dropdown than about the athlete. A fixed
-// week is a fact about the person: a lifter who has not trained in seven days
-// has missed roughly a full rotation, whatever range the coach is looking at.
-export const BEHIND_AFTER_DAYS = 7;
+// ⚠️ This replaced an attendance rule (a week without training). Attendance is
+// already visible in the "Last trained" column, so flagging it there too said
+// the same thing twice — and it missed the athlete a coach actually needs to
+// catch: the one who turns up every session and gets slower every session.
+// Three days out of five is a pattern rather than a bad night.
+//
+// Judged over ALL their history, not the selected window. Like "last trained",
+// whether someone is declining is a fact about the athlete; if it moved with
+// the dropdown the flag would describe the coach's filter instead of the lifter.
+export const BEHIND_DOWN_DAYS = 3;
+export const BEHIND_OF_LAST = 5;
 
 const DAY_MS = 86400000;
 
@@ -62,7 +68,8 @@ export function daysSince(lastTrained, now = Date.now()) {
  * one thing this view exists to make visible.
  */
 export function buildGroupRows(members, analytics, {
-  now = Date.now(), windowDays = 14, behindAfterDays = BEHIND_AFTER_DAYS,
+  now = Date.now(), windowDays = 14,
+  downDays = BEHIND_DOWN_DAYS, ofLast = BEHIND_OF_LAST,
 } = {}) {
   const cutoff = now - windowDays * DAY_MS;
 
@@ -83,8 +90,15 @@ export function buildGroupRows(members, analytics, {
 
     // Trend uses the SAME day-summary the per-athlete table uses, so the two
     // screens can never disagree about which way someone is going.
-    const summaries = summariseTrainingDays(groupHistorySets(inWindow));
-    const newest = summaries[0] || null;
+    const inWindowDays = summariseTrainingDays(groupHistorySets(inWindow));
+    const newest = inWindowDays[0] || null;
+
+    // The behind test reads ALL history, not the window — see BEHIND_DOWN_DAYS.
+    // Fewer than `ofLast` days is fine: three down out of three IS three down
+    // out of the last five. Requiring a full five would let the athlete with
+    // the shortest, steepest slide go unflagged.
+    const recentDays = summariseTrainingDays(groupHistorySets(allSets)).slice(0, ofLast);
+    const downCount = recentDays.filter((day) => day.trend === "down").length;
 
     return {
       athlete: member,
@@ -94,16 +108,22 @@ export function buildGroupRows(members, analytics, {
       avgVelocity,
       trend: newest?.trend ?? null,
       change: newest?.change ?? null,
-      behind: daysSince(lastTrained, now) >= behindAfterDays,
+      behind: downCount >= downDays,
+      downCount,
+      judgedOver: recentDays.length,
+      // Nobody to judge. Kept separate from `behind` so an athlete with no
+      // history is not quietly counted as fine — the column says which it is.
+      noHistory: recentDays.length === 0,
       failed: payload === null || payload === undefined,
     };
   });
 
-  // Behind first. The whole reason a coach opens this is to find them, and
+  // Behind first — the whole reason a coach opens this is to find them, and
   // making them scroll a squad of a hundred to spot a flag defeats the view.
-  // Within each half, least recent first — the same question, one level down.
+  // Then the steepest slide first, then whoever has been away longest.
   return rows.sort((left, right) => {
     if (left.behind !== right.behind) return left.behind ? -1 : 1;
+    if (left.downCount !== right.downCount) return right.downCount - left.downCount;
     return daysSince(right.lastTrained, now) - daysSince(left.lastTrained, now);
   });
 }

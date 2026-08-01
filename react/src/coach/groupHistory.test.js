@@ -42,26 +42,57 @@ describe("daysSince", () => {
 });
 
 describe("buildGroupRows", () => {
-  const members = [athlete(1, "Jordan"), athlete(2, "Alex"), athlete(3, "Taylor")];
-  const analytics = {
-    1: payload([set(daysAgo(0), 0.74), set(daysAgo(2), 0.71)]),
-    2: payload([set(daysAgo(1), 0.81)]),
-    3: payload([set(daysAgo(11), 0.58)]),   // stopped showing up
-  };
+  // Velocities are listed oldest-first here for readability, so a falling list
+  // is a falling athlete.
+  const training = (velocities) => payload(
+    velocities.map((v, i) => set(daysAgo(velocities.length - i), v)));
 
-  it("flags the member who has not trained in a week", () => {
+  // Down on 4 of the last 5 days: turns up every session and gets slower.
+  const sliding = training([0.80, 0.78, 0.75, 0.72, 0.70, 0.68]);
+  // Climbing, with one off day.
+  const improving = training([0.60, 0.64, 0.68, 0.66, 0.71, 0.75]);
+  const members = [athlete(1, "Jordan"), athlete(2, "Alex"), athlete(3, "Taylor")];
+  const analytics = { 1: improving, 2: sliding, 3: payload([set(daysAgo(11), 0.58)]) };
+
+  it("flags the athlete who is down on 3 of their last 5 days", () => {
     const rows = buildGroupRows(members, analytics, { now: NOW, windowDays: 30 });
     const byName = Object.fromEntries(rows.map((r) => [r.athlete.name, r]));
-    expect(byName.Taylor.behind).toBe(true);
+    expect(byName.Alex.behind).toBe(true);
+    expect(byName.Alex.downCount).toBeGreaterThanOrEqual(3);
     expect(byName.Jordan.behind).toBe(false);
-    expect(byName.Alex.behind).toBe(false);
+  });
+
+  // The rule is about performance, not attendance — someone can be away a long
+  // time and still not be sliding. "Last trained" already tells a coach that.
+  it("does not flag someone purely for being away a long time", () => {
+    const rows = buildGroupRows(members, analytics, { now: NOW, windowDays: 30 });
+    const taylor = rows.find((r) => r.athlete.name === "Taylor");
+    expect(taylor.behind).toBe(false);
+    expect(taylor.lastTrainedLabel).toBe("11 days ago");
+  });
+
+  // Requiring a full five would let the shortest, steepest slide go unflagged.
+  it("judges on what exists when there are fewer than five days", () => {
+    const rows = buildGroupRows([athlete(7, "Short")], { 7: training([0.80, 0.76, 0.72, 0.68]) },
+      { now: NOW, windowDays: 30 });
+    expect(rows[0].judgedOver).toBe(4);
+    expect(rows[0].behind).toBe(true);
+  });
+
+  // Judged over all history, so the dropdown describes the filter and not the
+  // lifter.
+  it("does not change the flag when the window changes", () => {
+    const wide = buildGroupRows(members, analytics, { now: NOW, windowDays: 90 });
+    const narrow = buildGroupRows(members, analytics, { now: NOW, windowDays: 3 });
+    const flag = (rows, name) => rows.find((r) => r.athlete.name === name).behind;
+    expect(flag(narrow, "Alex")).toBe(flag(wide, "Alex"));
   });
 
   // The point of the view. Making a coach scroll a squad of a hundred to spot a
   // flag defeats it.
   it("sorts the behind members to the top", () => {
     const rows = buildGroupRows(members, analytics, { now: NOW, windowDays: 30 });
-    expect(rows[0].athlete.name).toBe("Taylor");
+    expect(rows[0].athlete.name).toBe("Alex");
   });
 
   it("counts only sets inside the window", () => {
@@ -74,9 +105,12 @@ describe("buildGroupRows", () => {
   });
 
   it("averages velocity across the window only", () => {
-    const rows = buildGroupRows(members, analytics, { now: NOW, windowDays: 30 });
-    const jordan = rows.find((r) => r.athlete.name === "Jordan");
-    expect(jordan.avgVelocity).toBeCloseTo(0.725);
+    // Jordan's six days are 0.60 0.64 0.68 0.66 0.71 0.75 — mean 0.6733.
+    const wide = buildGroupRows(members, analytics, { now: NOW, windowDays: 30 });
+    expect(wide.find((r) => r.athlete.name === "Jordan").avgVelocity).toBeCloseTo(0.6733, 3);
+    // A 3-day window keeps only the most recent, so the average rises with it.
+    const narrow = buildGroupRows(members, analytics, { now: NOW, windowDays: 3 });
+    expect(narrow.find((r) => r.athlete.name === "Jordan").avgVelocity).toBeGreaterThan(0.6733);
   });
 
   // Dropping them would quietly shrink the roster, and a missing athlete is the
@@ -89,9 +123,12 @@ describe("buildGroupRows", () => {
     expect(alex.sets).toBe(0);
   });
 
-  it("marks someone who has never trained as behind", () => {
+  // Not "behind" — there is nothing to judge. Kept as its own state so a new
+  // signing is not quietly counted as fine, and not accused of sliding either.
+  it("marks someone who has never trained as no-history, not behind", () => {
     const rows = buildGroupRows([athlete(9, "New Signing")], { 9: payload([]) }, { now: NOW });
-    expect(rows[0].behind).toBe(true);
+    expect(rows[0].behind).toBe(false);
+    expect(rows[0].noHistory).toBe(true);
     expect(rows[0].lastTrainedLabel).toBe("Never");
     expect(rows[0].avgVelocity).toBeNull();
   });

@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { buildGroupRows, WINDOW_CHOICES } from './groupHistory.js'
+import { BEHIND_DOWN_DAYS, BEHIND_OF_LAST, buildGroupRows, WINDOW_CHOICES } from './groupHistory.js'
 
 const groupAthletesUrl = (groupId) => `/api/training-groups/${groupId}/athletes/`
 const athleteAnalyticsUrl = (athleteId) => `/api/analytics/athlete/${athleteId}/`
@@ -135,8 +135,13 @@ export default function GroupHistory({ group, accessToken, onLogout }) {
                 {!row.trend && <span className="history-trend flat">—</span>}
               </td>
               <td>
-                {row.behind && <span className="group-history-tag">Behind</span>}
+                {/* The count is on the tag on purpose — "Behind" alone invites
+                    "behind on what?", and 4/5 answers it without a tooltip. */}
+                {row.behind && <span className="group-history-tag" title={`Slower on ${row.downCount} of their last ${row.judgedOver} training days`}>
+                  Behind {row.downCount}/{row.judgedOver}
+                </span>}
                 {row.failed && <span className="group-history-tag is-unknown">No data</span>}
+                {!row.failed && row.noHistory && <span className="group-history-tag is-unknown">No history</span>}
               </td>
             </tr>
           ))}</tbody>
@@ -145,6 +150,11 @@ export default function GroupHistory({ group, accessToken, onLogout }) {
         {/* Said out loud on purpose. Phase H's open decision is whether to add a
             `?group=` parameter, and that should be settled by a number a coach
             can see rather than by how it feels on a four-athlete demo. */}
+        <p className="history-table-note">
+          <b>Behind</b> means slower than the session before on at least {BEHIND_DOWN_DAYS} of the
+          last {BEHIND_OF_LAST} training days — a pattern, not a bad night. Judged on the athlete’s whole
+          history, so it does not move when the window does.
+        </p>
         <p className="history-table-note">
           Built from <b>{requestCount} requests</b> — the group roster, then one per athlete. There is no
           group-scoped analytics route, so this is the cost today. Velocity pools every movement, the same
