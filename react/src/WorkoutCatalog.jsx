@@ -116,7 +116,22 @@ function ExerciseSummary({ exercise }) {
   return <li><b>{exercise.position}. {name}</b><span>{exercise.sets} x {exercise.reps} @ {exercise.target_percent}% of max · {velocity}</span></li>;
 }
 
-export default function WorkoutCatalog({ accessToken, onLogout }) {
+/*
+ * `section` splits this screen between two of PLANNING's sub-tabs:
+ *
+ *   "design"   making things — the block builder, the day builder, the CSV
+ *              import, deploy, and the deployed programs you can promote back up
+ *   "catalog"  looking at what exists — saved days by block, and the block
+ *              catalog with its category filters and paging
+ *
+ * ⚠️ IT IS ONE COMPONENT WITH TWO FACES, NOT TWO COMPONENTS. Both sub-tabs need
+ * the same blocks, categories, groups and deployed programs, and mounting this
+ * twice would fetch every one of them twice and let the two copies drift out of
+ * step — a block created on Design would not appear in Catalog until something
+ * happened to refetch it. One instance stays mounted across both; only the JSX
+ * below is partitioned.
+ */
+export default function WorkoutCatalog({ accessToken, onLogout, section = "design" }) {
   const [name, setName] = useState("");
   const [exercises, setExercises] = useState([createExerciseDraft(1)]);
   const [manualErrors, setManualErrors] = useState([]);
@@ -620,9 +635,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const allRepaired = repairs.length > 0 && repairedCount === repairs.length;
   const previewRows = preview?.rows || [];
 
+  const showDesign = section === "design";
+  const showCatalog = section === "catalog";
+
   return <div className="workout-catalog context-tab-content">
-    <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Design a block, fill it with days, then deploy it to a group. Loads are a percent of each athlete's own max.</p></div><b>{programCount} block{programCount === 1 ? "" : "s"} · {allDays.length} day{allDays.length === 1 ? "" : "s"}</b></header>
-    <div className="workout-builder-grid">
+    <header className="workout-catalog-heading"><div><span>{showDesign ? "Build and deploy" : "Reusable training templates"}</span><h2>{showDesign ? "Design" : "Workout catalog"}</h2><p>{showDesign ? "Design a block, fill it with days, then deploy it to a group. Loads are a percent of each athlete's own max." : "Everything that already exists. Blocks are templates; a deployed copy belongs to one group and never changes when the template does."}</p></div><b>{programCount} block{programCount === 1 ? "" : "s"} · {allDays.length} day{allDays.length === 1 ? "" : "s"}</b></header>
+    {showDesign && <div className="workout-builder-grid">
       <section className="workout-panel"><header><span>Manual builder</span><h3>Add a day to a block</h3><p>Movements are saved in the order shown. Loads are a percent of each athlete's own max.</p></header>
         <form onSubmit={createWorkout}>
           <label className="workout-name">Block<select value={workoutBlockId} onChange={(event) => setWorkoutBlockId(event.target.value)} required disabled={saving || !programs.length}><option value="">{programs.length ? "Select a block" : "Create a block first"}</option>{programs.map((block) => <option value={block.id} key={block.id}>{block.name}</option>)}</select></label>
@@ -680,7 +698,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           {preview.skipped?.length > 0 && <div className="context-notice"><strong>{preview.skipped.length} row{preview.skipped.length === 1 ? "" : "s"} skipped.</strong> A weight is only used when the sheet says plainly what it means — a bare number could be a one-rep max, a set of five, or a percentage, and guessing wrong would quietly become that athlete's official max.</div>}
         </div>}
       </section>
-    </div>
+    </div>}
 
     {/* Days no longer have a global list of their own — a day belongs to one
         block, so they are read from the blocks we already loaded. Each block
@@ -688,7 +706,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     {/* Days grouped under the block they belong to, because up/down only means
         anything within one block — and because a day's name ("Day 1") is
         ambiguous without it. Open a day to edit its movements. */}
-    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Rename, reorder, or remove. Changes here never touch a group already training a deployed copy.</p></header>
+    {showCatalog && <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Rename, reorder, or remove. Changes here never touch a group already training a deployed copy.</p></header>
       {programCatalogState === "loading" && <p className="monitor-empty" role="status">Loading blocks...</p>}
       {programCatalogState !== "loading" && allDays.length === 0 && <p className="monitor-empty">No days have been added to any block yet.</p>}
       {editError && <p className="training-day-error" role="alert">{editError}</p>}
@@ -742,10 +760,10 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           })}</div>
         </div>
       ))}
-    </section>
+    </section>}
 
     <div className="workout-program-grid">
-      <section className="workout-panel workout-program-builder"><header><span>Step 1 · Block builder</span><h3>New training block</h3><p>The reusable template. No group and no dates — those arrive when it is deployed.</p></header>
+      {showDesign && <section className="workout-panel workout-program-builder"><header><span>Step 1 · Block builder</span><h3>New training block</h3><p>The reusable template. No group and no dates — those arrive when it is deployed.</p></header>
         <form onSubmit={createTrainingBlock}>
           <label>Block name<input value={programName} onChange={(event) => setProgramName(event.target.value)} maxLength="255" required disabled={programSaving} placeholder="Fall Strength" /></label>
           <label>Duration (weeks)<input type="number" min="1" step="1" value={durationWeeks} onChange={(event) => setDurationWeeks(event.target.value)} disabled={programSaving} placeholder="Optional" /></label>
@@ -763,9 +781,9 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           <ErrorList errors={programErrors} />
           {programStatus && <p className="workout-status" role="status">{programStatus}</p>}
         </form>
-      </section>
+      </section>}
 
-      <section className="workout-panel workout-program-builder"><header><span>Step 3 · Deploy</span><h3>Run a block with a group</h3><p>Copies the template down for these athletes, starting on a date. The copy is independent — editing it later never changes the template.</p></header>
+      {showDesign && <section className="workout-panel workout-program-builder"><header><span>Step 3 · Deploy</span><h3>Run a block with a group</h3><p>Copies the template down for these athletes, starting on a date. The copy is independent — editing it later never changes the template.</p></header>
         <form onSubmit={deployBlock}>
           <label>Block<select value={deployBlockId} onChange={(event) => setDeployBlockId(event.target.value)} required disabled={deploySaving || !programs.length}><option value="">{programs.length ? "Select a block" : "Create a block first"}</option>{programs.map((block) => <option value={block.id} key={block.id}>{block.name}</option>)}</select></label>
           <label>Group<select value={deployGroupId} onChange={(event) => setDeployGroupId(event.target.value)} required disabled={deploySaving || !groups.length}><option value="">{groups.length ? "Select a group" : "No groups exist yet"}</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></label>
@@ -776,7 +794,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           <ErrorList errors={deployErrors} />
           {deployStatus && <p className="workout-status" role="status">{deployStatus}</p>}
         </form>
-      </section>
+      </section>}
 
       {/* Deployed programs, and the way back up to a reusable block.
 
@@ -784,7 +802,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           days, deploy it — and now, once a coach has tuned that deployment into
           something better than the template it came from, lift it back out so
           anyone can run it. */}
-      <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
+      {showDesign && <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
         <ErrorList errors={promoteErrors} title="That program could not be made into a block:" />
         {promoteStatus && <p className="workout-status" role="status">{promoteStatus}</p>}
         {deployedPrograms.length === 0
@@ -807,9 +825,9 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
                 </button>
               </div>
             </article>)}</div>}
-      </section>
+      </section>}
 
-      <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>
+      {showCatalog && <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>
         <div className="block-scope-toggle" role="group" aria-label="Whose blocks to show">
           <button type="button" className={blockScope === "mine" ? "" : "workout-secondary"} aria-pressed={blockScope === "mine"} onClick={() => showBlockScope("mine")}>My blocks</button>
           <button type="button" className={blockScope === "all" ? "" : "workout-secondary"} aria-pressed={blockScope === "all"} onClick={() => showBlockScope("all")}>All coaches</button>
@@ -830,7 +848,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
         </form>
         <ErrorList errors={categoryErrors} title="Categories:" />
         {(programPagination.previous || programPagination.next || programCount > programs.length) && <nav className="workout-pagination" aria-label="Workout program catalog pages"><button type="button" className="workout-secondary" onClick={() => loadPrograms(programPagination.previous)} disabled={!programPagination.previous || programCatalogState === "loading"}>Previous</button><span role="status">Showing {programs.length} on this page · {programCount} total</span><button type="button" onClick={() => loadPrograms(programPagination.next)} disabled={!programPagination.next || programCatalogState === "loading"}>Next</button></nav>}
-      </section>
+      </section>}
     </div>
   </div>;
 }

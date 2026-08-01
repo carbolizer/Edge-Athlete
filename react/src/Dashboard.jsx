@@ -47,6 +47,7 @@ import { isDevMode } from "./devMode.js";
 import StateNavbar from "./coach/StateNavbar.jsx";
 import SessionWidget from "./coach/SessionWidget.jsx";
 import QuickNote from "./coach/QuickNote.jsx";
+import GroupsView from "./coach/GroupsView.jsx";
 import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
 import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
 
@@ -62,9 +63,25 @@ import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
 // _COACH_UI_REDESIGN.md. Until then this table is the map, and the first entry
 // in each list is that state's landing tab.
 const STATE_TABS = {
-  planning: ["workouts", "schedule"],
+  planning: ["design", "groups", "catalog", "calendar"],
   session: ["room"],
   analytics: ["athlete", "history", "programs", "notes", "reports"],
+};
+
+// The sub-tab bar used to print its own keys, so it read "workouts · schedule"
+// in lowercase. PLANNING's four are named things a coach would say out loud, so
+// the label and the internal key stop being the same string here.
+const TAB_LABELS = {
+  design: "Design",
+  groups: "Groups",
+  catalog: "Workout catalog",
+  calendar: "Calendar",
+  room: "Room",
+  athlete: "Athlete",
+  history: "History",
+  programs: "Programs",
+  notes: "Notes",
+  reports: "Reports",
 };
 
 // Days a coach set up ahead of time and has not started yet.
@@ -620,7 +637,12 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
       {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}{/* The strip. Outside the three states because ending a day is something a
           coach does while looking at anything — and it renders nothing at all
           unless a day is actually running. */}
-      <SessionWidget roomState={roomState} accessToken={accessToken} onLogout={onLogout} refresh={refresh} onDayEnded={handleDayEnded}/>{!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav>}<div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}>{/* Opening a day with no block behind it. It lives in PLANNING, not
+      <SessionWidget roomState={roomState} accessToken={accessToken} onLogout={onLogout} refresh={refresh} onDayEnded={handleDayEnded}/>{!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{TAB_LABELS[t]??t}</button>)}</nav>}{/* ONE instance across two sub-tabs, not two. Design and Workout catalog
+          need the same blocks, categories, groups and deployed programs; mounting
+          it twice would fetch all of them twice and let the two copies drift —
+          a block made on Design would not show up in the catalog. */}
+      <div hidden={activeTab!=="design"&&activeTab!=="catalog"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout} section={activeTab==="catalog"?"catalog":"design"}/></div>
+      <div hidden={activeTab!=="groups"}><GroupsView accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="calendar"}>{/* Opening a day with no block behind it. It lives in PLANNING, not
               SESSION, for one hard reason: `POST /api/sessions/` starts the room
               immediately — there is no staged step it could reach SESSION with —
               and SESSION is dimmed until a day is set. Putting it there would
@@ -631,7 +653,7 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
               planned days to find is not an escape hatch. Phase D decides where
               this finally sits when PLANNING gets its four sub-tabs. */}
           {!dayRunning&&<OpenDayFromScratch athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}
-          <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh} onStaged={()=>{fetchStagedSlots(accessToken).then(setStagedSlots).catch(()=>{});navigate(pathForCoachState("session"));}}/></div>{dayMissing?<StatePanel title="No training day is set up" body="Set a day up from the calendar in Planning and it appears here, ready to start. For training with no plan behind it, Planning can open the room straight away." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?<>{/* A day set up earlier, waiting to be opened. Above the room because
+          <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh} onStaged={()=>{fetchStagedSlots(accessToken).then(setStagedSlots).catch(()=>{});navigate(pathForCoachState("session"));}}/></div>{dayMissing?<StatePanel title="No training day is set up" body="Set a day up from the calendar in Planning and it appears here, ready to start. For training with no plan behind it, Planning can open the room straight away." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="design"||activeTab==="catalog"||activeTab==="groups"||activeTab==="reports"||activeTab==="calendar"?null:activeTab==="room"?<>{/* A day set up earlier, waiting to be opened. Above the room because
             until it is started the room below is not following anything. */}
         {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} exerciseNames={exerciseNames} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
           object, not three copies of a bar. That is what makes three routes

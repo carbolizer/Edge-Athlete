@@ -1,0 +1,33 @@
+/*
+ * GroupsView.css — the group cards in PLANNING.
+ *
+ * One card per group, stacked. Matches the mockup: eyebrow, name, and a single
+ * line of "28 athletes · Sarah Kemp (head), Mike Ross". Nothing more, because
+ * the tab only answers "what groups exist and who runs them".
+ *
+ * Colours match react/src/theme.js.
+ */
+
+.groups-list { display: flex; flex-direction: column; gap: 12px; }
+
+.groups-card {
+  align-items: start;
+  background: #10171b;
+  border: 1px solid #263239;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 17px;
+}
+
+.groups-eyebrow {
+  color: #a9f04d;
+  display: block;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.groups-card h3 { font-size: 19px; margin: 3px 0 0; }
+.groups-card p { color: #89969d; font-size: 12px; margin: 5px 0 0; }
