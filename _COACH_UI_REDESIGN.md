@@ -6,10 +6,38 @@
 > Written 2026-07-30. Folds into [`_SPEC.md`](_SPEC.md) when the work lands, then
 > this file goes away.
 
+## The roadmap, in one table
+
+Eight phases. **A–F are a re-shelving** of things that already work; **G and H are
+new features.** Full exit criteria for each are in §16 — this table is so nobody
+has to reconstruct the shape from 900 lines.
+
+| | Phase | In one line | Status |
+|---|---|---|---|
+| **A** | The shell | Three routes, the glass navbar, the sliding pill. Each state shows the old tabs unchanged | ✅ `f14ce0b` |
+| **B** | SESSION | The live room + starting a day. Split `TrainingDayPanel`: open-from-scratch → PLANNING, start-staged → SESSION | ✅ `cae4d6e` |
+| **E** | The widget | The strip above all three states: elapsed timer, End training day | ✅ absorbed into **B** — ending a day needed a home before B could ship |
+| **C** | ANALYTICS | Athlete selector moves here from the topbar; one "choose an athlete" guard instead of four | ⬜ next |
+| **D** | PLANNING | The four sub-tabs — Design · Groups · Workout catalog · Calendar. Deploy/promote become buttons on the thing itself. Calendar gains the mockup's card view | ⬜ |
+| **F** | Removals | Delete the old 8-tab bar and the Programs card grid. **Only after A–E work** | ⬜ |
+| **G** | Dashboard Settings | A cog on the *wall* display holding Change device role. Genuinely new; may be its own branch | ⬜ |
+| **H** | Group history | *"Who is falling behind?"* — a scope switch on History. The highest-value analytics feature, and **the only thing here that is not free** | ⬜ |
+
+**How to read the order.** A built the frame. B–D fill the three states, in any
+order — they do not depend on each other. F is the cleanup that can only happen
+once nothing needs the old tabs. G and H are separable products; H in particular
+is worth doing on its own merits, not as part of this transition.
+
+**The rule that holds all of it together:** no backend routes change, anywhere in
+A–G. H is the one place that rule is allowed to be reconsidered, deliberately.
+
+---
+
 ## How to read this
 
 | If you want | Read |
 |---|---|
+| **The shape of the whole plan** | **the roadmap table above** |
 | **What to build** | **§13** the layout · **§14** mechanics · **§15** PLANNING's sub-tabs · **§16** the phases |
 | A picture of it | [`_COACH_UI_MOCKUP.html`](_COACH_UI_MOCKUP.html) — open in a browser |
 | *Why* something is the way it is | §1–§12, in the order the questions came up |
@@ -694,12 +722,20 @@ calendar is where a coach asks "what is Monday?" — see §15. The card carries 
 own action: *Stage this day* on a `planned` card, *Open in session* on a `ready`
 one.
 
-**Phase E — the widget**
-Conditional active-session bar with the elapsed timer.
+**Phase E — the widget** — ✅ **DONE, absorbed into Phase B** (`cae4d6e`)
 
-- [ ] Hidden with no running day; appears when one starts
-- [ ] Timer counts up from `started_at`, client-side, no new API
-- [ ] End training day works from any state
+It could not wait for its own phase: Phase B moved "End training day" out of
+`TrainingDayPanel`, and the button needed somewhere to live the moment it left.
+Built as `coach/SessionWidget.jsx`.
+
+- [x] Hidden with no running day; appears when one starts
+- [x] Timer counts up from `started_at`, client-side, no new API
+- [x] End training day works from any state — the strip is outside all three,
+      verified as the same DOM node across a state change
+
+Deliberately built as **a strip that currently shows a session**, not as a session
+bar, because §2 wants other notifications here later — a node that stopped
+reporting, a tablet that dropped off. Adding those should not mean rewriting it.
 
 **Phase F — removals**
 Only after A–E are working.
