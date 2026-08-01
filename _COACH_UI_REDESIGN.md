@@ -14,8 +14,8 @@ has to reconstruct the shape from 900 lines.
 
 | | Phase | In one line | Status |
 |---|---|---|---|
-| **A** | The shell | Three routes, the glass navbar, the sliding pill. Each state shows the old tabs unchanged | ✅ `f14ce0b` |
-| **B** | SESSION | The live room + starting a day. Split `TrainingDayPanel`: open-from-scratch → PLANNING, start-staged → SESSION | ✅ `cae4d6e` |
+| **A** | The shell | Three routes, the glass navbar, the sliding pill. Each state shows the old tabs unchanged | ✅ `f064d10` |
+| **B** | SESSION | The live room + starting a day. Split `TrainingDayPanel`: open-from-scratch → PLANNING, start-staged → SESSION | ✅ `e89a0e1` |
 | **E** | The widget | The strip above all three states: elapsed timer, End training day | ✅ absorbed into **B** — ending a day needed a home before B could ship |
 | **C** | ANALYTICS | Athlete selector moves here from the topbar; one "choose an athlete" guard instead of four | ⬜ next |
 | **D** | PLANNING | The four sub-tabs — Design · Groups · Workout catalog · Calendar. Deploy/promote become buttons on the thing itself. Calendar gains the mockup's card view | ✅ D1–D4 |
@@ -55,12 +55,12 @@ Not part of the phases below — done while the spec was being written.
 
 | | Commit |
 |---|---|
-| "Rack N is ready" deleted | `916c208` |
-| "No racks assigned" deleted; cog labelled **⚙ ROOM LAYOUT** | `cb75c66` |
-| Log out moved under the logo; Change device removed from the topbar | `916c208` |
-| Four "Choose an athlete" guards collapsed to one | `916c208` |
-| Summary strip hidden behind `isDevMode()` | `41c5c8e` |
-| `ProgramsTab` null-key + exercise-id-as-name bugs fixed | `1a9ef38` |
+| "Rack N is ready" deleted | `27b599c` |
+| "No racks assigned" deleted; cog labelled **⚙ ROOM LAYOUT** | `83ae406` |
+| Log out moved under the logo; Change device removed from the topbar | `27b599c` |
+| Four "Choose an athlete" guards collapsed to one | `27b599c` |
+| Summary strip hidden behind `isDevMode()` | `e324110` |
+| `ProgramsTab` null-key + exercise-id-as-name bugs fixed | `bd9ee08` |
 
 ---
 
@@ -297,17 +297,17 @@ nothing. The whole coach screen came from there by design (P7).
 | 2 | 174 | "Live scoreboard unavailable" | Wall | ✅ Keep — out of scope |
 | 3 | 177 | "The room is ready" | Wall | ✅ Keep — the wall's *legitimate* ready: no session started. Not the same bug as §4 |
 | 4 | 325 | `No {what} yet` | Coach | ✅ Keep — **ours**, added in P13, replacing one of his. Distinguishes "never trained" from "loading" |
-| 5 | 330 | "Choose an athlete" | Coach · athlete | ✅ **Collapsed** — `916c208` |
-| 6 | 386 | "Choose an athlete" | Coach · history | ✅ **Collapsed** — `916c208` |
+| 5 | 330 | "Choose an athlete" | Coach · athlete | ✅ **Collapsed** — `27b599c` |
+| 6 | 386 | "Choose an athlete" | Coach · history | ✅ **Collapsed** — `27b599c` |
 | 7 | 391 | "No completed training days" | Coach · history | ✅ Keep — real empty state, distinct from #6 |
-| 8 | 403 | "Choose an athlete" | Coach · programs | ✅ **Collapsed** — `916c208` |
-| 9 | 411 | "Choose an athlete" | Coach · notes | ✅ **Collapsed** — `916c208` |
+| 8 | 403 | "Choose an athlete" | Coach · programs | ✅ **Collapsed** — `27b599c` |
+| 9 | 411 | "Choose an athlete" | Coach · notes | ✅ **Collapsed** — `27b599c` |
 | 10 | 488 | "Loading coach workspace" | Coach | ✅ Keep — whole-screen, sibling-independent |
 | 11 | 489 | "Coach view unavailable" | Coach | ✅ Keep — has a retry action |
-| 12 | 491 | "No racks assigned" | Coach · room | ✅ **Deleted** — `cb75c66`; the cog carries it instead |
+| 12 | 491 | "No racks assigned" | Coach · room | ✅ **Deleted** — `83ae406`; the cog carries it instead |
 | 13 | 510 | "Loading athlete context" | Coach | ✅ Keep |
 | 14 | 510 | "Athlete context unavailable" | Coach | ✅ Keep |
-| — | 495 | "Rack N is ready" | Coach · room | ✅ **Deleted** — `916c208` |
+| — | 495 | "Rack N is ready" | Coach · room | ✅ **Deleted** — `27b599c` |
 
 #### The four "Choose an athlete" panels (#5, #6, #8, #9)
 
@@ -728,9 +728,9 @@ Built in four checkpoints, because it reshapes an 836-line file:
 
 | | | |
 |---|---|---|
-| **D1** | The four sub-tabs, Groups view, Calendar renamed | ✅ `7d1ddca` |
-| **D2** | The calendar's card view | ✅ `481bb2b` |
-| **D3** | Design tab surgery — dropdowns, in-component deploy/promote | ✅ `dcc10a3` |
+| **D1** | The four sub-tabs, Groups view, Calendar renamed | ✅ `5189e73` |
+| **D2** | The calendar's card view | ✅ `b01b0d5` |
+| **D3** | Design tab surgery — dropdowns, in-component deploy/promote | ✅ `b9b5192` |
 | **D4** | `Open` a group → its athletes → `AthleteWorkoutPlanning` (§15b) | ✅ |
 
 ⚠️ **`AthleteWorkoutPlanning` now renders in TWO places** — here, and still inside
@@ -749,7 +749,7 @@ along. Nothing on the coach screen had ever asked for it. Step 3 is built.
 - [ ] Create block / create session are dropdowns
 - [ ] Deploy is a button on a block; promote is a button on a program
 - [ ] The standalone deploy panel is gone
-- [x] Stage a day → lands in SESSION — **done in Phase B** (`cae4d6e`)
+- [x] Stage a day → lands in SESSION — **done in Phase B** (`e89a0e1`)
 - [ ] Groups / catalog / calendar reachable as view tabs
 - [ ] **Calendar is the current Schedule tab RENAMED**, not rebuilt — ✅ Devin
       2026-07-31. `ScheduleWorkspace` keeps its slot states, its move action and
@@ -779,7 +779,7 @@ calendar is where a coach asks "what is Monday?" — see §15. The card carries 
 own action: *Stage this day* on a `planned` card, *Open in session* on a `ready`
 one.
 
-**Phase E — the widget** — ✅ **DONE, absorbed into Phase B** (`cae4d6e`)
+**Phase E — the widget** — ✅ **DONE, absorbed into Phase B** (`e89a0e1`)
 
 It could not wait for its own phase: Phase B moved "End training day" out of
 `TrainingDayPanel`, and the button needed somewhere to live the moment it left.
@@ -896,7 +896,7 @@ for settled.
 5. Does the navbar dim? → **Yes**, SESSION only, when no day is set
 6. What does a brand-new gym see? → §9 — lands in PLANNING, no greeting
 7. Where does the per-athlete `programs` tab live? → **It stops existing.** Card grid deleted; `AthleteWorkoutPlanning` moves to PLANNING — **specifically to Groups → Open, see §15b** (settled 2026-07-31; "PLANNING" alone was not an address)
-8. `ProgramsTab` null-key bug? → **Fixed**, `1a9ef38`
+8. `ProgramsTab` null-key bug? → **Fixed**, `bd9ee08`
 9. Does `ProgramsTab` keep its card grid? → **No.** The rack screen already shows an athlete their live day, the coach wrote the plan, and at 100 athletes a per-person plan list answers the wrong question — a coach wants *who is behind*
 10. Does SESSION need a stripped athlete view? → **No**, for the same reason. Quick Note only
 
@@ -961,7 +961,7 @@ Append as we go. Date each entry.
   prescriptions" but shows only pounds, never the percent — presenting a derived
   number as the plan. Possibly a duplicate of the panel directly below it.
 - **2026-07-30** — **Programs tab: two bugs fixed** (outside this doc, commit
-  `1a9ef38`). Both had one root cause — it is Braydon's component, carried in by
+  `bd9ee08`). Both had one root cause — it is Braydon's component, carried in by
   P7, still written against the per-athlete `Program` table that P6 dropped. Its
   `key={program.id}` and `{program.exercise}` were both correct on his branch and
   both silently wrong here. **This is the sibling test again**, and the strongest
@@ -1020,7 +1020,7 @@ Append as we go. Date each entry.
   - Also decided: SESSION with no day **does not redirect**. Pulling a coach off
     the screen they were reading — which is what a redirect does the moment a day
     ends — is worse than a screen that says why it is empty.
-- **2026-07-31** — **Phase B built** (`cae4d6e`). `TrainingDayPanel` split in two:
+- **2026-07-31** — **Phase B built** (`e89a0e1`). `TrainingDayPanel` split in two:
   `OpenDayFromScratch` → PLANNING, `StartStagedDay` → SESSION, and the ending
   half became `coach/SessionWidget.jsx` outside all three states. Two decisions
   forced by building it, both confirmed by Devin:
