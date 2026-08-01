@@ -545,6 +545,29 @@
 .history-detail-row .history-day { margin:0; }
 
 .history-table-note { color:var(--muted); font-size:11px; margin:10px 0 0; }
+
+/* ── ANALYTICS → History, group scope ─────────────────────────────────────
+   Same table, turned sideways: one row per athlete instead of per day. */
+.coach-scope-switch { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:3px; padding:3px; }
+.coach-scope-switch button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.09em; padding:7px 15px; text-transform:uppercase; }
+.coach-scope-switch button.is-on { background:var(--lime); color:#071006; }
+
+.group-history-controls { align-items:center; display:flex; flex-wrap:wrap; gap:14px; margin-bottom:4px; }
+.group-history-controls label { align-items:center; color:var(--muted); display:flex; font-size:9px; font-weight:900; gap:9px; letter-spacing:.12em; text-transform:uppercase; }
+.group-history-controls select { background:var(--panel2); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; letter-spacing:normal; min-height:38px; padding:7px 10px; text-transform:none; }
+.group-history-count { color:var(--muted); font-size:12px; }
+.group-history-count b { color:var(--coral); font-weight:800; }
+
+/* The flagged row is tinted, not just tagged. At a squad of a hundred a coach
+   scans down a column of colour, not a column of words. */
+.group-history-table tr.is-behind td { background:rgba(255,100,107,.07); }
+.group-history-table tbody tr { cursor:default; }
+.group-history-table tbody tr:hover td { background:transparent; }
+.group-history-table tr.is-behind:hover td { background:rgba(255,100,107,.07); }
+.group-history-tag { border:1px solid var(--coral); color:var(--coral); font-size:9px; font-weight:900; letter-spacing:.08em; padding:2px 7px; text-transform:uppercase; white-space:nowrap; }
+.group-history-tag.is-unknown { border-color:var(--line); color:var(--muted); }
+
+.visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .history-day-close { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:800; letter-spacing:.07em; min-height:34px; padding:6px 12px; text-transform:uppercase; }
 .history-day-close:hover { border-color:var(--lime); color:var(--lime); }
 

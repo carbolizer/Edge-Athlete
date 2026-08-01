@@ -20,8 +20,8 @@ has to reconstruct the shape from 900 lines.
 | **C** | ANALYTICS | Athlete selector moves here from the topbar; one "choose an athlete" guard instead of four | ✅ `767f33e` |
 | **D** | PLANNING | The four sub-tabs — Design · Groups · Workout catalog · Calendar. Deploy/promote become buttons on the thing itself. Calendar gains the mockup's card view | ✅ D1–D4 |
 | **F** | Removals | Delete the old 8-tab bar and the Programs card grid. **Only after A–E work** | ✅ code done; tablet walk-through outstanding |
-| **G** | Dashboard Settings | A cog on the *wall* display holding Change device role. Genuinely new; may be its own branch | ⬜ |
-| **H** | Group history | *"Who is falling behind?"* — a scope switch on History. The highest-value analytics feature, and **the only thing here that is not free** | ⬜ |
+| **G** | Dashboard Settings | A cog on the *wall* display holding Change device role. Genuinely new; may be its own branch | ✅ `d9a1cef` |
+| **H** | Group history | *"Who is falling behind?"* — a scope switch on History. The highest-value analytics feature, and **the only thing here that is not free** | ✅ client-side; `?group=` deliberately unspent |
 
 **How to read the order.** A built the frame. B–D fill the three states, in any
 order — they do not depend on each other. F is the cleanup that can only happen
@@ -841,12 +841,43 @@ client-side without fetching every detail.
 **Recommendation:** build the client-side version first to prove the view is worth
 having, then add `?group=` if it is. Do not add the endpoint speculatively.
 
-- [ ] Scope switch on History: Athlete / Group
-- [ ] Group view lists members with last-trained, set count, average velocity, trend
-- [ ] A member who has not trained in the window is visibly distinct — that is the
-      whole point of the view
-- [ ] Decide, explicitly and in writing, whether `?group=` gets added
-- [ ] Reports tab unchanged — still per-day, still frozen
+### ✅ The `?group=` decision — settled 2026-07-31
+
+**Do not add it yet.** The client-side version is built and works, and the cost
+turned out lower than the doc feared.
+
+Measured against the running stack, one training group:
+
+| | |
+|---|---|
+| One `/api/analytics/athlete/{id}/` call | **16 ms** |
+| Four in parallel | **19 ms** |
+| Projected 28 athletes (7 batches of 4) | **~133 ms** |
+| Projected 100 athletes | **~475 ms** |
+
+⚠️ **Those numbers are from Docker on a laptop, not from a Raspberry Pi.** A Pi
+serving live rack tablets will be several times slower, so read them as a shape
+— the cost grows in batches, not per athlete — rather than as a promise. Even at
+5× a squad of 28 lands under a second.
+
+**So the rule is:** the extra requests buy a real feature for no backend change,
+and `?group=` stays unspent. **Revisit it if** a group over ~40 feels slow on the
+actual base station, or if this view ever needs to poll rather than load once.
+
+**What made it affordable:** requests go out four at a time, not all at once.
+The base station is also serving rack tablets mid-set, and a burst of twenty-
+eight parallel analytics queries is a real way to make someone's live velocity
+feed stutter.
+
+- [x] Scope switch on History: Athlete / Group
+- [x] Group view lists members with last-trained, set count, average velocity, trend
+- [x] A member who has not trained in the window is visibly distinct — that is the
+      whole point of the view. ⚠️ Implemented as **no training in 7 days**, not
+      "outside the window": read literally the latter flags nobody on a short
+      window and everybody on a long one, so the flag would describe the
+      dropdown rather than the athlete
+- [x] Decide, explicitly and in writing, whether `?group=` gets added — **no, see above**
+- [x] Reports tab unchanged — still per-day, still frozen
 
 ---
 

@@ -47,6 +47,7 @@ import StateNavbar from "./coach/StateNavbar.jsx";
 import SessionWidget from "./coach/SessionWidget.jsx";
 import QuickNote from "./coach/QuickNote.jsx";
 import GroupsView from "./coach/GroupsView.jsx";
+import GroupHistory from "./coach/GroupHistory.jsx";
 import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
 import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
 
@@ -665,6 +666,14 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
   // own data in PLANNING → Groups → Open. One less round trip per athlete.
   useEffect(()=>{setContext(null);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
+  // History looks at one athlete or at a whole group. The switch lives up here
+  // rather than inside HistoryTab because it changes what the selector beside it
+  // selects — and because group scope must NOT sit behind the "choose an
+  // athlete" guard, which would make it unreachable until you picked one.
+  const [historyScope,setHistoryScope]=useState("athlete");
+  const [groups,setGroups]=useState([]);
+  const [selectedGroupId,setSelectedGroupId]=useState(null);
+  useEffect(()=>{fetch("/api/training-groups/",{headers}).then(r=>r.ok?r.json():[]).then(b=>{const list=Array.isArray(b)?b:b.results||[];setGroups(list);setSelectedGroupId(current=>current??list[0]?.id??null);}).catch(()=>setGroups([]));},[accessToken]);
   // Staged days, re-read whenever a day starts or ends — both change the set.
   // A failure is deliberately silent and treated as "none staged": it costs the
   // coach a shortcut, and PLANNING can always open a day from scratch.
@@ -792,14 +801,31 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
         Not shown on Reports: that sub-tab has its own athlete picker with its
         own day/athlete modes, and two pickers on one screen is worse than the
         one it replaced. */}
-      {coachState==="analytics"&&ATHLETE_SCOPED_TABS.includes(activeTab)&&<div className="coach-analytics-bar">
-        <label>Athlete
-          <select value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete">
-            <option value="">Select athlete</option>
-            {athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}
-          </select>
-        </label>
-        {context?.athlete&&<span>Showing <b>{context.athlete.name}</b></span>}
+      {coachState==="analytics"&&(ATHLETE_SCOPED_TABS.includes(activeTab))&&<div className="coach-analytics-bar">
+        {/* On History the selector switches between an athlete and a group —
+            same question, wider lens. The other sub-tabs are athlete-only. */}
+        {activeTab==="history"&&<div className="coach-scope-switch" role="group" aria-label="History scope">
+          <button type="button" className={historyScope==="athlete"?"is-on":""} aria-pressed={historyScope==="athlete"}
+            onClick={()=>setHistoryScope("athlete")}>Athlete</button>
+          <button type="button" className={historyScope==="group"?"is-on":""} aria-pressed={historyScope==="group"}
+            onClick={()=>setHistoryScope("group")}>Group</button>
+        </div>}
+        {activeTab==="history"&&historyScope==="group"
+          ? <label>Group
+              <select value={selectedGroupId||""} onChange={e=>setSelectedGroupId(Number(e.target.value))} aria-label="Selected group">
+                {groups.length===0&&<option value="">No groups yet</option>}
+                {groups.map(g=><option value={g.id} key={g.id}>{g.name} · {g.athlete_count??0} athletes</option>)}
+              </select>
+            </label>
+          : <>
+              <label>Athlete
+                <select value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete">
+                  <option value="">Select athlete</option>
+                  {athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}
+                </select>
+              </label>
+              {context?.athlete&&<span>Showing <b>{context.athlete.name}</b></span>}
+            </>}
       </div>}
       {!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{TAB_LABELS[t]??t}</button>)}</nav>}{/* ONE instance across two sub-tabs, not two. Design and Workout catalog
           need the same blocks, categories, groups and deployed programs; mounting
@@ -819,7 +845,12 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
           {!dayRunning&&<OpenDayFromScratch athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}
           <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh} onStaged={()=>{fetchStagedSlots(accessToken).then(setStagedSlots).catch(()=>{});navigate(pathForCoachState("session"));}} onOpenSession={()=>navigate(pathForCoachState("session"))}/></div>{dayMissing?<StatePanel title="No training day is set up" body="Set a day up from the calendar in Planning and it appears here, ready to start. For training with no plan behind it, Planning can open the room straight away." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="design"||activeTab==="catalog"||activeTab==="groups"||activeTab==="reports"||activeTab==="calendar"?null:activeTab==="room"?<>{/* A day set up earlier, waiting to be opened. Above the room because
             until it is started the room below is not following anything. */}
-        {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
+        {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:/* Group history is deliberately AHEAD of the athlete guard below. It is not
+        about one athlete, so requiring one first would make it unreachable —
+        and the coach most in need of it is the one who does not yet know whose
+        name to type. */
+      activeTab==="history"&&historyScope==="group"?<GroupHistory group={groups.find(g=>g.id===selectedGroupId)||null} accessToken={accessToken} onLogout={onLogout}/>:
+      loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
           object, not three copies of a bar. That is what makes three routes
           read as one surface changing mode. */}
     <StateNavbar current={coachState} onSelect={goToState} daySet={daySet}/></main>;
