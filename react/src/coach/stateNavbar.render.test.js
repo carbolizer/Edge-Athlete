@@ -23,7 +23,7 @@ import StateNavbar from "./StateNavbar.jsx";
 
 function render(props = {}) {
   return renderToStaticMarkup(createElement(StateNavbar, {
-    current: "planning", onSelect: () => {}, dayRunning: true, ...props,
+    current: "planning", onSelect: () => {}, daySet: true, ...props,
   }));
 }
 
@@ -42,21 +42,23 @@ describe("StateNavbar", () => {
   });
 
   // The one branch that cannot be reached by clicking. See the note above.
-  it("disables SESSION when no training day is running", () => {
-    const html = render({ dayRunning: false });
-    expect(html).toContain("No training day is running");
+  it("disables SESSION when no training day is set", () => {
+    const html = render({ daySet: false });
+    expect(html).toContain("stage one from the calendar");
     expect(html.match(/<button[^>]*disabled/g) || []).toHaveLength(1);
   });
 
-  it("enables SESSION once a day is running", () => {
-    expect(render({ dayRunning: true })).not.toContain("disabled");
+  // "Set" means staged OR running — a day a coach lined up on Tuesday for
+  // Thursday makes SESSION reachable, because starting it is done there.
+  it("enables SESSION once a day is set", () => {
+    expect(render({ daySet: true })).not.toContain("disabled");
   });
 
   // A day can end while the coach is standing on SESSION. Dimming the button
   // under them would put the lime "you are here" pill and the grey "you cannot
   // go here" on one button — two opposite messages at once.
   it("does not dim the state the coach is already standing on", () => {
-    const html = render({ current: "session", dayRunning: false });
+    const html = render({ current: "session", daySet: false });
     expect(html).toContain('aria-current="page"');
     expect(html).not.toContain("disabled");
   });

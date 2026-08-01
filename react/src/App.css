@@ -150,6 +150,20 @@
 .training-day-confirm { align-items:center; display:flex; gap:9px; }
 .training-day-confirm strong { font-size:11px; max-width:260px; }
 .training-day-confirm button.workout-secondary { background:transparent; border-color:var(--line); color:var(--ink); }
+/* Days staged from the calendar and waiting to be started. Lime-edged like the
+   running-day strip, because it is the same kind of thing one step earlier —
+   but a dashed edge, because nothing is holding the racks yet. */
+.training-day-staged { background:var(--panel); border:1px dashed rgba(169,240,77,.45); margin-bottom:14px; padding:18px; }
+.training-day-staged>header { align-items:start; display:flex; gap:20px; justify-content:space-between; }
+.training-day-staged>header span { color:var(--lime); font-size:9px; font-weight:900; letter-spacing:.11em; text-transform:uppercase; }
+.training-day-staged>header h3 { font-size:22px; margin:3px 0; }
+.training-day-staged>header p { color:var(--muted); font-size:11px; margin:4px 0 0; }
+.training-day-staged>header>b { color:var(--lime); font-size:10px; text-transform:uppercase; white-space:nowrap; }
+.training-day-staged article { align-items:center; border-top:1px solid var(--line); display:flex; gap:16px; justify-content:space-between; margin-top:12px; padding-top:12px; }
+.training-day-staged article h4 { font-size:15px; margin:0; }
+.training-day-staged article p { color:var(--muted); font-size:11px; margin:4px 0 0; }
+.training-day-staged article button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:44px; padding:8px 15px; white-space:nowrap; }
+.training-day-staged article button:disabled { cursor:not-allowed; opacity:.42; }
 .training-day-status { color:var(--mint); font-size:11px; margin-bottom:0; }
 .training-day-error { color:var(--coral); font-size:11px; margin-bottom:0; }
 .training-report { margin-bottom:14px; }
@@ -462,7 +476,20 @@
 .schedule-past-toggle button.workout-secondary { background:transparent; border:1px solid var(--line); color:var(--muted); }
 .schedule-errors { border:1px solid var(--red,#e0574e); padding:12px; }
 .schedule-errors p { color:var(--red,#e0574e); font-size:11px; line-height:1.5; margin:0; }
-.schedule-day-list { display:flex; flex-direction:column; gap:14px; }
+/* The calendar scrolls INSIDE ITSELF rather than lengthening the page.
+   A deployed block generates a slot per training day, so this list runs to
+   dozens of rows within a couple of weeks. Left to grow, it pushed everything
+   else off the bottom of the screen and buried the controls above it under three
+   weeks of scrolling. Bounded here, the day rows stay where a coach left them
+   and the rest of PLANNING stays reachable.
+   `overscroll-behavior` stops a flick that reaches the end of the list from
+   carrying on and scrolling the page underneath it — on a tablet that reads as
+   the screen jumping. */
+.schedule-day-list { display:flex; flex-direction:column; gap:14px; max-height:min(58vh,640px); overflow-y:auto; overscroll-behavior:contain; padding-right:6px; }
+/* A hairline that says "there is more below" without adding chrome. */
+.schedule-day-list::-webkit-scrollbar { width:8px; }
+.schedule-day-list::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
+.schedule-day-list::-webkit-scrollbar-track { background:transparent; }
 .schedule-day { border:1px solid var(--line); }
 .schedule-day>header { align-items:baseline; border-bottom:1px solid var(--line); display:flex; gap:12px; justify-content:space-between; padding:12px 14px; }
 .schedule-day>header h4 { font-size:14px; margin:0; }

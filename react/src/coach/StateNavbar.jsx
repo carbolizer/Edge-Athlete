@@ -11,10 +11,15 @@
  * onto the pill; CSS animates the change from there. It re-measures on window
  * resize too, because a tablet gets rotated.
  *
- * WHY SESSION CAN BE OFF. SESSION is the live room, and there is no live room
- * until a training day is running. Rather than send a coach to an empty screen,
- * the button dims and stops responding until a day exists. This is the only
+ * WHY SESSION CAN BE OFF. SESSION is the room, and there is no room to look at
+ * until a training day is SET — meaning staged from the calendar, or already
+ * running. Staged counts on purpose: staging a day is what makes SESSION worth
+ * going to, and starting it is what a coach goes there to do. This is the only
  * state that can be unavailable.
+ *
+ * It dims rather than disappearing. A dimmed SESSION teaches the order — you can
+ * see the step exists and that something is missing before you can take it. A
+ * hidden one just looks like a two-state app.
  *
  * This component never unmounts when the state changes — that is the point. It
  * is rendered outside the part of the screen that swaps, so the bar is one
@@ -25,7 +30,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { COACH_STATES } from './coachState.js'
 import './StateNavbar.css'
 
-export default function StateNavbar({ current, onSelect, dayRunning }) {
+export default function StateNavbar({ current, onSelect, daySet }) {
   const buttonRefs = useRef({})
   // Null until the buttons have been measured, so the pill is never rendered in
   // the wrong place. That also means its FIRST appearance carries no animation
@@ -69,7 +74,7 @@ export default function StateNavbar({ current, onSelect, dayRunning }) {
           // opposite messages at once. Where they are is not somewhere they need
           // permission to go, and the body already explains that the room is
           // closed, so the bar just keeps showing where they are.
-          const unavailable = state.key === 'session' && !dayRunning && current !== 'session'
+          const unavailable = state.key === 'session' && !daySet && current !== 'session'
           return (
             <button
               key={state.key}
@@ -78,7 +83,7 @@ export default function StateNavbar({ current, onSelect, dayRunning }) {
               className={state.key === current ? 'on' : ''}
               aria-current={state.key === current ? 'page' : undefined}
               disabled={unavailable}
-              title={unavailable ? 'No training day is running' : undefined}
+              title={unavailable ? 'No training day is set up yet — stage one from the calendar' : undefined}
               onClick={() => onSelect(state.key)}
             >
               {state.label}

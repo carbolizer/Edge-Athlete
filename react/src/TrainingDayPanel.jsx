@@ -1,37 +1,41 @@
-// TrainingDayPanel.jsx — opening and closing a day of training.
+// TrainingDayPanel.jsx — OPENING a day of training, and the report shape.
 //
-// Two buttons, and the second one is permanent.
+// ⚠️ THIS FILE USED TO DO BOTH HALVES. It opened a day and it closed one, and
+// the closing half now lives in coach/SessionWidget.jsx. The split is not
+// tidying: starting a day and ending a day are done at different moments, from
+// different screens, by a coach thinking about different things.
 //
-//   START   Name today's training, tick who is in it, and the room is open.
-//           Racks only accept lifting once a day is running.
+//   START — here, in SESSION. Naming today's training and ticking who is in it
+//           is the act of opening the room you are about to stand in.
+//   END   — the strip above all three states. Ending is something a coach does
+//           while looking at anything, so it has to be reachable from anywhere.
 //
-//   END     Closes the day and FREEZES it into a report that is never edited
-//           again. It also recalculates everyone's reference maxes from what
-//           they actually lifted, which is why it asks for confirmation first —
-//           this is the moment today stops being editable and starts being
-//           history.
+// Two ways to open a day, and they live in DIFFERENT STATES because they are
+// different decisions:
 //
-// Ending is a PATCH on the session rather than a POST to an end/ route, because
-// "end the day" is just "set its end time" and that endpoint already did that.
-// It answers with a POINTER to the finished report, so we fetch the report
-// itself before rendering it below.
+//   OpenDayFromScratch → PLANNING. No block behind it. Name it, tick a roster,
+//                  go. Deciding that today happens at all is a planning act, and
+//                  this route (`POST /api/sessions/`) opens the room the instant
+//                  it succeeds — there is no staged step to reach SESSION with.
+//                  It has to live where a coach can always get to it, including
+//                  in a gym whose calendar is empty.
+//   StartStagedDay → SESSION. The day already exists, set up from the calendar
+//                  days ago with its roster and plan attached (P14's nullable
+//                  `started_at`). One button, no typing.
 //
-// ⚠️ WHY THE CONFIRMATION NAMES THE DAY. This panel once looked broken: pressing
-// End training day redrew the same active day and the same button, every time.
-// It was working perfectly — the database held several unended sessions, and
-// ending the newest instantly promoted the next one into its place. Only ONE day
-// can be open now (the server refuses a second), and the server also answers
-// with which day it just ended, so the confirmation can say so by name instead
-// of leaving the coach to infer it from a screen that may look identical.
+// ⚠️ A STAGED DAY IS NOT LIVE. It holds no racks and captures no check-ins until
+// it is started (canon D18). That is the whole reason it can be set up early,
+// and the screen must never present one as if the room were already open.
 //
-// The report view is deliberately BOUNDED. A busy day holds thousands of
-// individual reps, and mounting them all locks up a tablet at the exact moment a
-// coach wants to read the summary. So it renders a slice and says so — the saved
-// report always keeps every row. Nothing here can shrink what was stored; the
-// limit is about what the screen can hold.
+// What is still here besides starting: GeneratedReport, the frozen record of a
+// finished day, which ReportsWorkspace also renders. It is deliberately BOUNDED
+// — a busy day holds thousands of reps, and mounting them all locks up a tablet
+// at the exact moment a coach wants to read the summary. It renders a slice and
+// says so; the saved report always keeps every row.
 
 import { useState } from "react";
 import { budgetReportRendering, buildEndDayPayload, buildTrainingDayPayload, endedDayMessage, endTimeChoices, orderedReportExercises, orderedReportPrescriptions, reportAthletes, reportSnapshot, reportSummary, reportValue, timestampLabel, unfinishedRackNumbers } from "./trainingDay.js";
+import { scheduleDayLabel } from "./schedule.js";
 
 function ReportRep({ rep }) {
   return <li><span>Rep {rep.rep_number ?? rep.number ?? "--"}</span><b>{reportValue(rep.mean_velocity, " m/s mean")}</b><b>{reportValue(rep.peak_velocity, " m/s peak")}</b><b>{reportValue(rep.duration_ms, " ms")}</b></li>;
@@ -90,23 +94,16 @@ export function ConflictPrompt({ conflict, endedAt, onEndedAtChange, newDayLabel
   </div>;
 }
 
-export default function TrainingDayPanel({ roomState, athletes, accessToken, onLogout, refresh }) {
+export function OpenDayFromScratch({ athletes, accessToken, onLogout, refresh }) {
   const [label, setLabel] = useState("");
   const [selectedAthleteIds, setSelectedAthleteIds] = useState([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const [confirmEnd, setConfirmEnd] = useState(false);
-  // A corrected end time, only ever typed for a day that outlived a reboot.
-  // Empty means "end it now", which is the normal case.
-  const [endedAtOverride, setEndedAtOverride] = useState("");
   // The day that blocked this one, when a start hits 409. Held rather than just
   // reported, so it can be resolved without retyping the form.
   const [conflict, setConflict] = useState(null);
   const [conflictEndedAt, setConflictEndedAt] = useState("");
-  const [generatedReport, setGeneratedReport] = useState(null);
-  const session = roomState.session;
-  const staleDay = Boolean(session?.opened_on_a_previous_day);
   const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
 
   function toggleAthlete(id) {
@@ -165,7 +162,6 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
       if (body === null || body === undefined) return;
       setLabel("");
       setSelectedAthleteIds([]);
-      setGeneratedReport(null);
       setStatus("Training day started.");
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
     } catch (startError) {
@@ -208,7 +204,6 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
       setConflictEndedAt("");
       setLabel("");
       setSelectedAthleteIds([]);
-      setGeneratedReport(null);
       setStatus(`${endedDayMessage(ended)} “${body.label}” is now open.`);
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
     } catch (resolveError) {
@@ -218,52 +213,65 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
     }
   }
 
-  async function endDay() {
-    setBusy("end");
+  return <section className="training-day-shell" aria-label="Open a training day">
+    <form className="training-day-start" onSubmit={startDay}><header><div><span>Unplanned day</span><h3>Open the room now</h3><p>For training with no block behind it. Name it, tick who is in, and the room opens immediately — there is no staged step.</p></div><b>Starts at once</b></header><label>Training day label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength="255" required disabled={Boolean(busy)} /></label><fieldset><legend>Athletes</legend><div>{athletes.map((athlete) => <label key={athlete.id}><input type="checkbox" checked={selectedAthleteIds.includes(athlete.id)} onChange={() => toggleAthlete(athlete.id)} disabled={Boolean(busy)} /><span>{athlete.name}</span></label>)}</div></fieldset><button type="submit" disabled={!selectedAthleteIds.length || Boolean(busy)}>{busy === "start" ? "Starting..." : "Start training day"}</button>{conflict && <ConflictPrompt conflict={conflict} endedAt={conflictEndedAt} onEndedAtChange={setConflictEndedAt} newDayLabel={label} busy={busy} onCancel={() => { setConflict(null); setConflictEndedAt(""); setError(""); }} onConfirm={endConflictAndStart} />}</form>
+    {status && <p className="training-day-status" role="status">{status}</p>}{error && <p className="training-day-error" role="alert">{error}</p>}
+  </section>;
+}
+
+/*
+ * StartStagedDay — SESSION's half. Days that already exist and have not run.
+ *
+ * A coach set Thursday up on Tuesday from the calendar; its roster and its plan
+ * were attached then. Starting it is one button and no typing, because every
+ * decision was already made. That is the entire difference between this and
+ * OpenDayFromScratch above.
+ *
+ * ⚠️ NONE OF THESE ARE LIVE. A staged day holds no racks and captures no
+ * check-ins until it is started (canon D18) — that is precisely why it can be
+ * set up days early. The copy says "nothing is holding the racks" for that
+ * reason: a coach must never read this list as the room already being open.
+ */
+export function StartStagedDay({ slots, accessToken, onLogout, refresh, onStarted }) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
+
+  // Its own route rather than a PATCH: `PATCH sessions/{id}/` with an empty body
+  // already means "END the day now" (canon R2), so start could never have been a
+  // PATCH without the two meaning opposite things through one door.
+  async function start(slot) {
+    setBusy(`staged-${slot.id}`);
     setError("");
-    setStatus("");
     try {
-      // Ending a day is a PATCH on the session itself, not a POST to an end/
-      // route (merge canon R2): "end the day" is "set its end time", and that
-      // endpoint already did that. A PATCH with no ended_at means "end it now".
-      const response = await fetch(`/api/sessions/${session.id}/`, {
-        method: "PATCH",
+      const response = await fetch(`/api/sessions/${slot.session}/start/`, {
+        method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        // An empty body means "end it now", which is right almost always. A
-        // corrected time is for the power-cut case: the base station comes back
-        // with the day still open, and the honest end time is when the room
-        // actually emptied — not when someone next managed to log in.
-        body: JSON.stringify(buildEndDayPayload(endedAtOverride)),
+        body: "{}",
       });
-      const body = await parseResponse(response, "Training day could not be ended.");
-      if (body === null) return;
-      // The PATCH answers with a POINTER to the finished report, not the report
-      // itself, so fetch the full thing before rendering it. If that second call
-      // fails the day still ended — show it as ended rather than as an error.
-      const reportId = body.daily_report?.id;
-      let report = null;
-      if (reportId) {
-        report = await fetch(`/api/reports/${reportId}/`, { headers })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null);
-      }
-      setGeneratedReport(report);
-      setConfirmEnd(false);
-      setEndedAtOverride("");
-      setStatus(endedDayMessage(body));
+      if (response.status === 401 || response.status === 403) { onLogout(); return; }
+      const body = await response.json().catch(() => ({}));
+      // 409 is another day already running. The server names it, so say which.
+      if (!response.ok) throw new Error(body.detail || "That day could not be started.");
       await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
-    } catch (endError) {
-      setError(endError.message || "Training day could not be ended.");
+      onStarted?.();
+    } catch (startError) {
+      setError(startError.message || "That day could not be started.");
     } finally {
       setBusy("");
     }
   }
 
-  return <section className="training-day-shell" aria-label="Training day controls">
-    {generatedReport && <GeneratedReport report={generatedReport} />}
-    {!session ? <form className="training-day-start" onSubmit={startDay}><header><div><span>Training day</span><h3>Open the room</h3><p>Name today’s training and select every participating athlete.</p></div><b>Not active</b></header><label>Training day label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength="255" required disabled={Boolean(busy)} /></label><fieldset><legend>Athletes</legend><div>{athletes.map((athlete) => <label key={athlete.id}><input type="checkbox" checked={selectedAthleteIds.includes(athlete.id)} onChange={() => toggleAthlete(athlete.id)} disabled={Boolean(busy)} /><span>{athlete.name}</span></label>)}</div></fieldset><button type="submit" disabled={!selectedAthleteIds.length || Boolean(busy)}>{busy === "start" ? "Starting..." : "Start training day"}</button>{conflict && <ConflictPrompt conflict={conflict} endedAt={conflictEndedAt} onEndedAtChange={setConflictEndedAt} newDayLabel={label} busy={busy} onCancel={() => { setConflict(null); setConflictEndedAt(""); setError(""); }} onConfirm={endConflictAndStart} />}</form>
-      : (session.is_simulated || session.simulated || roomState.meta?.session_is_simulated) ? <div className="training-day-active simulation"><div><span>Simulation active</span><h3>{session.label}</h3><p>The simulator owns this training day. Stop or restart it with the simulation controls rather than generating a real report here.</p></div><b>Simulation</b></div>
-      : <div className={staleDay ? "training-day-active is-stale" : "training-day-active"}><div><span>{staleDay ? "Still open from an earlier day" : "Active training day"}</span><h3>{session.label}</h3><p>{roomState.participants?.length || 0} athletes · started {timestampLabel(session.started_at)}</p>{staleDay && <p className="training-day-stale-note">This day has been open since before today — most likely the base station restarted before anyone ended it. <b>Nothing was lost;</b> every set is saved. End it below, and set the time the room actually emptied so the report reads true.</p>}</div>{confirmEnd ? <div className="training-day-confirm" role="group" aria-label="Confirm end training day"><strong>End this training day and finalize its report?</strong><label className="training-day-end-time">Ended at <select value={endedAtOverride} onChange={(event) => setEndedAtOverride(event.target.value)} disabled={Boolean(busy)}>{endTimeChoices(session.started_at).map((choice) => <option key={choice.value || "now"} value={choice.value}>{choice.label}</option>)}</select><small>{endedAtOverride ? "The report will record this time." : "Ends the day as of right now."}</small></label><button className="workout-secondary" onClick={() => { setConfirmEnd(false); setEndedAtOverride(""); }} disabled={Boolean(busy)}>Cancel</button><button onClick={endDay} disabled={Boolean(busy)}>{busy === "end" ? "Ending..." : "Confirm end"}</button></div> : <button onClick={() => setConfirmEnd(true)} disabled={Boolean(busy)}>End training day</button>}</div>}
-    {status && <p className="training-day-status" role="status">{status}</p>}{error && <p className="training-day-error" role="alert">{error}</p>}
-  </section>;
+  if (!slots.length) return null;
+
+  return <div className="training-day-staged">
+    <header><div><span>Ready to start</span><h3>Set up and waiting</h3><p>Roster and plan already attached. Nothing is holding the racks until you start one.</p></div><b>{slots.length} ready</b></header>
+    {slots.map((slot) => <article key={slot.id}>
+      <div><h4>{slot.workout_name}</h4><p>{slot.group_name} · {scheduleDayLabel(slot.date)}</p></div>
+      <button type="button" disabled={Boolean(busy)} onClick={() => start(slot)}>
+        {busy === `staged-${slot.id}` ? "Starting..." : "Start day"}
+      </button>
+    </article>)}
+    {error && <p className="training-day-error" role="alert">{error}</p>}
+  </div>;
 }

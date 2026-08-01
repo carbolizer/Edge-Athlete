@@ -67,7 +67,7 @@ function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
   </article>;
 }
 
-export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
+export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onStaged }) {
   const [slots, setSlots] = useState([]);
   const [state, setState] = useState("loading");
   const [errors, setErrors] = useState([]);
@@ -105,7 +105,7 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
 
   useEffect(() => { load(); }, []);
 
-  async function act(key, url, options, fallback, describe) {
+  async function act(key, url, options, fallback, describe, afterwards) {
     setBusy(key);
     setErrors([]);
     setStatus("");
@@ -115,9 +115,10 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
       if (body === null) return;
       setStatus(describe(body));
       await load();
-      // The training-day panel above shows the running day, so starting one here
-      // has to reach it — otherwise the top of the screen contradicts this one.
+      // The strip above shows the running day, so starting one here has to reach
+      // it — otherwise the top of the screen contradicts this one.
       if (refresh) await refresh({ preserveSnapshot: true, forceAfterInFlight: true });
+      if (afterwards) afterwards();
     } catch (actErrors) {
       setErrors(Array.isArray(actErrors) ? actErrors : [{ detail: fallback }]);
     } finally {
@@ -125,12 +126,18 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
     }
   }
 
+  // Setting a day up is the last thing that happens in PLANNING, and starting it
+  // is the first thing that happens in SESSION — so once a day exists, carry the
+  // coach across. Staging is what makes SESSION reachable at all (it is dimmed
+  // until a day is set), and a coach who just set today up is almost always
+  // about to open the room.
   const createDay = (slot) => act(
     `create-${slot.id}`,
     `/api/scheduled-sessions/${slot.id}/session/`,
     { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: "{}" },
     "The day could not be set up.",
     () => `“${slot.workout_name}” is set up for ${scheduleDayLabel(slot.date)}. It is not running yet — press Start when the room fills.`,
+    () => { if (onStaged) onStaged(); },
   );
 
   const startDay = (slot) => act(

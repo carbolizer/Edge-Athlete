@@ -37,7 +37,7 @@ import useLiveRoomState from "./useLiveRoomState.js";
 import { compareReps, groupHistorySets } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
 import AthleteWorkoutPlanning from "./AthleteWorkoutPlanning.jsx";
-import TrainingDayPanel from "./TrainingDayPanel.jsx";
+import { OpenDayFromScratch, StartStagedDay } from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import ScheduleWorkspace from "./ScheduleWorkspace.jsx";
 import { sameOriginPath } from "./workoutCatalog.js";
@@ -45,7 +45,10 @@ import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } f
 import { roleIconSrc } from "./roleIcon.js";
 import { isDevMode } from "./devMode.js";
 import StateNavbar from "./coach/StateNavbar.jsx";
+import SessionWidget from "./coach/SessionWidget.jsx";
+import QuickNote from "./coach/QuickNote.jsx";
 import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
+import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
 
 // Which of the old tabs belongs to which state. This is the whole of Phase A's
 // reorganization: nothing inside a tab changed, the tabs were just sorted into
@@ -63,6 +66,27 @@ const STATE_TABS = {
   session: ["room"],
   analytics: ["athlete", "history", "programs", "notes", "reports"],
 };
+
+// Days a coach set up ahead of time and has not started yet.
+//
+// ⚠️ THEY ARE INVISIBLE TO THE LIVE ROOM FEED, ON PURPOSE.
+// `services/active_session.py` defines "active" as STARTED and not ended, so a
+// staged day never appears in `roomState.session` — that is exactly what stops
+// next Thursday's session from capturing today's check-ins (canon D18). It also
+// means the coach screen has to ask the calendar separately to know one exists.
+//
+// It matters here because SESSION is gated on a day being SET, not on one
+// running: staging a day is what makes SESSION reachable, and starting it is
+// what a coach goes there to do.
+async function fetchStagedSlots(accessToken) {
+  const response = await fetch(scheduleUrl(scheduleWindow()), {
+    headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) return [];
+  const body = await response.json();
+  const slots = Array.isArray(body) ? body : body.results || [];
+  return slots.filter((slot) => slotState(slot) === "ready");
+}
 
 function velocity(value) {
   return value === null || value === undefined ? "--" : Number(value).toFixed(2);
@@ -477,6 +501,12 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
     .catch(()=>setExerciseNames({}));},[accessToken]);
   useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/prescriptions/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
+  // Staged days, re-read whenever a day starts or ends — both change the set.
+  // A failure is deliberately silent and treated as "none staged": it costs the
+  // coach a shortcut, and PLANNING can always open a day from scratch.
+  const [stagedSlots,setStagedSlots]=useState([]);
+  const runningDayId=roomState?.session?.id??null;
+  useEffect(()=>{let cancelled=false;fetchStagedSlots(accessToken).then(slots=>{if(!cancelled)setStagedSlots(slots);}).catch(()=>{if(!cancelled)setStagedSlots([]);});return()=>{cancelled=true;};},[accessToken,runningDayId]);
   // Where this device is, so a bare /coach can send it back here after a reboot.
   // In an effect rather than in goToState below, because a state can also be
   // reached by the Back button or by typing the URL, and those must count too.
@@ -493,6 +523,13 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
   // question the tab bar does — the coach should not be able to lose a draft by
   // pressing a different part of the screen.
   const goToState=key=>{if(key===coachState)return;if(activeTab==="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;navigate(pathForCoachState(key));};
+  // A day just ended. The report it froze belongs in ANALYTICS, not in a strip
+  // floating over every state — so take the coach to where finished days live
+  // rather than drawing one on top of whatever they were doing.
+  //
+  // SESSION also has nothing left to show at this point: the room is closed, and
+  // staying there would leave them looking at an empty floor.
+  const handleDayEnded=()=>{setRequestedTab("reports");navigate(pathForCoachState("analytics"));};
   // Coach notes are a plain field on the athlete record, so saving one is a
   // PATCH to the athlete — there is no separate notes route (merge canon R1).
   //
@@ -531,14 +568,20 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
   if(!roomState&&requestState==="loading")return <main className="monitor coach-monitor"><StatePanel title="Loading coach workspace" body="Reconciling saved room state." /></main>;
   if(!roomState)return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body={lastError||"The base station could not be reached."} action={refresh} /></main>;
   const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set||null;
-  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?null:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?null:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}</>}</div></section>;
-  // SESSION is the live room, and there is no live room until a training day is
-  // open. The navbar dims the button; this covers getting here anyway — typing
-  // the URL, or standing on SESSION at the moment the day ends. It deliberately
-  // does NOT redirect: pulling a coach off the screen they were reading, without
+  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?null:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?null:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}{/* SESSION's only athlete-scoped control, and it needs no picker: the
+          rack rail on the left already IS the picker, and it picks the way a
+          coach thinks mid-floor — "whoever is on that rack". */}
+      <QuickNote athlete={selectedRack.athlete} rackNumber={selectedRack.rack_number} accessToken={accessToken} onLogout={onLogout}/></>}</div></section>;
+  // SESSION needs a day SET — staged from the calendar, or already running.
+  // Staged counts because starting a staged day is the thing SESSION is for.
+  //
+  // The navbar dims the button; this covers getting here anyway — typing the
+  // URL, or standing on SESSION at the moment the day ends. It deliberately does
+  // NOT redirect: pulling a coach off the screen they were reading, without
   // being asked to, is worse than an empty screen that says why it is empty.
   const dayRunning=Boolean(roomState.session);
-  const dayMissing=coachState==="session"&&!dayRunning;
+  const daySet=dayRunning||stagedSlots.length>0;
+  const dayMissing=coachState==="session"&&!daySet;
   // `coach-states-clearance` is room for the navbar to float over. Without it
   // the last card on every screen sits under the glass and cannot be reached.
   return <main className="monitor coach-monitor coach-states-clearance"><header className="coach-topbar">
@@ -574,10 +617,26 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
     </div>
   </header>{/* Developer instrumentation, not coaching information: reconciliation
           time, queue depth, raw counters. Hidden unless isDevMode(). */}
-      {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}<TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>{!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav>}<div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{dayMissing?<StatePanel title="No training day is running" body="The live room opens when a training day starts. Start one from Planning, and this screen fills in." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} exerciseNames={exerciseNames} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
+      {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}{/* The strip. Outside the three states because ending a day is something a
+          coach does while looking at anything — and it renders nothing at all
+          unless a day is actually running. */}
+      <SessionWidget roomState={roomState} accessToken={accessToken} onLogout={onLogout} refresh={refresh} onDayEnded={handleDayEnded}/>{!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav>}<div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}>{/* Opening a day with no block behind it. It lives in PLANNING, not
+              SESSION, for one hard reason: `POST /api/sessions/` starts the room
+              immediately — there is no staged step it could reach SESSION with —
+              and SESSION is dimmed until a day is set. Putting it there would
+              lock out any gym whose calendar is empty, which is every new one.
+
+              ABOVE the calendar, not below it: the calendar can run to dozens of
+              rows, and an escape hatch a coach has to scroll past three weeks of
+              planned days to find is not an escape hatch. Phase D decides where
+              this finally sits when PLANNING gets its four sub-tabs. */}
+          {!dayRunning&&<OpenDayFromScratch athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}
+          <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh} onStaged={()=>{fetchStagedSlots(accessToken).then(setStagedSlots).catch(()=>{});navigate(pathForCoachState("session"));}}/></div>{dayMissing?<StatePanel title="No training day is set up" body="Set a day up from the calendar in Planning and it appears here, ready to start. For training with no plan behind it, Planning can open the room straight away." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?<>{/* A day set up earlier, waiting to be opened. Above the room because
+            until it is started the room below is not following anything. */}
+        {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} exerciseNames={exerciseNames} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
           object, not three copies of a bar. That is what makes three routes
           read as one surface changing mode. */}
-    <StateNavbar current={coachState} onSelect={goToState} dayRunning={dayRunning}/></main>;
+    <StateNavbar current={coachState} onSelect={goToState} daySet={daySet}/></main>;
 }
 
 export default function Dashboard({ mode = "wall", coachState = "planning" }) {

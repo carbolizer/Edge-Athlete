@@ -18,7 +18,7 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import TrainingDayPanel, { ConflictPrompt } from "./TrainingDayPanel.jsx";
+import { ConflictPrompt, OpenDayFromScratch, StartStagedDay } from "./TrainingDayPanel.jsx";
 
 const athletes = [
   { id: 4, name: "Jordan Lee" },
@@ -26,8 +26,7 @@ const athletes = [
 ];
 
 function render(props) {
-  return renderToStaticMarkup(createElement(TrainingDayPanel, {
-    roomState: { session: null, participants: [] },
+  return renderToStaticMarkup(createElement(OpenDayFromScratch, {
     athletes,
     accessToken: "test-token",
     onLogout: () => {},
@@ -36,59 +35,56 @@ function render(props) {
   }));
 }
 
-describe("TrainingDayPanel renders", () => {
-  it("shows the start form when no day is running", () => {
+// ⚠️ THE ACTIVE-DAY CASES ARE NOT HERE ANY MORE. Ending a day moved to
+// coach/SessionWidget.jsx in Phase B, and so did its tests — the stale-day
+// banner, the simulation notice and the end button now live in
+// coach/sessionWidget.render.test.js. What is left here is opening a day.
+describe("OpenDayFromScratch renders", () => {
+  it("shows the start form with every athlete tickable", () => {
     const html = render({});
-    expect(html).toContain("Open the room");
+    expect(html).toContain("Open the room now");
     expect(html).toContain("Jordan Lee");
+    expect(html).toContain("Sam Rivera");
   });
 
-  it("shows the active day when one is running", () => {
-    const html = render({
-      roomState: {
-        session: { id: 3, label: "Monday — Upper", started_at: "2026-07-29T14:00:00Z" },
-        participants: [{ id: 4 }],
-      },
-    });
-    expect(html).toContain("Monday — Upper");
-    expect(html).toContain("End training day");
+  // It lives in PLANNING and starts the room immediately, which is unusual
+  // enough that the screen has to say so rather than let a coach discover it.
+  it("says it opens the room at once, with no staged step", () => {
+    expect(render({})).toContain("there is no staged step");
   });
 
-  // The power-cut case. This is the state a coach meets after the base station
-  // restarts, so it is the one most worth proving renders at all.
-  it("flags a day left open from before today, and says nothing was lost", () => {
-    const html = render({
-      roomState: {
-        session: {
-          id: 3, label: "Thursday — Lower", started_at: "2026-07-28T14:00:00Z",
-          opened_on_a_previous_day: true,
-        },
-        participants: [],
-      },
-    });
-    expect(html).toContain("Still open from an earlier day");
-    expect(html).toContain("Nothing was lost");
+  it("survives being handed no athletes at all — a brand-new gym", () => {
+    expect(render({ athletes: [] })).toContain("Open the room now");
+  });
+});
+
+describe("StartStagedDay renders", () => {
+  const slot = {
+    id: 9, session: 21, workout_name: "Day 1 — Lower", group_name: "Varsity",
+    date: "2026-08-03", session_started_at: null, session_ended_at: null,
+  };
+
+  function renderStaged(props) {
+    return renderToStaticMarkup(createElement(StartStagedDay, {
+      slots: [slot], accessToken: "test-token", onLogout: () => {},
+      refresh: async () => {}, ...props,
+    }));
+  }
+
+  it("names the day, its group and its date", () => {
+    const html = renderStaged({});
+    expect(html).toContain("Day 1 — Lower");
+    expect(html).toContain("Varsity");
   });
 
-  it("survives a session payload missing the optional fields", () => {
-    const html = render({ roomState: { session: { label: "Bare" } } });
-    expect(html).toContain("Bare");
+  // A coach must never read this list as the room already being open — a staged
+  // day holds no racks and captures no check-ins (canon D18).
+  it("says nothing is holding the racks yet", () => {
+    expect(renderStaged({})).toContain("Nothing is holding the racks");
   });
 
-  it("survives a room state with no participants array at all", () => {
-    const html = render({ roomState: { session: { id: 1, label: "Sparse" } } });
-    expect(html).toContain("Sparse");
-  });
-
-  it("renders the simulation notice instead of an end button", () => {
-    const html = render({
-      roomState: {
-        session: { id: 3, label: "Sim day", started_at: "2026-07-29T14:00:00Z", is_simulated: true },
-        participants: [],
-      },
-    });
-    expect(html).toContain("Simulation");
-    expect(html).not.toContain("End training day");
+  it("renders nothing at all when no day is staged", () => {
+    expect(renderStaged({ slots: [] })).toBe("");
   });
 });
 
