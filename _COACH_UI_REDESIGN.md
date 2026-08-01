@@ -607,7 +607,7 @@ Four sub-tabs. One builds, three view.
 | Sub-tab | Holds |
 |---|---|
 | **Design** | The creation flow, in the order a coach thinks |
-| **Groups** | View groups |
+| **Groups** | View groups — **and `Open` drills into one**, see below |
 | **Workout catalog** | View blocks / programs |
 | **Calendar** | The schedule — and **where days get staged**. Slots carry the four states from `schedule.js`; staging is an action on a `planned` slot |
 
@@ -629,6 +629,39 @@ Four sub-tabs. One builds, three view.
    itself. You promote *this* program; you deploy *this* block.
 
 That second rule is the real change in PLANNING. Everything else is re-shelving.
+
+### 15b. What `Open` on a group opens — ✅ decided 2026-07-31
+
+**The mockup has an `Open` button on every group card and this doc never said
+what it opened.** Devin asked. It is the missing home for the one PLANNING item
+§13 lists without giving it a sub-tab:
+
+> *Athlete plan assignment + per-athlete overrides — the existing "INDIVIDUAL
+> TARGETS · Exercise overrides" block inside `AthleteWorkoutPlanning`.*
+
+```
+Groups  →  Open a group  →  its athletes  →  one athlete's plans + overrides
+```
+
+**Why Groups and not somewhere else.** Assigning an athlete to a plan *is* putting
+them in the group that runs it — `AthleteWorkoutPlanning`'s own header says so,
+and the server answers with which groups changed. So the screen where a coach
+changes group membership and the screen where they see groups are the same screen.
+Anywhere else and a coach edits group membership from a place that never mentions
+groups.
+
+**It also answers "who is in this group?"**, which the card alone cannot — it says
+*28 athletes* and stops. That number is the only thing a coach cannot act on.
+
+⚠️ **This is where `AthleteWorkoutPlanning` MOVES TO**, out of `ProgramsTab` in
+ANALYTICS (open question 7). It passes the sibling test and needs no edits — only
+a new parent. The per-athlete override editor is the one genuinely load-bearing
+thing inside `ProgramsTab`, and Phase F cannot delete that tab until this lands.
+
+**Not in scope, and worth saying so:** creating a group, renaming one, moving an
+athlete between groups, assigning coaches. None of those exist as UI anywhere
+today — groups are made by importing a roster — and building them here would be
+new product rather than the re-shelving this phase is.
 
 ### 16. Build order — incremental, with exit criteria
 
@@ -691,6 +724,15 @@ Athlete selector + sub-tabs (summary, history, reports, notes).
 **Phase D — PLANNING**
 Four sub-tabs per §15; promote/deploy become in-component buttons.
 
+Built in four checkpoints, because it reshapes an 836-line file:
+
+| | | |
+|---|---|---|
+| **D1** | The four sub-tabs, Groups view, Calendar renamed | ✅ `7d1ddca` |
+| **D2** | The calendar's card view | ⬜ |
+| **D3** | Design tab surgery — dropdowns, in-component deploy/promote | ⬜ |
+| **D4** | `Open` a group → its athletes → `AthleteWorkoutPlanning` (§15b) | ⬜ |
+
 - [ ] Design tab ordered Block → Program → Session design
 - [ ] Create block / create session are dropdowns
 - [ ] Deploy is a button on a block; promote is a button on a program
@@ -702,6 +744,9 @@ Four sub-tabs per §15; promote/deploy become in-component buttons.
       its past-day toggle; only the label changes
 - [ ] **A second calendar view: month cards, per the mockup** — ✅ Devin
       2026-07-31, see below
+- [ ] **`Open` on a group card** → its athletes → `AthleteWorkoutPlanning`, per
+      §15b. ⚠️ **Phase F cannot delete `ProgramsTab` until this lands** — the
+      override editor inside it has nowhere else to go
 
 **The calendar's two views.** The list that exists today answers *"what is
 coming up, in order?"*. The mockup's card grid answers a different question —
@@ -838,7 +883,7 @@ for settled.
 4. Persist across reload? → **Yes**, via routes (§14)
 5. Does the navbar dim? → **Yes**, SESSION only, when no day is set
 6. What does a brand-new gym see? → §9 — lands in PLANNING, no greeting
-7. Where does the per-athlete `programs` tab live? → **It stops existing.** Card grid deleted; `AthleteWorkoutPlanning` moves to PLANNING
+7. Where does the per-athlete `programs` tab live? → **It stops existing.** Card grid deleted; `AthleteWorkoutPlanning` moves to PLANNING — **specifically to Groups → Open, see §15b** (settled 2026-07-31; "PLANNING" alone was not an address)
 8. `ProgramsTab` null-key bug? → **Fixed**, `1a9ef38`
 9. Does `ProgramsTab` keep its card grid? → **No.** The rack screen already shows an athlete their live day, the coach wrote the plan, and at 100 athletes a per-person plan list answers the wrong question — a coach wants *who is behind*
 10. Does SESSION need a stripped athlete view? → **No**, for the same reason. Quick Note only
