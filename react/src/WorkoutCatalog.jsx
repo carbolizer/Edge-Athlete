@@ -700,6 +700,24 @@ export default function WorkoutCatalog({ accessToken, onLogout, section = "desig
   const showDesign = section === "design";
   const showCatalog = section === "catalog";
 
+  // Which of the three design steps is open. An accordion rather than three
+  // stacked panels because the steps are a SEQUENCE — block, then program, then
+  // one-off — and three open at once turned the tab into a scroll where the
+  // order stopped being visible. One at a time keeps the shape of the process
+  // on screen even when you are only working in the middle of it.
+  const [openStep, setOpenStep] = useState(1);
+  const stepProps = (n) => ({
+    className: `design-step${openStep === n ? " is-open" : ""}`,
+  });
+  const stepButton = (n, label, summary) => (
+    <button type="button" className="design-step-head" aria-expanded={openStep === n}
+      onClick={() => setOpenStep(openStep === n ? null : n)}>
+      <span className="design-stepno">{label}</span>
+      <span className="design-step-summary">{summary}</span>
+      <span className="design-step-chevron" aria-hidden="true">{openStep === n ? "−" : "+"}</span>
+    </button>
+  );
+
   // "Create block" is a DROPDOWN that reveals a form, not a form sitting open
   // forever (spec §15). A coach creates a block occasionally and deploys one
   // constantly, so the rare thing should not be the tallest thing on screen.
@@ -717,11 +735,28 @@ export default function WorkoutCatalog({ accessToken, onLogout, section = "desig
     setDeployErrors([]);
   }
 
-  // "Edit days" preselects this block in the day builder below rather than
-  // opening a second editor. One builder, pointed at the block you asked about.
+  // "Edit days" preselects this block in the day builder rather than opening a
+  // second editor. One builder, pointed at the block you asked about.
+  //
+  // The builder now sits BELOW the three steps, so this has to carry the coach
+  // to it — otherwise the button silently sets a dropdown two screens away and
+  // looks like it did nothing.
+  //
+  // ⚠️ THE SCROLL RUNS IN AN EFFECT, not inline and not in requestAnimationFrame.
+  // Both of those fire before React has committed the accordion's new layout, so
+  // scrollIntoView measures a page that is about to change height and lands
+  // short — it stopped ~800px above the builder. An effect runs after commit,
+  // when the position it reads is the real one. The counter rather than a
+  // boolean so pressing Edit days twice on the same block still scrolls.
+  const [scrollToBuilder, setScrollToBuilder] = useState(0);
+  useEffect(() => {
+    if (!scrollToBuilder) return;
+    document.getElementById("day-builder")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [scrollToBuilder]);
+
   function editDays(block) {
     setWorkoutBlockId(String(block.id));
-    document.getElementById("day-builder")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setScrollToBuilder((n) => n + 1);
   }
 
   return <div className="workout-catalog context-tab-content">
@@ -732,9 +767,9 @@ export default function WorkoutCatalog({ accessToken, onLogout, section = "desig
         each with a "which block?" dropdown — which meant a coach picked the
         block twice, once to look at it and once to act on it, and nothing
         stopped the two from disagreeing. */}
-    {showDesign && <section className="design-step">
-      <div className="design-stepno">Step 1 · the template</div>
-      <section className="workout-panel">
+    {showDesign && <section {...stepProps(1)}>
+      {stepButton(1, "Step 1 · the template", `${programs.length} block${programs.length === 1 ? "" : "s"}`)}
+      {openStep === 1 && <section className="workout-panel">
         <header><span>Training blocks</span><h3>Reusable templates</h3><p>No group and no dates — those arrive when a block is deployed.</p></header>
 
         <div className="design-create-row">
@@ -795,7 +830,83 @@ export default function WorkoutCatalog({ accessToken, onLogout, section = "desig
                 {deployStatus && <p className="workout-status" role="status">{deployStatus}</p>}
               </form>}
             </article>)}</div>}
-      </section>
+      </section>}
+    </section>}
+
+    {/* ── Step 2 · placed in time ──────────────────────────────────────────
+        A program is a block that has been given a group and dates. The two
+        things you do to one — promote it back up into a template, or stage one
+        of its days — are buttons on the program, for the same reason deploy is
+        a button on the block. */}
+    {showDesign && <section {...stepProps(2)}>
+      {stepButton(2, "Step 2 · placed in time", `${deployedPrograms.length} program${deployedPrograms.length === 1 ? "" : "s"}`)}
+      {openStep === 2 && <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
+        <ErrorList errors={promoteErrors} title="That program could not be made into a block:" />
+        {promoteStatus && <p className="workout-status" role="status">{promoteStatus}</p>}
+        {deployedPrograms.length === 0
+          ? <p className="monitor-empty">No programs are deployed yet. Deploy a block above to start one.</p>
+          : <div className="deployed-program-list">{deployedPrograms.map((program) => <article key={program.id}>
+              <div className="deployed-program-main">
+                <span>{program.group_name || "Unknown group"}{program.start_date ? ` · from ${program.start_date}` : ""}</span>
+                <h4>{program.name}</h4>
+                <p>{program.workouts?.length || 0} day{program.workouts?.length === 1 ? "" : "s"}{program.training_block ? " · deployed from a block" : " · written directly for this group"}</p>
+              </div>
+              <div className="deployed-program-actions">
+                <label>New block name
+                  <input value={promoteNames[program.id] || ""} maxLength="255"
+                    placeholder={program.name}
+                    onChange={(event) => setPromoteNames((current) => ({ ...current, [program.id]: event.target.value }))}
+                    disabled={Boolean(promoting)} />
+                </label>
+                <button type="button" onClick={() => promoteProgram(program)} disabled={Boolean(promoting) || !(program.workouts?.length)}>
+                  {promoting === program.id ? "Making a block..." : "Promote to block ↑"}
+                </button>
+                {/* Staging itself happens on the calendar slot — that is where a
+                    coach asks "what is Monday?", and the slot already carries
+                    the four states. This is a door to it, not a second way in. */}
+                {onStageDay && <button type="button" className="workout-secondary" onClick={onStageDay}>
+                  Stage a training day →
+                </button>}
+              </div>
+            </article>)}</div>}
+      </section>}
+    </section>}
+
+    {/* ── Step 3 · a one-off ───────────────────────────────────────────────
+        A session with no template behind it. `TrainingProgram.training_block`
+        is nullable on purpose — the model calls a one-off "a permanent,
+        first-class path", not a special case — and buildDeployPayload already
+        omits the block when there is none.
+        Its DAYS come from a plan spreadsheet aimed at the program rather than
+        at a block; the importer has taken `kind="program"` all along
+        (`services/csv_import.py` _PLAN_TARGETS). The panel below can target
+        either, which is what makes this reachable without a new route. */}
+    {showDesign && <section {...stepProps(3)}>
+      {stepButton(3, "Step 3 · a one-off", "no template behind it")}
+      {openStep === 3 && <section className="workout-panel">
+        <header><div><span>Session design</span><h3>One-off session</h3><p>No template behind it. Promote it later if it turns out to be worth keeping.</p></div></header>
+
+        <div className="design-create-row">
+          <select aria-label="Create a one-off session" value={createSessionMode}
+            onChange={(event) => setCreateSessionMode(event.target.value)} disabled={oneOffSaving}>
+            <option value="">Create session…</option>
+            <option value="blank">Blank session</option>
+          </select>
+          {createSessionMode && <button type="button" className="workout-secondary"
+            onClick={() => setCreateSessionMode("")}>Cancel</button>}
+        </div>
+
+        {createSessionMode && <form className="design-inline-form" onSubmit={createOneOff}>
+          <label>Group<select value={oneOffGroupId} onChange={(event) => setOneOffGroupId(event.target.value)} required disabled={oneOffSaving || !groups.length}><option value="">{groups.length ? "Select a group" : "No groups exist yet"}</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></label>
+          <label>Session name<input value={oneOffName} onChange={(event) => setOneOffName(event.target.value)} maxLength="255" required disabled={oneOffSaving} placeholder="Testing day — Varsity" /></label>
+          <label>Start date<input type="date" value={oneOffStart} onChange={(event) => setOneOffStart(event.target.value)} required disabled={oneOffSaving} /></label>
+          <label>End date<input type="date" value={oneOffEnd} onChange={(event) => setOneOffEnd(event.target.value)} disabled={oneOffSaving} /></label>
+          <p className="monitor-empty">Creates the plan with no days in it. Add them by importing a plan spreadsheet aimed at this session, in the panel below.</p>
+          <div className="workout-form-actions"><button type="submit" disabled={oneOffSaving || !oneOffGroupId}>{oneOffSaving ? "Creating..." : "Create session"}</button></div>
+          <ErrorList errors={oneOffErrors} />
+          {oneOffStatus && <p className="workout-status" role="status">{oneOffStatus}</p>}
+        </form>}
+      </section>}
     </section>}
 
     {showDesign && <div className="workout-builder-grid" id="day-builder">
@@ -941,81 +1052,6 @@ export default function WorkoutCatalog({ accessToken, onLogout, section = "desig
       ))}
     </section>}
 
-    {/* ── Step 2 · placed in time ──────────────────────────────────────────
-        A program is a block that has been given a group and dates. The two
-        things you do to one — promote it back up into a template, or stage one
-        of its days — are buttons on the program, for the same reason deploy is
-        a button on the block. */}
-    {showDesign && <section className="design-step">
-      <div className="design-stepno">Step 2 · placed in time</div>
-      <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
-        <ErrorList errors={promoteErrors} title="That program could not be made into a block:" />
-        {promoteStatus && <p className="workout-status" role="status">{promoteStatus}</p>}
-        {deployedPrograms.length === 0
-          ? <p className="monitor-empty">No programs are deployed yet. Deploy a block above to start one.</p>
-          : <div className="deployed-program-list">{deployedPrograms.map((program) => <article key={program.id}>
-              <div className="deployed-program-main">
-                <span>{program.group_name || "Unknown group"}{program.start_date ? ` · from ${program.start_date}` : ""}</span>
-                <h4>{program.name}</h4>
-                <p>{program.workouts?.length || 0} day{program.workouts?.length === 1 ? "" : "s"}{program.training_block ? " · deployed from a block" : " · written directly for this group"}</p>
-              </div>
-              <div className="deployed-program-actions">
-                <label>New block name
-                  <input value={promoteNames[program.id] || ""} maxLength="255"
-                    placeholder={program.name}
-                    onChange={(event) => setPromoteNames((current) => ({ ...current, [program.id]: event.target.value }))}
-                    disabled={Boolean(promoting)} />
-                </label>
-                <button type="button" onClick={() => promoteProgram(program)} disabled={Boolean(promoting) || !(program.workouts?.length)}>
-                  {promoting === program.id ? "Making a block..." : "Promote to block ↑"}
-                </button>
-                {/* Staging itself happens on the calendar slot — that is where a
-                    coach asks "what is Monday?", and the slot already carries
-                    the four states. This is a door to it, not a second way in. */}
-                {onStageDay && <button type="button" className="workout-secondary" onClick={onStageDay}>
-                  Stage a training day →
-                </button>}
-              </div>
-            </article>)}</div>}
-      </section>
-    </section>}
-
-    {/* ── Step 3 · a one-off ───────────────────────────────────────────────
-        A session with no template behind it. `TrainingProgram.training_block`
-        is nullable on purpose — the model calls a one-off "a permanent,
-        first-class path", not a special case — and buildDeployPayload already
-        omits the block when there is none.
-        Its DAYS come from a plan spreadsheet aimed at the program rather than
-        at a block; the importer has taken `kind="program"` all along
-        (`services/csv_import.py` _PLAN_TARGETS). The panel below can target
-        either, which is what makes this reachable without a new route. */}
-    {showDesign && <section className="design-step">
-      <div className="design-stepno">Step 3 · a one-off</div>
-      <section className="workout-panel">
-        <header><div><span>Session design</span><h3>One-off session</h3><p>No template behind it. Promote it later if it turns out to be worth keeping.</p></div></header>
-
-        <div className="design-create-row">
-          <select aria-label="Create a one-off session" value={createSessionMode}
-            onChange={(event) => setCreateSessionMode(event.target.value)} disabled={oneOffSaving}>
-            <option value="">Create session…</option>
-            <option value="blank">Blank session</option>
-          </select>
-          {createSessionMode && <button type="button" className="workout-secondary"
-            onClick={() => setCreateSessionMode("")}>Cancel</button>}
-        </div>
-
-        {createSessionMode && <form className="design-inline-form" onSubmit={createOneOff}>
-          <label>Group<select value={oneOffGroupId} onChange={(event) => setOneOffGroupId(event.target.value)} required disabled={oneOffSaving || !groups.length}><option value="">{groups.length ? "Select a group" : "No groups exist yet"}</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></label>
-          <label>Session name<input value={oneOffName} onChange={(event) => setOneOffName(event.target.value)} maxLength="255" required disabled={oneOffSaving} placeholder="Testing day — Varsity" /></label>
-          <label>Start date<input type="date" value={oneOffStart} onChange={(event) => setOneOffStart(event.target.value)} required disabled={oneOffSaving} /></label>
-          <label>End date<input type="date" value={oneOffEnd} onChange={(event) => setOneOffEnd(event.target.value)} disabled={oneOffSaving} /></label>
-          <p className="monitor-empty">Creates the plan with no days in it. Add them by importing a plan spreadsheet aimed at this session, in the panel below.</p>
-          <div className="workout-form-actions"><button type="submit" disabled={oneOffSaving || !oneOffGroupId}>{oneOffSaving ? "Creating..." : "Create session"}</button></div>
-          <ErrorList errors={oneOffErrors} />
-          {oneOffStatus && <p className="workout-status" role="status">{oneOffStatus}</p>}
-        </form>}
-      </section>
-    </section>}
 
     <div className="workout-program-grid">
       {showCatalog && <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>

@@ -589,9 +589,22 @@
    is that template placed in time, a one-off is a program with no template.
    The left rule is what makes them read as a sequence rather than three
    unrelated panels stacked up. */
-.design-step { border-left:2px solid var(--line); margin-bottom:20px; padding-left:15px; }
-.design-step:first-of-type { border-left-color:var(--lime); }
-.design-stepno { color:var(--muted); font-size:10px; font-weight:900; letter-spacing:.12em; margin-bottom:8px; text-transform:uppercase; }
+/* An accordion, because the three steps are a SEQUENCE. Three open at once
+   turned the tab into a scroll where the order stopped being visible; one at a
+   time keeps the shape of the process on screen. */
+.design-step { border-left:2px solid var(--line); margin-bottom:10px; padding-left:15px; }
+.design-step.is-open { border-left-color:var(--lime); }
+.design-step-head { align-items:center; background:transparent; border:0; border-bottom:1px solid var(--line); color:inherit; cursor:pointer; display:flex; font:inherit; gap:12px; padding:12px 0; text-align:left; width:100%; }
+.design-step-head:hover .design-stepno { color:var(--ink); }
+.design-step.is-open .design-stepno { color:var(--lime); }
+.design-step-head:focus-visible { outline:2px solid var(--lime); outline-offset:2px; }
+.design-stepno { color:var(--muted); font-size:10px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }
+/* What is inside, without opening it — so a coach can tell which step they want
+   from the closed state. */
+.design-step-summary { color:var(--muted); flex:1; font-size:11px; }
+.design-step-chevron { color:var(--muted); font-size:15px; font-weight:800; line-height:1; }
+.design-step.is-open .design-step-chevron { color:var(--lime); }
+.design-step .workout-panel { margin-top:12px; }
 
 /* Create is a dropdown that REVEALS a form, not a form sitting open forever.
    A coach creates a block occasionally and deploys one constantly, so the rare
