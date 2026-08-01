@@ -34,7 +34,7 @@ import "./App.css";
 import { navigate } from "./router.js";
 import { coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
 import useLiveRoomState from "./useLiveRoomState.js";
-import { compareReps, groupHistorySets } from "./historyView.js";
+import { compareReps, groupHistorySets, summariseTrainingDays } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
 import { OpenDayFromScratch, StartStagedDay } from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
@@ -446,20 +446,70 @@ function HistorySetCard({ workoutSet, expanded, onToggle }) {
   </article>;
 }
 
+// The trend arrow. A word as well as a colour and a glyph, because red/green
+// alone is unreadable to anyone colour-blind and this is the column the whole
+// table exists for.
+function TrendCell({ trend, change }) {
+  if (!trend) return <span className="history-trend flat">—</span>;
+  const glyph = { up: "▲", down: "▼", flat: "—" }[trend];
+  const word = { up: "Faster", down: "Slower", flat: "Level" }[trend];
+  return <span className={`history-trend ${trend}`}>
+    {glyph} {word}{change === null ? "" : ` ${signed(change)}`}
+  </span>;
+}
+
 function HistoryTab({ context }) {
   const [expandedSetId, setExpandedSetId] = useState(null);
+  // Which day's detail is open. Null means the index only — a coach lands on
+  // "what has this athlete been doing lately", not on one day's rep tables.
+  const [openDayKey, setOpenDayKey] = useState(null);
   if (!context.sets?.length) return <NothingRecordedYet what="set history" />;
   const days = groupHistorySets(context.sets);
-  return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>Open any set for a rep-by-rep velocity comparison.</p></header>
+  const summaries = summariseTrainingDays(days);
+  const openDay = days.find((day) => day.key === openDayKey) || null;
+  return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>The last few days this athlete trained. Open one for its workouts, sets and rep-by-rep comparison.</p></header>
     {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}
     {days.length === 0 && <StatePanel title="No completed training days" body="Completed sets will be organized here by day and workout." />}
-    <div className="history-day-list">{days.map((day) => <section className="history-day" key={day.key}>
-      <header className="history-day-heading"><div><span>Training day</span><h4>{historyDayLabel(day.endedAt)}</h4></div><dl><div><dt>Workouts</dt><dd>{day.workouts.length}</dd></div><div><dt>Sets</dt><dd>{day.sets}</dd></div><div><dt>Reps</dt><dd>{day.reps}</dd></div></dl></header>
+
+    {/* The index. One row per training day, newest first — enough to answer
+        "how has this athlete been going" without opening anything. */}
+    <div className="history-table-wrap"><table className="history-table">
+      <caption>Training days for {context.athlete.name}, most recent first</caption>
+      <thead><tr>
+        <th scope="col">Day</th><th scope="col">Workouts</th><th scope="col">Sets</th>
+        <th scope="col">Reps</th><th scope="col">Avg velocity</th><th scope="col">Vs previous day</th>
+      </tr></thead>
+      <tbody>{summaries.map((row) => {
+        const open = row.key === openDayKey;
+        return <tr key={row.key} className={open ? "is-open" : ""}>
+          <td><button type="button" className="history-row-open" aria-expanded={open}
+            onClick={() => setOpenDayKey(open ? null : row.key)}>
+            {historyDayLabel(row.endedAt)}
+          </button></td>
+          <td>{row.workoutCount}</td>
+          <td>{row.sets}</td>
+          <td>{row.reps}</td>
+          <td><b>{velocity(row.avgVelocity)}</b> <small>m/s</small></td>
+          <td><TrendCell trend={row.trend} change={row.change} /></td>
+        </tr>;
+      })}</tbody>
+    </table></div>
+    {/* ⚠️ Said out loud rather than left for a coach to discover. The average
+        pools every movement trained that day, and velocity is only comparable
+        within a lift — so a bench day after a squat day reads as a jump the
+        athlete did not make. See summariseTrainingDays. */}
+    <p className="history-table-note">
+      Avg velocity pools every movement trained that day, so a change can reflect what was
+      programmed rather than the athlete. Open a day to compare like for like.
+    </p>
+
+    {openDay && <div className="history-day-list">{[openDay].map((day) => <section className="history-day" key={day.key}>
+      <header className="history-day-heading"><div><span>Training day</span><h4>{historyDayLabel(day.endedAt)}</h4></div><dl><div><dt>Workouts</dt><dd>{day.workouts.length}</dd></div><div><dt>Sets</dt><dd>{day.sets}</dd></div><div><dt>Reps</dt><dd>{day.reps}</dd></div></dl><button type="button" className="history-day-close" onClick={() => setOpenDayKey(null)}>Close</button></header>
       <div className="history-workout-list">{day.workouts.map((workout) => <section className="history-workout" key={workout.key}>
         <header><div><span>Workout</span><h5>{workout.label}</h5></div><p>{workout.sets.length} set{workout.sets.length === 1 ? "" : "s"} · {workout.reps} reps</p></header>
         <div className="history-set-list">{workout.sets.map((workoutSet) => <HistorySetCard workoutSet={workoutSet} expanded={expandedSetId === workoutSet.id} onToggle={() => setExpandedSetId(expandedSetId === workoutSet.id ? null : workoutSet.id)} key={workoutSet.id} />)}</div>
       </section>)}</div>
-    </section>)}</div>
+    </section>)}</div>}
   </section></div>;
 }
 

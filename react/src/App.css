@@ -482,6 +482,34 @@
 .schedule-past-toggle button.workout-secondary { background:transparent; border:1px solid var(--line); color:var(--muted); }
 .schedule-errors { border:1px solid var(--red,#e0574e); padding:12px; }
 .schedule-errors p { color:var(--red,#e0574e); font-size:11px; line-height:1.5; margin:0; }
+/* ── ANALYTICS → History: the training-day index ──────────────────────────
+   A table, because the question at this level is comparative - "how has this
+   athlete been going" - and a stack of cards makes you hold each one in your
+   head to compare it with the last. The detailed day card still exists; it is
+   what a row opens. Shape follows the mockup's group table. */
+.history-table-wrap { overflow-x:auto; }
+.history-table { border-collapse:collapse; font-size:12px; margin-top:13px; width:100%; }
+.history-table caption { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+.history-table th { color:var(--muted); font-size:9px; font-weight:900; letter-spacing:.11em; padding:8px 10px; text-align:left; text-transform:uppercase; white-space:nowrap; }
+.history-table td { border-top:1px solid var(--line); padding:11px 10px; white-space:nowrap; }
+.history-table tr.is-open td { background:rgba(169,240,77,.06); }
+.history-table td b { font-size:14px; font-weight:700; }
+.history-table td small { color:var(--muted); }
+
+/* The date is the control. The whole row would be a bigger target, but a row
+   full of numbers that is also a button reads as neither. */
+.history-row-open { background:none; border:0; color:var(--lime); cursor:pointer; font:inherit; font-size:13px; font-weight:650; padding:0; text-align:left; text-decoration:underline; text-underline-offset:3px; }
+.history-row-open:hover { color:var(--ink); }
+
+.history-trend { font-weight:800; }
+.history-trend.up { color:var(--mint); }
+.history-trend.down { color:var(--coral); }
+.history-trend.flat { color:var(--muted); }
+
+.history-table-note { color:var(--muted); font-size:11px; margin:10px 0 0; }
+.history-day-close { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:800; letter-spacing:.07em; min-height:34px; padding:6px 12px; text-transform:uppercase; }
+.history-day-close:hover { border-color:var(--lime); color:var(--lime); }
+
 /* ── PLANNING → Design: the three steps ───────────────────────────────────
    Numbered because the order is the point: a block is the template, a program
    is that template placed in time, a one-off is a program with no template.
