@@ -23,11 +23,20 @@ export function slotState(slot) {
 
 // What a coach can do next, given the state. Returned as a name rather than a
 // label so the component owns the wording and this stays testable.
+//
+// ⚠️ "ready" USED TO RETURN "start", AND THE CALENDAR STARTED THE DAY ITSELF.
+// It no longer does. Staging is a PLANNING act and starting is a SESSION act
+// (spec §2b), and having two screens that could both open the room meant two
+// places to open the wrong day — the exact shape of the D18 bug, where a stray
+// second session silently captured everyone's check-ins.
+//
+// So the calendar now hands the coach to SESSION and SESSION starts it. The
+// calendar's job is answering "what is Monday?", not opening the room.
 export function slotAction(slot) {
   switch (slotState(slot)) {
     case "planned": return "create";
-    case "ready": return "start";
-    default: return null;      // running and done are not started again
+    case "ready": return "open";   // → SESSION, which is where a day is started
+    default: return null;          // running and done are not started again
   }
 }
 

@@ -35,7 +35,10 @@ describe("slotState", () => {
 describe("slotAction", () => {
   it("offers exactly one next step, and none once the day has run", () => {
     expect(slotAction(planned)).toBe("create");
-    expect(slotAction(ready)).toBe("start");
+    // NOT "start". The calendar hands a ready day to SESSION rather than
+    // opening the room itself — two screens that could both start a day is two
+    // places to start the wrong one. See the note on slotAction.
+    expect(slotAction(ready)).toBe("open");
     expect(slotAction(running)).toBeNull();
     expect(slotAction(done)).toBeNull();
   });

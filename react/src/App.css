@@ -476,6 +476,36 @@
 .schedule-past-toggle button.workout-secondary { background:transparent; border:1px solid var(--line); color:var(--muted); }
 .schedule-errors { border:1px solid var(--red,#e0574e); padding:12px; }
 .schedule-errors p { color:var(--red,#e0574e); font-size:11px; line-height:1.5; margin:0; }
+/* ── PLANNING → Design: the three steps ───────────────────────────────────
+   Numbered because the order is the point: a block is the template, a program
+   is that template placed in time, a one-off is a program with no template.
+   The left rule is what makes them read as a sequence rather than three
+   unrelated panels stacked up. */
+.design-step { border-left:2px solid var(--line); margin-bottom:20px; padding-left:15px; }
+.design-step:first-of-type { border-left-color:var(--lime); }
+.design-stepno { color:var(--muted); font-size:10px; font-weight:900; letter-spacing:.12em; margin-bottom:8px; text-transform:uppercase; }
+
+/* Create is a dropdown that REVEALS a form, not a form sitting open forever.
+   A coach creates a block occasionally and deploys one constantly, so the rare
+   thing should not be the tallest thing on the screen. */
+.design-create-row { align-items:center; display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+.design-create-row select { background:var(--panel2); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; min-height:40px; padding:8px 10px; }
+.design-inline-form { border-top:1px solid var(--line); margin-top:12px; padding-top:14px; }
+.design-inline-form>label { color:var(--muted); display:grid; font-size:9px; font-weight:850; gap:6px; margin-top:12px; text-transform:uppercase; }
+.design-inline-form input,.design-inline-form select { background:#0b1114; border:1px solid var(--line); color:var(--ink); font:inherit; min-height:44px; padding:8px 10px; }
+
+/* Block cards. Deploy and Edit days are actions ON the block — they used to be
+   panels with their own "which block?" dropdown, so a coach picked the block
+   twice and nothing stopped the two picks from disagreeing. */
+.design-block-list { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+.design-block-list>article { background:var(--panel2); border:1px solid var(--line); padding:14px; }
+.design-block-main span { color:var(--muted); font-size:10px; font-weight:850; letter-spacing:.08em; text-transform:uppercase; }
+.design-block-main h4 { font-size:16px; margin:4px 0 0; }
+.design-block-actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:11px; }
+.design-block-actions button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font:inherit; font-size:11px; font-weight:850; min-height:40px; padding:8px 13px; }
+.design-block-actions button.workout-secondary { background:transparent; border-color:var(--line); color:var(--ink); }
+.design-block-actions button:disabled { cursor:not-allowed; opacity:.42; }
+
 /* ── the calendar's card view ──────────────────────────────────────────────
    A month at a glance: four across, one card per day, colour-coded by the same
    four states the list uses. The colours ARE the information here — a coach

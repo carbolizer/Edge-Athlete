@@ -641,7 +641,7 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
           need the same blocks, categories, groups and deployed programs; mounting
           it twice would fetch all of them twice and let the two copies drift —
           a block made on Design would not show up in the catalog. */}
-      <div hidden={activeTab!=="design"&&activeTab!=="catalog"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout} section={activeTab==="catalog"?"catalog":"design"}/></div>
+      <div hidden={activeTab!=="design"&&activeTab!=="catalog"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout} section={activeTab==="catalog"?"catalog":"design"} onStageDay={()=>setRequestedTab("calendar")}/></div>
       <div hidden={activeTab!=="groups"}><GroupsView accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="calendar"}>{/* Opening a day with no block behind it. It lives in PLANNING, not
               SESSION, for one hard reason: `POST /api/sessions/` starts the room
               immediately — there is no staged step it could reach SESSION with —

@@ -79,7 +79,7 @@ function SlotCards({ slots, busy, onCreate, onOpenInSession }) {
   </div>;
 }
 
-function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
+function SlotRow({ slot, slots, busy, onCreate, onOpenInSession, onMove }) {
   const state = slotState(slot);
   const action = slotAction(slot);
   const copy = STATE_COPY[state];
@@ -96,8 +96,9 @@ function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
     <div className="schedule-slot-actions">
       {action === "create" && <button type="button" disabled={Boolean(busy)}
         onClick={() => onCreate(slot)}>{busy === `create-${slot.id}` ? "Setting up..." : "Set up day"}</button>}
-      {action === "start" && <button type="button" disabled={Boolean(busy)}
-        onClick={() => onStart(slot)}>{busy === `start-${slot.id}` ? "Starting..." : "Start day"}</button>}
+      {/* Not "Start day". The room is opened in SESSION — see slotAction. */}
+      {action === "open" && <button type="button"
+        onClick={() => onOpenInSession(slot)}>Open in session</button>}
 
       {/* A day that has already run can still be moved — the coach is correcting
           the calendar, and the session keeps its own real start time. */}
@@ -197,13 +198,11 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onSt
     () => { if (onStaged) onStaged(); },
   );
 
-  const startDay = (slot) => act(
-    `start-${slot.id}`,
-    `/api/sessions/${slot.session}/start/`,
-    { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: "{}" },
-    "That day could not be started.",
-    () => `“${slot.workout_name}” is now open. The racks are following it.`,
-  );
+  // ⚠️ THERE IS NO startDay HERE ANY MORE, deliberately. It used to POST to
+  // /api/sessions/{id}/start/ straight from this screen. Starting a day is a
+  // SESSION act now (spec §2b) and `StartStagedDay` there is the one place that
+  // does it — so a coach cannot open the room from two screens and lose track of
+  // which day they opened. Both views send them to SESSION instead.
 
   const moveDay = (slot, date) => act(
     `move-${slot.id}`,
@@ -281,7 +280,8 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onSt
           <header><h4>{scheduleDayLabel(day.date)}</h4><span>{day.slots.length} session{day.slots.length === 1 ? "" : "s"}</span></header>
           <div className="schedule-slot-list">{day.slots.map((slot) => <SlotRow
             key={slot.id} slot={slot} slots={slots} busy={busy}
-            onCreate={createDay} onStart={startDay} onMove={moveDay} />)}</div>
+            onCreate={createDay} onOpenInSession={() => onOpenSession && onOpenSession()}
+            onMove={moveDay} />)}</div>
         </section>)}</div>}
   </div>;
 }
