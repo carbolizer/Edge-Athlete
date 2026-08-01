@@ -17,9 +17,9 @@ has to reconstruct the shape from 900 lines.
 | **A** | The shell | Three routes, the glass navbar, the sliding pill. Each state shows the old tabs unchanged | ✅ `f064d10` |
 | **B** | SESSION | The live room + starting a day. Split `TrainingDayPanel`: open-from-scratch → PLANNING, start-staged → SESSION | ✅ `e89a0e1` |
 | **E** | The widget | The strip above all three states: elapsed timer, End training day | ✅ absorbed into **B** — ending a day needed a home before B could ship |
-| **C** | ANALYTICS | Athlete selector moves here from the topbar; one "choose an athlete" guard instead of four | ⬜ next |
+| **C** | ANALYTICS | Athlete selector moves here from the topbar; one "choose an athlete" guard instead of four | ✅ `767f33e` |
 | **D** | PLANNING | The four sub-tabs — Design · Groups · Workout catalog · Calendar. Deploy/promote become buttons on the thing itself. Calendar gains the mockup's card view | ✅ D1–D4 |
-| **F** | Removals | Delete the old 8-tab bar and the Programs card grid. **Only after A–E work** | ⬜ |
+| **F** | Removals | Delete the old 8-tab bar and the Programs card grid. **Only after A–E work** | ✅ code done; tablet walk-through outstanding |
 | **G** | Dashboard Settings | A cog on the *wall* display holding Change device role. Genuinely new; may be its own branch | ⬜ |
 | **H** | Group history | *"Who is falling behind?"* — a scope switch on History. The highest-value analytics feature, and **the only thing here that is not free** | ⬜ |
 

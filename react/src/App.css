@@ -262,10 +262,10 @@
 .context-section { margin-top:16px; }
 .context-section>header { margin-bottom:14px; }
 .context-section>header h3 { font-size:23px; letter-spacing:-.035em; margin:3px 0; }
-.context-exercise-grid,.program-card-grid { display:grid; gap:10px; grid-template-columns:repeat(3,minmax(0,1fr)); }
-.context-exercise-grid article,.program-card-grid article { background:var(--panel); border:1px solid var(--line); padding:18px; }
-.context-exercise-grid article>span,.program-card-grid article>span { color:var(--muted); font-size:10px; font-weight:850; text-transform:uppercase; }
-.context-exercise-grid article>strong,.program-card-grid article>strong { display:block; font-size:27px; margin-top:14px; }
+.context-exercise-grid { display:grid; gap:10px; grid-template-columns:repeat(3,minmax(0,1fr)); }
+.context-exercise-grid article { background:var(--panel); border:1px solid var(--line); padding:18px; }
+.context-exercise-grid article>span { color:var(--muted); font-size:10px; font-weight:850; text-transform:uppercase; }
+.context-exercise-grid article>strong { display:block; font-size:27px; margin-top:14px; }
 .context-exercise-grid small { color:var(--muted); font-size:9px; }
 .context-exercise-grid dl { border-top:1px solid var(--line); display:flex; gap:16px; margin:15px 0 0; padding-top:12px; }
 .context-exercise-grid dl div { display:grid; gap:2px; } .context-exercise-grid dt { color:var(--muted); font-size:8px; text-transform:uppercase; } .context-exercise-grid dd { font-size:11px; margin:0; }
@@ -313,8 +313,6 @@
 .history-rep-velocity { align-items:center; display:grid; gap:10px; grid-template-columns:38px 1fr; min-width:170px; }
 .history-rep-velocity i { background:#0a0f12; display:block; height:6px; }
 .history-rep-velocity i span { background:var(--mint); display:block; height:100%; }
-.program-card-grid article>p { color:var(--lime); font-size:19px; font-weight:850; margin:5px 0 16px; }
-.program-card-grid article>div { border-top:1px solid var(--line); color:var(--muted); font-size:10px; padding-top:12px; } .program-card-grid article>div b { color:var(--ink); float:right; }
 .athlete-planning { display:grid; gap:16px; }
 .athlete-assignment-panel,.athlete-override-panel { background:var(--panel); border:1px solid var(--line); padding:20px; }
 .athlete-assignment-current { background:#0b1114; border:1px solid var(--line); display:grid; gap:4px; margin-top:14px; padding:12px 14px; }
@@ -798,7 +796,7 @@
   .coach-set-hero { grid-template-columns:1fr auto; }
   .coach-set-hero dl { border-left:0; border-top:1px solid var(--line); grid-column:1/-1; grid-template-columns:repeat(3,1fr); padding:12px 0 0; }
   .context-athlete-hero { grid-template-columns:1fr; }
-  .context-exercise-grid,.program-card-grid { grid-template-columns:repeat(2,1fr); }
+  .context-exercise-grid { grid-template-columns:repeat(2,1fr); }
   .athlete-assignment-fields { grid-template-columns:1fr 1fr; }
   .athlete-override-list fieldset { grid-template-columns:repeat(3,1fr); }
   .athlete-template-targets { grid-column:1/-1; }
@@ -838,7 +836,7 @@
   .coach-analytics-bar select { flex:1; min-width:0; }
   .context-tab-content { padding:14px 12px 30px; }
   .context-summary-grid { grid-template-columns:repeat(2,1fr); }
-  .context-exercise-grid,.program-card-grid { grid-template-columns:1fr; }
+  .context-exercise-grid { grid-template-columns:1fr; }
   .athlete-assignment-fields { grid-template-columns:1fr; }
   .athlete-override-list fieldset { grid-template-columns:1fr; }
   .athlete-override-actions { display:grid; grid-template-columns:1fr; }

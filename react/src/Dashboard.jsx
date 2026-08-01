@@ -22,9 +22,9 @@
 // comes in as the `coachState` prop, read from the URL by App.jsx, so a reload
 // keeps it and the Back button moves between states. See coach/coachState.js.
 //
-// Inside each state the original tab bar still works; the states just decide
-// which tabs belong to them (STATE_TABS below). Later phases reshape what is
-// inside each state — this one only builds the frame.
+// Each state has its own sub-tabs (STATE_TABS below) — the eight-at-once bar
+// this replaced is gone, and so is the Programs tab, whose per-athlete override
+// editor now lives in PLANNING → Groups → Open.
 //
 // What is NOT here, on purpose: assigning athletes or workouts to a rack ahead
 // of time. See the D8 note further down.
@@ -36,7 +36,6 @@ import { coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
 import useLiveRoomState from "./useLiveRoomState.js";
 import { compareReps, groupHistorySets } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
-import AthleteWorkoutPlanning from "./AthleteWorkoutPlanning.jsx";
 import { OpenDayFromScratch, StartStagedDay } from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import ScheduleWorkspace from "./ScheduleWorkspace.jsx";
@@ -51,31 +50,27 @@ import GroupsView from "./coach/GroupsView.jsx";
 import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
 import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
 
-// Which of the old tabs belongs to which state. This is the whole of Phase A's
-// reorganization: nothing inside a tab changed, the tabs were just sorted into
-// the three moments of a coach's day.
+// Which sub-tabs belong to which state — the three moments of a coach's day.
 //
 //   PLANNING   what you set up before anyone lifts
 //   SESSION    the live room, while they do
 //   ANALYTICS  what you read afterwards, one athlete at a time
 //
-// Later phases dissolve most of these tabs into the layout in §13-15 of
-// _COACH_UI_REDESIGN.md. Until then this table is the map, and the first entry
-// in each list is that state's landing tab.
+// The first entry in each list is that state's landing tab.
 const STATE_TABS = {
   planning: ["design", "groups", "catalog", "calendar"],
   session: ["room"],
-  analytics: ["athlete", "history", "programs", "notes", "reports"],
+  analytics: ["athlete", "history", "notes", "reports"],
 };
 
-// The sub-tab bar used to print its own keys, so it read "workouts · schedule"
-// in lowercase. PLANNING's four are named things a coach would say out loud, so
-// the label and the internal key stop being the same string here.
 // ANALYTICS sub-tabs that are about ONE athlete, and so need the selector above
 // them. Reports is the odd one out — it is day-scoped and carries its own
 // athlete/day mode switch, so the shared selector stays out of its way.
-const ATHLETE_SCOPED_TABS = ["athlete", "history", "programs", "notes"];
+const ATHLETE_SCOPED_TABS = ["athlete", "history", "notes"];
 
+// The sub-tab bar used to print its own keys, so it read "workouts · schedule"
+// in lowercase. These are named things a coach would say out loud, so the label
+// and the internal key stop being the same string here.
 const TAB_LABELS = {
   design: "Design",
   groups: "Groups",
@@ -84,7 +79,6 @@ const TAB_LABELS = {
   room: "Room",
   athlete: "Athlete",
   history: "History",
-  programs: "Programs",
   notes: "Notes",
   reports: "Reports",
 };
@@ -469,10 +463,6 @@ function HistoryTab({ context }) {
   </section></div>;
 }
 
-function ProgramsTab({ athlete, programs, exerciseNames, accessToken, onLogout }) {
-  return <div className="context-tab-content"><section className="context-section"><header><span>Recorded prescriptions</span><h3>{athlete.name} · Programs</h3><p>No program is labeled current without effective dates.</p></header><div className="program-card-grid">{programs.map((program) => <article key={program.exercise}><span>{exerciseNames[program.exercise] ?? `Movement ${program.exercise}`}</span><strong>{program.target_sets} × {program.target_reps}</strong><p>{program.target_weight_lbs} lbs</p><div>Target velocity <b>{program.velocity_zone_min === null && program.velocity_zone_max === null ? "No velocity target" : `${velocity(program.velocity_zone_min)}–${velocity(program.velocity_zone_max)} m/s`}</b></div></article>)}</div></section><AthleteWorkoutPlanning athlete={athlete} accessToken={accessToken} onLogout={onLogout} /></div>;
-}
-
 // Free-text memory a coach leaves on an athlete for whoever runs the next
 // session. Saved to `Athlete.notes` — see saveNote for the last-write-wins
 // caveat that came with folding away his dedicated notes route.
@@ -511,17 +501,19 @@ function RackSelectionControls({ rack }) {
 function CoachView({ monitor, accessToken, onLogout, coachState }) {
   const { roomState, requestState, connectionState, lastError, refresh } = monitor;
   const [brandMenuOpen,setBrandMenuOpen]=useState(false);
-  const [selectedRackNumber,setSelectedRackNumber]=useState(null),[requestedTab,setRequestedTab]=useState("room"),[athletes,setAthletes]=useState([]),[exerciseNames,setExerciseNames]=useState({}),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
+  const [selectedRackNumber,setSelectedRackNumber]=useState(null),[requestedTab,setRequestedTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
   useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
-  // The movement catalog, purely so prescriptions can show a NAME. The
-  // prescriptions endpoint returns `exercise` as a catalog id (the per-athlete
-  // Program table it used to read from is gone), and an id on screen tells a
-  // coach nothing. Resolved here rather than server-side so no route changes.
-  useEffect(()=>{fetch("/api/exercises/",{headers}).then(r=>r.json())
-    .then(rows=>setExerciseNames(Object.fromEntries(rows.map(e=>[e.id,e.name]))))
-    .catch(()=>setExerciseNames({}));},[accessToken]);
-  useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/prescriptions/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
+  // ⚠️ THE /api/exercises/ FETCH IS GONE TOO. It existed only to turn the
+  // prescriptions endpoint's catalog ids into names for the Programs tab —
+  // fixing the bug where a coach saw "1" instead of "Back Squat". With that tab
+  // deleted there is nothing left on this screen holding a raw exercise id, so
+  // the whole lookup went with it. WorkoutCatalog still fetches the catalog for
+  // its own movement pickers; this was a second copy for one label.
+  // Two requests, not three. `/api/prescriptions/` went with the Programs tab —
+  // it was the only reader, and the override editor that replaced it fetches its
+  // own data in PLANNING → Groups → Open. One less round trip per athlete.
+  useEffect(()=>{setContext(null);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
   // Staged days, re-read whenever a day starts or ends — both change the set.
   // A failure is deliberately silent and treated as "none staged": it costs the
@@ -677,7 +669,7 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
           {!dayRunning&&<OpenDayFromScratch athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}
           <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh} onStaged={()=>{fetchStagedSlots(accessToken).then(setStagedSlots).catch(()=>{});navigate(pathForCoachState("session"));}} onOpenSession={()=>navigate(pathForCoachState("session"))}/></div>{dayMissing?<StatePanel title="No training day is set up" body="Set a day up from the calendar in Planning and it appears here, ready to start. For training with no plan behind it, Planning can open the room straight away." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="design"||activeTab==="catalog"||activeTab==="groups"||activeTab==="reports"||activeTab==="calendar"?null:activeTab==="room"?<>{/* A day set up earlier, waiting to be opened. Above the room because
             until it is started the room below is not following anything. */}
-        {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} exerciseNames={exerciseNames} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
+        {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
           object, not three copies of a bar. That is what makes three routes
           read as one surface changing mode. */}
     <StateNavbar current={coachState} onSelect={goToState} daySet={daySet}/></main>;
