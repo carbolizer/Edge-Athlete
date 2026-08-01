@@ -14,12 +14,11 @@
 // first. This file is the proof; the decision comes after.
 
 import { groupHistorySets, summariseTrainingDays } from "../historyView.js";
+import { rangeContains } from "./historyRange.js";
 
-export const WINDOW_CHOICES = [
-  { days: 14, label: "Last 14 days" },
-  { days: 30, label: "Last 30 days" },
-  { days: 90, label: "Last 90 days" },
-];
+// ⚠️ The window choices moved to historyRange.js when the control was lifted
+// into the ANALYTICS bar — the athlete view needed the same range, and two
+// copies of "what counts as recent" is two answers to one question.
 
 // "Behind" means TRENDING DOWN: at least 3 of an athlete's last 5 training days
 // were slower than the day before.
@@ -68,15 +67,17 @@ export function daysSince(lastTrained, now = Date.now()) {
  * one thing this view exists to make visible.
  */
 export function buildGroupRows(members, analytics, {
-  now = Date.now(), windowDays = 14,
+  now = Date.now(), range = null,
   downDays = BEHIND_DOWN_DAYS, ofLast = BEHIND_OF_LAST,
 } = {}) {
-  const cutoff = now - windowDays * DAY_MS;
 
   const rows = (members || []).map((member) => {
     const payload = analytics?.[member.id];
     const allSets = payload?.sets || [];
-    const inWindow = allSets.filter((s) => s.ended_at && new Date(s.ended_at).getTime() >= cutoff);
+    // No range means everything — the caller has not narrowed it.
+    const inWindow = range
+      ? allSets.filter((s) => rangeContains(range, s.ended_at))
+      : allSets.filter((s) => s.ended_at);
 
     const endedTimes = allSets.map((s) => s.ended_at).filter(Boolean);
     const lastTrained = endedTimes.length

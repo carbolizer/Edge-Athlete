@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useState } from 'react'
-import { BEHIND_DOWN_DAYS, BEHIND_OF_LAST, buildGroupRows, WINDOW_CHOICES } from './groupHistory.js'
+import { BEHIND_DOWN_DAYS, BEHIND_OF_LAST, buildGroupRows } from './groupHistory.js'
+import { rangeLabel } from './historyRange.js'
 
 const groupAthletesUrl = (groupId) => `/api/training-groups/${groupId}/athletes/`
 const athleteAnalyticsUrl = (athleteId) => `/api/analytics/athlete/${athleteId}/`
@@ -43,8 +44,10 @@ function signedLabel(value) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
 }
 
-export default function GroupHistory({ group, accessToken, onLogout }) {
-  const [windowDays, setWindowDays] = useState(WINDOW_CHOICES[0].days)
+// `range` comes from the ANALYTICS bar and is shared with the athlete view —
+// this used to own a window dropdown of its own, which meant the two halves of
+// History could be looking at different stretches of time and neither said so.
+export default function GroupHistory({ group, range, accessToken, onLogout }) {
   const [members, setMembers] = useState([])
   const [analytics, setAnalytics] = useState({})
   const [state, setState] = useState('loading')
@@ -87,21 +90,14 @@ export default function GroupHistory({ group, accessToken, onLogout }) {
     return <p className="monitor-empty">Choose a group to see how its athletes are tracking.</p>
   }
 
-  const rows = buildGroupRows(members, analytics, { windowDays })
+  const rows = buildGroupRows(members, analytics, { range })
   const behindCount = rows.filter((row) => row.behind).length
 
   return (
     <div className="group-history">
       <div className="group-history-controls">
-        <label>Window
-          <select value={windowDays} onChange={(event) => setWindowDays(Number(event.target.value))}>
-            {WINDOW_CHOICES.map((choice) => (
-              <option key={choice.days} value={choice.days}>{choice.label}</option>
-            ))}
-          </select>
-        </label>
         {state === 'ready' && <span className="group-history-count">
-          {rows.length} athlete{rows.length === 1 ? '' : 's'}
+          {rows.length} athlete{rows.length === 1 ? '' : 's'} · {rangeLabel(range).toLowerCase()}
           {behindCount > 0 && <b> · {behindCount} behind</b>}
         </span>}
       </div>

@@ -49,6 +49,7 @@ import QuickNote from "./coach/QuickNote.jsx";
 import GroupsView from "./coach/GroupsView.jsx";
 import GroupHistory from "./coach/GroupHistory.jsx";
 import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
+import { DEFAULT_PRESET_DAYS, matchesPreset, normaliseRange, presetRange, RANGE_PRESETS, rangeContains, rangeLabel } from "./coach/historyRange.js";
 import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
 
 // Which sub-tabs belong to which state — the three moments of a coach's day.
@@ -542,17 +543,23 @@ function TrendCell({ trend, change }) {
   </span>;
 }
 
-function HistoryTab({ context }) {
+function HistoryTab({ context, range }) {
   const [expandedSetId, setExpandedSetId] = useState(null);
   // Which day's detail is open. Null means the index only — a coach lands on
   // "what has this athlete been doing lately", not on one day's rep tables.
   const [openDayKey, setOpenDayKey] = useState(null);
   if (!context.sets?.length) return <NothingRecordedYet what="set history" />;
-  const days = groupHistorySets(context.sets);
+  // The same range the group view uses, so the two halves of History can never
+  // disagree about which sets count as recent.
+  const inRange = context.sets.filter((workoutSet) => rangeContains(range, workoutSet.ended_at));
+  const days = groupHistorySets(inRange);
   const summaries = summariseTrainingDays(days);
   return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>The last few days this athlete trained. Open one for its workouts, sets and rep-by-rep comparison.</p></header>
     {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}
-    {days.length === 0 && <StatePanel title="No completed training days" body="Completed sets will be organized here by day and workout." />}
+    {/* Empty because of the range, not because the athlete has never trained —
+        those are different facts and a coach should not have to guess which. */}
+    {days.length === 0 && <StatePanel title={`Nothing in ${rangeLabel(range).toLowerCase()}`}
+      body="This athlete has saved history, just none in the dates selected. Widen the range above." />}
 
     {/* The index. One row per training day, newest first — enough to answer
         "how has this athlete been going" without opening anything. */}
@@ -671,6 +678,10 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
   // selects — and because group scope must NOT sit behind the "choose an
   // athlete" guard, which would make it unreachable until you picked one.
   const [historyScope,setHistoryScope]=useState("athlete");
+  // ONE range, shared by both scopes. It used to live inside GroupHistory, so
+  // the athlete view had no range at all and the two halves of History
+  // disagreed about what "recently" meant.
+  const [historyRange,setHistoryRange]=useState(()=>presetRange(DEFAULT_PRESET_DAYS));
   const [groups,setGroups]=useState([]);
   const [selectedGroupId,setSelectedGroupId]=useState(null);
   useEffect(()=>{fetch("/api/training-groups/",{headers}).then(r=>r.ok?r.json():[]).then(b=>{const list=Array.isArray(b)?b:b.results||[];setGroups(list);setSelectedGroupId(current=>current??list[0]?.id??null);}).catch(()=>setGroups([]));},[accessToken]);
@@ -826,6 +837,22 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
               </label>
               {context?.athlete&&<span>Showing <b>{context.athlete.name}</b></span>}
             </>}
+        {/* The range, beside the thing it scopes. Presets for the common
+            answers, two date fields for everything else — a coach chasing one
+            bad week needs to name that week, and no preset ever will. */}
+        {activeTab==="history"&&<div className="coach-range">
+          <div className="coach-range-presets" role="group" aria-label="Date range presets">
+            {RANGE_PRESETS.map(choice=><button key={choice.days} type="button"
+              className={matchesPreset(historyRange,choice.days)?"is-on":""}
+              aria-pressed={matchesPreset(historyRange,choice.days)}
+              onClick={()=>setHistoryRange(presetRange(choice.days))}>{choice.days}d</button>)}
+          </div>
+          <label>From<input type="date" value={historyRange.from} max={historyRange.to}
+            onChange={e=>setHistoryRange(current=>normaliseRange(e.target.value,current.to)||current)}/></label>
+          <label>To<input type="date" value={historyRange.to} min={historyRange.from}
+            onChange={e=>setHistoryRange(current=>normaliseRange(current.from,e.target.value)||current)}/></label>
+          <span className="coach-range-label">{rangeLabel(historyRange)}</span>
+        </div>}
       </div>}
       {!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{TAB_LABELS[t]??t}</button>)}</nav>}{/* ONE instance across two sub-tabs, not two. Design and Workout catalog
           need the same blocks, categories, groups and deployed programs; mounting
@@ -849,8 +876,8 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
         about one athlete, so requiring one first would make it unreachable —
         and the coach most in need of it is the one who does not yet know whose
         name to type. */
-      activeTab==="history"&&historyScope==="group"?<GroupHistory group={groups.find(g=>g.id===selectedGroupId)||null} accessToken={accessToken} onLogout={onLogout}/>:
-      loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
+      activeTab==="history"&&historyScope==="group"?<GroupHistory group={groups.find(g=>g.id===selectedGroupId)||null} range={historyRange} accessToken={accessToken} onLogout={onLogout}/>:
+      loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context} range={historyRange}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
           object, not three copies of a bar. That is what makes three routes
           read as one surface changing mode. */}
     <StateNavbar current={coachState} onSelect={goToState} daySet={daySet}/></main>;

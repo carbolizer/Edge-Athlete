@@ -548,6 +548,19 @@
 
 /* ── ANALYTICS → History, group scope ─────────────────────────────────────
    Same table, turned sideways: one row per athlete instead of per day. */
+/* The date range, beside the thing it scopes. Presets for the common answers,
+   two date fields for everything else — a coach chasing one bad week needs to
+   name that week, and no preset ever will. */
+.coach-range { align-items:center; border-left:1px solid var(--line); display:flex; flex-wrap:wrap; gap:10px; padding-left:14px; }
+.coach-range label { align-items:center; color:var(--muted); display:flex; font-size:9px; font-weight:900; gap:7px; letter-spacing:.1em; text-transform:uppercase; }
+.coach-range input[type="date"] { background:var(--panel); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; letter-spacing:normal; min-height:36px; padding:6px 8px; text-transform:none; }
+.coach-range input[type="date"]:focus-visible { border-color:var(--lime); outline:none; }
+.coach-range-presets { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:2px; padding:3px; }
+.coach-range-presets button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.06em; padding:6px 11px; }
+.coach-range-presets button.is-on { background:var(--lime); color:#071006; }
+.coach-range-presets button:hover:not(.is-on) { color:var(--ink); }
+.coach-range-label { color:var(--muted); font-size:11px; }
+
 .coach-scope-switch { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:3px; padding:3px; }
 .coach-scope-switch button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.09em; padding:7px 15px; text-transform:uppercase; }
 .coach-scope-switch button.is-on { background:var(--lime); color:#071006; }
