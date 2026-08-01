@@ -71,6 +71,11 @@ const STATE_TABS = {
 // The sub-tab bar used to print its own keys, so it read "workouts · schedule"
 // in lowercase. PLANNING's four are named things a coach would say out loud, so
 // the label and the internal key stop being the same string here.
+// ANALYTICS sub-tabs that are about ONE athlete, and so need the selector above
+// them. Reports is the odd one out — it is day-scoped and carries its own
+// athlete/day mode switch, so the shared selector stays out of its way.
+const ATHLETE_SCOPED_TABS = ["athlete", "history", "programs", "notes"];
+
 const TAB_LABELS = {
   design: "Design",
   groups: "Groups",
@@ -616,7 +621,6 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
     <div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div>
     <div className="coach-topbar-actions">
       <ConnectionBadge connectionState={connectionState} requestState={requestState}/>
-      <select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select>
       {/* Room Layout — assigning tablets to rack numbers. It lives on its own
           screen because it is setup work a coach does once when the room is
           built, not something they touch during a session. */}
@@ -637,7 +641,25 @@ function CoachView({ monitor, accessToken, onLogout, coachState }) {
       {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}{/* The strip. Outside the three states because ending a day is something a
           coach does while looking at anything — and it renders nothing at all
           unless a day is actually running. */}
-      <SessionWidget roomState={roomState} accessToken={accessToken} onLogout={onLogout} refresh={refresh} onDayEnded={handleDayEnded}/>{!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{TAB_LABELS[t]??t}</button>)}</nav>}{/* ONE instance across two sub-tabs, not two. Design and Workout catalog
+      <SessionWidget roomState={roomState} accessToken={accessToken} onLogout={onLogout} refresh={refresh} onDayEnded={handleDayEnded}/>{/* The athlete selector, ANALYTICS-only.
+        It used to sit in the topbar, on screen in every state — but PLANNING is
+        group- and program-scoped and SESSION picks by rack (the rack rail IS
+        the picker there, and it picks the way a coach thinks on the floor). A
+        global selector was a second path to a state only one state uses.
+
+        Not shown on Reports: that sub-tab has its own athlete picker with its
+        own day/athlete modes, and two pickers on one screen is worse than the
+        one it replaced. */}
+      {coachState==="analytics"&&ATHLETE_SCOPED_TABS.includes(activeTab)&&<div className="coach-analytics-bar">
+        <label>Athlete
+          <select value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete">
+            <option value="">Select athlete</option>
+            {athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}
+          </select>
+        </label>
+        {context?.athlete&&<span>Showing <b>{context.athlete.name}</b></span>}
+      </div>}
+      {!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{TAB_LABELS[t]??t}</button>)}</nav>}{/* ONE instance across two sub-tabs, not two. Design and Workout catalog
           need the same blocks, categories, groups and deployed programs; mounting
           it twice would fetch all of them twice and let the two copies drift —
           a block made on Design would not show up in the catalog. */}

@@ -237,7 +237,15 @@
 .coach-node strong { font-size:11px; } .coach-node small { color:var(--muted); font-size:9px; } .coach-node>b { font-size:13px; } .coach-screen-count,.coach-truncation { color:var(--muted); font-size:9px; margin-bottom:0; }
 
 /* Expanded coach context tabs */
-.coach-athlete-select { background:var(--panel); border:1px solid var(--line); color:var(--ink); min-width:170px; padding:8px 10px; }
+/* The athlete selector moved out of the topbar into ANALYTICS (Phase C), so it
+   is a bar of its own above the sub-tabs rather than a control in the toolbar.
+   It sits ABOVE the sub-tabs on purpose: the athlete is what every tab below is
+   about, so it scopes them rather than sitting inside one of them. */
+.coach-analytics-bar { align-items:center; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:14px; padding:12px 24px; }
+.coach-analytics-bar label { align-items:center; color:var(--muted); display:flex; font-size:9px; font-weight:900; gap:9px; letter-spacing:.12em; text-transform:uppercase; }
+.coach-analytics-bar select { background:var(--panel); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:13px; min-height:40px; min-width:200px; padding:8px 10px; text-transform:none; letter-spacing:normal; }
+.coach-analytics-bar span { color:var(--muted); font-size:12px; }
+.coach-analytics-bar b { color:var(--ink); font-weight:650; }
 .coach-context-tabs { background:#0a0f12; border-bottom:1px solid var(--line); display:flex; gap:4px; overflow-x:auto; padding:8px 24px; }
 .coach-context-tabs button { background:transparent; border:1px solid transparent; color:var(--muted); cursor:pointer; font-size:10px; font-weight:850; letter-spacing:.08em; padding:9px 16px; text-transform:uppercase; }
 .coach-context-tabs button.active { background:var(--panel); border-color:var(--line); color:var(--lime); }
@@ -823,7 +831,11 @@
   .coach-workspace { display:block; } .coach-rack-list { border-bottom:1px solid var(--line); border-right:0; display:flex; gap:6px; overflow-x:auto; padding:10px 12px; } .coach-section-label { display:none; }
   .coach-observation-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .coach-rack-row { flex:0 0 180px; } .coach-detail-workspace { padding:14px 12px 28px; } .coach-set-hero { grid-template-columns:1fr; } .coach-hero-metric { text-align:left; } .coach-set-hero dl { grid-template-columns:1fr; }
-  .coach-athlete-select { grid-column:1/-1; grid-row:3; width:100%; }
+  /* The selector left the topbar in Phase C, so it no longer needs a grid slot
+     there. On a narrow screen its own bar stacks and the select goes full width. */
+  .coach-analytics-bar { padding:12px; }
+  .coach-analytics-bar label { flex:1 1 100%; }
+  .coach-analytics-bar select { flex:1; min-width:0; }
   .context-tab-content { padding:14px 12px 30px; }
   .context-summary-grid { grid-template-columns:repeat(2,1fr); }
   .context-exercise-grid,.program-card-grid { grid-template-columns:1fr; }
