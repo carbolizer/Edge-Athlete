@@ -495,6 +495,12 @@ rather than a stale field — and the duplicate losing.
 > shape, the same job `edge_athlete_rack_ui.html` did for the rack screen. The
 > amber bar at the top is a mockup-only control that toggles "day running" so you
 > can see the widget appear and SESSION un-dim.
+>
+> ⚠️ **THE MOCKUP IS THE TARGET, NOT A SUGGESTION.** ✅ Devin 2026-07-31: *"I want
+> to try to model the mockup as much as possible during this transition."* Where
+> a phase could go either way, match the mockup. Where the running app already
+> disagrees with it, the mockup wins unless there is a stated reason in this doc
+> — and the reason gets written down here rather than left in the code.
 
 
 **PERSISTENT** (outside the states)
@@ -661,8 +667,32 @@ Four sub-tabs per §15; promote/deploy become in-component buttons.
 - [ ] Create block / create session are dropdowns
 - [ ] Deploy is a button on a block; promote is a button on a program
 - [ ] The standalone deploy panel is gone
-- [ ] Stage a day → lands in SESSION
+- [x] Stage a day → lands in SESSION — **done in Phase B** (`cae4d6e`)
 - [ ] Groups / catalog / calendar reachable as view tabs
+- [ ] **Calendar is the current Schedule tab RENAMED**, not rebuilt — ✅ Devin
+      2026-07-31. `ScheduleWorkspace` keeps its slot states, its move action and
+      its past-day toggle; only the label changes
+- [ ] **A second calendar view: month cards, per the mockup** — ✅ Devin
+      2026-07-31, see below
+
+**The calendar's two views.** The list that exists today answers *"what is
+coming up, in order?"*. The mockup's card grid answers a different question —
+*"what does this month look like?"* — and a coach asks both. So it is a **view
+toggle on one tab**, not a replacement:
+
+| View | Shape | Good for |
+|---|---|---|
+| **List** (today's) | Vertical, grouped by date, action on the right | Working through the next few days |
+| **Cards** (new) | 4-across grid, one card per slot, action on the card | Seeing a month's shape at a glance |
+
+Both read the same slots and the same four `schedule.js` states — `planned` /
+`ready` / `running` / `done`. The card grid is a second presentation of one
+source, never a second source.
+
+⚠️ **Staging happens on the SLOT, in either view.** That is the whole reason the
+calendar is where a coach asks "what is Monday?" — see §15. The card carries its
+own action: *Stage this day* on a `planned` card, *Open in session* on a `ready`
+one.
 
 **Phase E — the widget**
 Conditional active-session bar with the elapsed timer.
@@ -897,6 +927,27 @@ Append as we go. Date each entry.
   - Also decided: SESSION with no day **does not redirect**. Pulling a coach off
     the screen they were reading — which is what a redirect does the moment a day
     ends — is worse than a screen that says why it is empty.
+- **2026-07-31** — **Phase B built** (`cae4d6e`). `TrainingDayPanel` split in two:
+  `OpenDayFromScratch` → PLANNING, `StartStagedDay` → SESSION, and the ending
+  half became `coach/SessionWidget.jsx` outside all three states. Two decisions
+  forced by building it, both confirmed by Devin:
+  - **SESSION is gated on a day being SET, not running.** §7's word was already
+    "set"; staged counts, because starting a staged day is what SESSION is for.
+  - **The from-scratch form lives in PLANNING, not SESSION.** `POST /api/sessions/`
+    opens the room immediately — there is no staged step it could reach SESSION
+    with — so putting it in a state that dims until a day is set would lock out
+    every gym with an empty calendar.
+  - The **settings cog stays in the persistent topbar**, against §13's placement,
+    for the same lockout reason: Room Layout is the only screen that can assign
+    racks, and a gym with no racks has no day and so no SESSION.
+  - ⚠️ **§2b's code block is wrong about one route.** It says `POST /api/sessions/`
+    creates a staged day with `started_at` null; `views.py:349` saves with
+    `started_at=timezone.now()`. Staging is `POST /api/scheduled-sessions/{slot}/session/`.
+    The intent was right and both routes exist — only the naming was off.
+- **2026-07-31** — **Calendar keeps its list AND gains the mockup's card grid**,
+  as a view toggle on one tab. Devin: the card view is the month-at-a-glance
+  answer, the list is the next-few-days answer, and a coach asks both. Recorded
+  in Phase D. Same slots, same four states, two presentations.
 - **2026-07-31** — **Devin found the report escaping the states.** Ending a day
   draws `GeneratedReport` above the tab bar, so it floats over all three states
   like the active-day banner does. Pre-existing; the states only made it legible.
