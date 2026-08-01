@@ -476,6 +476,45 @@
 .schedule-past-toggle button.workout-secondary { background:transparent; border:1px solid var(--line); color:var(--muted); }
 .schedule-errors { border:1px solid var(--red,#e0574e); padding:12px; }
 .schedule-errors p { color:var(--red,#e0574e); font-size:11px; line-height:1.5; margin:0; }
+/* ── the calendar's card view ──────────────────────────────────────────────
+   A month at a glance: four across, one card per day, colour-coded by the same
+   four states the list uses. The colours ARE the information here — a coach
+   scanning this grid is reading shape, not text. */
+.schedule-header-controls { align-items:center; display:flex; flex-wrap:wrap; gap:12px; }
+.schedule-header-controls select { background:var(--panel2); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; padding:7px 9px; }
+.schedule-view-toggle { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:3px; padding:3px; }
+.schedule-view-toggle button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.09em; padding:7px 15px; text-transform:uppercase; }
+.schedule-view-toggle button.is-on { background:var(--lime); color:#071006; }
+
+.schedule-card-grid { display:grid; gap:10px; grid-template-columns:repeat(4,minmax(0,1fr)); }
+.schedule-card { background:var(--panel2); border:1px solid var(--line); padding:13px; }
+.schedule-card-date { color:var(--muted); font-size:10px; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
+.schedule-card b { display:block; font-size:14px; margin:5px 0 3px; }
+.schedule-card p { color:var(--muted); font-size:11px; margin:0 0 9px; }
+.schedule-card-state { font-size:10px; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
+.schedule-card button { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; font:inherit; font-size:10px; font-weight:800; letter-spacing:.05em; margin-top:9px; min-height:38px; padding:8px 11px; text-transform:uppercase; width:100%; }
+.schedule-card button:hover:not(:disabled) { border-color:var(--lime); color:var(--lime); }
+.schedule-card button.schedule-card-primary { background:var(--lime); border-color:var(--lime); color:#071006; }
+.schedule-card button:disabled { cursor:not-allowed; opacity:.42; }
+
+/* Dashed edge = nothing exists yet. The one state that is a plan, not a thing. */
+.schedule-card.is-planned { border-style:dashed; }
+.schedule-card.is-planned .schedule-card-state { color:var(--muted); }
+.schedule-card.is-ready { border-color:var(--lime); }
+.schedule-card.is-ready .schedule-card-state { color:var(--lime); }
+.schedule-card.is-running { background:rgba(69,220,179,.07); border-color:var(--mint); }
+.schedule-card.is-running .schedule-card-state { color:var(--mint); }
+/* Faded, not hidden: a finished day is context for the ones around it. */
+.schedule-card.is-done { opacity:.55; }
+.schedule-card.is-done .schedule-card-state { color:var(--muted); }
+
+.schedule-card-note { color:var(--muted); font-size:11px; margin-top:13px; }
+
+/* Four across needs width. Below that the cards get too narrow to read a
+   workout name in, so drop to two and then one rather than squeezing. */
+@media (max-width:1100px) { .schedule-card-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:620px) { .schedule-card-grid { grid-template-columns:1fr; } }
+
 /* The calendar scrolls INSIDE ITSELF rather than lengthening the page.
    A deployed block generates a slot per training day, so this list runs to
    dozens of rows within a couple of weeks. Left to grow, it pushed everything

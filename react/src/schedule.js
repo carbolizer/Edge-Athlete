@@ -65,6 +65,50 @@ export function scheduleDayLabel(isoDate, today = new Date()) {
   return full;
 }
 
+// "Mon 3" — the compact date on a calendar CARD.
+//
+// The card view is scanned, not read: a coach is looking at a month of them at
+// once, asking "what shape is this month?". A full "Monday, August 3" in that
+// grid is four times the ink for the same fact, and the month is already in the
+// heading above the cards.
+//
+// Same local-date parsing as scheduleDayLabel, and for the same reason —
+// `new Date("2026-08-05")` is midnight UTC, which is the previous evening in
+// the Americas, so every card would show the wrong day.
+export function slotCardDate(isoDate) {
+  const [year, month, day] = String(isoDate).split("-").map(Number);
+  if (!year || !month || !day) return String(isoDate);
+  const date = new Date(year, month - 1, day);
+  // Composed by hand rather than asking toLocaleDateString for both parts at
+  // once: given {weekday, day} it decides the ORDER by locale and returned
+  // "5 Wed" here. The weekday name still comes from the locale — that part
+  // should translate; the layout should not.
+  return `${date.toLocaleDateString([], { weekday: "short" })} ${date.getDate()}`;
+}
+
+// The month a run of slots belongs to, for the heading above the card grid —
+// "August 2026", or "August – October 2026" when the window spans several.
+// Reads the FIRST and LAST slot rather than every one; they arrive date-ordered.
+export function slotMonthRange(slots) {
+  const dates = (slots || []).map((slot) => slot.date).filter(Boolean).sort();
+  if (dates.length === 0) return "";
+  const parse = (iso) => {
+    const [year, month, day] = String(iso).split("-").map(Number);
+    return year ? new Date(year, month - 1, day) : null;
+  };
+  const first = parse(dates[0]);
+  const last = parse(dates[dates.length - 1]);
+  if (!first || !last) return "";
+  const label = (date, withYear) =>
+    date.toLocaleDateString([], withYear ? { month: "long", year: "numeric" } : { month: "long" });
+  if (first.getFullYear() === last.getFullYear() && first.getMonth() === last.getMonth()) {
+    return label(first, true);
+  }
+  // Same year: name the year once, at the end.
+  if (first.getFullYear() === last.getFullYear()) return `${label(first, false)} – ${label(last, true)}`;
+  return `${label(first, true)} – ${label(last, true)}`;
+}
+
 export function isPastDate(isoDate, today = new Date()) {
   const [year, month, day] = String(isoDate).split("-").map(Number);
   if (!year) return false;

@@ -20,7 +20,8 @@
 
 import { useEffect, useState } from "react";
 import { groupSlotsByDate, isPastDate, moveDateChoices, scheduleDayLabel,
-         scheduleUrl, scheduleWindow, slotAction, slotState } from "./schedule.js";
+         scheduleUrl, scheduleWindow, slotAction, slotCardDate, slotMonthRange,
+         slotState } from "./schedule.js";
 import { flattenApiErrors } from "./workoutCatalog.js";
 
 const STATE_COPY = {
@@ -29,6 +30,54 @@ const STATE_COPY = {
   running: { label: "Running", hint: "Open now. The racks are following this day." },
   done: { label: "Complete", hint: "Ended; its report is frozen." },
 };
+
+// Shorter wording for the card grid, where a whole month is on screen at once
+// and there is no room for a sentence. Same four states, same source.
+const CARD_STATE_COPY = {
+  planned: "Planned · no day yet",
+  ready: "Ready · staged, not started",
+  running: "Running · holding the racks",
+  done: "Done · report frozen",
+};
+
+/*
+ * The month-at-a-glance view.
+ *
+ * ⚠️ A SECOND PRESENTATION, NEVER A SECOND SOURCE. It reads the same slots and
+ * the same four `slotState` values as the list beside it. If these two could
+ * ever disagree about what Monday is, the calendar would be useless — so there
+ * is no separate fetch, no separate filter and no separate state machine here.
+ *
+ * The two views answer different questions, which is why both exist: the list
+ * answers "what is coming up, in order?" and this answers "what shape is this
+ * month?". A coach asks both, on different days.
+ */
+function SlotCards({ slots, busy, onCreate, onOpenInSession }) {
+  if (slots.length === 0) return null;
+  return <div className="schedule-card-grid">
+    {slots.map((slot) => {
+      const state = slotState(slot);
+      return <article className={`schedule-card is-${state}`} key={slot.id}>
+        <div className="schedule-card-date">{slotCardDate(slot.date)}</div>
+        <b>{slot.workout_name}</b>
+        <p>{slot.group_name}</p>
+        <div className="schedule-card-state">{CARD_STATE_COPY[state]}</div>
+
+        {/* Staging happens HERE, on the slot — this is where a coach looks to
+            ask "what is Monday?". */}
+        {state === "planned" && <button type="button" className="schedule-card-primary"
+          disabled={Boolean(busy)} onClick={() => onCreate(slot)}>
+          {busy === `create-${slot.id}` ? "Setting up..." : "Stage this day"}
+        </button>}
+
+        {/* A staged day is STARTED in SESSION, not here — see the note on the
+            list's Start button below. This carries the coach there. */}
+        {state === "ready" && <button type="button"
+          onClick={() => onOpenInSession(slot)}>Open in session</button>}
+      </article>;
+    })}
+  </div>;
+}
 
 function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
   const state = slotState(slot);
@@ -67,7 +116,7 @@ function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
   </article>;
 }
 
-export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onStaged }) {
+export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onStaged, onOpenSession }) {
   const [slots, setSlots] = useState([]);
   const [state, setState] = useState("loading");
   const [errors, setErrors] = useState([]);
@@ -76,6 +125,14 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onSt
   // Past days are hidden by default: the calendar is a thing a coach looks
   // FORWARD in, and a finished week pushes tomorrow off the screen.
   const [showPast, setShowPast] = useState(false);
+  // "list" or "cards". Defaults to the list because that is what this screen has
+  // always been, and a view that silently changed shape would be a worse
+  // surprise than one more button.
+  const [view, setView] = useState("list");
+  // The mockup's group dropdown. Empty means every group — worth having because
+  // a department running three groups sees three programs' slots interleaved by
+  // date, and "what is Varsity doing in August" is unanswerable from that.
+  const [groupFilter, setGroupFilter] = useState("");
   const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
 
   async function parseResponse(response, fallback) {
@@ -157,18 +214,40 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onSt
     (body) => `“${slot.workout_name}” moved to ${scheduleDayLabel(body.date)}. Nothing else in the block moved.`,
   );
 
-  const visible = showPast ? slots : slots.filter((slot) => !isPastDate(slot.date));
+  // One filter chain feeding BOTH views, so they can never disagree about which
+  // slots exist — see the note on SlotCards.
+  const inGroup = (slot) => !groupFilter || String(slot.group_name) === groupFilter;
+  const visible = (showPast ? slots : slots.filter((slot) => !isPastDate(slot.date))).filter(inGroup);
   const days = groupSlotsByDate(visible);
   const pastCount = slots.length - slots.filter((slot) => !isPastDate(slot.date)).length;
+  // Read off the slots rather than fetched: the calendar already knows every
+  // group it is showing, and asking /api/training-groups/ would list groups with
+  // nothing on the calendar — options that filter to an empty screen.
+  const groupNames = [...new Set(slots.map((slot) => slot.group_name).filter(Boolean))].sort();
 
   return <div className="schedule-workspace">
     <header className="workout-catalog-heading">
       <div>
         <span>Training calendar</span>
-        <h2>Scheduled days</h2>
+        <h2>Scheduled days{view === "cards" && slotMonthRange(visible) ? ` · ${slotMonthRange(visible)}` : ""}</h2>
         <p>Generated when a block was deployed. Setting a day up creates its session and roster — it does not start it.</p>
       </div>
-      <b>{visible.length} day{visible.length === 1 ? "" : "s"}</b>
+      <div className="schedule-header-controls">
+        {groupNames.length > 1 && <select aria-label="Filter by group" value={groupFilter}
+          onChange={(event) => setGroupFilter(event.target.value)}>
+          <option value="">All groups</option>
+          {groupNames.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>}
+        {/* Two ways to look at one set of days. Neither is a mode the coach can
+            get stuck in — it is the same data either way. */}
+        <div className="schedule-view-toggle" role="group" aria-label="Calendar view">
+          <button type="button" className={view === "list" ? "is-on" : ""}
+            aria-pressed={view === "list"} onClick={() => setView("list")}>List</button>
+          <button type="button" className={view === "cards" ? "is-on" : ""}
+            aria-pressed={view === "cards"} onClick={() => setView("cards")}>Cards</button>
+        </div>
+        <b>{visible.length} day{visible.length === 1 ? "" : "s"}</b>
+      </div>
     </header>
 
     {pastCount > 0 && <div className="schedule-past-toggle">
@@ -189,11 +268,20 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh, onSt
       No scheduled days. A block needs training days and a duration for its calendar to be generated — deploy one from the Workouts tab.
     </p>}
 
-    <div className="schedule-day-list">{days.map((day) => <section className="schedule-day" key={day.date}>
-      <header><h4>{scheduleDayLabel(day.date)}</h4><span>{day.slots.length} session{day.slots.length === 1 ? "" : "s"}</span></header>
-      <div className="schedule-slot-list">{day.slots.map((slot) => <SlotRow
-        key={slot.id} slot={slot} slots={slots} busy={busy}
-        onCreate={createDay} onStart={startDay} onMove={moveDay} />)}</div>
-    </section>)}</div>
+    {view === "cards"
+      ? <>
+          <SlotCards slots={visible} busy={busy} onCreate={createDay}
+            onOpenInSession={() => onOpenSession && onOpenSession()} />
+          <p className="schedule-card-note">
+            Staging happens here, on the day itself — this is where you ask “what is Monday?”.
+            A staged day is <b>not running</b>: it holds no racks until it is started in Session.
+          </p>
+        </>
+      : <div className="schedule-day-list">{days.map((day) => <section className="schedule-day" key={day.date}>
+          <header><h4>{scheduleDayLabel(day.date)}</h4><span>{day.slots.length} session{day.slots.length === 1 ? "" : "s"}</span></header>
+          <div className="schedule-slot-list">{day.slots.map((slot) => <SlotRow
+            key={slot.id} slot={slot} slots={slots} busy={busy}
+            onCreate={createDay} onStart={startDay} onMove={moveDay} />)}</div>
+        </section>)}</div>}
   </div>;
 }

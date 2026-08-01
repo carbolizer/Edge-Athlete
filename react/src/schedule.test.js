@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { groupSlotsByDate, isPastDate, moveDateChoices, scheduleDayLabel,
-         scheduleUrl, scheduleWindow, slotAction, slotState } from "./schedule.js";
+         scheduleUrl, scheduleWindow, slotAction, slotCardDate, slotMonthRange,
+         slotState } from "./schedule.js";
 
 const planned = { id: 1, date: "2026-08-05", training_program: 3, session: null,
                   session_started_at: null, session_ended_at: null };
@@ -157,5 +158,55 @@ describe("moveDateChoices", () => {
 
   it("returns nothing for a slot with an unusable date", () => {
     expect(moveDateChoices({ id: 1, date: "nope", training_program: 3 }, [])).toEqual([]);
+  });
+});
+
+// ── the card view's two labels ──────────────────────────────────────────────
+
+describe("slotCardDate", () => {
+  // The bug this guards is the one scheduleDayLabel already documents:
+  // new Date("2026-08-03") is midnight UTC, which is Aug 2 in the Americas, so
+  // every card in the grid would show the wrong day.
+  it("reads the date as local, not UTC", () => {
+    expect(slotCardDate("2026-08-03")).toBe("Mon 3");
+  });
+
+  it("is compact — weekday and day number only, no month", () => {
+    expect(slotCardDate("2026-08-05")).toBe("Wed 5");
+    expect(slotCardDate("2026-12-25")).toBe("Fri 25");
+  });
+
+  it("hands back anything it cannot parse rather than showing NaN", () => {
+    expect(slotCardDate("nope")).toBe("nope");
+    expect(slotCardDate(null)).toBe("null");
+  });
+});
+
+describe("slotMonthRange", () => {
+  const on = (date) => ({ date });
+
+  it("names one month and its year", () => {
+    expect(slotMonthRange([on("2026-08-03"), on("2026-08-28")])).toBe("August 2026");
+  });
+
+  // The default window is a fortnight back and eight weeks on, so spanning two
+  // or three months is the ordinary case, not the edge case.
+  it("spans months in one year, naming the year once", () => {
+    expect(slotMonthRange([on("2026-08-03"), on("2026-10-01")])).toBe("August – October 2026");
+  });
+
+  it("names both years when the window crosses new year", () => {
+    expect(slotMonthRange([on("2026-12-20"), on("2027-01-10")]))
+      .toBe("December 2026 – January 2027");
+  });
+
+  // Slots arrive date-ordered, but nothing guarantees it, so it sorts.
+  it("does not depend on the slots arriving in order", () => {
+    expect(slotMonthRange([on("2026-10-01"), on("2026-08-03")])).toBe("August – October 2026");
+  });
+
+  it("says nothing when there are no slots", () => {
+    expect(slotMonthRange([])).toBe("");
+    expect(slotMonthRange(null)).toBe("");
   });
 });
