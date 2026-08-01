@@ -492,14 +492,27 @@
 .history-table caption { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
 .history-table th { color:var(--muted); font-size:9px; font-weight:900; letter-spacing:.11em; padding:8px 10px; text-align:left; text-transform:uppercase; white-space:nowrap; }
 .history-table td { border-top:1px solid var(--line); padding:11px 10px; white-space:nowrap; }
-.history-table tr.is-open td { background:rgba(169,240,77,.06); }
+/* THE WHOLE ROW is the control, not the date inside it — a coach aiming at a
+   date in a table of numbers is aiming at the smallest thing on the line. The
+   date is therefore styled as a heading rather than as a link: no underline,
+   nothing that says "click this bit specifically". The row's hover and cursor
+   carry the affordance instead. */
+.history-table tbody tr { cursor:pointer; }
+.history-table tbody tr:hover td { background:rgba(169,240,77,.05); }
+.history-table tbody tr:hover .history-row-open { color:var(--lime); }
+.history-table tr.is-open td { background:rgba(169,240,77,.09); }
+.history-table tr.is-open .history-row-open { color:var(--lime); }
 .history-table td b { font-size:14px; font-weight:700; }
 .history-table td small { color:var(--muted); }
 
-/* The date is the control. The whole row would be a bigger target, but a row
-   full of numbers that is also a button reads as neither. */
-.history-row-open { background:none; border:0; color:var(--lime); cursor:pointer; font:inherit; font-size:13px; font-weight:650; padding:0; text-align:left; text-decoration:underline; text-underline-offset:3px; }
-.history-row-open:hover { color:var(--ink); }
+/* Scoped to the table on purpose. `.monitor button { font:inherit }` near the
+   top of this file is specificity (0,1,1) and its `font` shorthand resets
+   size and weight — a bare `.history-row-open` (0,1,0) loses to it and the date
+   silently renders at the table's 12px/400 instead. */
+.history-table .history-row-open { background:none; border:0; color:var(--ink); cursor:pointer; font-family:inherit; font-size:14px; font-weight:750; letter-spacing:-.01em; padding:0; text-align:left; }
+/* Keyboard users get a visible ring — without it the only clickable thing in
+   the table would be invisible to anyone not using a mouse. */
+.history-row-open:focus-visible { outline:2px solid var(--lime); outline-offset:3px; }
 
 .history-trend { font-weight:800; }
 .history-trend.up { color:var(--mint); }

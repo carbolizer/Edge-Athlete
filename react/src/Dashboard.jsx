@@ -450,11 +450,16 @@ function HistorySetCard({ workoutSet, expanded, onToggle }) {
 // alone is unreadable to anyone colour-blind and this is the column the whole
 // table exists for.
 function TrendCell({ trend, change }) {
+  // Nothing behind this day to compare against.
   if (!trend) return <span className="history-trend flat">—</span>;
-  const glyph = { up: "▲", down: "▼", flat: "—" }[trend];
-  const word = { up: "Faster", down: "Slower", flat: "Level" }[trend];
+  // Flat is just the number. A glyph, the word "Level" and 0.00 were three ways
+  // of saying the same thing; the number alone says it once.
+  if (trend === "flat") return <span className="history-trend flat">{signed(change)}</span>;
+  // Up and down keep the word as well as the colour and the arrow — red/green
+  // alone is unreadable to anyone colour-blind, and this is the column the whole
+  // table exists for.
   return <span className={`history-trend ${trend}`}>
-    {glyph} {word}{change === null ? "" : ` ${signed(change)}`}
+    {trend === "up" ? "▲" : "▼"} {trend === "up" ? "Faster" : "Slower"} {signed(change)}
   </span>;
 }
 
@@ -481,9 +486,18 @@ function HistoryTab({ context }) {
       </tr></thead>
       <tbody>{summaries.map((row) => {
         const open = row.key === openDayKey;
-        return <tr key={row.key} className={open ? "is-open" : ""}>
-          <td><button type="button" className="history-row-open" aria-expanded={open}
-            onClick={() => setOpenDayKey(open ? null : row.key)}>
+        const toggle = () => setOpenDayKey(open ? null : row.key);
+        // The whole row is the target — a coach aiming at a date in a table of
+        // numbers is aiming at the smallest thing on the line.
+        //
+        // The button stays because the row cannot: a <tr> is not focusable and
+        // carries no role, so keyboard and screen-reader users would lose the
+        // control entirely. The row guards against the button's own click
+        // bubbling up and toggling twice, which would look like nothing
+        // happened.
+        return <tr key={row.key} className={open ? "is-open" : ""}
+          onClick={(event) => { if (!event.target.closest("button")) toggle(); }}>
+          <td><button type="button" className="history-row-open" aria-expanded={open} onClick={toggle}>
             {historyDayLabel(row.endedAt)}
           </button></td>
           <td>{row.workoutCount}</td>
