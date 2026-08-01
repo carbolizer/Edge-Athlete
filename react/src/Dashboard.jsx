@@ -29,7 +29,7 @@
 // What is NOT here, on purpose: assigning athletes or workouts to a rack ahead
 // of time. See the D8 note further down.
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import "./App.css";
 import { navigate } from "./router.js";
 import { coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
@@ -471,7 +471,6 @@ function HistoryTab({ context }) {
   if (!context.sets?.length) return <NothingRecordedYet what="set history" />;
   const days = groupHistorySets(context.sets);
   const summaries = summariseTrainingDays(days);
-  const openDay = days.find((day) => day.key === openDayKey) || null;
   return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>The last few days this athlete trained. Open one for its workouts, sets and rep-by-rep comparison.</p></header>
     {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}
     {days.length === 0 && <StatePanel title="No completed training days" body="Completed sets will be organized here by day and workout." />}
@@ -495,17 +494,33 @@ function HistoryTab({ context }) {
         // control entirely. The row guards against the button's own click
         // bubbling up and toggling twice, which would look like nothing
         // happened.
-        return <tr key={row.key} className={open ? "is-open" : ""}
-          onClick={(event) => { if (!event.target.closest("button")) toggle(); }}>
-          <td><button type="button" className="history-row-open" aria-expanded={open} onClick={toggle}>
-            {historyDayLabel(row.endedAt)}
-          </button></td>
-          <td>{row.workoutCount}</td>
-          <td>{row.sets}</td>
-          <td>{row.reps}</td>
-          <td><b>{velocity(row.avgVelocity)}</b> <small>m/s</small></td>
-          <td><TrendCell trend={row.trend} change={row.change} /></td>
-        </tr>;
+        // The detail opens as the NEXT ROW, directly under the day it belongs
+        // to. Rendered after the table it read as a panel about nothing in
+        // particular — a coach who opened the eleventh day had to scroll past
+        // ten unrelated rows to find out what they had just clicked.
+        const day = open ? days.find((candidate) => candidate.key === row.key) : null;
+        return <Fragment key={row.key}>
+          <tr className={open ? "is-open" : ""}
+            onClick={(event) => { if (!event.target.closest("button")) toggle(); }}>
+            <td><button type="button" className="history-row-open" aria-expanded={open} onClick={toggle}>
+              {historyDayLabel(row.endedAt)}
+            </button></td>
+            <td>{row.workoutCount}</td>
+            <td>{row.sets}</td>
+            <td>{row.reps}</td>
+            <td><b>{velocity(row.avgVelocity)}</b> <small>m/s</small></td>
+            <td><TrendCell trend={row.trend} change={row.change} /></td>
+          </tr>
+          {day && <tr className="history-detail-row"><td colSpan={6}>
+            <section className="history-day">
+              <header className="history-day-heading"><div><span>Training day</span><h4>{historyDayLabel(day.endedAt)}</h4></div><dl><div><dt>Workouts</dt><dd>{day.workouts.length}</dd></div><div><dt>Sets</dt><dd>{day.sets}</dd></div><div><dt>Reps</dt><dd>{day.reps}</dd></div></dl><button type="button" className="history-day-close" onClick={() => setOpenDayKey(null)}>Close</button></header>
+              <div className="history-workout-list">{day.workouts.map((workout) => <section className="history-workout" key={workout.key}>
+                <header><div><span>Workout</span><h5>{workout.label}</h5></div><p>{workout.sets.length} set{workout.sets.length === 1 ? "" : "s"} · {workout.reps} reps</p></header>
+                <div className="history-set-list">{workout.sets.map((workoutSet) => <HistorySetCard workoutSet={workoutSet} expanded={expandedSetId === workoutSet.id} onToggle={() => setExpandedSetId(expandedSetId === workoutSet.id ? null : workoutSet.id)} key={workoutSet.id} />)}</div>
+              </section>)}</div>
+            </section>
+          </td></tr>}
+        </Fragment>;
       })}</tbody>
     </table></div>
     {/* ⚠️ Said out loud rather than left for a coach to discover. The average
@@ -517,13 +532,6 @@ function HistoryTab({ context }) {
       programmed rather than the athlete. Open a day to compare like for like.
     </p>
 
-    {openDay && <div className="history-day-list">{[openDay].map((day) => <section className="history-day" key={day.key}>
-      <header className="history-day-heading"><div><span>Training day</span><h4>{historyDayLabel(day.endedAt)}</h4></div><dl><div><dt>Workouts</dt><dd>{day.workouts.length}</dd></div><div><dt>Sets</dt><dd>{day.sets}</dd></div><div><dt>Reps</dt><dd>{day.reps}</dd></div></dl><button type="button" className="history-day-close" onClick={() => setOpenDayKey(null)}>Close</button></header>
-      <div className="history-workout-list">{day.workouts.map((workout) => <section className="history-workout" key={workout.key}>
-        <header><div><span>Workout</span><h5>{workout.label}</h5></div><p>{workout.sets.length} set{workout.sets.length === 1 ? "" : "s"} · {workout.reps} reps</p></header>
-        <div className="history-set-list">{workout.sets.map((workoutSet) => <HistorySetCard workoutSet={workoutSet} expanded={expandedSetId === workoutSet.id} onToggle={() => setExpandedSetId(expandedSetId === workoutSet.id ? null : workoutSet.id)} key={workoutSet.id} />)}</div>
-      </section>)}</div>
-    </section>)}</div>}
   </section></div>;
 }
 

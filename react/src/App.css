@@ -519,6 +519,13 @@
 .history-trend.down { color:var(--coral); }
 .history-trend.flat { color:var(--muted); }
 
+/* The opened day, sitting as a row directly under the day it belongs to. No
+   cell padding — the card brings its own — and no hover tint, because this row
+   is content rather than another target. */
+.history-detail-row > td { background:rgba(169,240,77,.04); border-top:0; cursor:default; padding:0 0 14px; }
+.history-table tbody tr.history-detail-row:hover > td { background:rgba(169,240,77,.04); }
+.history-detail-row .history-day { margin:0; }
+
 .history-table-note { color:var(--muted); font-size:11px; margin:10px 0 0; }
 .history-day-close { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:800; letter-spacing:.07em; min-height:34px; padding:6px 12px; text-transform:uppercase; }
 .history-day-close:hover { border-color:var(--lime); color:var(--lime); }
