@@ -29,7 +29,7 @@
 // What is NOT here, on purpose: assigning athletes or workouts to a rack ahead
 // of time. See the D8 note further down.
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { navigate } from "./router.js";
 import { coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
@@ -230,6 +230,77 @@ function WallInsights({ insights }) {
   );
 }
 
+// The wall's settings cog — the mirror of the coach's Room Layout button.
+//
+// It holds one thing: Change device role. That used to be a labelled button
+// sitting in the wall header permanently, which is a lot of room to give a
+// control used once, when the room is built.
+//
+// ⚠️ IT ASKS FIRST, AND THE COACH SCREEN DOES NOT. The difference is that
+// nobody is standing at this one. It is a scoreboard on a wall in a room full
+// of people, and a stray press blanks it until someone finds the tablet and
+// picks a role again. The coach tablet is in a coach's hands; this is not.
+//
+// Closes on Escape and on a click anywhere else, so a panel opened by accident
+// does not sit over the scoreboard for the rest of the session.
+function WallSettings() {
+  const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const root = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = () => { setOpen(false); setConfirming(false); };
+    // ⚠️ mousedown, NOT click, and a ref rather than a selector.
+    //
+    // On click this closed the panel the moment you pressed anything inside it.
+    // React re-renders before the document-level click handler runs, so by then
+    // the button that was pressed is DETACHED — and `closest('.wall-settings')`
+    // on a detached node walks a tree that no longer contains the wrapper, comes
+    // back null, and the panel decides the click was outside itself.
+    //
+    // mousedown fires before React's click handler and before any re-render, so
+    // the node is still in the document and `contains` gives a true answer.
+    const onPointer = (event) => { if (!root.current?.contains(event.target)) close(); };
+    const onKey = (event) => { if (event.key === "Escape") close(); };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="wall-settings" ref={root}>
+      <button type="button" className="wall-settings-cog" aria-expanded={open} aria-haspopup="dialog"
+        title="Dashboard settings" aria-label="Dashboard settings"
+        onClick={() => { setOpen(!open); setConfirming(false); }}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.66.79 1.11 1.51 1.09H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+
+      {open && <div className="wall-settings-panel" role="dialog" aria-label="Dashboard settings">
+        <span className="wall-settings-title">Dashboard settings</span>
+        {confirming
+          ? <>
+              <p>This screen stops showing the scoreboard until someone picks a role again.</p>
+              <div className="wall-settings-actions">
+                <button type="button" onClick={() => setConfirming(false)}>Cancel</button>
+                <button type="button" className="is-danger" onClick={changeDeviceRole}>Change it</button>
+              </div>
+            </>
+          : <button type="button" className="wall-settings-item" onClick={() => setConfirming(true)}>
+              Change device role
+            </button>}
+      </div>}
+    </div>
+  );
+}
+
 function WallView({ monitor }) {
   const { requestState, connectionState, refresh } = monitor;
   const display = wallDisplayState(monitor);
@@ -255,8 +326,15 @@ function WallView({ monitor }) {
           <span>Now training</span>
           <h1>{roomState.session.label}</h1>
         </div>
-        <ConnectionBadge connectionState={connectionState} requestState={requestState} />
-        <button className="coach-logout" onClick={changeDeviceRole}>Change device role</button>
+        {/* Badge and cog share ONE grid cell. `.wall-topbar` is a three-column
+            grid, so a fourth child wraps onto a second row — which is what the
+            cog did on its own. */}
+        <div className="wall-topbar-actions">
+          <ConnectionBadge connectionState={connectionState} requestState={requestState} />
+          {/* Change device role moved in here. A scoreboard should spend its
+              header on the room, not on a control used once when it is set up. */}
+          <WallSettings />
+        </div>
       </header>
 
       <section className={`wall-movement-board ${movement.waiting ? "waiting" : ""}`}>

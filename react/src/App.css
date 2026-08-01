@@ -37,7 +37,9 @@
 .wall-session { text-align:center; }
 .wall-session>span,.coach-session-title>span { color:var(--lime); font-size:10px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
 .wall-session h1 { font-size:25px; letter-spacing:-.035em; margin:2px 0 0; }
-.wall-topbar .monitor-connection { justify-self:end; }
+/* One cell holding both, so the three-column grid above still gets exactly
+   three children and nothing wraps onto a second row. */
+.wall-topbar-actions { align-items:center; display:flex; gap:12px; justify-self:end; }
 .coach-summary-strip span { color:var(--muted); font-size:9px; font-weight:850; letter-spacing:.11em; text-transform:uppercase; }
 .wall-content { display:grid; gap:18px; grid-template-columns:minmax(0,1fr) minmax(290px,25vw); min-height:0; padding:18px 28px; }
 .wall-rack-grid { display:grid; gap:12px; grid-auto-rows:minmax(210px,1fr); grid-template-columns:repeat(3,minmax(0,1fr)); min-height:0; overflow-y:auto; }
@@ -106,7 +108,23 @@
 .coach-topbar { align-items:center; border-bottom:1px solid var(--line); display:grid; gap:24px; grid-template-columns:auto 1fr auto; min-height:72px; padding:10px 24px; }
 .coach-topbar-actions { align-items:center; display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
 .coach-session-title h1 { font-size:20px; letter-spacing:-.035em; margin:1px 0 0; }
-.coach-logout { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font-size:11px; padding:8px 11px; }
+/* ── the wall's settings cog ──────────────────────────────────────────────
+   Replaces the permanent "Change device role" button that used to sit in the
+   wall header. Icon-only: a scoreboard should spend its header on the room. */
+.wall-settings { position:relative; }
+.wall-settings-cog { align-items:center; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; height:34px; justify-content:center; width:34px; }
+.wall-settings-cog:hover { border-color:var(--lime); color:var(--lime); }
+
+.wall-settings-panel { background:var(--panel); border:1px solid var(--line); min-width:230px; padding:12px; position:absolute; right:0; top:42px; z-index:40; }
+.wall-settings-title { color:var(--lime); display:block; font-size:9px; font-weight:900; letter-spacing:.13em; margin-bottom:9px; text-transform:uppercase; }
+.wall-settings-panel p { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 11px; }
+.wall-settings-item { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; font:inherit; font-size:12px; padding:9px 11px; text-align:left; width:100%; }
+.wall-settings-item:hover { border-color:var(--lime); color:var(--lime); }
+.wall-settings-actions { display:flex; gap:8px; }
+.wall-settings-actions button { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; flex:1; font:inherit; font-size:12px; padding:9px 10px; }
+/* Coral, not lime. This one stops the scoreboard. */
+.wall-settings-actions button.is-danger { border-color:var(--coral); color:var(--coral); }
+.wall-settings-actions button.is-danger:hover { background:var(--coral); color:#1a0508; }
 /* Square icon button, sized to match the height of the text buttons beside it. */
 .coach-icon-button { align-items:center; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; height:31px; justify-content:center; padding:0; width:31px; }
 .coach-icon-button:hover { border-color:var(--lime); color:var(--lime); }
