@@ -1,18 +1,25 @@
 """wifi_config.py — change the base station's Wi-Fi (AP) password from the app.
 
-⚠️ THE WEB APP IS NOT ALLOWED TO TOUCH THE HOST NETWORK, on purpose. Django runs
-in a container; the Wi-Fi AP is the host's, driven by `nmcli` through
-NetworkManager. Handing this container the privileges to run nmcli (host network,
-NET_ADMIN, D-Bus) would make the most exposed service in the building able to
-reconfigure the building — a bad trade on a lean, closed box.
+THE "WORK-ORDER SLIP" HANDSHAKE (this file is one of six that share it).
+Picture the base station as a building. This coach app is a front-desk clerk who
+is deliberately NOT given keys to the electrical panel (the machine's network).
+Changing the Wi-Fi means flipping a switch on that panel — a root-only job. We
+do not hand the front desk those keys, because it is the part of the building
+most exposed to the outside; if anything gets broken into, it's here.
 
-So this endpoint only writes INTENT: it drops the requested password into a spool
-file. A privileged HOST agent — the systemd path-unit edgeathlete-wifi-apply.path
-installed by setup.sh — watches that file and runs scripts/basestation/apply-wifi.sh
-as root, on the host, to do the actual nmcli work. The web container never runs
-nmcli. On a real base station the spool dir is bind-mounted in
-(docker-compose.basestation.yml); on a dev box it is not, so the endpoint answers
-"no base station here" instead of pretending to change anything.
+So the clerk does not touch the panel. It writes the new password on a
+work-order slip and drops it in an inbox tray. A maintenance worker who DOES
+have the keys picks it up and does the job. The pieces:
+
+  * this file           — the clerk: writes the slip (the spool file)
+  * apply-wifi.sh       — the maintenance worker: has the keys, does the work
+  * setup.sh            — puts the worker on watch (the systemd path-unit)
+  * docker-compose.basestation.yml — the shared room the tray sits in (the mount)
+
+So all this endpoint does is write INTENT: it drops the requested password into
+a spool file and returns. It never runs nmcli. On a real base station the spool
+dir is bind-mounted in; on a dev laptop it is not, so the endpoint answers "no
+base station here" instead of pretending to change anything.
 
 That split also fixes a problem live-apply would otherwise have: applying the new
 password disconnects every device INCLUDING the coach's own tablet, so a

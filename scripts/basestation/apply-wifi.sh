@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # apply-wifi.sh — apply a Wi-Fi password change the coach app requested.
 #
-# This is the PRIVILEGED HALF of "change the Wi-Fi password from the app". The
-# web container is deliberately not allowed to run nmcli (it is the most exposed
-# service; it must not be able to reconfigure the host network), so instead it
-# drops the new password into a spool file. A systemd path-unit watches that file
-# and runs THIS, as root, on the host — where the network privilege already
-# lives. See wifi_config.py for the other half.
+# THE "WORK-ORDER SLIP" HANDSHAKE (this file is one of six that share it).
+# Picture the base station as a building. The coach app is a front-desk clerk
+# with no keys to the electrical panel (the network); changing the Wi-Fi means
+# flipping a switch on that panel, which is a root-only job. So the clerk just
+# writes the new password on a work-order slip (a spool file) and drops it in an
+# inbox tray.
+#
+# THIS SCRIPT IS THE MAINTENANCE WORKER. It is the one with the keys. A systemd
+# path-unit keeps it watching the inbox tray; when a slip appears it picks it up,
+# checks the slip is sane, flips the switch (runs nmcli, as root, on the host),
+# and bins the slip. Keeping the keys here — out of the exposed web container —
+# is the whole point. See wifi_config.py for the clerk's side.
 #
 # Triggered by edgeathlete-wifi-apply.path (installed by setup.sh). Not run by
 # hand normally, but safe to: with no request file it does nothing.

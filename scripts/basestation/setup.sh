@@ -195,10 +195,12 @@ systemctl daemon-reload
 systemctl enable edgeathlete.service
 
 echo "[9b] installing the Wi-Fi-change agent..."
-# The privileged half of "change the Wi-Fi password from the app". The coach app
-# (in a container) writes a request file; this path-unit notices it and runs
-# apply-wifi.sh as root on the host to do the nmcli work. Keeping nmcli here, out
-# of the web container, is the whole point — see apply-wifi.sh.
+# THE "WORK-ORDER SLIP" HANDSHAKE (see apply-wifi.sh for the full picture).
+# The coach app (a front-desk clerk in a container) leaves a work-order slip when
+# it wants the Wi-Fi password changed; a maintenance worker on the host does the
+# actual job. THIS STEP PUTS THE WORKER ON WATCH: the .path unit keeps an eye on
+# the inbox tray (the request file), and the .service is the worker it calls when
+# a slip appears. Both run as root — the worker needs the keys nmcli requires.
 chmod +x "$PROJECT_DIR/scripts/basestation/apply-wifi.sh"
 cat > /etc/systemd/system/edgeathlete-wifi-apply.service <<EOF
 [Unit]

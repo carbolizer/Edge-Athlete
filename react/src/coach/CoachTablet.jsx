@@ -75,15 +75,19 @@ async function copyToClipboard(text) {
   try { await navigator.clipboard.writeText(text); return true } catch { return false }
 }
 
-// The Wi-Fi password change form — one component, opened from two places (the
-// banner link and the always-on button on this page). A modal so it can be
-// reached from either without navigating away.
+// The Wi-Fi password change form — THE FRONT DESK in the "work-order slip"
+// handshake (see django/event_handler/wifi_config.py for the full picture).
+// Picture the base station as a building: this form is where the coach fills out
+// the request. It cannot flip the switch itself — a web app has no keys to a
+// device's Wi-Fi — so it hands the request to the clerk (the endpoint), who
+// leaves a slip for the maintenance worker on the host to carry out.
 //
-// It has two faces: the entry form, and — after a successful change, or on any
-// later open while a recent change is still remembered — a "here is the new
-// password, copy it and reconnect in Settings" view. That second face IS the
-// catch-all: a web app cannot change this tablet's OS Wi-Fi, so the most it can
-// do is hand the coach the password and point them at Settings.
+// Opened from two places (the banner link and the always-on button), as a modal
+// so either works without navigating away. It has two faces: the entry form,
+// and — after a change, or on any later open while a recent one is remembered —
+// a "here is the new password, copy it and reconnect in Settings" view. That
+// second face matters because changing the Wi-Fi drops THIS tablet too, and no
+// web app can rejoin it for you; the most it can do is hand you the password.
 //
 // Re-auth is deliberate: the coach is already logged in, but changing the gym
 // Wi-Fi is a standing-config change, so it costs the coach password again.

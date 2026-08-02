@@ -150,10 +150,12 @@ cd "$PROJECT_DIR" || {
 # boolean — it is never sent anywhere.
 export AP_PASSWORD
 
-# The base-station overlay is added on top of the base compose file. It grants the
-# django container the one host mount it needs so a Wi-Fi-password change from the
-# app reaches the host agent. It lives only in startup.sh (i.e. only on a real
-# base station) — a plain `docker compose up` on a dev box never includes it.
+# THE "WORK-ORDER SLIP" HANDSHAKE (see apply-wifi.sh for the full picture).
+# The base-station overlay is what OPENS THE SHARED ROOM each morning: it gives
+# the coach app (a front-desk clerk in a container) the one host folder where it
+# can leave a work-order slip to change the Wi-Fi password, so the maintenance
+# worker on the host can pick it up. Added only here — i.e. only on a real base
+# station — so a plain `docker compose up` on a dev box never opens that room.
 BASE_OVERLAY="$PROJECT_DIR/docker-compose.basestation.yml"
 COMPOSE_ARGS=(-f "$PROJECT_DIR/docker-compose.yml")
 [ -f "$BASE_OVERLAY" ] && COMPOSE_ARGS+=(-f "$BASE_OVERLAY")
