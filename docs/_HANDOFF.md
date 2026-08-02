@@ -107,7 +107,8 @@ constant in the repo into one file makes things harder to find, not easier. Keep
 | **`default_weight_lbs` is a v1-report field only** | Reports read it for schema-version-1 snapshots. Nothing writes it any more. It is *not* a live plan field — the live plan stores `target_percent` |
 | **Coach adjustments look exactly like real sets** | `Set.is_coach_adjustment` marks a row a coach wrote to move an athlete's working weight. It has `ended_at` and `weight_lbs` like any completed set. **Every** new query over `Set` must consciously include or exclude it — SPEC §6.5 has the exhaustive list |
 | **NULLs sort FIRST descending in Postgres** | `started_at` is nullable now. Order by `-started_at` without excluding nulls and an unstarted future session comes back as "newest" |
-| **The containers bake their source** | No volume mounts. `makemigrations` writes *inside* the container — copy it back or it vanishes on rebuild. [`_MIGRATION_PLAYBOOK.md`](_MIGRATION_PLAYBOOK.md) |
+| **The containers bake their source** | No volume mounts. `makemigrations` writes *inside* the container — copy it back or it vanishes on rebuild. [`_MIGRATION_PLAYBOOK.md`](_MIGRATION_PLAYBOOK.md). Same trap with `docker compose run` — it will happily reuse a stale image, so pass `--build` after changing code |
+| **`http://basestation` will not resolve on your laptop** | That name is handed out by the base station's own dnsmasq, so it exists only on the gym network — nothing is broken. The stack itself is already correct for it (`basestation` is in `ALLOWED_HOSTS`, nginx has no `server_name` restriction). Test it from a dev host without editing `/etc/hosts`: `curl --resolve basestation:80:127.0.0.1 http://basestation/` |
 
 ---
 
@@ -131,14 +132,47 @@ Not bugs — decisions nobody made yet, or work that stopped at a sensible line.
 
 ## 5. Ship prep that is NOT done
 
-- `SprintBranch` has not been fast-forwarded to `merge-braydon`. It is a **strict
-  fast-forward** — `SprintBranch` is 0 ahead, 75 behind — so there is no config
-  union to reconcile and no conflict possible. An earlier note here said otherwise;
-  that assumed the branches had diverged, and they never did.
-- **`.env.example` ships `DEBUG=True`.** That is the template every deployment
-  copies, and with DEBUG on Django serves full stack traces *and* the
-  `/api/dev/seed-session/` endpoint goes live — an endpoint that wipes data. The
-  guard in `dev_views.py` is written correctly; the shipped default disarms it.
+- ~~`SprintBranch` has not been fast-forwarded to `merge-braydon`.~~ **Done.** The
+  two now hold identical history, and `SprintBranch` has since moved 3 commits
+  ahead (the seed service, the simulator gate, the base-station scripts).
+  `SprintBranch` is the branch to ship from.
+
+### ⚠️ The `DEBUG=False` cliff — read this before you flip it
+
+`.env.example` ships `DEBUG=True`, and that is the template every deployment
+copies. Leaving it on is genuinely unsafe: Django serves full stack traces to
+anyone on the gym Wi-Fi, and `/api/dev/seed-session/` goes live — an endpoint
+that **wipes and recreates athletes and sessions**. The guard in `dev_views.py`
+is written correctly; the shipped default is what disarms it.
+
+But **turning it off is not a one-line change**, and finding that out in a gym
+would be a bad afternoon. Three things are load-bearing on `DEBUG=True` right
+now:
+
+1. **Static files vanish.** `nginx.conf` proxies `/static/admin/` and
+   `/static/rest_framework/` to Django, and there is **no `STATIC_ROOT`** in
+   settings — so `collectstatic` has nowhere to write. Today those files are
+   served by Django's staticfiles app, which only does that when `DEBUG=True`.
+   With it off, `runserver` refuses to serve static at all. The Django admin and
+   the DRF browsable API lose every stylesheet. Nothing crashes; the pages just
+   come out broken, with nothing useful in the log.
+2. **`runserver` is still the web server.** Django's own docs say don't. The
+   concurrency argument is weak here — it is multithreaded and this is a dozen
+   tablets on a closed network — but three things do bite: the autoreloader
+   polls the filesystem forever on a box that runs unattended for months and can
+   restart mid-request; nothing reaps a stuck request (no timeout, no worker
+   recycling); and one unhandled crash takes the whole process, which during a
+   training day means sets not saving until Docker restarts it.
+3. **`SECRET_KEY` is the committed dev key**, straight out of `.env.example`.
+
+**Do all of it as one change, not three.** Add `gunicorn` to `requirements.txt`
+and make it the `CMD`; set `STATIC_ROOT` and run `collectstatic` in the image
+build; generate a real `SECRET_KEY`; then set `DEBUG=False`. Roughly an hour.
+Doing gunicorn on its own while keeping `DEBUG=True` gets you the worst of both.
+
+> Keeping `DEBUG=True` for a **demo** is a defensible call and was a deliberate
+> one — the coach page's seed button depends on it. Just never hand a real gym a
+> base station in that state.
 - **Dev tooling is still wired in:** `dev_views.py`, the `/api/dev/` route, and
   `<DevPanel/>` in `CoachTablet.jsx`. All three carry removal instructions.
 - `requests==2.31.0` is a dead dependency — its own comment says it was for Ntfy,
@@ -154,7 +188,7 @@ Not bugs — decisions nobody made yet, or work that stopped at a sensible line.
 
 Nine of the bugs found during this merge were found by **clicking**, and none by
 the test suite — every one of them a test asserting against a hand-built fixture
-instead of the real request path. The suite is 280 backend + 131 frontend tests
+instead of the real request path. The suite is 293 backend + 209 frontend tests
 and it is worth having, but it did not find the 500 on schedule deploy, the
 `PROTECT` that made programs undeletable, or the unvalidated end time that
 accepted the year 2020.
@@ -162,6 +196,14 @@ accepted the year 2020.
 When you add a test for a bug, **break the code on purpose and watch the test
 fail.** A test that passes against broken code is worse than no test — it is a
 green light with nothing behind it.
+
+The one place that habit has since been applied properly is the base-station
+scripts (`scripts/basestation/tests/run.sh`). They run the *real* scripts inside
+Debian with the hardware commands stubbed, and they caught two bugs nobody would
+have seen until the box was in the gym: a boot script that died before starting
+the app whenever the Wi-Fi adapter refused AP mode, and an update that silently
+did nothing if anyone had ever edited a tracked file. Same idea works anywhere
+the thing under test is a script rather than a function.
 
 Good luck. It's a good system.
 
