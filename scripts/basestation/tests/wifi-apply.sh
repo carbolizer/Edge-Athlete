@@ -38,7 +38,9 @@ AP_IP_CIDR="192.168.4.1/24"
 EOF
   printf '%s\n' "$1" > /tmp/state/wifi-apply.request
 }
-run() { EDGE_CONFIG=/tmp/etc/basestation.conf EDGE_STATE=/tmp/state bash "$SRC" 2>&1; }
+# EDGE_APPLY_DELAY=0 so the pre-apply "let the broadcast land" pause doesn't slow
+# the tests — the delay is real-world timing, not logic under test.
+run() { EDGE_CONFIG=/tmp/etc/basestation.conf EDGE_STATE=/tmp/state EDGE_APPLY_DELAY=0 bash "$SRC" 2>&1; }
 
 echo "=== a valid change is applied live and persisted ==="
 setup_case "GymFloor2026!"

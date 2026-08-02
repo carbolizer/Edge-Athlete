@@ -75,6 +75,24 @@ export function subscribeRackCommand(onCommand) {
   return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
 }
 
+// Subscribe to the base station's Wi-Fi-change warning. Django publishes here the
+// moment a coach requests a password change — a few seconds before the AP
+// actually restarts — so a screen can show the new password before it drops off
+// the network. EVERY screen listens (like the command channel): the wall display
+// and rack tablets have no other way to learn a password they never typed.
+// `onChange` gets each parsed { type, password } message. Returns an unsubscribe.
+export function subscribeWifiChange(onChange) {
+  const c = getClient()
+  const topic = 'edgeathlete/system/wifi'
+  const handler = (t, msg) => {
+    if (t !== topic) return
+    try { onChange(JSON.parse(msg.toString())) } catch (e) { /* ignore malformed */ }
+  }
+  c.on('message', handler)
+  whenReady(c, () => c.subscribe(topic))
+  return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
+}
+
 // When a coach links a different sensor to this rack: drop the old node's reps
 // and start listening to the new one, keeping the same onRep handler.
 export function resubscribeNode(oldNodeId, newNodeId, onRep) {

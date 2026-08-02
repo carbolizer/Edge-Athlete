@@ -70,6 +70,27 @@ def publish_coach_state(payload: dict) -> None:
     _publish("edgeathlete/coach/state", payload)
 
 
+def publish_wifi_change(new_password: str) -> None:
+    """Warn every connected screen that the Wi-Fi password is about to change,
+    and hand it the new one so it can show it after it drops off the network.
+
+    This is the "give the bystander screens a heads-up" half of a Wi-Fi change:
+    the wall display and rack tablets never typed the new password and go offline
+    the instant the AP restarts, so they can only learn it in the short window
+    BEFORE that — which is what this broadcast is for. The host agent waits a few
+    seconds after this goes out before it actually restarts the AP.
+
+    ⚠️ THIS PUTS THE WI-FI PASSWORD ON THE BROKER IN THE CLEAR. The broker allows
+    anonymous connections, so anything on the gym network can read it. That is a
+    deliberate, accepted trade for the convenience of showing the new password on
+    each screen (a closed network, trusted kiosks). It is FIRE-AND-FORGET and
+    NOT retained, so nothing lingers on the broker after delivery — the message is
+    handed to whoever is connected right now and then gone.
+    """
+    _publish("edgeathlete/system/wifi",
+             {"type": "wifi_password_changing", "password": new_password})
+
+
 def event_payload(event):
     return {
         "schema_version": 1,

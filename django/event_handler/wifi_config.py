@@ -105,6 +105,15 @@ def change_wifi_password(request):
         return Response(
             {"error": "spool_write_failed", "detail": str(exc)}, status=503)
 
+    # Warn the OTHER screens (wall display, rack tablets) NOW, while they are
+    # still connected — the host agent waits a few seconds before it restarts the
+    # AP, so this reaches them before they drop. Lazy import so this module has no
+    # MQTT side-effects unless a change is actually made. Fire-and-forget: a
+    # missed broadcast just means a screen falls back to "reconnect in Settings"
+    # without showing the password — it never fails the change.
+    from .realtime.broadcast.publisher import publish_wifi_change
+    publish_wifi_change(new_password)
+
     return Response({
         "applied": True,
         "detail": "Wi-Fi password saved. Applying now — every device, including "

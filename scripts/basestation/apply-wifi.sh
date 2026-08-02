@@ -83,6 +83,13 @@ if [ -f "$CONFIG_FILE" ]; then
     log "updated $CONFIG_FILE"
 fi
 
+# Give the screens their heads-up before we pull the rug. Django already
+# broadcast the new password over MQTT when the request came in; this short pause
+# makes sure every connected screen has actually received and shown it before the
+# AP restarts and drops them. Without it, a fast apply could beat the broadcast.
+# Overridable so the test harness can set it to 0 instead of waiting for real.
+sleep "${EDGE_APPLY_DELAY:-3}"
+
 # Apply live. modify persists the new key into the NetworkManager profile (so it
 # survives a reboot); up re-applies it now, which is the moment every device
 # drops and must rejoin with the new password.

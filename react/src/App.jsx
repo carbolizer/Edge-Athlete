@@ -21,6 +21,7 @@ import RackScreen from './rack/RackScreen.jsx'
 import RackSetup from './rack/RackSetup.jsx'
 import CoachTablet from './coach/CoachTablet.jsx'
 import Dashboard from './Dashboard.jsx'
+import WifiChangeOverlay from './WifiChangeOverlay.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
@@ -231,7 +232,13 @@ export default function App() {
   // A rack device keeps the remote-command listener mounted across every route
   // (it stays put while the screen behind it changes), so `enter_setup` works
   // whether the tablet is live, waiting, or mid-session.
-  const isRack = localStorage.getItem('device_role') === 'rack'
+  const role = localStorage.getItem('device_role')
+  const isRack = role === 'rack'
+  // The wall display and rack tablets are the "bystander" screens: they never
+  // type the new Wi-Fi password and drop offline when it changes, so they get an
+  // overlay showing it. The coach tablet initiates the change and has its own
+  // copy-the-password flow, so it does not need this.
+  const isBystanderScreen = role === 'rack' || role === 'dashboard'
   return (
     // Keyed by pathname so navigating away from a broken screen clears the
     // error — otherwise one bad route would hold the whole app hostage until a
@@ -239,6 +246,7 @@ export default function App() {
     <ErrorBoundary key={pathname}>
       {route(pathname)}
       {isRack && <RackCommandListener />}
+      {isBystanderScreen && <WifiChangeOverlay />}
     </ErrorBoundary>
   )
 }

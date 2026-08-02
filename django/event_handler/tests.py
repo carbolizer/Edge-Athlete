@@ -3568,3 +3568,33 @@ class WifiPasswordChangeTests(APITestCase):
         res = self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
         self.assertEqual(res.status_code, 200)
         self.assertFalse(res.data["applied"])
+
+    def test_a_valid_change_warns_the_screens_with_the_new_password(self):
+        # The bystander screens (wall + racks) learn the password from this
+        # broadcast, since they drop offline before they could be told any other
+        # way. Patch the publisher's fire-and-forget hook and read what it sent.
+        from unittest.mock import patch
+        with patch("event_handler.realtime.broadcast.publisher._publish") as pub:
+            res = self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
+        self.assertEqual(res.status_code, 200)
+        pub.assert_called_once()
+        topic, payload = pub.call_args[0][0], pub.call_args[0][1]
+        self.assertEqual(topic, "edgeathlete/system/wifi")
+        self.assertEqual(payload["type"], "wifi_password_changing")
+        self.assertEqual(payload["password"], "a-good-gym-password")
+
+    def test_a_rejected_change_broadcasts_nothing(self):
+        # A bad password must never be announced to the screens.
+        from unittest.mock import patch
+        with patch("event_handler.realtime.broadcast.publisher._publish") as pub:
+            self._post(new_password="short", coach_password="s3cret-coach-pw")
+        pub.assert_not_called()
+
+    def test_no_base_station_broadcasts_nothing(self):
+        # Nothing was queued, so there is nothing to warn anyone about.
+        import os
+        from unittest.mock import patch
+        os.environ["WIFI_APPLY_SPOOL"] = "/nonexistent-dir-here/wifi-apply.request"
+        with patch("event_handler.realtime.broadcast.publisher._publish") as pub:
+            self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
+        pub.assert_not_called()
