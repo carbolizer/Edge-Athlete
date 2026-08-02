@@ -137,42 +137,39 @@ Not bugs — decisions nobody made yet, or work that stopped at a sensible line.
   ahead (the seed service, the simulator gate, the base-station scripts).
   `SprintBranch` is the branch to ship from.
 
-### ⚠️ The `DEBUG=False` cliff — read this before you flip it
+### The `DEBUG=False` cliff — mostly handled now
 
-`.env.example` ships `DEBUG=True`, and that is the template every deployment
-copies. Leaving it on is genuinely unsafe: Django serves full stack traces to
-anyone on the gym Wi-Fi, and `/api/dev/seed-session/` goes live — an endpoint
-that **wipes and recreates athletes and sessions**. The guard in `dev_views.py`
-is written correctly; the shipped default is what disarms it.
+This used to be a one-hour landmine. Phase 4 defused most of it, so flipping
+`DEBUG=False` is now close to a one-line change. What got done:
 
-But **turning it off is not a one-line change**, and finding that out in a gym
-would be a bad afternoon. Three things are load-bearing on `DEBUG=True` right
-now:
+- **gunicorn replaced `runserver`** as the Django `CMD`. It is the actual web
+  server now — a manager plus 3 workers, a per-request timeout, and one crash no
+  longer taking the whole process down.
+- **Static files survive the flip.** `STATIC_ROOT` is set, `collectstatic` runs
+  at image build, and WhiteNoise serves the admin + DRF stylesheets under
+  gunicorn regardless of `DEBUG`. Verified serving with `DEBUG=False`. (This was
+  the silent one — admin and DRF would have gone unstyled with nothing in the
+  log.)
+- **`SECRET_KEY` is generated per base station.** `setup.sh` writes a unique one
+  into `.env` at provision time, and `settings.py` **refuses to boot** with
+  `DEBUG=False` and no key rather than falling back to a placeholder. The coach
+  admin page also shows a banner while a shipped default is still live
+  (`GET /api/system/status/`).
+- **Healthchecks.** `/api/health/` does a real `SELECT 1`; the compose
+  healthcheck uses it, and nginx now waits for django to be *healthy*, not merely
+  started.
 
-1. **Static files vanish.** `nginx.conf` proxies `/static/admin/` and
-   `/static/rest_framework/` to Django, and there is **no `STATIC_ROOT`** in
-   settings — so `collectstatic` has nowhere to write. Today those files are
-   served by Django's staticfiles app, which only does that when `DEBUG=True`.
-   With it off, `runserver` refuses to serve static at all. The Django admin and
-   the DRF browsable API lose every stylesheet. Nothing crashes; the pages just
-   come out broken, with nothing useful in the log.
-2. **`runserver` is still the web server.** Django's own docs say don't. The
-   concurrency argument is weak here — it is multithreaded and this is a dozen
-   tablets on a closed network — but three things do bite: the autoreloader
-   polls the filesystem forever on a box that runs unattended for months and can
-   restart mid-request; nothing reaps a stuck request (no timeout, no worker
-   recycling); and one unhandled crash takes the whole process, which during a
-   training day means sets not saving until Docker restarts it.
-3. **`SECRET_KEY` is the committed dev key**, straight out of `.env.example`.
+**What is deliberately NOT done:** `.env.example` still ships `DEBUG=True`, by
+your call, so the coach page's seed button keeps working for the retrospective.
+That is the one thing left before a real gym:
 
-**Do all of it as one change, not three.** Add `gunicorn` to `requirements.txt`
-and make it the `CMD`; set `STATIC_ROOT` and run `collectstatic` in the image
-build; generate a real `SECRET_KEY`; then set `DEBUG=False`. Roughly an hour.
-Doing gunicorn on its own while keeping `DEBUG=True` gets you the worst of both.
+1. Set `DEBUG=False` in the base station's `.env`.
+2. Confirm `/api/dev/seed-session/` now refuses (it is DEBUG-gated) and, ideally,
+   strip the dev tooling entirely — `dev_views.py`, the `/api/dev/` route, and
+   `<DevPanel/>` (all carry removal instructions).
 
-> Keeping `DEBUG=True` for a **demo** is a defensible call and was a deliberate
-> one — the coach page's seed button depends on it. Just never hand a real gym a
-> base station in that state.
+The static/secret-key/server work that used to ride along with that flip is
+already in place, so it really is close to a one-liner now.
 - **Dev tooling is still wired in:** `dev_views.py`, the `/api/dev/` route, and
   `<DevPanel/>` in `CoachTablet.jsx`. All three carry removal instructions.
 - `requests==2.31.0` is a dead dependency — its own comment says it was for Ntfy,

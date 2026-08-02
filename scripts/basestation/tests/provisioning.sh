@@ -87,6 +87,15 @@ check "finds the repo where it actually is" "found the repo at $INSTALL" "$out1"
 check "detects the real wifi name, not the default" "found: wlp2s0" "$out1"
 check "creates .env" "created .env from .env.example" "$out1"
 
+# The shipped SECRET_KEY is public (it is committed in .env.example) and it signs
+# coach logins, so provisioning must replace it with a unique one.
+env_key=$(grep '^SECRET_KEY=' "$INSTALL/.env" | cut -d= -f2-)
+check "generates a SECRET_KEY on first provision" "generated a unique SECRET_KEY" "$out1"
+check "the shipped public key is gone from .env" "0" \
+      "$(grep -c 'django-insecure' "$INSTALL/.env")"
+check "the new key is a real length (not blank)" "yes" \
+      "$([ "${#env_key}" -ge 40 ] && echo yes || echo "no:${#env_key}")"
+
 unit=$(cat /etc/systemd/system/edgeathlete.service 2>&1)
 check "systemd ExecStart uses the resolved path" \
       "ExecStart=$INSTALL/scripts/basestation/startup.sh" "$unit"
@@ -107,6 +116,7 @@ echo "=== run 2: re-running setup must be safe ==="
 # Someone has changed the password by now. Re-provisioning must not stamp on it.
 sed -i 's/ChangeMe123!/RealGymPassword/' /etc/edgeathlete/basestation.conf
 echo "CUSTOM=1" >> "$INSTALL/.env"
+key_after_run1=$(grep '^SECRET_KEY=' "$INSTALL/.env" | cut -d= -f2-)
 out2=$("$INSTALL/scripts/basestation/setup.sh" 2>&1)
 rc2=$?
 echo "$out2" | sed 's/^/    /'
@@ -118,6 +128,11 @@ check "does not clobber an existing config" "left alone (delete it to regenerate
 check "kept the changed password" "RealGymPassword" "$(cat /etc/edgeathlete/basestation.conf)"
 check "does not clobber an existing .env" ".env already exists, left alone" "$out2"
 check "kept local .env edits" "CUSTOM=1" "$(cat "$INSTALL/.env")"
+# ⚠️ The key must NOT be rotated on re-provision — doing so would log every coach
+# out on every update. Once it is real, it is left exactly as-is.
+check "does not regenerate an already-real SECRET_KEY" "already customised" "$out2"
+check "the key is byte-identical to run 1" "$key_after_run1" \
+      "$(grep '^SECRET_KEY=' "$INSTALL/.env" | cut -d= -f2-)"
 
 echo
 echo "=== run 3: startup.sh ==="

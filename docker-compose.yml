@@ -35,7 +35,26 @@ services:
     build: ./django
     container_name: edgeathlete-django
     env_file: .env
+    # The Wi-Fi password lives in the base station's config file, not .env.
+    # startup.sh sources that file and exports AP_PASSWORD, and this passes it
+    # through so the coach page can warn when it is still the default. Empty
+    # everywhere else (a laptop has no AP), which the status endpoint reads as
+    # "unknown" rather than "default". Only the boolean is ever exposed — the
+    # password itself never leaves the container.
+    environment:
+      - AP_PASSWORD=${AP_PASSWORD:-}
     restart: unless-stopped
+    # Alive AND able to serve + reach the database. `restart: unless-stopped`
+    # already handles a container that CRASHES; this catches the worse case it
+    # cannot see — a worker that is up and answering nothing, or came up before
+    # Postgres and is failing every query. /api/health/ does a real SELECT 1.
+    # start_period covers first-boot migrations, which run before gunicorn binds.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health/').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -94,9 +113,14 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
     restart: unless-stopped
+    # Wait for django to be HEALTHY, not merely started, so the front door does
+    # not open onto 502s while migrations are still running at first boot. react
+    # is static and only needs to have started.
     depends_on:
-      - react
-      - django
+      react:
+        condition: service_started
+      django:
+        condition: service_healthy
 
   # ── ON DEMAND ───────────────────────────────────────────────────────────────
   # Everything below is a ONE-SHOT you run by name. `profiles:` is what keeps it

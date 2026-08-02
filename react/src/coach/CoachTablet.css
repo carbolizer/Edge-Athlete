@@ -256,3 +256,21 @@
   font-size: 11px;
   color: var(--coach-ink2);
 }
+
+/* Default-Wi-Fi-password nudge. Amber, not red: a "before you ship" reminder,
+   not an error — the box works fine, it is just not hardened yet. Shown only
+   while the status endpoint reports the password is still the shipped default. */
+.coach-defaults-banner {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--coach-warn);
+  background: rgba(255, 182, 62, 0.08);
+  color: var(--coach-ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.coach-defaults-banner strong {
+  color: var(--coach-warn);
+}

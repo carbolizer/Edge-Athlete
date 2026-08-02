@@ -5,8 +5,9 @@
 django==5.1.2               # The Django web framework
 djangorestframework==3.15.2 # Adds tools for building JSON APIs for React
 psycopg2-binary==2.9.9      # PostgreSQL database driver — required for Docker
-requests==2.31.0            # HTTP client used to send notifications to Ntfy
 paho-mqtt==1.6.1            # Python Mosquitto broker library
+gunicorn==23.0.0            # the actual web server. `runserver` is a dev tool and Django says so
+whitenoise==6.8.2           # lets Django serve its own admin/DRF static files under gunicorn
 djangorestframework-simplejwt==5.3.1 # JWT token auth for the React frontend
 django-cors-headers==4.4.0 # Allows React (port 5173) to call Django (port 8000)
 reportlab==4.5.1           # renders the immutable DailyReport snapshot as a printable PDF

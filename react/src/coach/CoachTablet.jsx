@@ -22,6 +22,33 @@ import DevPanel from './DevPanel.jsx'  // ⚠️ DEV-ONLY — delete with the <D
 /** Demo room size — slots are UI numbers, not a DB model. */
 const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
 
+// A quiet nudge shown only while the base station is still on the default Wi-Fi
+// password. Nothing otherwise — invisible on a configured box and on a laptop
+// (where there is no AP, so the password reads as unknown, not default).
+//
+// This finishes an idea that was half-built: startup.sh set a flag file meaning
+// "default password still in use" that nothing ever read. The check now lives in
+// a coach-only endpoint, so the warning reaches a person.
+function DefaultsBanner({ token }) {
+  const [status, setStatus] = useState(null)
+
+  useEffect(() => {
+    let live = true
+    coachFetch('/api/system/status/', { token })
+      .then((data) => { if (live) setStatus(data) })
+      .catch(() => {})   // a nudge that fails to load is not worth an error
+    return () => { live = false }
+  }, [token])
+
+  if (!status || !status.wifi_password_is_default) return null
+
+  return (
+    <div className="coach-defaults-banner" role="alert">
+      <strong>Wi-Fi password is still the default.</strong> Change it before real use.
+    </div>
+  )
+}
+
 function useCoachIdentity() {
   useEffect(() => {
     const prevTitle = document.title
@@ -433,6 +460,7 @@ export default function CoachTablet() {
           <LoginGate onLoggedIn={setToken} />
         ) : (
           <>
+            <DefaultsBanner token={token} />
             <RoomLayout token={token} onAuthLost={logout} />
             {/* ⚠️ DEV-ONLY — delete this line and the DevPanel import above. */}
             <DevPanel token={token} />

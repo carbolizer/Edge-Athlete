@@ -13,9 +13,20 @@ must match first or they'd get swallowed.
 from django.urls import path
 
 from . import views
+from . import health
+from . import system_status
 from . import dev_views  # ⚠️ DEV-ONLY — delete with the dev/ route below
 
 urlpatterns = [
+    # Can this container serve requests and reach the database? Used by the
+    # container healthcheck in docker-compose.yml, which is why it is open and
+    # why it is first — nothing else should have to be working for it to answer.
+    path('health/', health.health, name='health'),
+
+    # Coach-only: still-default credentials the operator should change before a
+    # real gym uses this box. Drives the banner on the coach admin page.
+    path('system/status/', system_status.system_status, name='system_status'),
+
     # tablet: racks
     path('racks/register/', views.rack_register, name='rack_register'),
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),

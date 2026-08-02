@@ -89,6 +89,40 @@ else
     echo "    .env already exists, left alone"
 fi
 
+echo "[5b] ensuring a real SECRET_KEY..."
+# ⚠️ THE KEY .env SHIPS WITH IS PUBLIC. It comes from .env.example, which is
+# committed, and it SIGNS THE JWTs a coach logs in with (symmetric HS256 — the
+# same key signs and verifies), so anyone holding it can forge a coach session.
+# Every real base station gets its own.
+#
+# Generate-once, like the config file and the AP password: if a real key is
+# already here we leave it, so re-running setup or updating the code never
+# invalidates every outstanding login by rotating the key underneath it.
+#
+# The whole SECRET_KEY line is stripped and re-appended rather than sed-replaced
+# in place — a random key can contain characters sed treats specially, and this
+# sidesteps all of them. The alphabet is plain alphanumeric for the same reason:
+# no #, $ or quotes to confuse .env parsing. 50 chars is ~297 bits, ample.
+CURRENT_KEY="$(grep '^SECRET_KEY=' "$PROJECT_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+case "$CURRENT_KEY" in
+    ""|django-insecure-*)
+        # Read a FIXED chunk of randomness, then filter and slice it in bash —
+        # deliberately not `tr ... < /dev/urandom | head -c 50`. That pipeline
+        # SIGPIPEs tr when head closes early, and under `set -o pipefail` that is
+        # exit 141, which kills the whole script. A bounded read ends cleanly.
+        # 512 random bytes yields ~300 alphanumerics, ample for a 50-char key.
+        RANDOM_CHARS="$(head -c 512 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9')"
+        NEW_KEY="${RANDOM_CHARS:0:50}"
+        grep -v '^SECRET_KEY=' "$PROJECT_DIR/.env" > "$PROJECT_DIR/.env.tmp"
+        echo "SECRET_KEY=$NEW_KEY" >> "$PROJECT_DIR/.env.tmp"
+        mv "$PROJECT_DIR/.env.tmp" "$PROJECT_DIR/.env"
+        echo "    generated a unique SECRET_KEY (the shipped one is public)"
+        ;;
+    *)
+        echo "    SECRET_KEY already customised, left alone"
+        ;;
+esac
+
 echo "[6] detecting the Wi-Fi adapter..."
 # The base station BROADCASTS its own network, so it needs a Wi-Fi device that
 # can run in AP mode. A wired-only OptiPlex will fail here, which is the correct

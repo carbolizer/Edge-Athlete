@@ -3391,3 +3391,94 @@ class SimulatorGateTests(APITestCase):
 
         self.assertFalse(rack_activity(1, MODE_LIFTING)[0])
         self.assertTrue(rack_activity(2, MODE_LIFTING)[0])
+
+
+class HealthEndpointTests(APITestCase):
+    """The container healthcheck's target. It must answer WITHOUT a login (the
+    thing that watches for broken logins cannot itself need one) and it must do a
+    real database touch, not return a constant — 'the web server is up' was never
+    the part in doubt."""
+
+    def test_it_is_open_and_reports_ok(self):
+        res = self.client.get("/api/health/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["status"], "ok")
+        self.assertEqual(res.data["database"], "ok")
+
+
+class SystemStatusTests(APITestCase):
+    """The coach-only "still on shipped defaults?" check that drives the admin
+    banner. This is the finished version of the flag file startup.sh set and
+    nothing read."""
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="x", is_staff=True)
+
+    def test_it_requires_a_coach_login(self):
+        """It reports the box's security posture, so it must not be readable by
+        the whole gym network."""
+        self.assertEqual(self.client.get("/api/system/status/").status_code, 401)
+
+    def test_flags_the_committed_secret_key_as_default(self):
+        # The APITestCase runs on the repo's own settings, whose SECRET_KEY is
+        # one of the shipped defaults — so this is the real "unconfigured" case.
+        self.client.force_authenticate(self.coach)
+        res = self.client.get("/api/system/status/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["secret_key_is_default"])
+        self.assertTrue(res.data["needs_attention"])
+
+    def test_a_real_secret_key_clears_the_secret_flag(self):
+        from django.test import override_settings
+        self.client.force_authenticate(self.coach)
+        with override_settings(SECRET_KEY="a-genuinely-unique-generated-key-xyz"):
+            res = self.client.get("/api/system/status/")
+        self.assertFalse(res.data["secret_key_is_default"])
+
+    def test_wifi_is_unknown_not_default_when_not_visible_to_the_container(self):
+        """AP_PASSWORD lives in the base station's config file, not the Django
+        container's env. Absent must read as 'unknown' (null), NOT as 'default' —
+        crying wolf on every box that cannot see it would train people to ignore
+        the banner."""
+        import os
+        self.client.force_authenticate(self.coach)
+        old = os.environ.pop("AP_PASSWORD", None)
+        try:
+            res = self.client.get("/api/system/status/")
+        finally:
+            if old is not None:
+                os.environ["AP_PASSWORD"] = old
+        self.assertIsNone(res.data["wifi_password_is_default"])
+
+    def test_wifi_empty_string_also_reads_as_unknown(self):
+        """The compose passthrough sets AP_PASSWORD to "" on any box without an
+        AP (a laptop). Empty must read the same as missing — unknown — or the
+        banner would fire on every dev machine, which is exactly the false alarm
+        it must not raise."""
+        import os
+        self.client.force_authenticate(self.coach)
+        old = os.environ.get("AP_PASSWORD")
+        os.environ["AP_PASSWORD"] = ""
+        try:
+            res = self.client.get("/api/system/status/")
+        finally:
+            if old is None:
+                os.environ.pop("AP_PASSWORD", None)
+            else:
+                os.environ["AP_PASSWORD"] = old
+        self.assertIsNone(res.data["wifi_password_is_default"])
+
+    def test_flags_the_default_wifi_password_when_it_can_see_it(self):
+        import os
+        self.client.force_authenticate(self.coach)
+        old = os.environ.get("AP_PASSWORD")
+        os.environ["AP_PASSWORD"] = "ChangeMe123!"
+        try:
+            res = self.client.get("/api/system/status/")
+        finally:
+            if old is None:
+                os.environ.pop("AP_PASSWORD", None)
+            else:
+                os.environ["AP_PASSWORD"] = old
+        self.assertTrue(res.data["wifi_password_is_default"])
+        self.assertTrue(res.data["needs_attention"])

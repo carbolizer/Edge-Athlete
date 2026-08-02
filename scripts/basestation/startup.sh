@@ -143,6 +143,13 @@ cd "$PROJECT_DIR" || {
     exit 1
 }
 
+# Pass the Wi-Fi password through to the containers for the coach page's
+# "still on the default password" warning. AP_PASSWORD was set above by sourcing
+# the config file; exporting it lets docker compose substitute it into the django
+# service. The value is only ever compared to the default and reported as a
+# boolean — it is never sent anywhere.
+export AP_PASSWORD
+
 # `docker compose` (v2, a plugin) is what setup.sh installs. The old
 # docker-compose fallback is kept for a box provisioned before that, and because
 # a boot script failing over a hyphen is a bad way to lose a gym's morning.
