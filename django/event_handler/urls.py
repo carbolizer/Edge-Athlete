@@ -15,6 +15,7 @@ from django.urls import path
 from . import views
 from . import health
 from . import system_status
+from . import wifi_config
 from . import dev_views  # ⚠️ DEV-ONLY — delete with the dev/ route below
 
 urlpatterns = [
@@ -26,6 +27,10 @@ urlpatterns = [
     # Coach-only: still-default credentials the operator should change before a
     # real gym uses this box. Drives the banner on the coach admin page.
     path('system/status/', system_status.system_status, name='system_status'),
+
+    # Coach-only, re-authenticated: change the base station's Wi-Fi password.
+    # Only writes intent; a host agent applies it (see wifi_config.py).
+    path('system/wifi-password/', wifi_config.change_wifi_password, name='change_wifi_password'),
 
     # tablet: racks
     path('racks/register/', views.rack_register, name='rack_register'),

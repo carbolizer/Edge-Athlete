@@ -274,3 +274,97 @@
 .coach-defaults-banner strong {
   color: var(--coach-warn);
 }
+
+/* The banner's inline "change it" link — a button that reads as a link, so the
+   nudge and the action are one thing. Underlined because the coach asked for it
+   and because it signals "this is clickable" without a second UI element. */
+.coach-linkbtn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--coach-warn);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.coach-linkbtn:hover {
+  opacity: 0.85;
+}
+
+/* Wi-Fi password modal. Reached from the banner link and the always-on button;
+   a modal so either entry point works without leaving the page. */
+.coach-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+
+.coach-modal {
+  width: 100%;
+  max-width: 420px;
+  background: var(--coach-card);
+  border: 1px solid var(--coach-line);
+  border-radius: 14px;
+  padding: 22px;
+  color: var(--coach-ink);
+}
+
+.coach-modal-warn {
+  margin: 0 0 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--coach-warn);
+}
+
+.coach-field {
+  display: block;
+  font-size: 12px;
+  color: var(--coach-ink2);
+  margin-bottom: 12px;
+}
+
+.coach-field input {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--coach-line);
+  background: var(--coach-bg);
+  color: var(--coach-ink);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.coach-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+/* The revealed new password on the copy view — big, monospace, selectable, so a
+   coach can read it off or copy it before walking to Settings. */
+.coach-wifi-reveal {
+  margin: 4px 0 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px dashed var(--coach-line);
+  background: var(--coach-bg);
+  text-align: center;
+}
+
+.coach-wifi-reveal code {
+  font-family: var(--coach-mono);
+  font-size: 20px;
+  letter-spacing: 0.5px;
+  color: var(--coach-accent);
+  user-select: all;
+  word-break: break-all;
+}

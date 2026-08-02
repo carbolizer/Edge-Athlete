@@ -3482,3 +3482,89 @@ class SystemStatusTests(APITestCase):
                 os.environ["AP_PASSWORD"] = old
         self.assertTrue(res.data["wifi_password_is_default"])
         self.assertTrue(res.data["needs_attention"])
+
+
+class WifiPasswordChangeTests(APITestCase):
+    """Changing the AP password from the app. The endpoint only writes INTENT to
+    a spool file — a host agent does the privileged nmcli work — so these prove
+    the gate (coach re-auth), the validation, and that a good request lands in
+    the spool. The actual nmcli apply is host-side and covered by the script
+    harness, not here."""
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="coach", password="s3cret-coach-pw", is_staff=True)
+        # A real, writable spool dir per test, pointed at by the same env var the
+        # endpoint reads — so no test ever writes to the real /var/lib path.
+        import tempfile, os
+        self.tmp = tempfile.mkdtemp()
+        self.spool = os.path.join(self.tmp, "wifi-apply.request")
+        self._old_env = os.environ.get("WIFI_APPLY_SPOOL")
+        os.environ["WIFI_APPLY_SPOOL"] = self.spool
+
+    def tearDown(self):
+        import os, shutil
+        if self._old_env is None:
+            os.environ.pop("WIFI_APPLY_SPOOL", None)
+        else:
+            os.environ["WIFI_APPLY_SPOOL"] = self._old_env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _post(self, **body):
+        self.client.force_authenticate(self.coach)
+        return self.client.post("/api/system/wifi-password/", body, format="json")
+
+    def test_requires_a_coach_login(self):
+        res = self.client.post("/api/system/wifi-password/",
+                               {"new_password": "brandnewpw", "coach_password": "s3cret-coach-pw"},
+                               format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_wrong_coach_password_is_refused_and_writes_nothing(self):
+        import os
+        res = self._post(new_password="brandnewpw", coach_password="not-my-password")
+        self.assertEqual(res.status_code, 403)
+        self.assertFalse(os.path.exists(self.spool))   # a rejected change must not touch the spool
+
+    def test_a_blank_coach_password_never_passes(self):
+        res = self._post(new_password="brandnewpw", coach_password="")
+        self.assertEqual(res.status_code, 403)
+
+    def test_too_short_a_wifi_password_is_rejected(self):
+        import os
+        res = self._post(new_password="short", coach_password="s3cret-coach-pw")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(os.path.exists(self.spool))
+
+    def test_too_long_a_wifi_password_is_rejected(self):
+        res = self._post(new_password="x" * 64, coach_password="s3cret-coach-pw")
+        self.assertEqual(res.status_code, 400)
+
+    def test_non_ascii_wifi_password_is_rejected(self):
+        # WPA2-PSK is printable ASCII; the AP would reject an accent at apply time.
+        res = self._post(new_password="café-wifi-1", coach_password="s3cret-coach-pw")
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_valid_change_is_queued_to_the_spool(self):
+        import os
+        res = self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["applied"])
+        self.assertTrue(os.path.exists(self.spool))
+        with open(self.spool) as handle:
+            self.assertEqual(handle.read().strip(), "a-good-gym-password")
+
+    def test_the_spool_file_is_not_world_readable(self):
+        # It holds the Wi-Fi password in the clear until the agent consumes it.
+        import os, stat
+        self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
+        mode = stat.S_IMODE(os.stat(self.spool).st_mode)
+        self.assertEqual(mode & 0o077, 0, f"spool is group/other-accessible: {oct(mode)}")
+
+    def test_no_base_station_here_is_a_clear_answer_not_a_crash(self):
+        # A dev machine has no spool directory. The form is reachable there too,
+        # so the endpoint must answer plainly rather than 500 on a missing path.
+        import os
+        os.environ["WIFI_APPLY_SPOOL"] = "/nonexistent-dir-here/wifi-apply.request"
+        res = self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["applied"])

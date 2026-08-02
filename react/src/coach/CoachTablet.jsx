@@ -28,8 +28,9 @@ const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
 //
 // This finishes an idea that was half-built: startup.sh set a flag file meaning
 // "default password still in use" that nothing ever read. The check now lives in
-// a coach-only endpoint, so the warning reaches a person.
-function DefaultsBanner({ token }) {
+// a coach-only endpoint, so the warning reaches a person — and the "change it"
+// link opens the same form the always-on button does.
+function DefaultsBanner({ token, onChangePassword }) {
   const [status, setStatus] = useState(null)
 
   useEffect(() => {
@@ -44,7 +45,159 @@ function DefaultsBanner({ token }) {
 
   return (
     <div className="coach-defaults-banner" role="alert">
-      <strong>Wi-Fi password is still the default.</strong> Change it before real use.
+      <strong>Wi-Fi password is still the default.</strong>{' '}
+      <button type="button" className="coach-linkbtn" onClick={onChangePassword}>
+        Change it before real use.
+      </button>
+    </div>
+  )
+}
+
+// Where the just-set password is kept on THIS tablet so it survives the Wi-Fi
+// drop and a reload. It is the one place that legitimately holds the new
+// password: the coach typed it here, and they need it to reconnect in Settings.
+// Cleared once they confirm they are back on.
+const WIFI_RECENT_KEY = 'ea_wifi_recent'
+
+function readRecentWifi() {
+  try {
+    const raw = localStorage.getItem(WIFI_RECENT_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    // Stale after a couple of hours — a password from last week is not something
+    // to keep flashing on a tablet.
+    if (!parsed.password || Date.now() - parsed.ts > 2 * 60 * 60 * 1000) return null
+    return parsed
+  } catch { return null }
+}
+
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true } catch { return false }
+}
+
+// The Wi-Fi password change form — one component, opened from two places (the
+// banner link and the always-on button on this page). A modal so it can be
+// reached from either without navigating away.
+//
+// It has two faces: the entry form, and — after a successful change, or on any
+// later open while a recent change is still remembered — a "here is the new
+// password, copy it and reconnect in Settings" view. That second face IS the
+// catch-all: a web app cannot change this tablet's OS Wi-Fi, so the most it can
+// do is hand the coach the password and point them at Settings.
+//
+// Re-auth is deliberate: the coach is already logged in, but changing the gym
+// Wi-Fi is a standing-config change, so it costs the coach password again.
+function WifiPasswordForm({ token, onClose }) {
+  const [newPassword, setNewPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [coachPassword, setCoachPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  // If a recent change is remembered, open straight onto the copy view.
+  const [saved, setSaved] = useState(() => readRecentWifi())
+  const [copied, setCopied] = useState(false)
+
+  async function submit(event) {
+    event.preventDefault()
+    setError('')
+    // Client-side checks first, so the obvious mistakes never cost a round trip.
+    // The server re-checks all of this — the client is a courtesy, not the gate.
+    if (newPassword.length < 8 || newPassword.length > 63) {
+      setError('Wi-Fi password must be 8–63 characters.')
+      return
+    }
+    if (newPassword !== confirm) {
+      setError('The two Wi-Fi passwords do not match.')
+      return
+    }
+    setBusy(true)
+    try {
+      const data = await coachFetch('/api/system/wifi-password/', {
+        token, method: 'POST',
+        body: { new_password: newPassword, coach_password: coachPassword },
+      })
+      if (data.applied) {
+        // Remember it locally so it survives the drop, then show the copy view.
+        const record = { password: newPassword, ts: Date.now() }
+        try { localStorage.setItem(WIFI_RECENT_KEY, JSON.stringify(record)) } catch {}
+        setSaved(record)
+      } else {
+        // e.g. running on a dev box with no base station to change.
+        setError(data.detail || 'Nothing to change here.')
+      }
+    } catch (err) {
+      setError(err.message || 'Could not change the Wi-Fi password.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function done() {
+    try { localStorage.removeItem(WIFI_RECENT_KEY) } catch {}
+    onClose()
+  }
+
+  // ── the copy view (after a change) ──────────────────────────────────────────
+  if (saved) {
+    return (
+      <div className="coach-modal-backdrop" onClick={onClose}>
+        <div className="coach-modal" onClick={(event) => event.stopPropagation()}>
+          <h3 style={{ margin: '0 0 8px' }}>New Wi-Fi password</h3>
+          <p className="coach-modal-warn">
+            The gym Wi-Fi is changing. This tablet — and every other device — will
+            drop and must reconnect to “EdgeAthlete” with this password in
+            Settings › Wi-Fi. A web app cannot change that for you.
+          </p>
+          <div className="coach-wifi-reveal">
+            <code>{saved.password}</code>
+          </div>
+          <div className="coach-modal-actions">
+            <button type="button" className="coach-btn coach-btn-ghost" onClick={done}>
+              I’m reconnected
+            </button>
+            <button type="button" className="coach-btn"
+                    onClick={async () => setCopied(await copyToClipboard(saved.password))}>
+              {copied ? 'Copied ✓' : 'Copy password'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── the entry form ──────────────────────────────────────────────────────────
+  return (
+    <div className="coach-modal-backdrop" onClick={onClose}>
+      <div className="coach-modal" onClick={(event) => event.stopPropagation()}>
+        <h3 style={{ margin: '0 0 8px' }}>Change Wi-Fi password</h3>
+        <p className="coach-modal-warn">
+          This changes the gym Wi-Fi (“EdgeAthlete”). Every device — including this
+          one — drops and must rejoin with the new password.
+        </p>
+        <form onSubmit={submit}>
+          <label className="coach-field">New Wi-Fi password
+            <input type="password" value={newPassword} autoComplete="new-password"
+                   onChange={(event) => setNewPassword(event.target.value)} />
+          </label>
+          <label className="coach-field">Confirm new password
+            <input type="password" value={confirm} autoComplete="new-password"
+                   onChange={(event) => setConfirm(event.target.value)} />
+          </label>
+          <label className="coach-field">Your coach password
+            <input type="password" value={coachPassword} autoComplete="current-password"
+                   onChange={(event) => setCoachPassword(event.target.value)} />
+          </label>
+          {error && <p className="coach-msg-err" style={{ marginTop: 10 }}>{error}</p>}
+          <div className="coach-modal-actions">
+            <button type="button" className="coach-btn coach-btn-ghost" onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+            <button type="submit" className="coach-btn" disabled={busy}>
+              {busy ? 'Saving…' : 'Change password'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }
@@ -415,6 +568,10 @@ function changeDeviceRole() {
 export default function CoachTablet() {
   useCoachIdentity()
   const [token, setToken] = useState(() => getCoachToken())
+  // Open the Wi-Fi modal on its own if a change was made just before the tablet
+  // dropped/reloaded — so the coach lands back on the "here is the password"
+  // view and can copy it, rather than having to remember to reopen it.
+  const [showWifi, setShowWifi] = useState(() => Boolean(readRecentWifi()))
 
   // Stable identity (useCallback) on purpose: this is passed down as onAuthLost,
   // which RoomLayout's `load` depends on. A fresh function each render made `load`
@@ -446,6 +603,11 @@ export default function CoachTablet() {
               ← Coach workspace
             </button>
             {token && (
+              <button type="button" className="coach-btn coach-btn-ghost" onClick={() => setShowWifi(true)}>
+                Wi-Fi password
+              </button>
+            )}
+            {token && (
               <button type="button" className="coach-btn coach-btn-ghost" onClick={logout}>
                 Sign out
               </button>
@@ -460,11 +622,14 @@ export default function CoachTablet() {
           <LoginGate onLoggedIn={setToken} />
         ) : (
           <>
-            <DefaultsBanner token={token} />
+            <DefaultsBanner token={token} onChangePassword={() => setShowWifi(true)} />
             <RoomLayout token={token} onAuthLost={logout} />
             {/* ⚠️ DEV-ONLY — delete this line and the DevPanel import above. */}
             <DevPanel token={token} />
           </>
+        )}
+        {token && showWifi && (
+          <WifiPasswordForm token={token} onClose={() => setShowWifi(false)} />
         )}
       </div>
     </div>
