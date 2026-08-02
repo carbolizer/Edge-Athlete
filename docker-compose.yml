@@ -134,6 +134,40 @@ services:
       postgres:
         condition: service_healthy
 
+  # A fake rack sensor, for demoing without hardware:
+  #
+  #   docker compose --profile demo up -d simulator     # runs until you stop it
+  #   docker compose logs -f simulator                  # watch it decide
+  #
+  # It publishes pulses forever, and reps ONLY while rack 1 is actually busy —
+  # by default, only while a set is open there. So the room stays quiet until a
+  # coach starts a set on the tablet, then reps flow, then it goes quiet again
+  # when the set ends. That is both what real hardware should do and what makes
+  # a demo readable.
+  #
+  # The rack it watches comes from the NODE's own database row, re-read every
+  # couple of seconds — link the sensor to a rack mid-demo and it wakes up on
+  # its own. Nothing to restart.
+  #
+  # Loosen or disable the gate with --active-when:
+  #   checkin  publish whenever anyone is checked in at the rack
+  #   always   never pause (the behaviour before the gate existed)
+  #
+  # Simulating a second rack is one more `run`, no compose edit needed:
+  #   docker compose run --rm simulator python manage.py simulate_node --node-id rack_2
+  simulator:
+    build: ./django
+    env_file: .env
+    profiles: ["demo"]
+    environment:
+      - PYTHONUNBUFFERED=1      # otherwise the decisions sit in a buffer, unwatchable
+    command: python manage.py simulate_node --node-id rack_1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
   # NOTE: the reference project also ran a second `mosquitto-subscriber` service
   # (python manage.py start_mqtt_listener) alongside `mqtt-listener` above — both
   # subscribed to the same topics, double-processing every message. That duplicate

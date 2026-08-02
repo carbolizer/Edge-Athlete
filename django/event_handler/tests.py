@@ -26,6 +26,8 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
+from .management.commands.simulate_node import (MODE_ALWAYS, MODE_CHECKIN, MODE_LIFTING,
+                                                rack_activity, rack_for_node)
 
 
 def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
@@ -3250,3 +3252,142 @@ class SessionDeleteProtectionTests(APITestCase):
         pass every test above and still lose data in production."""
         field = Set._meta.get_field("session")
         self.assertIs(field.remote_field.on_delete, models.PROTECT)
+
+
+class SimulatorGateTests(APITestCase):
+    """The fake sensor's decision about when to shut up.
+
+    A node bolted to an unused rack should not be filling the broker with reps,
+    and in a demo a rack that chatters while nobody stands at it makes the whole
+    room look like noise. The gate is what stops that — and because it is the
+    thing that makes the simulator go SILENT, a bug in it looks exactly like a
+    crashed simulator. Hence these.
+    """
+
+    def setUp(self):
+        self.node = Node.objects.create(node_id="rack_1", rack_number=1)
+        self.session = TrainingSession.objects.create(label="Thursday",
+                                                      started_at=timezone.now())
+        self.athlete = Athlete.objects.create(name="Devin Walton")
+        self.session.athletes.add(self.athlete)
+        self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
+
+    def _check_in(self, athlete, rack_number):
+        return RackCheckIn.objects.create(session=self.session, athlete=athlete,
+                                          rack_number=rack_number)
+
+    def _open_a_set(self, athlete):
+        """A set with no end time — the same thing session_status calls 'lifting'."""
+        return Set.objects.create(session=self.session, athlete=athlete,
+                                  exercise=self.squat, set_number=1, node=self.node)
+
+    # ── which rack am I? ────────────────────────────────────────────────────
+
+    def test_the_rack_comes_from_the_nodes_own_row(self):
+        self.assertEqual(rack_for_node("rack_1"), 1)
+
+    def test_an_unknown_node_has_no_rack_rather_than_exploding(self):
+        self.assertIsNone(rack_for_node("nobody"))
+
+    # ── the reasons to stay quiet ───────────────────────────────────────────
+
+    def test_a_node_linked_to_no_rack_stays_quiet(self):
+        """It cannot be busy at a rack it isn't on. Says so, rather than going
+        silent for a reason nobody can see in the log."""
+        active, _, why = rack_activity(None, MODE_LIFTING)
+        self.assertFalse(active)
+        self.assertIn("not linked", why)
+
+    def test_no_training_day_means_quiet(self):
+        self.session.ended_at = timezone.now()
+        self.session.save()
+        active, _, why = rack_activity(1, MODE_LIFTING)
+        self.assertFalse(active)
+        self.assertIn("no training day", why)
+
+    def test_an_empty_rack_stays_quiet_even_mid_session(self):
+        self._check_in(self.athlete, rack_number=2)      # somewhere else
+        active, _, why = rack_activity(1, MODE_LIFTING)
+        self.assertFalse(active)
+        self.assertIn("nobody is checked in", why)
+
+    def test_checked_in_but_between_sets_is_quiet_in_lifting_mode(self):
+        """The default gate. Standing at the rack isn't lifting at it."""
+        self._check_in(self.athlete, rack_number=1)
+        active, _, why = rack_activity(1, MODE_LIFTING)
+        self.assertFalse(active)
+        self.assertIn("no set is open", why)
+
+    def test_a_finished_set_does_not_keep_it_talking(self):
+        self._check_in(self.athlete, rack_number=1)
+        a_set = self._open_a_set(self.athlete)
+        a_set.ended_at = timezone.now()
+        a_set.save()
+        active, _, _ = rack_activity(1, MODE_LIFTING)
+        self.assertFalse(active)
+
+    # ── the reasons to talk ─────────────────────────────────────────────────
+
+    def test_an_open_set_at_this_rack_turns_it_on(self):
+        self._check_in(self.athlete, rack_number=1)
+        a_set = self._open_a_set(self.athlete)
+        active, token, why = rack_activity(1, MODE_LIFTING)
+        self.assertTrue(active)
+        self.assertEqual(token, f"set:{a_set.id}")
+        self.assertIn(str(a_set.id), why)
+
+    def test_the_token_changes_between_sets_so_rep_numbering_restarts(self):
+        """Rep numbering keys off this. If two sets shared a token the stream
+        would count to 40 across five sets, which looks broken to anyone
+        watching the topic."""
+        self._check_in(self.athlete, rack_number=1)
+        first = self._open_a_set(self.athlete)
+        _, first_token, _ = rack_activity(1, MODE_LIFTING)
+        first.ended_at = timezone.now()
+        first.save()
+        second = self._open_a_set(self.athlete)
+        _, second_token, _ = rack_activity(1, MODE_LIFTING)
+        self.assertNotEqual(first_token, second_token)
+        self.assertEqual(second_token, f"set:{second.id}")
+
+    def test_checkin_mode_talks_whenever_somebody_is_standing_there(self):
+        self._check_in(self.athlete, rack_number=1)
+        active, token, _ = rack_activity(1, MODE_CHECKIN)
+        self.assertTrue(active)
+        self.assertIn(str(self.athlete.id), token)
+
+    def test_always_mode_never_looks_at_anything(self):
+        """The escape hatch — the behaviour from before the gate existed. It must
+        not need a session, a rack, or a database row."""
+        active, _, _ = rack_activity(None, MODE_ALWAYS)
+        self.assertTrue(active)
+
+    # ── the subtle one ──────────────────────────────────────────────────────
+
+    def test_an_athlete_who_moved_racks_no_longer_counts_here(self):
+        """⚠️ THE BUG THIS EXISTS TO PREVENT. Check-ins are add-only and
+        newest-wins, so filtering `rack_number=1` in SQL would still match the
+        athlete's OLD row and leave rack 1 publishing reps for someone who walked
+        to rack 2 ten minutes ago. Only their newest check-in counts.
+        """
+        self._check_in(self.athlete, rack_number=1)
+        self._check_in(self.athlete, rack_number=2)      # moved
+        self._open_a_set(self.athlete)
+
+        active, _, why = rack_activity(1, MODE_LIFTING)
+        self.assertFalse(active)
+        self.assertIn("nobody is checked in", why)
+
+        # ...and rack 2, where they actually are, does light up.
+        active, _, _ = rack_activity(2, MODE_LIFTING)
+        self.assertTrue(active)
+
+    def test_another_athletes_open_set_elsewhere_does_not_wake_this_rack(self):
+        other = Athlete.objects.create(name="Kyle Prather")
+        self.session.athletes.add(other)
+        self._check_in(self.athlete, rack_number=1)
+        self._check_in(other, rack_number=2)
+        self._open_a_set(other)                          # lifting at rack 2
+
+        self.assertFalse(rack_activity(1, MODE_LIFTING)[0])
+        self.assertTrue(rack_activity(2, MODE_LIFTING)[0])

@@ -26,6 +26,7 @@ network, so services reach each other by name (e.g. `postgres`, `mosquitto`).
 | `react` | 80 (internal) | Builds the front-end to static files and serves them via its own Nginx. |
 | `nginx` | 80 (published) | The front door. Routes `/api/`, `/admin/`, `/static/*` to Django and everything else to React. |
 | `seed` | — | **On demand only.** Fills an empty database with a demo gym. Profile-gated, so `docker compose up` never starts it. See [Seeding demo data](#seeding-demo-data). |
+| `simulator` | — | **On demand only.** A fake rack sensor for demos without hardware. Also profile-gated. See [Running a demo without hardware](#running-a-demo-without-hardware). |
 
 > There is exactly ONE MQTT listener service (`mqtt-listener`). The reference
 > project ran a second, duplicate listener — it has been removed here.
@@ -84,6 +85,57 @@ deploying a second one, and matches its own rows by name. Two runs leave exactly
 > ```bash
 > docker compose run --rm seed python manage.py seed_active_session --reset
 > ```
+
+## Running a demo without hardware
+
+The `simulator` service is a fake rack sensor. It publishes the same pulse and
+rep messages a real node would, on the same topics, so the tablet and the wall
+display can be demoed with nothing bolted to a rack.
+
+```bash
+docker compose --profile demo up -d simulator     # runs until you stop it
+docker compose logs -f simulator                  # watch it decide
+docker compose --profile demo down simulator      # stop it
+```
+
+**It stays quiet until the rack is actually being used.** By default the rep
+stream is gated on a set being open at the linked rack, so a demo reads like
+this:
+
+| What the room is doing | What the node publishes |
+|---|---|
+| No training day running | pulses only |
+| Day running, nobody at the rack | pulses only |
+| Athlete checked in, between sets | pulses only |
+| **Set open at that rack** | **pulses + reps** |
+| Set ended | pulses only |
+
+The heartbeat never stops, on purpose — pulses are how Django knows the node is
+alive, so going quiet on those would make an idle rack look like a dead one.
+
+The rack it watches comes from the **node's own database row**, re-read every
+couple of seconds. Link the sensor to a rack mid-demo and it wakes up on its
+own; there is nothing to restart.
+
+Loosen the gate with `--active-when` if you want a chattier demo:
+
+| Mode | Publishes reps when |
+|---|---|
+| `lifting` *(default)* | a set is open at the rack |
+| `checkin` | anyone is checked in there, set or no set |
+| `always` | never pauses — the behaviour from before the gate existed |
+
+Simulating a second rack needs no compose edit:
+
+```bash
+docker compose run --rm simulator python manage.py simulate_node --node-id rack_2
+```
+
+> The gate reads the database directly rather than calling
+> `GET /api/sessions/active/status/`. It is a management command, so it is
+> already inside the ORM — the HTTP route would be the same rows with a web
+> server and a base URL in the way. It reuses `active_session()` for "which day
+> is live", so it can never disagree with the screens about that (canon D18).
 
 ## Database migrations & rollback
 
