@@ -25,6 +25,7 @@ network, so services reach each other by name (e.g. `postgres`, `mosquitto`).
 | `mqtt-listener` | — | The ONE MQTT subscriber process. Listens to node pulse topics and updates node health. |
 | `react` | 80 (internal) | Builds the front-end to static files and serves them via its own Nginx. |
 | `nginx` | 80 (published) | The front door. Routes `/api/`, `/admin/`, `/static/*` to Django and everything else to React. |
+| `seed` | — | **On demand only.** Fills an empty database with a demo gym. Profile-gated, so `docker compose up` never starts it. See [Seeding demo data](#seeding-demo-data). |
 
 > There is exactly ONE MQTT listener service (`mqtt-listener`). The reference
 > project ran a second, duplicate listener — it has been removed here.
@@ -51,6 +52,38 @@ docker compose logs -f mqtt-listener
 First boot builds the Django and React images and runs database migrations
 automatically (via the Dockerfile / listener command). The app is reachable at
 `http://<pi-ip>/` (or `http://localhost/` on the dev host).
+
+## Seeding demo data
+
+A freshly migrated database is empty — no athletes, no session, and no coach
+login, so `/coach` cannot even be signed into. One command fills it:
+
+```bash
+docker compose run --rm seed
+```
+
+That gives you a live training day ("Thursday — Lower + Push"), four athletes,
+the plan they train, recorded reference maxes, two already-finished sets, and the
+demo coach login (`coach` / `coachpass`).
+
+**`seed` is a one-shot, and it is invisible to `docker compose up`.** It carries a
+Compose *profile*, which means the service does not exist unless you name it —
+demo data can never appear on its own at boot.
+
+Running it again is safe. The seeder converges instead of piling up: it closes
+whatever day was left open, reuses the group's existing plan rather than
+deploying a second one, and matches its own rows by name. Two runs leave exactly
+**one** open session, which is the rule the whole app depends on (canon D18).
+
+> ⚠️ **`--reset` is not passed, on purpose.** The seeder's reset flag deletes the
+> rows it thinks are its own, but it matches them **by name** — on a real base
+> station that would take out a group genuinely called "Varsity", plus any athlete
+> sharing a name with the demo four, and their sets with them. On a laptop, where
+> that is fine, ask for it explicitly:
+>
+> ```bash
+> docker compose run --rm seed python manage.py seed_active_session --reset
+> ```
 
 ## Database migrations & rollback
 

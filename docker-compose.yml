@@ -98,6 +98,42 @@ services:
       - react
       - django
 
+  # ── ON DEMAND ───────────────────────────────────────────────────────────────
+  # Everything below is a ONE-SHOT you run by name. `profiles:` is what keeps it
+  # that way: a service carrying a profile is invisible to a plain
+  # `docker compose up`, so nothing here can start on its own at boot. That is
+  # the whole point — demo data and fake sensor traffic should only ever appear
+  # because a person asked for them, out loud, at a terminal.
+
+  # Fill an empty gym with something to look at:
+  #
+  #   docker compose run --rm seed
+  #
+  # A live training day, four athletes, the plan they train, recorded maxes, and
+  # a couple of finished sets. Also (re)creates the demo coach login so /coach
+  # can actually be signed into — coach / coachpass.
+  #
+  # Safe to run more than once. The seeder converges rather than piles up: it
+  # closes any day left open, reuses the group's existing deployment instead of
+  # adding another, and matches its own rows by name.
+  #
+  # ⚠️ IT DOES NOT PASS --reset, AND THAT IS DELIBERATE. `--reset` deletes the
+  # rows the seeder considers its own — but it matches them by NAME, so on a real
+  # base station it would take out any group actually called "Varsity" and any
+  # athlete sharing a name with the demo four, along with their sets. If you want
+  # a hard rebuild on a laptop, ask for it explicitly and say the word out loud:
+  #
+  #   docker compose run --rm seed python manage.py seed_active_session --reset
+  seed:
+    build: ./django
+    env_file: .env
+    profiles: ["seed"]
+    command: sh -c "python manage.py seed_active_session && python manage.py ensure_demo_coach"
+    # No mosquitto: seeding writes rows, it publishes nothing.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # NOTE: the reference project also ran a second `mosquitto-subscriber` service
   # (python manage.py start_mqtt_listener) alongside `mqtt-listener` above — both
   # subscribed to the same topics, double-processing every message. That duplicate
