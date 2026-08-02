@@ -31,6 +31,35 @@ network, so services reach each other by name (e.g. `postgres`, `mosquitto`).
 > There is exactly ONE MQTT listener service (`mqtt-listener`). The reference
 > project ran a second, duplicate listener — it has been removed here.
 
+## Installing a base station
+
+One command on a fresh machine. It installs Docker, pulls the code, writes the
+boot service, and builds the stack:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/SprintBranch/scripts/basestation/bootstrap.sh | sudo bash
+```
+
+Run the **same command again** to update a base station later — it is not
+one-shot.
+
+| | Path |
+|---|---|
+| The install | `/srv/edge-athlete/Edge-Athlete` |
+| This machine's Wi-Fi settings | `/etc/edgeathlete/basestation.conf` (**not** in git) |
+| Boot service | `edgeathlete.service` |
+
+Then, before the gym uses it:
+
+```bash
+sudo nano /etc/edgeathlete/basestation.conf   # AP_PASSWORD is still the default
+sudo systemctl restart edgeathlete.service
+```
+
+Nothing depends on which user is logged in, and the scripts work from wherever
+the repo was cloned. Full detail — including what to do when the access point
+won't start — is in [`scripts/README.md`](scripts/README.md).
+
 ## Start / Stop procedure
 
 From the repo root (where `docker-compose.yml` lives):

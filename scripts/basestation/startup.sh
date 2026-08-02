@@ -1,75 +1,107 @@
-#!/bin/bash
-set -e
-
+#!/usr/bin/env bash
 # startup.sh — Edge Athlete base-station boot script.
-# Runs automatically on Pi boot (via edgeathlete.service). It turns the Pi's
-# Wi-Fi adapter into a private access point — the gym's own closed network that
-# never touches the internet — then brings the whole Docker stack up. Tablets,
-# the wall display, and the coach device all join THIS network and reach the
-# base station at http://basestation. Ported from Privacy-Dots-V2; only the
-# names, SSID, and paths changed.
 #
-# Install (done for you by setup.sh):
-#   Service file:  /etc/systemd/system/edgeathlete.service
-#   ExecStart:     /home/pi/edge-athlete/scripts/basestation/startup.sh
-#   Enable:        sudo systemctl daemon-reload && sudo systemctl enable edgeathlete.service
-#   Executable:    chmod +x scripts/basestation/startup.sh
+# Runs on every boot, via edgeathlete.service (installed by setup.sh). It turns
+# the machine's Wi-Fi adapter into a private access point — the gym's own closed
+# network, which never touches the internet — and then brings the Docker stack
+# up. Tablets, the wall display and the coach device all join THIS network and
+# reach the base station at http://basestation.
 #
-# NOTE: PROJECT_DIR below is the REPO ROOT (where docker-compose.yml lives), not
-# this script's folder — that's why the docker stack still comes up correctly
-# even though this script now lives under scripts/basestation/.
+# You can also run it by hand to restart everything:
+#   sudo systemctl restart edgeathlete.service
+#
+# TWO THINGS IT DOES NOT DO ANY MORE:
+#
+#  1. It does not hardcode /home/pi. The repo root is resolved from this
+#     script's own location, so the install works from wherever it was cloned
+#     and does not care which user is logged in.
+#
+#  2. It does not carry this machine's settings. The Wi-Fi name, password and
+#     interface live in /etc/edgeathlete/basestation.conf, outside the repo.
+#     setup.sh used to `sed -i` the interface name into this file, which left
+#     the repo dirty and made the next update conflict — and put the gym's Wi-Fi
+#     password in git.
 
-##################################### BEGIN SCRIPT ###################################
+set -euo pipefail
 
-# Define all system settings (Wi-Fi name, password, paths, etc.)
-AP_NAME="EdgeAthlete"              # Wi-Fi name users will see
-AP_PASSWORD="ChangeMe123!"         # Wi-Fi password (change before any real use)
-WIFI_IFACE="wlan0"                 # Physical Wi-Fi device (setup.sh auto-detects and rewrites this)
-CONNECTION_NAME="EdgeAthlete-AP"   # Internal name used by the system
-AP_IP_CIDR="192.168.4.1/24"        # IP range for connected devices
-AP_IP="${AP_IP_CIDR%%/*}"          # IP the AP maps the base-station domain to
-PROJECT_DIR="/home/pi/edge-athlete"
+# ── where am I? ─────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" >/dev/null 2>&1 && pwd -P)"
+PROJECT_DIR="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd -P)"
 
-# Create flags to track setup and default password state
-STATE_DIR="/var/lib/edgeathlete"   # directory in linux var files to track which state sys is in
+# ── settings ────────────────────────────────────────────────────────────────
+# Defaults first, so this still runs on a machine where setup.sh has not written
+# a config yet. The file wins wherever it says something.
+AP_NAME="EdgeAthlete"
+AP_PASSWORD="ChangeMe123!"
+WIFI_IFACE="wlan0"
+CONNECTION_NAME="EdgeAthlete-AP"
+AP_IP_CIDR="192.168.4.1/24"
+
+CONFIG_FILE="/etc/edgeathlete/basestation.conf"
+if [ -f "$CONFIG_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$CONFIG_FILE"
+    echo "[*] settings from $CONFIG_FILE"
+else
+    echo "[!] no $CONFIG_FILE — using built-in defaults (run setup.sh to create one)"
+fi
+
+AP_IP="${AP_IP_CIDR%%/*}"          # the address the base-station name resolves to
+
+STATE_DIR="/var/lib/edgeathlete"
 SETUP_COMPLETE_FLAG="$STATE_DIR/setup_complete.flag"
 DEFAULT_FLAG="$STATE_DIR/default_ap_password.flag"
 
 mkdir -p "$STATE_DIR"
 
-# Run only once: mark that default password is active on first setup
-if [ ! -f "$SETUP_COMPLETE_FLAG" ]; then         # Check if we completed init setup
-    echo "[*] First boot detected"
-    # Set the Linux hostname so users can access the base station with:
-    # http://basestation
+# ── first boot only ─────────────────────────────────────────────────────────
+if [ ! -f "$SETUP_COMPLETE_FLAG" ]; then
+    echo "[*] first boot"
+
+    # So everything on the network can use http://basestation instead of an IP.
     hostnamectl set-hostname basestation
 
-    # Tell connected devices that "basestation" points to the Pi AP IP
+    # Tell connected devices that "basestation" means this machine. NetworkManager
+    # runs dnsmasq for a shared connection, and this drops an answer into it.
     mkdir -p /etc/NetworkManager/dnsmasq-shared.d
-
     cat > /etc/NetworkManager/dnsmasq-shared.d/basestation.conf <<EOF
 address=/basestation/$AP_IP
 EOF
 
-    touch "$DEFAULT_FLAG"                       # Flag that default password is still being used
-    touch "$SETUP_COMPLETE_FLAG"                # Flag that init setup has been completed (doesnt rerun)
+    touch "$SETUP_COMPLETE_FLAG"
 fi
 
-# Start NetworkManager to control network connections
-echo "[1] Starting NetworkManager..."
+# Track whether the Wi-Fi password is still the shipped default, so it can be
+# surfaced rather than silently left in place for a season.
+if [ "$AP_PASSWORD" = "ChangeMe123!" ]; then
+    touch "$DEFAULT_FLAG"
+else
+    rm -f "$DEFAULT_FLAG"
+fi
+
+# ── the access point ────────────────────────────────────────────────────────
+echo "[1] starting NetworkManager..."
 systemctl restart NetworkManager
 sleep 2
 
-# Bring up existing Wi-Fi access point, or create it if missing
-echo "[2] Bringing up AP mode..."
-# nmcli - Network command line interface
-nmcli connection up "$CONNECTION_NAME" || {
-    echo "[!] AP profile not found. Creating it now..."
+# ⚠️ A FAILING ACCESS POINT MUST NOT STOP THE STACK.
+#
+# This used to be a bare `nmcli ... || { ...create... }` under `set -e`, so any
+# failure in here killed the boot script on the spot and the Docker stack never
+# started. That is the worst of both outcomes: a base station with no gym Wi-Fi
+# AND no application, which cannot even be reached over a cable to find out why.
+#
+# So the AP is attempted, and a failure is shouted about and carried — the app
+# still comes up, still answers on the wired network, and the log says plainly
+# what went wrong.
+bring_up_ap() {
+    # Existing profile? Just raise it.
+    nmcli connection up "$CONNECTION_NAME" 2>/dev/null && return 0
 
-    # Create new Wi-Fi access point profile
-    nmcli connection add type wifi ifname "$WIFI_IFACE" con-name "$CONNECTION_NAME" autoconnect yes ssid "$AP_NAME"
+    echo "    no AP profile yet — creating it"
+    nmcli connection add type wifi ifname "$WIFI_IFACE" con-name "$CONNECTION_NAME" \
+      autoconnect yes ssid "$AP_NAME" || return 1
 
-    # Configure Wi-Fi settings (mode, password, IP range, etc.)
     nmcli connection modify "$CONNECTION_NAME" \
       802-11-wireless.mode ap \
       802-11-wireless.band bg \
@@ -80,29 +112,55 @@ nmcli connection up "$CONNECTION_NAME" || {
       ipv4.addresses "$AP_IP_CIDR" \
       ipv6.method ignore \
       connection.autoconnect yes \
-      connection.permissions ""
+      connection.permissions "" || return 1
 
-    # Activate the access point
-    nmcli connection up "$CONNECTION_NAME"
+    nmcli connection up "$CONNECTION_NAME" || return 1
 }
 
-# Give the network time to fully come online
-echo "[3] Waiting for AP/network to fully initialize..."
-sleep 5
-
-# Start all backend services (Django, React, DB, etc.)
-echo "[4] Starting Edge Athlete Docker stack..."
-cd "$PROJECT_DIR" || {
-    echo "[!] Project directory not found: $PROJECT_DIR"
-    exit 1
-}
-# Support both old and new Docker Compose formats
-if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose up -d
+echo "[2] bringing up the access point on $WIFI_IFACE..."
+AP_UP=1
+if bring_up_ap; then
+    echo "    access point '$AP_NAME' is up"
 else
-    docker compose up -d
+    AP_UP=0
+    echo "[!] ------------------------------------------------------------"
+    echo "[!] COULD NOT START THE ACCESS POINT on $WIFI_IFACE."
+    echo "[!] Tablets will not be able to join the gym network."
+    echo "[!] Most likely: this adapter does not support AP mode."
+    echo "[!]   check:  iw list | grep -A5 'Supported interface modes'"
+    echo "[!]           nmcli device status"
+    echo "[!] Carrying on so the app still comes up on the wired network."
+    echo "[!] ------------------------------------------------------------"
 fi
 
-# Confirm system is running
-echo "[✔] Edge Athlete base-station startup complete"
-nmcli connection show --active
+echo "[3] waiting for the network to settle..."
+sleep 5
+
+# ── the stack ───────────────────────────────────────────────────────────────
+echo "[4] starting the Docker stack from $PROJECT_DIR..."
+cd "$PROJECT_DIR" || {
+    echo "[!] project directory not found: $PROJECT_DIR"
+    exit 1
+}
+
+# `docker compose` (v2, a plugin) is what setup.sh installs. The old
+# docker-compose fallback is kept for a box provisioned before that, and because
+# a boot script failing over a hyphen is a bad way to lose a gym's morning.
+if docker compose version >/dev/null 2>&1; then
+    docker compose up -d
+elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose up -d
+else
+    echo "[!] no docker compose available — run setup.sh"
+    exit 1
+fi
+
+if [ "$AP_UP" -eq 1 ]; then
+    echo "[✔] base station up — join '$AP_NAME' and open http://basestation"
+else
+    echo "[✔] app is up, but there is NO GYM WI-FI — see the access point error above"
+fi
+if [ -f "$DEFAULT_FLAG" ]; then
+    echo "[!] the Wi-Fi password is STILL THE DEFAULT — change AP_PASSWORD in $CONFIG_FILE"
+fi
+nmcli connection show --active || true
