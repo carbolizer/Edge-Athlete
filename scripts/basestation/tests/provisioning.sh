@@ -101,6 +101,14 @@ check "systemd ExecStart uses the resolved path" \
       "ExecStart=$INSTALL/scripts/basestation/startup.sh" "$unit"
 check "systemd unit has no /home/pi left in it" "" "$(echo "$unit" | grep -c '/home/pi' | grep '^0$')"
 
+# The Wi-Fi-change agent's units must be installed and point at the resolved repo.
+apply_unit=$(cat /etc/systemd/system/edgeathlete-wifi-apply.service 2>&1)
+check "installs the wifi-apply service at the resolved path" \
+      "ExecStart=$INSTALL/scripts/basestation/apply-wifi.sh" "$apply_unit"
+apply_path=$(cat /etc/systemd/system/edgeathlete-wifi-apply.path 2>&1)
+check "installs the wifi-apply path-watcher on the spool file" \
+      "PathExists=/var/lib/edgeathlete/wifi-apply.request" "$apply_path"
+
 conf=$(cat /etc/edgeathlete/basestation.conf 2>&1)
 check "config records the detected interface" 'WIFI_IFACE="wlp2s0"' "$conf"
 check "config is outside the repo" "AP_PASSWORD" "$conf"
@@ -172,7 +180,9 @@ echo "$out3b" | sed 's/^/    /'
 echo
 echo "--- assertions ---"
 check "does not die when the AP cannot start" "0" "$rc3b"
-check "STILL starts the docker stack" "compose up -d" "$(cat /tmp/calls.log)"
+# `up -d` (not the contiguous "compose up -d") because the real call now carries
+# -f overlay args between "compose" and "up".
+check "STILL starts the docker stack" "up -d" "$(cat /tmp/calls.log)"
 check "shouts about the missing gym network" "COULD NOT START THE ACCESS POINT" "$out3b"
 check "tells you how to check the adapter" "Supported interface modes" "$out3b"
 check "final line does not claim everything is fine" "NO GYM WI-FI" "$out3b"

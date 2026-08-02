@@ -44,6 +44,11 @@ docker run --rm -v "$REPO:/src:ro" debian:12 bash -c \
      && bash /src/scripts/basestation/tests/bootstrap.sh' || failed=1
 
 echo
+echo "############ wifi-apply: the host password-change agent ############"
+docker run --rm -v "$REPO:/src:ro" debian:12 \
+    bash /src/scripts/basestation/tests/wifi-apply.sh || failed=1
+
+echo
 if [ "$failed" -eq 0 ]; then
     echo "[✔] base-station scripts pass"
 else

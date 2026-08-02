@@ -1,0 +1,15 @@
+# docker-compose.basestation.yml — overlay used ONLY on a real base station.
+#
+# startup.sh adds this with a second `-f` on top of docker-compose.yml. It is
+# deliberately NOT part of a plain `docker compose up`, because it bind-mounts a
+# host path (/var/lib/edgeathlete) that exists on a provisioned base station but
+# not on a dev laptop — mounting it in dev would fail, and there is no AP to
+# change there anyway.
+#
+# The one thing it adds: the django container can write the Wi-Fi-change spool
+# file to the host, where the privileged host agent (edgeathlete-wifi-apply.path)
+# picks it up. Django still never runs nmcli — it only writes intent here.
+services:
+  django:
+    volumes:
+      - /var/lib/edgeathlete:/var/lib/edgeathlete

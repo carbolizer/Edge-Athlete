@@ -7,11 +7,12 @@ NET_ADMIN, D-Bus) would make the most exposed service in the building able to
 reconfigure the building — a bad trade on a lean, closed box.
 
 So this endpoint only writes INTENT: it drops the requested password into a spool
-file. A privileged HOST agent — a systemd path-unit that watches that file and
-does the actual nmcli work as root, on the host — is the other half of this
-feature and is NOT built yet (next checkpoint). Until it lands, the request is
-written and nothing consumes it, so this endpoint does not yet change any real
-AP. That is why it ships on a branch, not to a gym.
+file. A privileged HOST agent — the systemd path-unit edgeathlete-wifi-apply.path
+installed by setup.sh — watches that file and runs scripts/basestation/apply-wifi.sh
+as root, on the host, to do the actual nmcli work. The web container never runs
+nmcli. On a real base station the spool dir is bind-mounted in
+(docker-compose.basestation.yml); on a dev box it is not, so the endpoint answers
+"no base station here" instead of pretending to change anything.
 
 That split also fixes a problem live-apply would otherwise have: applying the new
 password disconnects every device INCLUDING the coach's own tablet, so a

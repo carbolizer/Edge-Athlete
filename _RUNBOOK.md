@@ -60,6 +60,12 @@ Nothing depends on which user is logged in, and the scripts work from wherever
 the repo was cloned. Full detail — including what to do when the access point
 won't start — is in [`scripts/README.md`](scripts/README.md).
 
+A coach can also change the Wi-Fi password from the coach admin page. It applies
+live via a host agent, and **disconnects every device** — tablets, wall display,
+and each rack Pi — which must then rejoin by hand. It's a walk-around; do it
+between sessions. See "Changing the Wi-Fi password" in
+[`scripts/README.md`](scripts/README.md).
+
 ## Start / Stop procedure
 
 From the repo root (where `docker-compose.yml` lives):

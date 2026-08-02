@@ -22,7 +22,11 @@ is not one-shot: it pulls the latest code and re-provisions.
 - **`setup.sh`** — installs Docker + NetworkManager, writes this machine's
   config, installs the boot service, builds the stack.
 - **`startup.sh`** — runs on every boot: brings up the access point, then
-  `docker compose up -d`.
+  `docker compose up -d` (with the base-station overlay, below).
+- **`apply-wifi.sh`** — the privileged Wi-Fi-password-change agent. Not run by
+  hand: a systemd path-unit fires it when the coach app requests a change. It
+  does the `nmcli` work as root, on the host, so the web container never needs
+  network privileges. See "Changing the Wi-Fi password" below.
 
 ### Where things live
 
@@ -57,6 +61,33 @@ password in version control.
 sudo nano /etc/edgeathlete/basestation.conf   # change AP_PASSWORD before real use
 sudo systemctl restart edgeathlete.service    # apply without rebooting
 ```
+
+### Changing the Wi-Fi password (from the app or by hand)
+
+A coach can change the gym Wi-Fi password from the coach admin page (banner link,
+or the "Wi-Fi password" button). How it works, and why it is built this way:
+
+- The coach app runs in a container and is **never** allowed to run `nmcli` — it
+  is the most exposed service, so it must not be able to reconfigure the host
+  network. Instead it writes the new password to a spool file
+  (`/var/lib/edgeathlete/wifi-apply.request`, via the base-station overlay mount).
+- A systemd path-unit (`edgeathlete-wifi-apply.path`) notices that file and runs
+  `apply-wifi.sh` as root on the host, which updates `basestation.conf` and does
+  the `nmcli` re-key. `nmcli` stays on the host, where the privilege already is.
+- The request returns to the coach **before** the AP bounces, so the coach tablet
+  can show the new password (with copy-to-clipboard) before it drops.
+
+> ⚠️ **A Wi-Fi password change disconnects EVERY device** — every tablet, the
+> wall display, and every rack Pi — the instant it applies. A web app cannot
+> change a device's OS Wi-Fi credentials, so each one must rejoin by hand in its
+> Settings. **The rack screens are Pis** with the password baked into their
+> NetworkManager client profile (`rack-kiosk-setup.sh`), so each rack Pi needs
+> its client profile updated too (SSH or keyboard) — not just a tablet tap.
+> Rotating the Wi-Fi password is a walk-around, by design of Wi-Fi, not of this
+> app. Do it between sessions.
+
+By hand instead of the app: edit `AP_PASSWORD` in `basestation.conf` and
+`sudo systemctl restart edgeathlete.service`.
 
 > ⚠️ **The install is pinned to `SprintBranch`, deliberately.** GitHub's default
 > branch for this repo is `main`, and main is a whole generation behind —

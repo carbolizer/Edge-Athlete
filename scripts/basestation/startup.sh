@@ -150,13 +150,21 @@ cd "$PROJECT_DIR" || {
 # boolean — it is never sent anywhere.
 export AP_PASSWORD
 
+# The base-station overlay is added on top of the base compose file. It grants the
+# django container the one host mount it needs so a Wi-Fi-password change from the
+# app reaches the host agent. It lives only in startup.sh (i.e. only on a real
+# base station) — a plain `docker compose up` on a dev box never includes it.
+BASE_OVERLAY="$PROJECT_DIR/docker-compose.basestation.yml"
+COMPOSE_ARGS=(-f "$PROJECT_DIR/docker-compose.yml")
+[ -f "$BASE_OVERLAY" ] && COMPOSE_ARGS+=(-f "$BASE_OVERLAY")
+
 # `docker compose` (v2, a plugin) is what setup.sh installs. The old
 # docker-compose fallback is kept for a box provisioned before that, and because
 # a boot script failing over a hyphen is a bad way to lose a gym's morning.
 if docker compose version >/dev/null 2>&1; then
-    docker compose up -d
+    docker compose "${COMPOSE_ARGS[@]}" up -d
 elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose up -d
+    docker-compose "${COMPOSE_ARGS[@]}" up -d
 else
     echo "[!] no docker compose available — run setup.sh"
     exit 1

@@ -194,6 +194,38 @@ EOF
 systemctl daemon-reload
 systemctl enable edgeathlete.service
 
+echo "[9b] installing the Wi-Fi-change agent..."
+# The privileged half of "change the Wi-Fi password from the app". The coach app
+# (in a container) writes a request file; this path-unit notices it and runs
+# apply-wifi.sh as root on the host to do the nmcli work. Keeping nmcli here, out
+# of the web container, is the whole point — see apply-wifi.sh.
+chmod +x "$PROJECT_DIR/scripts/basestation/apply-wifi.sh"
+cat > /etc/systemd/system/edgeathlete-wifi-apply.service <<EOF
+[Unit]
+Description=Apply an Edge Athlete Wi-Fi password change
+
+[Service]
+Type=oneshot
+ExecStart=$PROJECT_DIR/scripts/basestation/apply-wifi.sh
+User=root
+EOF
+cat > /etc/systemd/system/edgeathlete-wifi-apply.path <<EOF
+[Unit]
+Description=Watch for an Edge Athlete Wi-Fi password change request
+
+[Path]
+# Fires the service whenever the coach app drops a request file here. The service
+# consumes (deletes) the file, so this re-arms cleanly for the next change.
+PathExists=$STATE_DIR/wifi-apply.request
+Unit=edgeathlete-wifi-apply.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now edgeathlete-wifi-apply.path
+
 echo "[10] capping docker log growth..."
 # Without this the JSON logs grow until the disk fills. A gym runs this box for
 # months without anyone looking at it.
