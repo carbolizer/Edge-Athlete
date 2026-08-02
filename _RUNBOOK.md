@@ -12,6 +12,10 @@ The whole system runs as one Docker stack on the Raspberry Pi. There is no cloud
 no internet dependency, and no subscription — the Pi broadcasts its own private
 WiFi and serves everything itself.
 
+> **Just bringing up a fresh box?** [`QUICKSTART.md`](QUICKSTART.md) is the short
+> path — clean Linux install to a running base station in six steps. This runbook
+> is the deeper reference for operating one once it's up.
+
 ## Services
 
 Every service is defined in `docker-compose.yml` and shares one private Docker
@@ -32,6 +36,9 @@ network, so services reach each other by name (e.g. `postgres`, `mosquitto`).
 > project ran a second, duplicate listener — it has been removed here.
 
 ## Installing a base station
+
+The step-by-step version — including prerequisites and the optional demo data —
+is [`QUICKSTART.md`](QUICKSTART.md). The essentials:
 
 One command on a fresh machine. It installs Docker, pulls the code, writes the
 boot service, and builds the stack:
