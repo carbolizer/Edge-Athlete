@@ -56,14 +56,17 @@ cd "$PROJECT_DIR"
 echo "[2] installing required tools..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
+# Only what the scripts actually use: NetworkManager (nmcli runs the AP), iw (the
+# AP-mode capability check), git/curl/certs. The old wireless-tools (iwconfig)
+# and net-tools (ifconfig) were carried over from the Pi port and used nowhere —
+# and Ubuntu 26.04 dropped wireless-tools entirely, so asking for it aborted the
+# whole install with "no installation candidate". nmcli + iw cover everything.
 apt-get install -y -qq \
   ca-certificates \
   curl \
   git \
   network-manager \
-  wireless-tools \
-  iw \
-  net-tools
+  iw
 
 echo "[3] installing Docker..."
 # Docker's own installer, not the distro's docker.io. The distro packages split
@@ -80,6 +83,42 @@ fi
 echo "[4] enabling services..."
 systemctl enable --now NetworkManager
 systemctl enable --now docker
+
+echo "[4b] making sure NetworkManager owns the network..."
+# ⚠️ UBUNTU SERVER TRAP. Its default renderer is systemd-networkd, which holds
+# onto the Wi-Fi adapter so nmcli never sees it — and then step [6] below fails
+# with "no Wi-Fi adapter detected", or the AP can't be created on an unmanaged
+# device at boot. Our whole access point is built through NetworkManager, so NM
+# has to own the devices. netplan is Ubuntu's switch for that.
+#
+# Debian has no netplan and lets NM manage unconfigured devices directly, so this
+# is skipped there — hence the `command -v netplan` guard.
+#
+# NOTE: if you are provisioning over SSH on the WIRED link, `netplan apply` can
+# blip that link for a moment as NM takes it over. Provisioning at the console
+# (keyboard + monitor) sidesteps that.
+NM_NETPLAN="/etc/netplan/99-edgeathlete-nm.yaml"
+if command -v netplan >/dev/null 2>&1; then
+    if [ -f "$NM_NETPLAN" ]; then
+        echo "    already handed to NetworkManager, left alone"
+    else
+        mkdir -p /etc/netplan
+        cat > "$NM_NETPLAN" <<'EOF'
+# Hand networking to NetworkManager so the Wi-Fi adapter is visible to nmcli and
+# can run the access point. Written by Edge Athlete setup.sh.
+network:
+  version: 2
+  renderer: NetworkManager
+EOF
+        chmod 600 "$NM_NETPLAN"    # netplan warns loudly about world-readable files
+        netplan generate
+        netplan apply
+        sleep 3                     # give NM a moment to claim the devices
+        echo "    netplan renderer set to NetworkManager"
+    fi
+else
+    echo "    no netplan (not Ubuntu) — NetworkManager manages devices directly"
+fi
 
 echo "[5] preparing env file..."
 if [ ! -f "$PROJECT_DIR/.env" ]; then

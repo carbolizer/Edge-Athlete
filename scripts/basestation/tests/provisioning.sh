@@ -53,6 +53,15 @@ echo "    [stub curl] $*" >> /tmp/calls.log
 exit 0
 EOF
 
+# Presence of `netplan` is what tells setup.sh "this is Ubuntu, hand the network
+# to NetworkManager". Stubbed so that branch is exercised in the harness (the
+# Debian test image has no netplan of its own).
+cat > "$STUBS/netplan" <<'EOF'
+#!/bin/sh
+echo "    [stub netplan] $*" >> /tmp/calls.log
+exit 0
+EOF
+
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
 
@@ -96,6 +105,14 @@ check "the shipped public key is gone from .env" "0" \
 check "the new key is a real length (not blank)" "yes" \
       "$([ "${#env_key}" -ge 40 ] && echo yes || echo "no:${#env_key}")"
 
+# On Ubuntu (netplan present) the network must be handed to NetworkManager, or
+# nmcli never sees the Wi-Fi and detection fails.
+nm_netplan=$(cat /etc/netplan/99-edgeathlete-nm.yaml 2>&1)
+check "hands the network to NetworkManager on Ubuntu" "renderer: NetworkManager" "$nm_netplan"
+check "the renderer file is chmod 600 (netplan warns otherwise)" "600" \
+      "$(stat -c '%a' /etc/netplan/99-edgeathlete-nm.yaml 2>/dev/null)"
+check "applies the netplan change so it takes effect now" "netplan] apply" "$(cat /tmp/calls.log)"
+
 unit=$(cat /etc/systemd/system/edgeathlete.service 2>&1)
 check "systemd ExecStart uses the resolved path" \
       "ExecStart=$INSTALL/scripts/basestation/startup.sh" "$unit"
@@ -136,6 +153,8 @@ check "does not clobber an existing config" "left alone (delete it to regenerate
 check "kept the changed password" "RealGymPassword" "$(cat /etc/edgeathlete/basestation.conf)"
 check "does not clobber an existing .env" ".env already exists, left alone" "$out2"
 check "kept local .env edits" "CUSTOM=1" "$(cat "$INSTALL/.env")"
+check "does not re-apply netplan once NetworkManager already owns it" \
+      "already handed to NetworkManager, left alone" "$out2"
 # ⚠️ The key must NOT be rotated on re-provision — doing so would log every coach
 # out on every update. Once it is real, it is left exactly as-is.
 check "does not regenerate an already-real SECRET_KEY" "already customised" "$out2"

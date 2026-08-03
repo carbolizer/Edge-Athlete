@@ -101,6 +101,13 @@ The base station is a Dell OptiPlex mini PC. The Pi's MT7601U USB Wi-Fi firmware
 step is gone — it only ever existed for that dongle. Everything else ports
 unchanged, because the access point is NetworkManager's job on any Linux box.
 
+**Ubuntu Server is handled automatically.** It defaults to `systemd-networkd`,
+which hides the Wi-Fi adapter from `nmcli`; `setup.sh` detects netplan and hands
+the network to NetworkManager so the adapter is visible and can run the AP. On
+Debian there's no netplan and NM manages devices directly, so nothing special
+happens. (If you provision Ubuntu Server over SSH on the wired link, that step
+can blip the link for a moment — provisioning at the console avoids it.)
+
 **It still needs a Wi-Fi adapter that supports AP mode**, since it broadcasts the
 gym's network. `setup.sh` refuses to provision a machine with no Wi-Fi device
 rather than leaving you with a base station nothing can join. Check with:
