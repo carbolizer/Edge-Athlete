@@ -3,6 +3,9 @@
 // The service worker caches the app shell so a rack screen survives WiFi drops
 // (see public/service-worker.js). Registration is best-effort: if it fails, the
 // app still runs, it just won't have the offline shell.
+// FIRST — installs crypto.randomUUID for the plain-HTTP (non-secure) context the
+// base station serves in, before anything calls getDeviceId(). See polyfills.js.
+import './polyfills.js'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 // Inter, bundled into the app (not fetched from a CDN) so it renders on the Pi's
