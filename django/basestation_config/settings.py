@@ -137,6 +137,7 @@ DATABASES = {
 MQTT_HOST = os.environ.get('MQTT_HOST') or 'mosquitto'
 MQTT_PORT = int(os.environ.get('MQTT_PORT') or 1883)
 SIMULATOR_ENABLED = os.environ.get('SIMULATOR_ENABLED', 'False') == 'True'
+USB_BRIDGE_ENABLED = os.environ.get('USB_BRIDGE_ENABLED', 'False') == 'True'
 
 # Password validation rules for user accounts
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators

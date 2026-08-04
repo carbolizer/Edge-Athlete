@@ -54,6 +54,8 @@ class RackCompletionRejected(Exception):
 
 
 def _effective_set_count(progress):
+    if progress.day_plan_id:
+        return progress.current_day_plan_exercise.sets
     override = AthleteWorkoutExerciseOverride.objects.filter(
         athlete_id=progress.athlete_id,
         workout_exercise_id=progress.current_workout_exercise_id,
@@ -73,54 +75,81 @@ def _advance_progress(progress, is_false_set):
         progress.save(update_fields=["expected_set_number", "status", "updated_at"])
         return
 
-    next_exercise = (
-        progress.current_program_item.workout.exercises
-        .filter(
-            Q(position__gt=progress.current_workout_exercise.position)
-            | Q(position=progress.current_workout_exercise.position, id__gt=progress.current_workout_exercise_id)
+    if progress.day_plan_id:
+        current_workout = progress.current_day_plan_workout
+        current_exercise = progress.current_day_plan_exercise
+        next_exercise = current_workout.exercises.filter(
+            Q(position__gt=current_exercise.position)
+            | Q(position=current_exercise.position, id__gt=current_exercise.id)
+        ).order_by("position", "id").first()
+    else:
+        next_exercise = (
+            progress.current_program_item.workout.exercises
+            .filter(
+                Q(position__gt=progress.current_workout_exercise.position)
+                | Q(position=progress.current_workout_exercise.position, id__gt=progress.current_workout_exercise_id)
+            )
+            .order_by("position", "id")
+            .first()
         )
-        .order_by("position", "id")
-        .first()
-    )
     if next_exercise:
-        progress.current_workout_exercise = next_exercise
+        if progress.day_plan_id:
+            progress.current_day_plan_exercise = next_exercise
+            update_field = "current_day_plan_exercise"
+        else:
+            progress.current_workout_exercise = next_exercise
+            update_field = "current_workout_exercise"
         progress.expected_set_number = 1
         progress.status = AthleteDayProgress.READY
-        progress.save(update_fields=["current_workout_exercise", "expected_set_number", "status", "updated_at"])
+        progress.save(update_fields=[update_field, "expected_set_number", "status", "updated_at"])
         return
 
-
-    next_item = (
-        progress.workout_program.items
-        .filter(
-            Q(position__gt=progress.current_program_item.position)
-            | Q(position=progress.current_program_item.position, id__gt=progress.current_program_item_id)
+    if progress.day_plan_id:
+        next_item = progress.day_plan.workouts.filter(
+            Q(position__gt=progress.current_day_plan_workout.position)
+            | Q(position=progress.current_day_plan_workout.position, id__gt=progress.current_day_plan_workout_id)
+        ).order_by("position", "id").first()
+    else:
+        next_item = (
+            progress.workout_program.items
+            .filter(
+                Q(position__gt=progress.current_program_item.position)
+                | Q(position=progress.current_program_item.position, id__gt=progress.current_program_item_id)
+            )
+            .select_related("workout")
+            .order_by("position", "id")
+            .first()
         )
-        .select_related("workout")
-        .order_by("position", "id")
-        .first()
-    )
     if next_item:
-        next_exercise = next_item.workout.exercises.order_by("position", "id").first()
+        next_exercise = (
+            next_item.exercises.order_by("position", "id").first()
+            if progress.day_plan_id else next_item.workout.exercises.order_by("position", "id").first()
+        )
         if next_exercise is None:
             raise UnexpectedWorkoutStep(progress)
-        progress.current_program_item = next_item
-        progress.current_workout_exercise = next_exercise
+        if progress.day_plan_id:
+            progress.current_day_plan_workout = next_item
+            progress.current_day_plan_exercise = next_exercise
+            fields = ["current_day_plan_workout", "current_day_plan_exercise"]
+        else:
+            progress.current_program_item = next_item
+            progress.current_workout_exercise = next_exercise
+            fields = ["current_program_item", "current_workout_exercise"]
         progress.expected_set_number = 1
         progress.status = AthleteDayProgress.READY
-        progress.save(update_fields=[
-            "current_program_item", "current_workout_exercise", "expected_set_number",
-            "status", "updated_at",
-        ])
+        progress.save(update_fields=fields + ["expected_set_number", "status", "updated_at"])
         return
 
 
     progress.current_program_item = None
     progress.current_workout_exercise = None
+    progress.current_day_plan_workout = None
+    progress.current_day_plan_exercise = None
     progress.expected_set_number = None
     progress.status = AthleteDayProgress.COMPLETE
     progress.save(update_fields=[
-        "current_program_item", "current_workout_exercise", "expected_set_number",
+        "current_program_item", "current_workout_exercise", "current_day_plan_workout",
+        "current_day_plan_exercise", "expected_set_number",
         "status", "updated_at",
     ])
 
@@ -163,6 +192,7 @@ def complete_set(set_id, data, *, rack_number=None, device_id=None):
                 AthleteDayProgress.objects.select_for_update(of=("self",))
                 .select_related(
                     "workout_program", "current_program_item__workout", "current_workout_exercise",
+                    "day_plan", "current_day_plan_workout", "current_day_plan_exercise",
                 )
                 .filter(id=observed["athlete_day_progress_id"])
                 .first()
@@ -189,15 +219,23 @@ def complete_set(set_id, data, *, rack_number=None, device_id=None):
             raise SetSessionEnded
         if target_set.ended_at is not None or target_set.reps.exists():
             raise SetAlreadyComplete
+        legacy_mismatch = progress is not None and progress.day_plan_id is None and (
+            assignment is None
+            or assignment.workout_program_id != progress.workout_program_id
+            or progress.current_program_item_id != target_set.workout_program_item_id
+            or progress.current_workout_exercise_id != target_set.workout_exercise_id
+        )
+        frozen_mismatch = progress is not None and progress.day_plan_id is not None and (
+            progress.current_day_plan_workout_id != target_set.day_plan_workout_id
+            or progress.current_day_plan_exercise_id != target_set.day_plan_exercise_id
+        )
         if progress is not None and (
             progress.status != AthleteDayProgress.IN_SET
-            or assignment is None
-            or assignment.workout_program_id != progress.workout_program_id
+            or legacy_mismatch
+            or frozen_mismatch
             or progress.session_id != target_set.session_id
             or progress.athlete_id != target_set.athlete_id
             or progress.id != target_set.athlete_day_progress_id
-            or progress.current_program_item_id != target_set.workout_program_item_id
-            or progress.current_workout_exercise_id != target_set.workout_exercise_id
             or progress.expected_set_number != target_set.set_number
             or rack_state is None
             or rack_state.active_session_id != target_set.session_id

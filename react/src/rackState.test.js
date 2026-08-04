@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { appendLiveRep, athleteNameLabels, buildAthleteIdentityPayload, buildRackAssignmentPayload, buildRackSetStartPayload, buildSetCompletionPayload, classifyVelocity, createDeviceId, orderedEffectiveExercises, parseRepMessage, rackAssignmentChanged, rackProgressView, repTopic, shouldRefreshRack } from "./rackState.js";
+import { describe, expect, it, vi } from "vitest";
+import { appendLiveRep, athleteNameLabels, authoritativeIdentitySet, buildAthleteIdentityPayload, buildRackAssignmentPayload, buildRackSetStartPayload, buildSetCompletionPayload, classifyVelocity, createDeviceId, identityActionEvent, motionTopic, orderedEffectiveExercises, parseMotionMessage, parseRepMessage, rackAssignmentChanged, rackProgressView, rackSessionChanged, rackSetStartMode, randomDemoAthlete, repTopic, shouldRefreshRack } from "./rackState.js";
 
 describe("rack live rep state", () => {
   const nodeId = "rack-node-2";
@@ -11,6 +11,14 @@ describe("rack live rep state", () => {
     duration_ms: 640,
     timestamp: "2026-07-15T12:00:00Z",
   };
+
+  it("accepts bounded current velocity on the assigned motion topic", () => {
+    const motion = { node_id: nodeId, event_type: "motion", velocity: 0.42, timestamp: payload.timestamp };
+    expect(parseMotionMessage(JSON.stringify(motion), motionTopic(nodeId), nodeId, Date.parse(payload.timestamp))).toEqual(motion);
+    expect(parseMotionMessage(JSON.stringify({ ...motion, velocity: 10.01 }), motionTopic(nodeId), nodeId)).toBeNull();
+    expect(parseMotionMessage(JSON.stringify({ ...motion, accel_x: 1.2 }), motionTopic(nodeId), nodeId)).toBeNull();
+    expect(parseMotionMessage(JSON.stringify(motion), motionTopic("other-node"), nodeId)).toBeNull();
+  });
 
   it("accepts a valid rep and ignores the publisher's count for display ordering", () => {
     const rep = parseRepMessage(JSON.stringify(payload), repTopic(nodeId), nodeId, Date.parse(payload.timestamp));
@@ -104,8 +112,42 @@ describe("catalog rack state", () => {
   it("builds mutually exclusive coach and athlete payloads", () => {
     expect(buildRackAssignmentPayload("workout", "4", "", "")).toEqual({ workout_id: 4, workout_program_id: null });
     expect(buildRackAssignmentPayload("workout_program", "", "8", "12")).toEqual({ workout_id: 12, workout_program_id: 8 });
-    expect(buildAthleteIdentityPayload("screen-id", "5")).toEqual({ device_id: "screen-id", athlete_id: 5 });
+    expect(buildAthleteIdentityPayload("screen-id", "5", "9", "event-id")).toEqual({
+      device_id: "screen-id", athlete_id: 5, session_id: 9, event_id: "event-id",
+    });
     expect(buildRackSetStartPayload("screen-id")).toEqual({ device_id: "screen-id" });
+  });
+
+  it("reuses an identity event for retry and rotates it for a new confirmed action", () => {
+    const cryptoObject = { randomUUID: vi.fn()
+      .mockReturnValueOnce("10000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("10000000-0000-4000-8000-000000000002") };
+    const first = identityActionEvent(null, "1:9:5", cryptoObject);
+
+    expect(identityActionEvent(first, "1:9:5", cryptoObject)).toBe(first);
+    expect(identityActionEvent(first, "1:10:5", cryptoObject)).toEqual({
+      key: "1:10:5", eventId: "10000000-0000-4000-8000-000000000002",
+    });
+    expect(cryptoObject.randomUUID).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses only the top-level authoritative set from identity responses", () => {
+    const historical = { id: 7, ended_at: "2026-07-22T12:00:00Z" };
+    expect(authoritativeIdentitySet({
+      set: null,
+      identity_event: { resulting_set: historical, replayed: true },
+    })).toBeNull();
+    expect(authoritativeIdentitySet({
+      set: { id: 8, ended_at: null },
+      identity_event: { resulting_set: historical, replayed: true },
+    })).toEqual({ id: 8, ended_at: null });
+  });
+
+  it("retains explicit set start only for legacy ready progress", () => {
+    expect(rackSetStartMode({ status: "ready", program: { id: 2, name: "Legacy" }, active_set: null })).toBe("compatibility");
+    expect(rackSetStartMode({ status: "ready", program: { id: 3, name: "Frozen", schedule_source: "weekday" }, active_set: null })).toBe("automatic");
+    expect(rackSetStartMode({ status: "in_set", program: { id: 3, schedule_source: "date" }, active_set: { id: 11 } })).toBe("active");
+    expect(rackSetStartMode({ status: "ready", program: { schedule_source: null }, active_set: null })).toBe("compatibility");
   });
 
   it("builds bounded live reps into authoritative completion order and false sets", () => {
@@ -133,6 +175,28 @@ describe("catalog rack state", () => {
     ]);
   });
 
+  it("selects only strict server-authorized demo athletes with injected randomness", () => {
+    const athletes = [
+      { id: 1, name: "Arbitrary", demo_wristband_eligible: true },
+      { id: 2, name: "[DEMO] Prefix only", demo_wristband_eligible: false },
+      { id: 3, name: "Truthy is not boolean", demo_wristband_eligible: 1 },
+      { id: 4, name: "Second eligible", demo_wristband_eligible: true },
+      { id: 5, name: "Missing flag" },
+      { id: 6, name: "Third eligible", demo_wristband_eligible: true },
+    ];
+    const snapshot = structuredClone(athletes);
+
+    expect(randomDemoAthlete(athletes, () => 0)).toEqual(athletes[0]);
+    expect(randomDemoAthlete(athletes, () => 0.5)).toEqual(athletes[3]);
+    expect(randomDemoAthlete(athletes, () => 0.999999)).toEqual(athletes[5]);
+    expect(athletes).toEqual(snapshot);
+  });
+
+  it("returns null when no eligible demo athlete is present", () => {
+    expect(randomDemoAthlete([], () => 0)).toBeNull();
+    expect(randomDemoAthlete([{ id: 1, name: "[DEMO] Avery" }], () => 0)).toBeNull();
+  });
+
   it("orders effective exercises without mutating the API response", () => {
     const exercises = [{ position: 2, exercise: "Press" }, { position: 1, exercise: "Squat" }];
     expect(orderedEffectiveExercises({ exercises })).toEqual([{ position: 1, exercise: "Squat" }, { position: 2, exercise: "Press" }]);
@@ -144,5 +208,7 @@ describe("catalog rack state", () => {
     expect(rackAssignmentChanged(3, "3")).toBe(false);
     expect(rackAssignmentChanged(3, 4)).toBe(true);
     expect(rackAssignmentChanged(4, null)).toBe(true);
+    expect(rackSessionChanged(9, "9")).toBe(false);
+    expect(rackSessionChanged(9, 10)).toBe(true);
   });
 });

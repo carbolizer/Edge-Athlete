@@ -38,6 +38,7 @@ urlpatterns = [
     path('athletes/<int:athlete_id>/reports/<int:report_id>/', views.athlete_report_detail, name='athlete_report_detail'),
     path('athletes/<int:athlete_id>/reports/<int:report_id>/pdf/', views.athlete_report_pdf, name='athlete_report_pdf'),
     path('athletes/<int:athlete_id>/workout-assignment/', views.athlete_workout_assignment, name='athlete_workout_assignment'),
+    path('athletes/<int:athlete_id>/schedule/', views.athlete_schedule, name='athlete_schedule'),
     path('athletes/<int:athlete_id>/workout-exercises/<int:exercise_id>/override/', views.athlete_workout_exercise_override, name='athlete_workout_exercise_override'),
 
     # training plans
@@ -52,6 +53,7 @@ urlpatterns = [
     path('workout-programs/', views.workout_programs_view, name='workout_programs'),
 
     # sessions
+    path('sessions/preview/', views.session_preview, name='session_preview'),
     path('sessions/', views.sessions_view, name='sessions'),
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
     path('sessions/<int:session_id>/end/', views.session_end, name='session_end'),

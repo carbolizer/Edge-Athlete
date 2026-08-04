@@ -7,11 +7,15 @@ from django.utils import timezone
 from ..models import (
     Athlete,
     AthleteDayProgress,
+    AthleteDayPlan,
+    AthleteDayPlanExercise,
+    AthleteDayPlanWorkout,
     AthleteRackParticipation,
     AthleteWorkoutAssignment,
     AthleteWorkoutExerciseOverride,
     AthleteWorkoutProgramAssignment,
     DailyReport,
+    DemoAthleteSeed,
     MonitoringEvent,
     Program,
     RackScreen,
@@ -24,6 +28,7 @@ from ..models import (
 )
 from .athlete_workouts import assignment_workout, effective_workout
 from .training_limits import (
+    MAX_REPORT_BASELINE_BYTES,
     MAX_REPORT_SNAPSHOT_BYTES,
     MAX_SESSION_ATHLETES,
     MAX_SESSION_REPS,
@@ -32,7 +37,7 @@ from .training_limits import (
 
 
 TRAINING_DAY_ADVISORY_LOCK = 2026071601
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 
 
 class ActiveTrainingDayConflict(Exception):
@@ -48,6 +53,10 @@ class SessionAlreadyEnded(Exception):
 
 
 class SimulationEndRejected(Exception):
+    pass
+
+
+class DemoSeedCleanupRequired(Exception):
     pass
 
 
@@ -83,15 +92,47 @@ def lock_rack_number(rack_number):
 
 
 @transaction.atomic
-def start_training_day(validated_data, *, is_simulated=False):
+def start_training_day(validated_data, *, is_simulated=False, preview_version=None):
     lock_training_day()
     if Session.objects.select_for_update().filter(ended_at=None).exists():
         raise ActiveTrainingDayConflict
-    athletes = validated_data.pop("athletes", [])
+    submitted_athletes = validated_data.pop("athletes", [])
+    preview = None
+    if preview_version is not None:
+        from .athlete_schedules import ScheduleError, build_preview
+        preview = build_preview()
+        if preview_version != preview["preview_version"]:
+            raise ScheduleError("schedule_version_conflict", "Start Day preview is stale; preview again.")
+        athletes = [row["athlete"] for row in preview["_resolved"] if row["eligible"]]
+    else:
+        athletes = submitted_athletes
     if len(athletes) > MAX_SESSION_ATHLETES:
         raise SessionAthleteLimitExceeded
-    session = Session.objects.create(**validated_data, is_simulated=is_simulated)
+    training_date = preview["training_date"] if preview is not None else timezone.localdate()
+    session = Session.objects.create(
+        **validated_data, training_date=training_date, is_simulated=is_simulated,
+    )
     session.athletes.set(athletes)
+    if preview is not None:
+        from .athlete_schedules import freeze_resolved_plan
+        for resolved in preview["_resolved"]:
+            if resolved["eligible"]:
+                freeze_resolved_plan(session, resolved)
+        baseline_snapshot = _build_schema_three_snapshot(
+            session, timezone.now(), [], [], [],
+        )
+        baseline_bytes = len(json.dumps(
+            baseline_snapshot, separators=(",", ":"), ensure_ascii=False,
+        ).encode("utf-8"))
+        if baseline_bytes > MAX_REPORT_BASELINE_BYTES:
+            raise ScheduleError(
+                "scheduled_day_too_large",
+                "Scheduled day exceeds the report baseline limit.",
+                dimensions={
+                    "snapshot_bytes": baseline_bytes,
+                    "limits": {"snapshot_bytes": MAX_REPORT_BASELINE_BYTES},
+                },
+            )
     rack_numbers = list(
         RackScreen.objects.exclude(rack_number=None)
         .values("rack_number")
@@ -212,6 +253,9 @@ def _progress_snapshot(progress):
             "position": current_exercise.position,
         } if current_exercise else None),
         "expected_set_number": progress.expected_set_number,
+        "day_plan_id": progress.day_plan_id,
+        "current_day_plan_workout_id": progress.current_day_plan_workout_id,
+        "current_day_plan_exercise_id": progress.current_day_plan_exercise_id,
     }
 
 
@@ -376,7 +420,7 @@ def _build_schema_two_snapshot(session, end_time, states, session_sets, reps):
             } for workout_set in sets_by_athlete.get(athlete.id, [])],
         })
     return {
-        "schema_version": REPORT_SCHEMA_VERSION,
+        "schema_version": 2,
         "generated_at": _iso(end_time),
         "session": {
             "id": session.id,
@@ -393,7 +437,58 @@ def _build_schema_two_snapshot(session, end_time, states, session_sets, reps):
     }
 
 
+def _frozen_plan_snapshot(day_plan):
+    return {
+        "id": day_plan.id,
+        "name": day_plan.name,
+        "schedule_source": day_plan.schedule_source,
+        "schedule_version": day_plan.schedule_version,
+        "source_program_id": day_plan.source_program_id,
+        "workouts": [{
+            "id": workout.id,
+            "source_workout_id": workout.source_workout_id,
+            "name": workout.name,
+            "position": workout.position,
+            "exercises": [{
+                "id": exercise.id,
+                "source_exercise_id": exercise.source_exercise_id,
+                "exercise": exercise.exercise,
+                "position": exercise.position,
+                "sets": exercise.sets,
+                "reps": exercise.reps,
+                "weight_lbs": exercise.weight_lbs,
+                "velocity_min": exercise.velocity_min,
+                "velocity_max": exercise.velocity_max,
+            } for exercise in workout.exercises.all()],
+        } for workout in day_plan.workouts.all()],
+    }
+
+
+def _build_schema_three_snapshot(session, end_time, states, session_sets, reps):
+    snapshot = _build_schema_two_snapshot(session, end_time, states, session_sets, reps)
+    snapshot["schema_version"] = 3
+    snapshot["session"]["training_date"] = _iso(session.training_date)
+    plans = {
+        plan.athlete_id: plan
+        for plan in AthleteDayPlan.objects.filter(session=session).prefetch_related(
+            "workouts__exercises",
+        )
+    }
+    sets = {workout_set.id: workout_set for workout_set in session_sets}
+    for entry in snapshot["athletes"]:
+        day_plan = plans.get(entry["athlete"]["id"])
+        entry["frozen_plan"] = _frozen_plan_snapshot(day_plan) if day_plan else None
+        entry.pop("assigned_program", None)
+        for set_body in entry["sets"]:
+            workout_set = sets[set_body["id"]]
+            set_body["day_plan_workout_id"] = workout_set.day_plan_workout_id
+            set_body["day_plan_exercise_id"] = workout_set.day_plan_exercise_id
+    return snapshot
+
+
 def _build_snapshot(session, end_time, states, session_sets, reps):
+    if AthleteDayPlan.objects.filter(session=session).exists():
+        return _build_schema_three_snapshot(session, end_time, states, session_sets, reps)
     athlete_ids = session.athletes.values_list("id", flat=True)
     athlete_driven = (
         AthleteDayProgress.objects.filter(session=session).exists()
@@ -420,6 +515,8 @@ def end_training_day(session_id):
                 raise SessionNotFound
             if session.is_simulated:
                 raise SimulationEndRejected
+            if DemoAthleteSeed.objects.filter(session=session).exists():
+                raise DemoSeedCleanupRequired
             report = DailyReport.objects.filter(session=session).first()
             if report:
                 return report, False
@@ -500,6 +597,17 @@ def end_training_day(session_id):
                     AthleteDayProgress.objects.select_for_update()
                     .filter(session=session)
                     .order_by("athlete_id")
+                )
+                frozen_plans = list(
+                    AthleteDayPlan.objects.select_for_update().filter(session=session).order_by("athlete_id")
+                )
+                frozen_workouts = list(
+                    AthleteDayPlanWorkout.objects.select_for_update()
+                    .filter(day_plan__in=frozen_plans).order_by("day_plan_id", "position", "id")
+                )
+                list(
+                    AthleteDayPlanExercise.objects.select_for_update()
+                    .filter(workout__in=frozen_workouts).order_by("workout_id", "position", "id")
                 )
                 list(AthleteWorkoutExerciseOverride.objects.select_for_update().filter(athlete_id__in=participant_ids))
                 program_ids = {

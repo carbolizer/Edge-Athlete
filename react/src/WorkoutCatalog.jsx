@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { addProgramWorkout, buildWorkoutPayload, buildWorkoutProgramPayload, createExerciseDraft, errorLabel, flattenApiErrors, moveProgramWorkout, sameOriginPath } from "./workoutCatalog.js";
+import { addProgramWorkout, buildWorkoutPayload, buildWorkoutProgramPayload, createExerciseDraft, errorLabel, flattenApiErrors, moveProgramWorkout, sameOriginPath, unscopedValidationErrors, validateProgramDraft, validateWorkoutDraft, validationErrorsAt } from "./workoutCatalog.js";
 
 const WORKOUTS_URL = "/api/workouts/";
 const CSV_PREVIEW_URL = "/api/workouts/imports/preview/";
@@ -9,6 +9,12 @@ const WORKOUT_PROGRAMS_URL = "/api/workout-programs/";
 function ErrorList({ errors, title = "Please correct the following:" }) {
   if (!errors.length) return null;
   return <div className="workout-errors" role="alert"><strong>{title}</strong><ul>{errors.map((error, index) => <li key={`${error.row || ""}-${error.field || ""}-${index}`}>{errorLabel(error)}</li>)}</ul></div>;
+}
+
+function FieldErrors({ errors, path, form, exact = true }) {
+  const local = validationErrorsAt(errors, path, form, exact);
+  if (!local.length) return null;
+  return <div className="workout-field-errors">{local.map((error, index) => <p key={`${path}-${index}`}>{error.detail}</p>)}</div>;
 }
 
 function ExerciseSummary({ exercise }) {
@@ -49,6 +55,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [programPagination, setProgramPagination] = useState({ previous: null, next: null });
   const [programCatalogState, setProgramCatalogState] = useState("loading");
   const [programCatalogErrors, setProgramCatalogErrors] = useState([]);
+  const [catalogSearch, setCatalogSearch] = useState("");
   const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
 
   async function parseResponse(response, fallback) {
@@ -112,6 +119,14 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     loadPrograms(WORKOUT_PROGRAMS_URL);
   }, [accessToken]);
 
+  const dirty = Boolean(name.trim() || exercises.some((exercise) => Object.entries(exercise).some(([field, value]) => field !== "position" && value !== "")) || programName.trim() || selectedWorkouts.length);
+  useEffect(() => {
+    const warn = (event) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
+    window.__edgePlanningDirty = { ...window.__edgePlanningDirty, catalog: dirty };
+    window.addEventListener("beforeunload", warn);
+    return () => { window.removeEventListener("beforeunload", warn); window.__edgePlanningDirty = { ...window.__edgePlanningDirty, catalog: false }; };
+  }, [dirty]);
+
   function updateExercise(index, field, value) {
     setExercises((current) => current.map((exercise, exerciseIndex) => exerciseIndex === index ? { ...exercise, [field]: value } : exercise));
   }
@@ -122,6 +137,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
 
   async function createWorkout(event) {
     event.preventDefault();
+    const validation = validateWorkoutDraft(name, exercises);
+    if (validation.length) {
+      setManualErrors(validation);
+      setManualStatus("");
+      return;
+    }
     setSaving(true);
     setManualErrors([]);
     setManualStatus("");
@@ -136,6 +157,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       setName("");
       setExercises([createExerciseDraft(1)]);
       setManualStatus(`${body.name || name.trim()} was added to the workout catalog.`);
+      setSelectedWorkouts((current) => addProgramWorkout(current, body));
       await loadWorkouts(catalogUrl);
     } catch (errors) {
       setManualErrors(Array.isArray(errors) ? errors : [{ detail: "The workout could not be created." }]);
@@ -188,7 +210,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
 
   async function createWorkoutProgram(event) {
     event.preventDefault();
-    if (!selectedWorkouts.length) return;
+    const validation = validateProgramDraft(programName, selectedWorkouts);
+    if (validation.length) {
+      setProgramErrors(validation);
+      setProgramStatus("");
+      return;
+    }
     setProgramSaving(true);
     setProgramErrors([]);
     setProgramStatus("");
@@ -213,26 +240,32 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
 
   const previewWorkouts = preview?.workouts || preview?.results || [];
   const previewValid = preview && csvErrors.length === 0;
+  const visibleWorkouts = workouts.filter((workout) => `${workout.name} ${(workout.exercises || []).map((exercise) => exercise.exercise).join(" ")}`.toLowerCase().includes(catalogSearch.trim().toLowerCase()));
 
   return <div className="workout-catalog context-tab-content">
     <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Create ordered workouts manually or validate a CSV before an atomic import.</p></div><b>{workoutCount} workout{workoutCount === 1 ? "" : "s"}</b></header>
     <div className="workout-builder-grid">
       <section className="workout-panel"><header><span>Manual builder</span><h3>New workout</h3><p>Rows are saved in the order shown.</p></header>
-        <form onSubmit={createWorkout}>
-          <label className="workout-name">Workout name<input value={name} onChange={(event) => setName(event.target.value)} maxLength="255" required disabled={saving} /></label>
+        <form onSubmit={createWorkout} noValidate>
+          <label className="workout-name">Workout name<input value={name} onChange={(event) => setName(event.target.value)} maxLength="255" required disabled={saving} aria-invalid={validationErrorsAt(manualErrors, "name", "workout").length > 0} /><FieldErrors errors={manualErrors} path="name" form="workout" /></label>
           <div className="workout-exercise-list">
-            {exercises.map((exercise, index) => <fieldset key={exercise.position}><legend>Exercise {index + 1}</legend>
-              <label className="exercise-movement">Movement<input value={exercise.exercise} onChange={(event) => updateExercise(index, "exercise", event.target.value)} required disabled={saving} /></label>
-              <label>Sets<input type="number" min="1" step="1" value={exercise.sets} onChange={(event) => updateExercise(index, "sets", event.target.value)} required disabled={saving} /></label>
-              <label>Reps<input type="number" min="1" step="1" value={exercise.reps} onChange={(event) => updateExercise(index, "reps", event.target.value)} required disabled={saving} /></label>
-              <label>Weight (lbs)<input type="number" min="0" step="any" value={exercise.default_weight_lbs} onChange={(event) => updateExercise(index, "default_weight_lbs", event.target.value)} required disabled={saving} /></label>
-              <label>Velocity min<input type="number" min="0" max="10" step="any" value={exercise.velocity_min} onChange={(event) => updateExercise(index, "velocity_min", event.target.value)} disabled={saving} /></label>
-              <label>Velocity max<input type="number" min="0" max="10" step="any" value={exercise.velocity_max} onChange={(event) => updateExercise(index, "velocity_max", event.target.value)} disabled={saving} /></label>
+            {exercises.map((exercise, index) => {
+              const rowPath = `exercises.${index}`;
+              return <fieldset className={validationErrorsAt(manualErrors, rowPath, "workout", false).length ? "has-errors" : ""} key={exercise.position}><legend>Exercise {index + 1}</legend>
+              <label className="exercise-movement">Movement<input value={exercise.exercise} onChange={(event) => updateExercise(index, "exercise", event.target.value)} required disabled={saving} aria-invalid={validationErrorsAt(manualErrors, `${rowPath}.exercise`, "workout").length > 0} /><FieldErrors errors={manualErrors} path={`${rowPath}.exercise`} form="workout" /></label>
+              <label>Sets<input type="number" min="1" step="1" value={exercise.sets} onChange={(event) => updateExercise(index, "sets", event.target.value)} required disabled={saving} aria-invalid={validationErrorsAt(manualErrors, `${rowPath}.sets`, "workout").length > 0} /><FieldErrors errors={manualErrors} path={`${rowPath}.sets`} form="workout" /></label>
+              <label>Reps<input type="number" min="1" step="1" value={exercise.reps} onChange={(event) => updateExercise(index, "reps", event.target.value)} required disabled={saving} aria-invalid={validationErrorsAt(manualErrors, `${rowPath}.reps`, "workout").length > 0} /><FieldErrors errors={manualErrors} path={`${rowPath}.reps`} form="workout" /></label>
+              <label>Weight (lbs)<input type="number" min="0" step="any" value={exercise.default_weight_lbs} onChange={(event) => updateExercise(index, "default_weight_lbs", event.target.value)} required disabled={saving} aria-invalid={validationErrorsAt(manualErrors, `${rowPath}.default_weight_lbs`, "workout").length > 0} /><FieldErrors errors={manualErrors} path={`${rowPath}.default_weight_lbs`} form="workout" /></label>
+              <label>Velocity min<input type="number" min="0" max="10" step="any" value={exercise.velocity_min} onChange={(event) => updateExercise(index, "velocity_min", event.target.value)} disabled={saving} aria-invalid={validationErrorsAt(manualErrors, `${rowPath}.velocity_min`, "workout").length > 0} /><FieldErrors errors={manualErrors} path={`${rowPath}.velocity_min`} form="workout" /></label>
+              <label>Velocity max<input type="number" min="0" max="10" step="any" value={exercise.velocity_max} onChange={(event) => updateExercise(index, "velocity_max", event.target.value)} disabled={saving} aria-invalid={validationErrorsAt(manualErrors, `${rowPath}.velocity_max`, "workout").length > 0} /><FieldErrors errors={manualErrors} path={`${rowPath}.velocity_max`} form="workout" /></label>
               <button type="button" className="workout-remove" onClick={() => removeExercise(index)} disabled={exercises.length === 1 || saving} aria-label={`Remove exercise ${index + 1}`}>Remove</button>
-            </fieldset>)}
+              <FieldErrors errors={manualErrors} path={`${rowPath}.position`} form="workout" />
+              <FieldErrors errors={manualErrors} path={rowPath} form="workout" />
+            </fieldset>;})}
+            <FieldErrors errors={manualErrors} path="exercises" form="workout" />
           </div>
           <div className="workout-form-actions"><button type="button" className="workout-secondary" onClick={() => setExercises((current) => [...current, createExerciseDraft(current.length + 1)])} disabled={saving}>Add exercise</button><button type="submit" disabled={saving}>{saving ? "Creating..." : "Create workout"}</button></div>
-          <ErrorList errors={manualErrors} />
+          <ErrorList errors={unscopedValidationErrors(manualErrors, "workout")} />
           {manualStatus && <p className="workout-status" role="status">{manualStatus}</p>}
         </form>
       </section>
@@ -247,28 +280,29 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       </section>
     </div>
 
-    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Available workouts</h3><p>Exercises appear in prescribed order.</p></header>
+    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Available workouts</h3><p>Search this compact page, then add occurrences to the ordered draft.</p></header><label className="workout-search">Search workouts<input type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Workout or exercise" /></label>
       {catalogState === "loading" && <p className="monitor-empty" role="status">Loading workout page...</p>}
       <ErrorList errors={catalogErrors} title="Catalog unavailable:" />
       {catalogState === "error" && <button type="button" className="workout-secondary" onClick={() => loadWorkouts(retryCatalogUrl)}>Retry page</button>}
       {catalogState !== "loading" && workoutCount === 0 && <p className="monitor-empty">No workouts have been created.</p>}
-      <div className="workout-card-grid">{workouts.map((workout) => {
+      <div className="workout-card-grid compact">{visibleWorkouts.map((workout) => {
         const selected = selectedWorkouts.some((item) => Number(item.id) === Number(workout.id));
         return <article key={workout.id || workout.name}><header><span>{workout.exercises?.length || 0} exercise{workout.exercises?.length === 1 ? "" : "s"}</span><h4>{workout.name}</h4></header><ol>{(workout.exercises || []).map((exercise) => <ExerciseSummary exercise={exercise} key={`${exercise.position}-${exercise.exercise}`} />)}</ol><button type="button" className="workout-card-add" onClick={() => setSelectedWorkouts((current) => addProgramWorkout(current, workout))} disabled={selected}>{selected ? "Added to program" : "Add to program"}</button></article>;
-      })}</div>
+      })}</div>{catalogState === "ready" && visibleWorkouts.length === 0 && workouts.length > 0 && <p className="monitor-empty">No workouts match this search.</p>}
       {(pagination.previous || pagination.next || workoutCount > workouts.length) && <nav className="workout-pagination" aria-label="Workout catalog pages"><button type="button" className="workout-secondary" onClick={() => loadWorkouts(pagination.previous)} disabled={!pagination.previous || catalogState === "loading"}>Previous</button><span role="status">Showing {workouts.length} on this page · {workoutCount} total</span><button type="button" onClick={() => loadWorkouts(pagination.next)} disabled={!pagination.next || catalogState === "loading"}>Next</button></nav>}
     </section>
 
     <div className="workout-program-grid">
-      <section className="workout-panel workout-program-builder"><header><span>Program builder</span><h3>New workout program</h3><p>Select workouts from any catalog page, then arrange their training order.</p></header>
-        <form onSubmit={createWorkoutProgram}>
-          <label>Program name<input value={programName} onChange={(event) => setProgramName(event.target.value)} maxLength="255" required disabled={programSaving} /></label>
+      <section className="workout-panel workout-program-builder"><header><span>Program builder</span><h3>New workout program</h3><p>Catalog choices and newly created workouts stay in this draft until saved or discarded.</p></header>
+        <form onSubmit={createWorkoutProgram} noValidate>
+          <label>Program name<input value={programName} onChange={(event) => setProgramName(event.target.value)} maxLength="255" required disabled={programSaving} aria-invalid={validationErrorsAt(programErrors, "name", "program").length > 0} /><FieldErrors errors={programErrors} path="name" form="program" /></label>
           <div className="program-draft" aria-live="polite">
             <h4>Selected workouts <span>{selectedWorkouts.length}</span></h4>
-            {selectedWorkouts.length === 0 ? <p className="monitor-empty">Use “Add to program” on a workout card.</p> : <ol>{selectedWorkouts.map((workout, index) => <li key={workout.id}><b><span>{index + 1}</span>{workout.name}</b><div><button type="button" onClick={() => setSelectedWorkouts((current) => moveProgramWorkout(current, index, -1))} disabled={index === 0 || programSaving} aria-label={`Move ${workout.name} up`}>Up</button><button type="button" onClick={() => setSelectedWorkouts((current) => moveProgramWorkout(current, index, 1))} disabled={index === selectedWorkouts.length - 1 || programSaving} aria-label={`Move ${workout.name} down`}>Down</button><button type="button" className="program-remove" onClick={() => setSelectedWorkouts((current) => current.filter((item) => Number(item.id) !== Number(workout.id)))} disabled={programSaving} aria-label={`Remove ${workout.name} from program`}>Remove</button></div></li>)}</ol>}
+            {selectedWorkouts.length === 0 ? <p className="monitor-empty">Use “Add to program” on a workout card.</p> : <ol>{selectedWorkouts.map((workout, index) => <li className={validationErrorsAt(programErrors, `items.${index}`, "program", false).length ? "has-errors" : ""} key={workout.id}><b><span>{index + 1}</span>{workout.name}</b><div><button type="button" onClick={() => setSelectedWorkouts((current) => moveProgramWorkout(current, index, -1))} disabled={index === 0 || programSaving} aria-label={`Move ${workout.name} up`}>Up</button><button type="button" onClick={() => setSelectedWorkouts((current) => moveProgramWorkout(current, index, 1))} disabled={index === selectedWorkouts.length - 1 || programSaving} aria-label={`Move ${workout.name} down`}>Down</button><button type="button" className="program-remove" onClick={() => setSelectedWorkouts((current) => current.filter((item) => Number(item.id) !== Number(workout.id)))} disabled={programSaving} aria-label={`Remove ${workout.name} from program`}>Remove</button></div><FieldErrors errors={programErrors} path={`items.${index}`} form="program" exact={false} /></li>)}</ol>}
+            <FieldErrors errors={programErrors} path="items" form="program" />
           </div>
-          <div className="workout-form-actions"><button type="submit" disabled={!selectedWorkouts.length || programSaving}>{programSaving ? "Creating..." : "Create program"}</button></div>
-          <ErrorList errors={programErrors} />
+          <div className="workout-form-actions"><button type="button" className="workout-secondary" disabled={!dirty || programSaving} onClick={() => { if (!window.confirm("Discard the unsaved workout and program draft?")) return; setProgramName(""); setSelectedWorkouts([]); setName(""); setExercises([createExerciseDraft(1)]); setManualErrors([]); setProgramErrors([]); }}>Discard draft</button><button type="submit" disabled={programSaving}>{programSaving ? "Creating..." : "Create program"}</button></div>
+          <ErrorList errors={unscopedValidationErrors(programErrors, "program")} />
           {programStatus && <p className="workout-status" role="status">{programStatus}</p>}
         </form>
       </section>

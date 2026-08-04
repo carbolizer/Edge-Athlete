@@ -41,7 +41,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
-from .models import Node, RackScreen, RackWorkoutState, Athlete, Program, Session, Set, Rep, MonitoringEvent, Workout, WorkoutExercise, WorkoutProgram, WorkoutProgramItem, AthleteWorkoutAssignment, AthleteWorkoutProgramAssignment, AthleteWorkoutExerciseOverride, AthleteDayProgress, AthleteRackParticipation, DailyReport, POSITIVE_INTEGER_MAX
+from .models import Node, RackScreen, RackWorkoutState, RackIdentityEvent, Athlete, Program, Session, Set, Rep, MonitoringEvent, Workout, WorkoutExercise, WorkoutProgram, WorkoutProgramItem, AthleteWorkoutAssignment, AthleteWorkoutProgramAssignment, AthleteWorkoutExerciseOverride, AthleteDayProgress, AthleteRackParticipation, AthleteSchedule, DailyReport, DemoAthleteSeed, POSITIVE_INTEGER_MAX
 from .permissions import IsCoach
 from .services.set_completion import (
     complete_set,
@@ -77,6 +77,7 @@ from .services.athlete_workouts import (
 from .services.athlete_progress import AthleteProgramIncomplete, get_or_create_progress
 from .services.training_days import (
     ActiveTrainingDayConflict,
+    DemoSeedCleanupRequired,
     SessionAlreadyEnded,
     SessionNotFound as TrainingDaySessionNotFound,
     SimulationEndRejected,
@@ -85,11 +86,16 @@ from .services.training_days import (
     TrainingDayRaceConflict,
     UnfinishedSetsConflict,
     end_training_day,
+    lock_training_day,
     lock_rack_number as training_day_lock_rack_number,
     serialize_daily_report,
     start_training_day,
 )
-from .services.training_limits import MAX_SESSION_REPS, MAX_SESSION_SETS
+from .services.training_limits import (
+    MAX_SESSION_RACK_PARTICIPATIONS,
+    MAX_SESSION_REPS,
+    MAX_SESSION_SETS,
+)
 from .services.reports import (
     AthleteNotInReport,
     UnsupportedReportSchema,
@@ -100,9 +106,18 @@ from .services.reports import (
     reports_for_athlete,
 )
 from .services.report_pdf import PdfTooLarge, render_report_pdf
+from .services.athlete_schedules import (
+    ScheduleError,
+    build_preview,
+    delete_schedule,
+    replace_schedule,
+    serialize_schedule,
+    serialize_schedule_state,
+)
+from .services.training_execution import ExecutionError, start_expected_set
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           ProgramSerializer, PublicProgramSerializer, AthleteSerializer, PublicAthleteSerializer, SessionSerializer,
-                          NodeSerializer)
+                          ScheduledSessionStartSerializer, NodeSerializer)
 
 
 def _require_coach(request):
@@ -124,6 +139,9 @@ class RackReadThrottle(AnonRateThrottle):
 class RackWriteThrottle(AnonRateThrottle):
     scope = "rack_write"
     rate = "120/min"
+
+
+MAX_RACK_IDENTITY_EVENTS_PER_SCREEN_SESSION = 256
 
 
 # ─────────────────────────── tablet: racks ───────────────────────────
@@ -384,31 +402,63 @@ def _rack_state_body(rack_number, *, include_active_set=False):
                 "workout_program",
                 "current_program_item__workout",
                 "current_workout_exercise",
+                "day_plan",
+                "current_day_plan_workout",
+                "current_day_plan_exercise__source_exercise",
+                "day_plan",
+                "current_day_plan_workout",
+                "current_day_plan_exercise",
             ).filter(session=active_session, athlete=catalog_athlete).first()
         )
-        if progress and progress.current_program_item_id:
+        if progress and progress.day_plan_id and progress.current_day_plan_workout_id:
+            effective_workout = {
+                "id": progress.current_day_plan_workout.id,
+                "name": progress.current_day_plan_workout.name,
+                "exercises": [{
+                    "id": exercise.id,
+                    "exercise": exercise.exercise,
+                    "position": exercise.position,
+                    "sets": exercise.sets,
+                    "reps": exercise.reps,
+                    "default_weight_lbs": exercise.weight_lbs,
+                    "velocity_min": exercise.velocity_min,
+                    "velocity_max": exercise.velocity_max,
+                } for exercise in progress.current_day_plan_workout.exercises.all()],
+            }
+            effective_assignment_source = progress.day_plan.schedule_source
+        elif progress and progress.current_program_item_id:
             effective_workout = build_effective_workout(
                 progress.current_program_item.workout,
                 catalog_athlete,
             )
             effective_assignment_source = "athlete_program"
 
+    frozen_roster = bool(active_session and active_session.athlete_day_plans.exists())
     roster_available = bool(
-        active_session
+        frozen_roster or active_session
         and AthleteWorkoutProgramAssignment.objects.filter(
             athlete__sessions=active_session,
             workout_program__items__workout__exercises__isnull=False,
         ).exists()
     )
     if roster_available:
-        active_athletes = list(
-            active_session.athletes.filter(
+        active_query = active_session.athletes.all() if frozen_roster else active_session.athletes.filter(
                 workout_program_assignment__workout_program__items__workout__exercises__isnull=False,
-            ).distinct().order_by("name", "id")[:MAX_RACK_ACTIVE_ATHLETES + 1]
-        )
+            )
+        active_athletes = list(active_query.distinct().order_by("name", "id")[:MAX_RACK_ACTIVE_ATHLETES + 1])
         active_athletes_truncated = len(active_athletes) > MAX_RACK_ACTIVE_ATHLETES
+        demo_athlete_ids = set()
+        demo_seed = DemoAthleteSeed.objects.filter(session=active_session).values(
+            "athlete_1_id", "athlete_2_id", "athlete_3_id", "athlete_4_id",
+        ).first()
+        if demo_seed:
+            demo_athlete_ids = set(demo_seed.values())
         active_athlete_rows = [
-            {"id": active_athlete.id, "name": active_athlete.name}
+            {
+                "id": active_athlete.id,
+                "name": active_athlete.name,
+                "demo_wristband_eligible": active_athlete.id in demo_athlete_ids,
+            }
             for active_athlete in active_athletes[:MAX_RACK_ACTIVE_ATHLETES]
         ]
     if not athlete:
@@ -540,6 +590,52 @@ def _positive_json_id(value, field):
     return value, None
 
 
+def _identity_event_body(identity_event, *, replayed):
+    return {
+        "event_id": str(identity_event.event_id),
+        "session_id": identity_event.session_id,
+        "athlete_id": identity_event.athlete_id,
+        "rack_number": identity_event.rack_number,
+        "result": identity_event.result,
+        "created_at": identity_event.created_at,
+        "resulting_set": (
+            SetSerializer(identity_event.resulting_set).data
+            if identity_event.resulting_set else None
+        ),
+        "replayed": replayed,
+    }
+
+
+def _rack_identity_body(rack_number, active_session, identity_event, *, replayed):
+    body = _rack_state_body(rack_number, include_active_set=True)
+    current_set = (
+        Set.objects.filter(
+            session=active_session, rack_number=rack_number, ended_at=None,
+        ).order_by("started_at", "id").first()
+    )
+    body["set"] = SetSerializer(current_set).data if current_set else None
+    body["identity_event"] = _identity_event_body(identity_event, replayed=replayed)
+    return body
+
+
+def _record_rack_participation(session, athlete, rack_number):
+    participation = AthleteRackParticipation.objects.filter(
+        session=session, athlete=athlete, rack_number=rack_number,
+    ).first()
+    if participation is not None:
+        participation.save(update_fields=["last_seen_at"])
+        return participation
+    if AthleteRackParticipation.objects.filter(session=session).count() >= MAX_SESSION_RACK_PARTICIPATIONS:
+        raise ExecutionError(
+            "session_rack_participation_limit",
+            "Session has reached the rack participation limit.",
+            429,
+        )
+    return AthleteRackParticipation.objects.create(
+        session=session, athlete=athlete, rack_number=rack_number,
+    )
+
+
 @_private_no_store
 @api_view(["PUT"])
 @permission_classes([IsCoach])
@@ -630,7 +726,7 @@ def rack_catalog_assignment(request, rack_number):
 @_private_no_store
 @api_view(["PUT", "DELETE"])
 @permission_classes([AllowAny])
-@throttle_classes([RackReadThrottle])
+@throttle_classes([RackWriteThrottle])
 def rack_athlete_identity(request, rack_number):
     """Atomically sign an eligible athlete into one registered rack or out."""
     if not _known_rack(rack_number):
@@ -645,12 +741,22 @@ def rack_athlete_identity(request, rack_number):
     if device_id is None:
         return _rack_error("invalid_device_id", "device_id must be a canonical UUID.", 400)
     athlete_id = None
+    event_id = None
     if request.method == "PUT":
         athlete_id, error = _positive_json_id(payload.get("athlete_id"), "athlete_id")
         if error:
             return error
+        session_id, error = _positive_json_id(payload.get("session_id"), "session_id")
+        if error:
+            return _rack_error(
+                "invalid_session_id", "session_id must be a positive integer.", 400,
+            )
+        event_id = _canonical_device_id(payload.get("event_id"))
+        if event_id is None:
+            return _rack_error("invalid_event_id", "event_id must be a canonical UUID.", 400)
 
     for _attempt in range(3):
+        automatic_set = None
         observed_athlete_id = athlete_id
         if request.method == "DELETE":
             observed_athlete_id = (
@@ -669,6 +775,42 @@ def rack_athlete_identity(request, rack_number):
             with transaction.atomic():
                 for locked_rack in locked_racks:
                     _lock_rack_number(locked_rack)
+                screen = (
+                    RackScreen.objects.select_for_update()
+                    .filter(device_id=device_id)
+                    .first()
+                )
+                active_session = (
+                    Session.objects.select_for_update()
+                    .filter(ended_at=None)
+                    .order_by("-started_at", "-id")
+                    .first()
+                )
+                if request.method == "PUT" and (
+                    active_session is None or active_session.id != session_id
+                ):
+                    return _rack_error(
+                        "identity_session_conflict",
+                        "session_id does not match the active session.",
+                        409,
+                    )
+                bound_event = None
+                if request.method == "PUT" and screen is not None:
+                    bound_event = (
+                        RackIdentityEvent.objects.select_for_update(of=("self",))
+                        .select_related("resulting_set")
+                        .filter(screen=screen, event_id=event_id)
+                        .first()
+                    )
+                    if bound_event is not None and (
+                        bound_event.athlete_id != athlete_id
+                        or bound_event.rack_number != rack_number
+                    ):
+                        return _rack_error(
+                            "identity_event_conflict",
+                            "event_id is already bound to a different identity request.",
+                            409,
+                        )
                 screens = list(
                     RackScreen.objects.select_for_update()
                     .filter(rack_number=rack_number)
@@ -676,15 +818,34 @@ def rack_athlete_identity(request, rack_number):
                 )
                 if len(screens) != 1:
                     return _rack_error("rack_screen_conflict", "Rack must have exactly one assigned screen.", 409)
-                if screens[0].device_id != device_id:
+                if screen is None or screens[0].id != screen.id:
                     return _rack_error("rack_screen_mismatch", "device_id is not assigned to this rack.", 403)
 
-                active_session = (
-                    Session.objects.select_for_update()
-                    .filter(ended_at=None)
-                    .order_by("-started_at", "-id")
-                    .first()
-                )
+                if request.method == "PUT":
+                    identity_event = bound_event
+                    if identity_event is not None:
+                        if (
+                            active_session is None
+                            or identity_event.session_id != active_session.id
+                            or identity_event.athlete_id != athlete_id
+                            or identity_event.rack_number != rack_number
+                        ):
+                            return _rack_error(
+                                "identity_event_conflict",
+                                "event_id is already bound to a different identity request.",
+                                409,
+                            )
+                        return _private_response(_rack_identity_body(
+                            rack_number, active_session, identity_event, replayed=True,
+                        ))
+                    if RackIdentityEvent.objects.filter(
+                        screen=screen, session=active_session,
+                    ).count() >= MAX_RACK_IDENTITY_EVENTS_PER_SCREEN_SESSION:
+                        return _rack_error(
+                            "identity_event_limit",
+                            "This screen has reached the identity action limit for the active session.",
+                            429,
+                        )
                 states = list(
                     RackWorkoutState.objects.select_for_update()
                     .filter(rack_number__in=locked_racks)
@@ -719,34 +880,56 @@ def rack_athlete_identity(request, rack_number):
                     return _rack_error("athlete_not_found", "Athlete not found.", 404)
                 if not active_session.athletes.filter(id=athlete.id).exists():
                     return _rack_error("athlete_not_in_active_session", "Athlete is not in the active session.", 409)
-                assignment = (
-                    AthleteWorkoutProgramAssignment.objects.select_for_update()
-                    .select_related("workout_program")
-                    .filter(athlete=athlete)
-                    .first()
+                progress = (
+                    AthleteDayProgress.objects.select_for_update(of=("self",))
+                    .select_related(
+                        "day_plan", "current_day_plan_workout", "current_day_plan_exercise",
+                        "current_program_item", "current_workout_exercise",
+                    ).filter(session=active_session, athlete=athlete).first()
                 )
-                if assignment is None:
-                    return _rack_error("athlete_program_required", "Athlete requires a complete workout program.", 409)
-
+                assignment = None
+                if progress is None:
+                    assignment = (
+                        AthleteWorkoutProgramAssignment.objects.select_for_update()
+                        .select_related("workout_program")
+                        .filter(athlete=athlete)
+                        .first()
+                    )
+                    if assignment is None:
+                        return _rack_error("athlete_program_required", "Athlete requires a complete workout program.", 409)
                 current_racks = tuple(
                     row.rack_number for row in states if row.selected_athlete_id == athlete.id
                 )
                 if current_racks != observed_racks:
                     retry = True
                     continue
-                try:
-                    progress = get_or_create_progress(active_session, athlete, assignment)
-                except AthleteProgramIncomplete:
-                    return _rack_error("athlete_program_required", "Athlete requires a complete workout program.", 409)
+                if progress is None:
+                    try:
+                        progress = get_or_create_progress(active_session, athlete, assignment)
+                    except AthleteProgramIncomplete:
+                        return _rack_error("athlete_program_required", "Athlete requires a complete workout program.", 409)
                 if current_racks == (rack_number,) and destination.selected_athlete_id == athlete.id:
-                    participation, created = AthleteRackParticipation.objects.get_or_create(
-                        session=active_session,
-                        athlete=athlete,
-                        rack_number=rack_number,
+                    _record_rack_participation(active_session, athlete, rack_number)
+                    set_created = False
+                    if progress.day_plan_id or Set.objects.filter(
+                        athlete_day_progress=progress, ended_at=None,
+                    ).exists():
+                        automatic_set, set_created = start_expected_set(
+                            active_session, athlete, progress, rack_number,
+                        )
+                    identity_event = RackIdentityEvent.objects.create(
+                        screen=screen, event_id=event_id, session=active_session,
+                        athlete=athlete, rack_number=rack_number,
+                        resulting_set=automatic_set,
+                        result=(
+                            RackIdentityEvent.RESULT_SET_STARTED if set_created
+                            else RackIdentityEvent.RESULT_SET_ACTIVE if automatic_set
+                            else RackIdentityEvent.RESULT_CONFIRMED
+                        ),
                     )
-                    if not created:
-                        participation.save(update_fields=["last_seen_at"])
-                    return _private_response(_rack_state_body(rack_number))
+                    return _private_response(_rack_identity_body(
+                        rack_number, active_session, identity_event, replayed=False,
+                    ))
                 if Set.objects.select_for_update().filter(
                     athlete_day_progress=progress,
                     ended_at=None,
@@ -767,11 +950,7 @@ def rack_athlete_identity(request, rack_number):
                         return _rack_error("unfinished_set", "Rack athlete has an unfinished set.", 409)
                 if Set.objects.select_for_update().filter(rack_number__in=locked_racks, ended_at=None).exists():
                     return _rack_error("unfinished_set", "An affected rack has an unfinished set.", 409)
-                AthleteRackParticipation.objects.get_or_create(
-                    session=active_session,
-                    athlete=athlete,
-                    rack_number=rack_number,
-                )
+                _record_rack_participation(active_session, athlete, rack_number)
                 if destination is None:
                     destination = RackWorkoutState.objects.create(
                         rack_number=rack_number,
@@ -790,14 +969,41 @@ def rack_athlete_identity(request, rack_number):
                     "active_session", "active_program", "assigned_workout",
                     "assigned_program_item", "selected_athlete", "updated_at",
                 ])
+                set_created = False
+                if progress.day_plan_id or Set.objects.filter(
+                    athlete_day_progress=progress, ended_at=None,
+                ).exists():
+                    automatic_set, set_created = start_expected_set(
+                        active_session, athlete, progress, rack_number,
+                    )
                 MonitoringEvent.objects.create(
                     reason="rack_identity_changed",
                     is_simulated=active_session.is_simulated,
                 )
+                identity_event = RackIdentityEvent.objects.create(
+                    screen=screen, event_id=event_id, session=active_session,
+                    athlete=athlete, rack_number=rack_number,
+                    resulting_set=automatic_set,
+                    result=(
+                        RackIdentityEvent.RESULT_SET_STARTED if set_created
+                        else RackIdentityEvent.RESULT_SET_ACTIVE if automatic_set
+                        else RackIdentityEvent.RESULT_CONFIRMED
+                    ),
+                )
+        except ExecutionError as error:
+            if error.code in {"unfinished_set", "session_rack_participation_limit"}:
+                return _rack_error(error.code, error.detail, error.status)
+            return _rack_error(
+                "automatic_set_start_failed",
+                "Athlete identity and automatic set start were not changed.",
+                error.status,
+            )
         except IntegrityError:
             retry = True
         if not retry:
-            return _private_response(_rack_state_body(rack_number))
+            return _private_response(_rack_identity_body(
+                rack_number, active_session, identity_event, replayed=False,
+            ))
     return _rack_error(
         "athlete_sign_in_conflict",
         "Athlete sign-in changed concurrently; retry the request.",
@@ -835,16 +1041,19 @@ class ReportPdfThrottle(UserRateThrottle):
 def _coach_training_body(progress):
     if progress is None:
         return None
-    exercise = progress.current_workout_exercise
-    item = progress.current_program_item
-    effective_exercise = None
-    if exercise and item:
+    frozen = bool(progress.day_plan_id)
+    exercise = progress.current_day_plan_exercise if frozen else progress.current_workout_exercise
+    item = progress.current_day_plan_workout if frozen else progress.current_program_item
+    effective_exercise = ({
+        "sets": exercise.sets, "reps": exercise.reps,
+    } if frozen and exercise else None)
+    if exercise and item and not frozen:
         effective_exercise = next(
             row for row in build_effective_workout(item.workout, progress.athlete)["exercises"]
             if row["id"] == exercise.id
         )
     current_sets = progress.sets.filter(
-        workout_exercise=exercise,
+        **({"day_plan_exercise": exercise} if frozen else {"workout_exercise": exercise}),
         ended_at__isnull=False,
     ) if exercise else Set.objects.none()
     latest_result = (
@@ -854,10 +1063,13 @@ def _coach_training_body(progress):
     )
     return {
         "athlete": {"id": progress.athlete_id, "name": progress.athlete.name},
-        "program": {"id": progress.workout_program_id, "name": progress.workout_program.name},
+        "program": ({
+            "id": progress.day_plan_id, "name": progress.day_plan.name,
+            "schedule_source": progress.day_plan.schedule_source,
+        } if frozen else {"id": progress.workout_program_id, "name": progress.workout_program.name}),
         "workout": ({
-            "id": item.workout_id,
-            "name": item.workout.name,
+            "id": item.id if frozen else item.workout_id,
+            "name": item.name if frozen else item.workout.name,
             "position": item.position,
         } if item else None),
         "exercise": ({
@@ -877,7 +1089,7 @@ def _coach_training_body(progress):
         } if exercise else None),
         "latest_result": ({
             "id": latest_result.id,
-            "exercise_id": latest_result.workout_exercise_id,
+            "exercise_id": latest_result.day_plan_exercise_id if frozen else latest_result.workout_exercise_id,
             "exercise": latest_result.exercise,
             "set_number": latest_result.set_number,
             "reps_completed": latest_result.reps_completed,
@@ -957,12 +1169,18 @@ def _room_state_snapshot(include_details):
         if registration_counts.get(rack_number, 0) != 1 or state.selected_athlete_id in seen_athletes:
             continue
         progress = progress_by_athlete.get(state.selected_athlete_id)
-        exercise = progress.current_workout_exercise if progress else None
+        exercise = (
+            progress.current_day_plan_exercise if progress and progress.day_plan_id
+            else progress.current_workout_exercise if progress else None
+        )
         if exercise is None or exercise.velocity_min is None or exercise.velocity_max is None:
             continue
         seen_athletes.add(state.selected_athlete_id)
-        movement_exercises[exercise.id] = exercise
-        movement_counts[exercise.id] = movement_counts.get(exercise.id, 0) + 1
+        source_id = exercise.source_exercise_id if progress.day_plan_id else exercise.id
+        if source_id is None:
+            continue
+        movement_exercises[source_id] = exercise
+        movement_counts[source_id] = movement_counts.get(source_id, 0) + 1
     selected_exercise = None
     if movement_counts:
         selected_exercise_id = min(
@@ -983,7 +1201,7 @@ def _room_state_snapshot(include_details):
         session_sets = Set.objects.filter(session=active_session)
         latest_sets = (
             session_sets.filter(rack_number__in=rack_numbers, ended_at__isnull=False)
-            .select_related("athlete", "node", "workout_exercise")
+            .select_related("athlete", "node", "workout_exercise", "day_plan_exercise")
             .order_by("rack_number", "-started_at", "-id")
             .distinct("rack_number")
         )
@@ -1037,6 +1255,9 @@ def _room_state_snapshot(include_details):
                 if latest_set.workout_exercise_id:
                     velocity_min = latest_set.workout_exercise.velocity_min
                     velocity_max = latest_set.workout_exercise.velocity_max
+                elif latest_set.day_plan_exercise_id:
+                    velocity_min = latest_set.day_plan_exercise.velocity_min
+                    velocity_max = latest_set.day_plan_exercise.velocity_max
                 else:
                     legacy_program = Program.objects.filter(
                         athlete=latest_set.athlete,
@@ -1105,7 +1326,8 @@ def _room_state_snapshot(include_details):
     leaderboard_sets = session_sets.none()
     if selected_exercise:
         leaderboard_sets = session_sets.filter(
-            workout_exercise=selected_exercise,
+            Q(workout_exercise_id=selected_exercise_id)
+            | Q(day_plan_exercise__source_exercise_id=selected_exercise_id),
             athlete_day_progress__isnull=False,
             ended_at__isnull=False,
             is_false_set=False,
@@ -1394,6 +1616,7 @@ def _with_locked_athlete_workout_mutation(athlete_id, mutation):
         )
         retry = False
         with transaction.atomic():
+            lock_training_day()
             for rack_number in observed_racks:
                 _lock_rack_number(rack_number)
             athlete = Athlete.objects.select_for_update().filter(id=athlete_id).first()
@@ -1446,7 +1669,8 @@ def _athlete_assignment_queryset():
 def athlete_workout_assignment(request, athlete_id):
     """Read, replace, or remove one athlete's complete workout program."""
     if request.method == "GET":
-        if not Athlete.objects.filter(id=athlete_id).exists():
+        athlete = Athlete.objects.filter(id=athlete_id).first()
+        if athlete is None:
             return _private_response({"code": "athlete_not_found", "detail": "Athlete not found."}, status=404)
         assignment = _athlete_assignment_queryset().filter(athlete_id=athlete_id).first()
         if assignment is None:
@@ -1514,6 +1738,52 @@ def athlete_workout_assignment(request, athlete_id):
         return Response(status=204)
 
     return _with_locked_athlete_workout_mutation(athlete_id, remove_assignment)
+
+
+@_private_no_store
+@api_view(["GET", "PUT", "DELETE"])
+@permission_classes([IsCoach])
+def athlete_schedule(request, athlete_id):
+    """Read or atomically replace one athlete's complete versioned schedule."""
+    if request.method == "GET":
+        athlete = Athlete.objects.filter(id=athlete_id).first()
+        if athlete is None:
+            return _private_response({"code": "athlete_not_found", "detail": "Athlete not found."}, status=404)
+        schedule = (
+            AthleteSchedule.objects.filter(athlete_id=athlete_id)
+            .prefetch_related("plans__workouts__exercises", "entries")
+            .first()
+        )
+        return _private_response(serialize_schedule_state(athlete, schedule))
+    try:
+        payload = request.data
+    except ParseError:
+        return _private_response({"code": "malformed_request", "detail": "Request body must be valid JSON."}, status=400)
+    if not isinstance(payload, Mapping):
+        return _private_response({"code": "malformed_request", "detail": "Request body must be an object."}, status=400)
+    try:
+        if request.method == "DELETE":
+            unknown = sorted(set(payload) - {"expected_version"})
+            if unknown:
+                raise ScheduleError("unknown_fields", f"Unknown schedule field(s): {', '.join(unknown)}.")
+            expected = payload.get("expected_version")
+            if isinstance(expected, bool) or not isinstance(expected, int) or expected < 1:
+                raise ScheduleError("scheduled_plan_invalid", "expected_version must be a positive integer.")
+            deleted = delete_schedule(athlete_id, expected)
+            if not deleted:
+                return _private_response({"code": "schedule_not_found", "detail": "Athlete schedule not found."}, status=404)
+            return _private_response({"version": deleted})
+        schedule = replace_schedule(athlete_id, payload)
+    except ScheduleError as error:
+        status = 404 if error.code == "athlete_not_found" else 409 if error.code in {"schedule_conflict", "schedule_version_conflict"} else 400
+        body = {"code": error.code, "detail": error.detail}
+        if error.errors is not None:
+            body["errors"] = error.errors
+        return _private_response(body, status=status)
+    schedule = AthleteSchedule.objects.prefetch_related(
+        "plans__workouts__exercises", "entries",
+    ).get(id=schedule.id)
+    return _private_response(serialize_schedule(schedule))
 
 
 def _validated_override_value(payload, field, errors):
@@ -1887,14 +2157,37 @@ def workout_programs_view(request):
 
 # ─────────────────────────── sessions ───────────────────────────
 
+@_private_no_store
+@api_view(["GET"])
+@permission_classes([IsCoach])
+def session_preview(request):
+    try:
+        preview = build_preview()
+    except ScheduleError as error:
+        body = {"code": error.code, "detail": error.detail}
+        if error.dimensions is not None:
+            body["dimensions"] = error.dimensions
+        return _private_response(body, status=409)
+    preview.pop("_resolved", None)
+    return _private_response(preview)
+
+
 @api_view(["POST"])
 @permission_classes([IsCoach])
 def sessions_view(request):
     """Coach-only: start a training session."""
-    form = SessionSerializer(data=request.data)
+    preview_version = request.data.get("preview_version") if isinstance(request.data, Mapping) else None
+    payload = dict(request.data) if isinstance(request.data, Mapping) else request.data
+    if preview_version is not None:
+        if not isinstance(preview_version, str) or len(preview_version) != 64:
+            return _private_response({"code": "malformed_request", "detail": "preview_version is invalid."}, status=400)
+        payload.pop("preview_version", None)
+        payload.pop("athletes", None)
+    form_class = ScheduledSessionStartSerializer if preview_version is not None else SessionSerializer
+    form = form_class(data=payload)
     form.is_valid(raise_exception=True)
     try:
-        session = start_training_day(dict(form.validated_data))
+        session = start_training_day(dict(form.validated_data), preview_version=preview_version)
     except (ActiveTrainingDayConflict, IntegrityError):
         return _private_response({
             "code": "active_training_day_exists",
@@ -1905,6 +2198,11 @@ def sessions_view(request):
             "code": "session_athlete_limit",
             "detail": "Training day athlete limit exceeded.",
         }, status=400)
+    except ScheduleError as error:
+        body = {"code": error.code, "detail": error.detail}
+        if error.dimensions is not None:
+            body["dimensions"] = error.dimensions
+        return _private_response(body, status=409)
     return _private_response(SessionSerializer(session).data, status=201)
 
 
@@ -1917,6 +2215,11 @@ def _end_training_day_response(session_id):
         return _private_response({
             "code": "simulation_end_rejected",
             "detail": "Simulation sessions cannot produce daily reports.",
+        }, status=409)
+    except DemoSeedCleanupRequired:
+        return _private_response({
+            "code": "demo_seed_cleanup_required",
+            "detail": "Remove the demo wristband seed before ending the training day.",
         }, status=409)
     except SessionAlreadyEnded:
         return _private_response({
@@ -2121,16 +2424,12 @@ def rack_set_create(request, rack_number):
             athlete = Athlete.objects.select_for_update().filter(id=observed_athlete_id).first()
             if athlete is None:
                 return _rack_error("athlete_not_selected", "No athlete is signed into this rack.", 409)
-            assignment = (
-                AthleteWorkoutProgramAssignment.objects.select_for_update()
-                .filter(athlete=athlete)
-                .first()
-            )
-            if assignment is None:
-                return _rack_error("athlete_program_required", "Athlete requires a complete workout program.", 409)
             progress = (
                 AthleteDayProgress.objects.select_for_update(of=("self",))
-                .select_related("current_program_item__workout", "current_workout_exercise")
+                .select_related(
+                    "current_program_item__workout", "current_workout_exercise",
+                    "current_day_plan_workout", "current_day_plan_exercise", "day_plan",
+                )
                 .filter(session=session, athlete=athlete)
                 .first()
             )
@@ -2144,59 +2443,14 @@ def rack_set_create(request, rack_number):
                 return _rack_error("rack_identity_changed", "Rack identity changed; refresh and retry.", 409)
             if progress is None:
                 return _rack_error("unexpected_workout_step", "Athlete progress is unavailable.", 409)
-            if progress.status == AthleteDayProgress.COMPLETE:
+            new_set, created = start_expected_set(session, athlete, progress, rack_number)
+            if new_set is None:
                 return _rack_error("program_complete", "Athlete has completed today's program.", 409)
-            if progress.status != AthleteDayProgress.READY:
-                return _rack_error("unfinished_set", "Athlete has an unfinished set.", 409)
-            if (
-                progress.workout_program_id != assignment.workout_program_id
-                or progress.current_program_item.workout_program_id != progress.workout_program_id
-                or progress.current_workout_exercise.workout_id != progress.current_program_item.workout_id
-            ):
-                return _rack_error("unexpected_workout_step", "Athlete progress does not match the assigned program.", 409)
-            if Set.objects.select_for_update().filter(athlete_day_progress=progress, ended_at=None).exists():
-                return _rack_error("unfinished_set", "Athlete has an unfinished set.", 409)
-
-            nodes = list(Node.objects.select_for_update().filter(rack_number=rack_number).order_by("node_id")[:2])
-            if len(nodes) != 1 or not nodes[0].is_active:
-                return _rack_error("rack_node_unavailable", "Rack requires exactly one active sensor node.", 409)
-            node = nodes[0]
-            if node.is_simulated != session.is_simulated or athlete.is_simulated != session.is_simulated:
-                return _rack_error("simulation_ownership_mismatch", "Rack execution ownership does not match the active session.", 409)
-            if Set.objects.filter(session=session).count() >= MAX_SESSION_SETS:
-                return _rack_error(
-                    "session_set_limit",
-                    f"Session may contain at most {MAX_SESSION_SETS} persisted sets.",
-                    409,
-                )
-            override = AthleteWorkoutExerciseOverride.objects.filter(
-                athlete=athlete,
-                workout_exercise=progress.current_workout_exercise,
-            ).first()
-            weight_lbs = (
-                override.weight_lbs
-                if override and override.weight_lbs is not None
-                else progress.current_workout_exercise.default_weight_lbs
-            )
-            new_set = Set.objects.create(
-                session=session,
-                athlete=athlete,
-                node=node,
-                rack_number=rack_number,
-                exercise=progress.current_workout_exercise.exercise,
-                set_number=progress.expected_set_number,
-                weight_lbs=weight_lbs,
-                is_simulated=session.is_simulated,
-                athlete_day_progress=progress,
-                workout_program_item=progress.current_program_item,
-                workout_exercise=progress.current_workout_exercise,
-            )
-            progress.status = AthleteDayProgress.IN_SET
-            progress.save(update_fields=["status", "updated_at"])
-            MonitoringEvent.objects.create(reason="set_started", is_simulated=session.is_simulated)
+    except ExecutionError as error:
+        return _rack_error(error.code, error.detail, error.status)
     except IntegrityError:
         return _rack_error("unfinished_set", "Athlete has an unfinished set.", 409)
-    return Response(SetSerializer(new_set).data, status=201)
+    return Response(SetSerializer(new_set).data, status=201 if created else 200)
 
 @api_view(["POST"])
 @permission_classes([AllowAny])

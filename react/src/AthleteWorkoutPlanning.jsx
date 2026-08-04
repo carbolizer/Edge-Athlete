@@ -1,224 +1,124 @@
 import { useEffect, useState } from "react";
-import { buildAthleteAssignmentPayload, buildOverrideFields, exerciseTargetView } from "./athletePlanning.js";
+import { addWorkoutOccurrence, buildSchedulePayload, confirmedProgramSelection, materializeProgram, moveOccurrence, normalizeSchedule, scheduleValidation, validationErrorsAt, WEEKDAYS } from "./athletePlanning.js";
 import { errorLabel, flattenApiErrors, sameOriginPath } from "./workoutCatalog.js";
 
 function PlanningErrors({ errors }) {
   if (!errors.length) return null;
-  return <div className="workout-errors" role="alert"><strong>Please correct the following:</strong><ul>{errors.map((error, index) => <li key={`${error.row || ""}-${error.field || ""}-${index}`}>{errorLabel(error)}</li>)}</ul></div>;
+  return <div className="workout-errors" role="alert"><strong>Schedule not saved:</strong><ul>{errors.map((error, index) => <li key={index}>{typeof error === "string" ? error : errorLabel(error)}</li>)}</ul></div>;
+}
+
+function FieldErrors({ errors, path, exact = false }) {
+  const local = exact ? errors.filter((error) => error?.path === path) : validationErrorsAt(errors, path);
+  if (!local.length) return null;
+  return <div className="schedule-field-errors">{local.map((error, index) => <p key={`${error.path}-${index}`}>{error.detail}</p>)}</div>;
 }
 
 export default function AthleteWorkoutPlanning({ athlete, accessToken, onLogout }) {
+  const empty = { version: 0, training_date: "", plans: [], entries: [] };
+  const [draft, setDraft] = useState(empty);
+  const [savedDraft, setSavedDraft] = useState(empty);
   const [workouts, setWorkouts] = useState([]);
-  const [workoutPrograms, setWorkoutPrograms] = useState([]);
-  const [assignment, setAssignment] = useState(null);
-  const [workoutProgramId, setWorkoutProgramId] = useState("");
-  const [selectedWorkoutId, setSelectedWorkoutId] = useState("");
+  const [programs, setPrograms] = useState([]);
+  const [sourceProgramId, setSourceProgramId] = useState("");
   const [loading, setLoading] = useState(true);
-  const [assignmentSaving, setAssignmentSaving] = useState(false);
-  const [assignmentErrors, setAssignmentErrors] = useState([]);
-  const [assignmentStatus, setAssignmentStatus] = useState("");
-  const [overrideWorkout, setOverrideWorkout] = useState(null);
-  const [overrideDrafts, setOverrideDrafts] = useState([]);
-  const [overrideLoading, setOverrideLoading] = useState(false);
-  const [overrideSaving, setOverrideSaving] = useState(false);
-  const [overrideErrors, setOverrideErrors] = useState([]);
-  const [overrideStatus, setOverrideStatus] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [errors, setErrors] = useState([]);
+  const [status, setStatus] = useState("");
   const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
+  const dirty = JSON.stringify(draft) !== JSON.stringify(savedDraft);
+  const plan = draft.plans[0];
 
-  async function parseResponse(response, fallback) {
-    if (response.status === 401 || response.status === 403) {
-      onLogout();
-      return null;
-    }
+  async function parse(response, fallback) {
+    if (response.status === 401 || response.status === 403) { onLogout(); return null; }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw flattenApiErrors(body, fallback);
     return body;
   }
 
-  async function readAll(initialUrl, signal) {
-    const results = [];
-    let url = initialUrl;
+  async function readAll(url, signal) {
+    const rows = [];
     for (let page = 0; url && page < 20; page += 1) {
-      const response = await fetch(url, { headers, signal });
-      const body = await parseResponse(response, "Workout choices could not be loaded.");
-      if (body === null) return [];
-      results.push(...(Array.isArray(body) ? body : body.results || []));
+      const body = await parse(await fetch(url, { headers, signal }), "Planning catalogs could not be loaded.");
+      if (!body) return [];
+      rows.push(...(Array.isArray(body) ? body : body.results || []));
       url = Array.isArray(body) ? null : sameOriginPath(body.next, window.location.origin);
     }
-    return results;
-  }
-
-  function applyAssignment(nextAssignment) {
-    setAssignment(nextAssignment);
-    const program = nextAssignment?.workout_program;
-    if (program) {
-      setWorkoutProgramId(String(program.id));
-      setSelectedWorkoutId(String(program.items?.[0]?.workout?.id || ""));
-    } else {
-      setWorkoutProgramId("");
-      setSelectedWorkoutId("");
-    }
+    return rows;
   }
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setAssignmentErrors([]);
-    setAssignmentStatus("");
+    setLoading(true); setErrors([]); setStatus("");
     Promise.all([
       readAll("/api/workouts/?page_size=100", controller.signal),
       readAll("/api/workout-programs/?page_size=100", controller.signal),
-      fetch(`/api/athletes/${athlete.id}/workout-assignment/`, { headers, signal: controller.signal }).then(async (response) => {
-        if (response.status === 404) return null;
-        return parseResponse(response, "Athlete assignment could not be loaded.");
-      }),
-    ]).then(([nextWorkouts, nextPrograms, body]) => {
-      setWorkouts(nextWorkouts);
-      setWorkoutPrograms(nextPrograms);
-      applyAssignment(body?.assignment || body);
-    }).catch((errors) => {
-      if (errors?.name !== "AbortError") setAssignmentErrors(Array.isArray(errors) ? errors : [{ detail: "Athlete planning could not be loaded." }]);
-    }).finally(() => setLoading(false));
+      fetch(`/api/athletes/${athlete.id}/schedule/`, { headers, signal: controller.signal }).then((response) => response.status === 404 ? null : parse(response, "Schedule could not be loaded.")),
+    ]).then(([nextWorkouts, nextPrograms, schedule]) => {
+      const normalized = normalizeSchedule(schedule);
+      setWorkouts(nextWorkouts); setPrograms(nextPrograms); setDraft(normalized); setSavedDraft(normalized);
+      setSourceProgramId(String(normalized.plans[0]?.workout_program_id || ""));
+    }).catch((caught) => { if (caught?.name !== "AbortError") setErrors(Array.isArray(caught) ? caught : [{ detail: "Athlete schedule could not be loaded." }]); }).finally(() => setLoading(false));
     return () => controller.abort();
   }, [athlete.id, accessToken]);
 
-  const chosenWorkoutId = selectedWorkoutId;
-
-  const chosenWorkout = workouts.find((workout) => Number(workout.id) === Number(chosenWorkoutId));
-
   useEffect(() => {
-    if (!chosenWorkoutId) {
-      setOverrideWorkout(null);
-      setOverrideDrafts([]);
-      return undefined;
-    }
-    const controller = new AbortController();
-    setOverrideLoading(true);
-    setOverrideErrors([]);
-    setOverrideStatus("");
-    if (!chosenWorkout) {
-      setOverrideLoading(false);
-      return undefined;
-    }
-    const exercises = [...(chosenWorkout.exercises || [])].sort((left, right) => left.position - right.position);
-    Promise.all(exercises.map((exercise) => fetch(`/api/athletes/${athlete.id}/workout-exercises/${exercise.id}/override/`, { headers, signal: controller.signal }).then(async (response) => {
-      if (response.status === 404) return null;
-      return parseResponse(response, "Exercise overrides could not be loaded.");
-    }))).then((overrides) => {
-        const effectiveExercises = exercises.map((exercise, index) => ({ ...exercise, override: overrides[index] }));
-        setOverrideWorkout({ ...chosenWorkout, exercises: effectiveExercises });
-        setOverrideDrafts(effectiveExercises.map((exercise) => {
-          const override = exercise.override || {};
-          return {
-            workout_exercise_id: exercise.id,
-            sets: override.sets ?? "",
-            reps: override.reps ?? "",
-            weight_lbs: override.weight_lbs ?? "",
-          };
-        }));
-      })
-      .catch((errors) => {
-        if (errors?.name !== "AbortError") setOverrideErrors(Array.isArray(errors) ? errors : [{ detail: "Exercise overrides could not be loaded." }]);
-      })
-      .finally(() => setOverrideLoading(false));
-    return () => controller.abort();
-  }, [athlete.id, chosenWorkoutId, chosenWorkout?.id, accessToken]);
+    const warn = (event) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
+    window.__edgePlanningDirty = { ...window.__edgePlanningDirty, schedule: dirty };
+    window.addEventListener("beforeunload", warn);
+    return () => { window.removeEventListener("beforeunload", warn); window.__edgePlanningDirty = { ...window.__edgePlanningDirty, schedule: false }; };
+  }, [dirty]);
 
-  async function saveAssignment() {
-    setAssignmentSaving(true);
-    setAssignmentErrors([]);
-    setAssignmentStatus("");
+  function chooseProgram(id) {
+    const selection = confirmedProgramSelection(sourceProgramId, id, dirty, () => window.confirm("Replace the current unsaved athlete plan with this program?"));
+    if (!selection.confirmed) return;
+    const program = programs.find((row) => Number(row.id) === Number(id));
+    if (!program) return;
+    setSourceProgramId(selection.id);
+    const expanded = { ...program, items: (program.items || []).map((item) => ({ ...item, workout: workouts.find((workout) => Number(workout.id) === Number(item.workout.id)) || item.workout })) };
+    setDraft((current) => ({ ...current, plans: [materializeProgram(expanded)] }));
+  }
+
+  function changePlan(updater) { setDraft((current) => ({ ...current, plans: [updater(current.plans[0])] })); }
+  function updateExercise(workoutIndex, exerciseIndex, field, value) {
+    changePlan((current) => ({ ...current, workouts: current.workouts.map((workout, index) => index !== workoutIndex ? workout : { ...workout, exercises: workout.exercises.map((exercise, row) => row === exerciseIndex ? { ...exercise, [field]: value } : exercise) }) }));
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    const validation = scheduleValidation(draft);
+    if (validation.length) { setErrors(validation); return; }
+    setSaving(true); setErrors([]); setStatus("");
     try {
-      const response = await fetch(`/api/athletes/${athlete.id}/workout-assignment/`, {
-        method: "PUT",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify(buildAthleteAssignmentPayload(workoutProgramId)),
-      });
-      const body = await parseResponse(response, "Athlete assignment could not be saved.");
-      if (body === null) return;
-      applyAssignment(body.assignment || body);
-      setAssignmentStatus("Athlete assignment saved.");
-    } catch (errors) {
-      setAssignmentErrors(Array.isArray(errors) ? errors : [{ detail: "Athlete assignment could not be saved." }]);
-    } finally {
-      setAssignmentSaving(false);
-    }
+      const body = await parse(await fetch(`/api/athletes/${athlete.id}/schedule/`, { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(buildSchedulePayload(draft)) }), "Schedule could not be saved.");
+      if (!body) return;
+      const normalized = normalizeSchedule(body);
+      setDraft(normalized); setSavedDraft(normalized); setStatus(`Schedule version ${normalized.version} saved atomically.`);
+    } catch (caught) { setErrors(Array.isArray(caught) ? caught : [{ detail: "Schedule could not be saved." }]); }
+    finally { setSaving(false); }
   }
 
-  async function removeAssignment() {
-    setAssignmentSaving(true);
-    setAssignmentErrors([]);
-    setAssignmentStatus("");
-    try {
-      const response = await fetch(`/api/athletes/${athlete.id}/workout-assignment/`, { method: "DELETE", headers });
-      const body = await parseResponse(response, "Athlete assignment could not be removed.");
-      if (body === null) return;
-      applyAssignment(null);
-       setAssignmentStatus("Athlete program assignment removed.");
-    } catch (errors) {
-      setAssignmentErrors(Array.isArray(errors) ? errors : [{ detail: "Athlete assignment could not be removed." }]);
-    } finally {
-      setAssignmentSaving(false);
-    }
+  function discard() {
+    if (dirty && !window.confirm("Discard all unsaved schedule changes?")) return;
+    setDraft(savedDraft); setErrors([]); setStatus("Unsaved changes discarded.");
+    setSourceProgramId(String(savedDraft.plans[0]?.workout_program_id || ""));
   }
 
-  function updateOverride(index, field, value) {
-    setOverrideDrafts((current) => current.map((draft, draftIndex) => draftIndex === index ? { ...draft, [field]: value } : draft));
-  }
-
-  async function changeOverride(index, method) {
-    if (!chosenWorkoutId) return;
-    setOverrideSaving(true);
-    setOverrideErrors([]);
-    setOverrideStatus("");
-    try {
-      const draft = overrideDrafts[index];
-      const response = await fetch(`/api/athletes/${athlete.id}/workout-exercises/${draft.workout_exercise_id}/override/`, {
-          method,
-          headers: { ...headers, "Content-Type": "application/json" },
-          ...(method === "PATCH" ? { body: JSON.stringify(buildOverrideFields(draft)) } : {}),
-        });
-      const body = await parseResponse(response, `Exercise override could not be ${method === "PATCH" ? "saved" : "reset"}.`);
-      if (body === null) return;
-      setOverrideWorkout((current) => ({ ...current, exercises: current.exercises.map((exercise, exerciseIndex) => exerciseIndex === index ? { ...exercise, override: method === "DELETE" ? null : body } : exercise) }));
-      if (method === "DELETE") setOverrideDrafts((current) => current.map((currentDraft, draftIndex) => draftIndex === index ? { ...currentDraft, sets: "", reps: "", weight_lbs: "" } : currentDraft));
-      setOverrideStatus(method === "PATCH" ? `${overrideWorkout.exercises[index].exercise} overrides saved.` : `${overrideWorkout.exercises[index].exercise} reset to template targets.`);
-    } catch (errors) {
-      setOverrideErrors(Array.isArray(errors) ? errors : [{ detail: `Exercise overrides could not be ${method === "PATCH" ? "saved" : "reset"}.` }]);
-    } finally {
-      setOverrideSaving(false);
-    }
-  }
-
-  const selectedProgram = workoutPrograms.find((program) => Number(program.id) === Number(workoutProgramId));
-  const includedWorkouts = selectedProgram?.items || [];
-  const assignmentReady = Boolean(workoutProgramId);
-  const assignedItems = assignment?.workout_program?.items || [];
-  const overridesAllowed = assignedItems.some((item) => Number(item.workout?.id) === Number(chosenWorkoutId));
-  const assignmentLabel = assignment?.workout_program?.name || "No workout program assigned";
-
-  return <div className="athlete-planning">
-    <section className="context-section athlete-assignment-panel"><header><span>Athlete assignment</span><h3>Complete workout program for {athlete.name}</h3><p>The athlete follows this ordered program at any rack.</p></header>
-      <div className="athlete-assignment-current"><span>Current</span><b>{assignmentLabel}</b></div>
-      {loading ? <p className="monitor-empty" role="status">Loading athlete workout assignment...</p> : <div className="athlete-assignment-fields">
-        <label>Workout program<select value={workoutProgramId} onChange={(event) => { setWorkoutProgramId(event.target.value); setSelectedWorkoutId(""); }} disabled={assignmentSaving}><option value="">Select program</option>{workoutPrograms.map((program) => <option value={program.id} key={program.id}>{program.name}</option>)}</select></label>
-        <button onClick={saveAssignment} disabled={!assignmentReady || assignmentSaving}>{assignmentSaving ? "Saving..." : "Save assignment"}</button><button className="athlete-remove-assignment" onClick={removeAssignment} disabled={!assignment || assignmentSaving}>Remove assignment</button>
-      </div>}
-      <PlanningErrors errors={assignmentErrors} />{assignmentStatus && <p className="workout-status" role="status">{assignmentStatus}</p>}
+  if (loading) return <p className="monitor-empty" role="status">Loading athlete schedule...</p>;
+  return <form className="athlete-planning schedule-editor" onSubmit={save}>
+    <section className="context-section athlete-assignment-panel"><header><span>Server-local schedule</span><h3>{athlete.name}</h3><p>Exact dates take precedence over recurring weekdays. Removing an exact date restores weekday resolution.</p></header>
+      <div className="schedule-source-row"><label>Materialize source program<select value={sourceProgramId} onChange={(event) => chooseProgram(event.target.value)} disabled={saving}><option value="">Choose a program</option>{programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}</select></label><b>Version {draft.version || "new"}</b>{dirty && <span>Unsaved changes</span>}</div>
+      <div className="schedule-entry-list"><header><h4>When this plan applies</h4><button type="button" className="workout-secondary" onClick={() => setDraft((current) => ({ ...current, entries: [...current.entries, { selector_type: "weekday", weekday: "", date: "", is_rest: false, plan_client_id: plan?.client_id || "main" }] }))} disabled={!plan}>Add schedule entry</button></header>
+        {draft.entries.length === 0 ? <><p className="monitor-empty">No explicit schedule. Add a program, then weekdays or exact dates.</p><FieldErrors errors={errors} path="entries" /></> : draft.entries.map((entry, index) => {
+          const selectorType = entry.selector_type || (entry.date ? "date" : "weekday");
+          const entryErrors = validationErrorsAt(errors, `entries.${index}`);
+          return <fieldset className={entryErrors.length ? "has-errors" : ""} key={index}><legend>Entry {index + 1}</legend><label>Type<select value={selectorType} onChange={(event) => setDraft((current) => ({ ...current, entries: current.entries.map((row, i) => i !== index ? row : event.target.value === "date" ? { ...row, selector_type: "date", date: current.training_date || "", weekday: "" } : { ...row, selector_type: "weekday", date: "", weekday: 0 }) }))}><option value="weekday">Recurring weekday</option><option value="date">Exact date</option></select></label>{selectorType === "date" ? <label>Exact date<input type="date" value={entry.date} aria-invalid={validationErrorsAt(errors, `entries.${index}.date`).length > 0} onChange={(event) => setDraft((current) => ({ ...current, entries: current.entries.map((row, i) => i === index ? { ...row, date: event.target.value } : row) }))} /><FieldErrors errors={errors} path={`entries.${index}.date`} /></label> : <label>Weekday<select value={entry.weekday} aria-invalid={validationErrorsAt(errors, `entries.${index}.weekday`).length > 0} onChange={(event) => setDraft((current) => ({ ...current, entries: current.entries.map((row, i) => i === index ? { ...row, weekday: event.target.value } : row) }))}><option value="">Choose weekday</option>{WEEKDAYS.map((day, dayIndex) => <option value={dayIndex} key={day}>{day}</option>)}</select><FieldErrors errors={errors} path={`entries.${index}.weekday`} /></label>}<label className="schedule-rest"><input type="checkbox" checked={entry.is_rest} onChange={(event) => setDraft((current) => ({ ...current, entries: current.entries.map((row, i) => i === index ? { ...row, is_rest: event.target.checked, plan_client_id: event.target.checked ? null : plan?.client_id || "main" } : row) }))} />Explicit rest</label><button type="button" className="program-remove" onClick={() => setDraft((current) => ({ ...current, entries: current.entries.filter((_, i) => i !== index) }))}>Remove</button><FieldErrors errors={errors} path={`entries.${index}.selector`} /></fieldset>;
+        })}
+      </div>
     </section>
-
-    <section className="context-section athlete-override-panel"><header><span>Individual targets</span><h3>Exercise overrides</h3><p>Leave a field blank to inherit its template value. Velocity targets and exercise order cannot be changed.</p></header>
-      {includedWorkouts.length > 0 && <label>Program workout<select value={selectedWorkoutId} onChange={(event) => setSelectedWorkoutId(event.target.value)} disabled={overrideSaving}><option value="">Select included workout</option>{includedWorkouts.map((item) => <option value={item.workout.id} key={item.id}>{item.position}. {item.workout.name}</option>)}</select></label>}
-      {!chosenWorkoutId ? <p className="monitor-empty">Choose an assigned program workout to edit this athlete’s targets.</p> : overrideLoading ? <p className="monitor-empty" role="status">Loading effective exercise targets...</p> : overrideWorkout && <>
-        <div className="athlete-override-list">{overrideWorkout.exercises.map((exercise, index) => {
-          const targets = exerciseTargetView(exercise);
-          const draft = overrideDrafts[index] || {};
-          const hasValue = [draft.sets, draft.reps, draft.weight_lbs].some((value) => value !== "" && value !== undefined);
-          return <fieldset key={exercise.id}><legend>{exercise.position}. {exercise.exercise}</legend><div className="athlete-template-targets"><span>Template</span><b>{targets.sets.template} sets · {targets.reps.template} reps · {targets.weight_lbs.template} lbs</b><span>Effective</span><b>{targets.sets.effective} sets · {targets.reps.effective} reps · {targets.weight_lbs.effective} lbs</b></div><label>Sets<input type="number" min="1" step="1" value={draft.sets ?? ""} onChange={(event) => updateOverride(index, "sets", event.target.value)} placeholder={String(targets.sets.template)} disabled={overrideSaving} /></label><label>Reps<input type="number" min="1" step="1" value={draft.reps ?? ""} onChange={(event) => updateOverride(index, "reps", event.target.value)} placeholder={String(targets.reps.template)} disabled={overrideSaving} /></label><label>Weight (lbs)<input type="number" min="0" step="any" value={draft.weight_lbs ?? ""} onChange={(event) => updateOverride(index, "weight_lbs", event.target.value)} placeholder={String(targets.weight_lbs.template)} disabled={overrideSaving} /></label><div className="athlete-exercise-actions"><button type="button" className="workout-secondary" onClick={() => changeOverride(index, "DELETE")} disabled={!overridesAllowed || overrideSaving || !exercise.override}>Reset</button><button type="button" onClick={() => changeOverride(index, "PATCH")} disabled={!overridesAllowed || overrideSaving || !hasValue}>{overrideSaving ? "Saving..." : "Save"}</button></div></fieldset>;
-        })}</div>
-        {!overridesAllowed && <div className="context-notice">Save this workout as the athlete assignment before changing overrides.</div>}
-      </>}
-      <PlanningErrors errors={overrideErrors} />{overrideStatus && <p className="workout-status" role="status">{overrideStatus}</p>}
+    <section className="context-section athlete-override-panel"><header><span>Athlete-local materialization</span><h3>Ordered workout occurrences</h3><p>Duplicates are allowed. Targets belong to this occurrence and do not alter shared templates or an active day.</p></header>
+      {!plan ? <><p className="monitor-empty">Choose a source program to begin.</p><FieldErrors errors={errors} path="plan.workouts" /></> : <><div className="schedule-add-workout"><label>Add catalog workout<select defaultValue="" onChange={(event) => { const workout = workouts.find((row) => Number(row.id) === Number(event.target.value)); if (workout) changePlan((current) => addWorkoutOccurrence(current, workout)); event.target.value = ""; }}><option value="">Select workout</option>{workouts.map((workout) => <option value={workout.id} key={workout.id}>{workout.name}</option>)}</select></label></div><ol className="schedule-workouts">{plan.workouts.map((workout, workoutIndex) => <li className={validationErrorsAt(errors, `plan.workouts.${workoutIndex}`).length ? "has-errors" : ""} key={`${workout.workout_id}-${workoutIndex}`}><header><span>{workoutIndex + 1}</span><h4>{workout.name}</h4><div><button type="button" onClick={() => changePlan((current) => ({ ...current, workouts: moveOccurrence(current.workouts, workoutIndex, -1) }))} disabled={workoutIndex === 0}>Up</button><button type="button" onClick={() => changePlan((current) => ({ ...current, workouts: moveOccurrence(current.workouts, workoutIndex, 1) }))} disabled={workoutIndex === plan.workouts.length - 1}>Down</button><button type="button" className="program-remove" onClick={() => changePlan((current) => ({ ...current, workouts: current.workouts.filter((_, index) => index !== workoutIndex) }))}>Remove</button></div></header><FieldErrors errors={errors} path={`plan.workouts.${workoutIndex}`} exact /><div className="schedule-exercises">{workout.exercises.map((exercise, exerciseIndex) => <fieldset className={validationErrorsAt(errors, `plan.workouts.${workoutIndex}.exercises.${exerciseIndex}`).length ? "has-errors" : ""} key={exercise.workout_exercise_id}><legend>{exerciseIndex + 1}. {exercise.exercise}</legend>{[["sets", "Sets", 1], ["reps", "Reps", 1], ["weight_lbs", "Weight (lbs)", 0]].map(([field, label, min]) => { const path = `plan.workouts.${workoutIndex}.exercises.${exerciseIndex}.${field}`; return <label key={field}>{label}<input type="number" min={min} step={field === "weight_lbs" ? "any" : "1"} value={exercise[field]} aria-invalid={validationErrorsAt(errors, path).length > 0} onChange={(event) => updateExercise(workoutIndex, exerciseIndex, field, event.target.value)} /><FieldErrors errors={errors} path={path} /></label>; })}</fieldset>)}</div></li>)}</ol></>}
+      <PlanningErrors errors={errors} />{status && <p className="workout-status" role="status">{status}</p>}
+      <div className="athlete-override-actions"><button type="button" className="workout-secondary" onClick={discard} disabled={!dirty || saving}>Discard changes</button><button type="submit" disabled={!dirty || saving}>{saving ? "Saving atomically..." : "Save schedule"}</button></div>
     </section>
-  </div>;
+  </form>;
 }

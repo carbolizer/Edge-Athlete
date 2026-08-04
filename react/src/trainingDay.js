@@ -1,8 +1,19 @@
 export function buildTrainingDayPayload(label, athleteIds) {
+  if (typeof athleteIds === "string") return { label: label.trim(), preview_version: athleteIds };
   return {
     label: label.trim(),
     athletes: [...new Set(athleteIds.map(Number))],
   };
+}
+
+export function previewGroups(preview) {
+  const groups = { eligible: [], rest: [], missing: [] };
+  for (const row of preview?.athletes || []) {
+    if (row.eligible) groups.eligible.push(row);
+    else if (row.is_rest) groups.rest.push(row);
+    else groups.missing.push(row);
+  }
+  return groups;
 }
 
 export function unfinishedRackNumbers(body) {
@@ -15,8 +26,18 @@ export function reportValue(value, suffix = "") {
 }
 
 export function orderedReportPrescriptions(athlete) {
-  const prescriptions = athlete?.prescriptions || athlete?.effective_prescriptions || (athlete?.prescription ? [athlete.prescription] : []);
+  const prescriptions = athlete?.frozen_plan?.workouts || athlete?.prescriptions || athlete?.effective_prescriptions || (athlete?.prescription ? [athlete.prescription] : []);
   return [...prescriptions].sort((left, right) => (left.position || 0) - (right.position || 0));
+}
+
+export function reportExerciseSets(athlete, prescription, exercise) {
+  const occurrenceId = prescription.occurrence_id ?? prescription.id;
+  return (athlete?.sets || []).filter((workoutSet) => {
+    if (workoutSet.day_plan_exercise_id != null && exercise.id != null) return Number(workoutSet.day_plan_exercise_id) === Number(exercise.id);
+    if (workoutSet.workout_exercise_id != null && exercise.id != null) return Number(workoutSet.workout_exercise_id) === Number(exercise.id);
+    if (workoutSet.day_plan_workout_id != null && occurrenceId != null) return Number(workoutSet.day_plan_workout_id) === Number(occurrenceId) && workoutSet.exercise === exercise.exercise;
+    return workoutSet.exercise === exercise.exercise;
+  });
 }
 
 export function orderedReportExercises(prescription) {
@@ -39,6 +60,17 @@ export function reportSummary(report) {
     athlete_count: athletes.length,
     completed_sets: sets.length,
     completed_reps: sets.reduce((total, workoutSet) => total + (workoutSet.reps_completed || 0), 0),
+  };
+}
+
+export function reportAthleteContext(entry) {
+  const frozenPlan = entry?.frozen_plan;
+  return {
+    scheduleSource: entry?.schedule_source || frozenPlan?.schedule_source || "legacy",
+    scheduleVersion: frozenPlan?.schedule_version ?? null,
+    programName: frozenPlan?.name || entry?.assigned_program?.name || null,
+    progressStatus: entry?.final_progress?.status || null,
+    rackNumbers: entry?.rack_participation || [],
   };
 }
 

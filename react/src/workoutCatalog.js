@@ -35,7 +35,7 @@ export function flattenApiErrors(body, fallback) {
     }
     if (Array.isArray(value)) {
       value.forEach((item, index) => {
-        const itemPath = typeof item === "object" && item !== null ? `${path}${path ? "." : ""}${index + 1}` : path;
+        const itemPath = typeof item === "object" && item !== null ? `${path}${path ? "." : ""}${index}` : path;
         visit(item, itemPath);
       });
       return;
@@ -66,6 +66,66 @@ export function flattenApiErrors(body, fallback) {
 export function errorLabel(error) {
   const location = [error.row ? `Row ${error.row}` : "", error.field ? String(error.field).replaceAll("_", " ") : ""].filter(Boolean).join(" · ");
   return `${location ? `${location}: ` : ""}${error.detail}`;
+}
+
+export function validationErrorPath(error, form) {
+  if (error?.path) return error.path;
+  const field = error?.field || "";
+  const row = Number(error?.row);
+  if (form === "workout") {
+    if (field === "name" || field === "workout_name" || error?.code === "workout_name_conflict") return "name";
+    if (field === "exercises" || field.startsWith("exercises.")) return field;
+    if (Number.isInteger(row) && row > 0) return `exercises.${row - 1}${field ? `.${field}` : ""}`;
+  }
+  if (form === "program") {
+    if (field === "name" || error?.code === "workout_program_name_conflict") return "name";
+    if (field === "items" || field.startsWith("items.")) return field;
+    if (Number.isInteger(row) && row > 0) return `items.${row - 1}${field ? `.${field}` : ""}`;
+  }
+  return "";
+}
+
+export function validationErrorsAt(errors, path, form, exact = true) {
+  return errors.filter((error) => {
+    const errorPath = validationErrorPath(error, form);
+    return exact ? errorPath === path : errorPath === path || errorPath.startsWith(`${path}.`);
+  });
+}
+
+export function unscopedValidationErrors(errors, form) {
+  return errors.filter((error) => !validationErrorPath(error, form));
+}
+
+export function validateWorkoutDraft(name, exercises) {
+  const errors = [];
+  if (!name.trim()) errors.push({ path: "name", detail: "Workout name is required." });
+  exercises.forEach((exercise, index) => {
+    const base = `exercises.${index}`;
+    if (!exercise.exercise.trim()) errors.push({ path: `${base}.exercise`, detail: "Movement is required." });
+    for (const field of ["sets", "reps"]) {
+      if (!/^\d+$/.test(String(exercise[field])) || Number(exercise[field]) < 1) errors.push({ path: `${base}.${field}`, detail: `${field === "sets" ? "Sets" : "Reps"} must be a positive whole number.` });
+    }
+    const weight = Number(exercise.default_weight_lbs);
+    if (exercise.default_weight_lbs === "" || !Number.isFinite(weight) || weight < 0) errors.push({ path: `${base}.default_weight_lbs`, detail: "Weight must be zero or greater." });
+    const hasMin = exercise.velocity_min !== "";
+    const hasMax = exercise.velocity_max !== "";
+    if (hasMin !== hasMax) {
+      errors.push({ path: `${base}.${hasMin ? "velocity_max" : "velocity_min"}`, detail: "Enter both velocity bounds or leave both blank." });
+    } else if (hasMin) {
+      const minimum = Number(exercise.velocity_min);
+      const maximum = Number(exercise.velocity_max);
+      if (!Number.isFinite(minimum) || minimum < 0 || minimum > 10) errors.push({ path: `${base}.velocity_min`, detail: "Velocity minimum must be between 0 and 10." });
+      if (!Number.isFinite(maximum) || maximum < minimum || maximum > 10) errors.push({ path: `${base}.velocity_max`, detail: "Velocity maximum must be between the minimum and 10." });
+    }
+  });
+  return errors;
+}
+
+export function validateProgramDraft(name, selected) {
+  const errors = [];
+  if (!name.trim()) errors.push({ path: "name", detail: "Program name is required." });
+  if (!selected.length) errors.push({ path: "items", detail: "Add at least one workout." });
+  return errors;
 }
 
 export function sameOriginPath(value, origin) {

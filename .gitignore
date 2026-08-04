@@ -33,3 +33,7 @@ Sprint 1.html
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ESP32 credentials and site-specific network configuration
+/esp32/edge_athlete_node/secrets.h
+/esp32/edge_athlete_node/build/

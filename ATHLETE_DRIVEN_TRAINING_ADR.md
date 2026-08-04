@@ -3,6 +3,9 @@
 ## Status
 
 Accepted and implemented through migrations `0012` and `0013` on 2026-07-16.
+Migrations `0014`-`0016` extend this decision with scheduled frozen plans,
+schema 3 reports, and idempotent automatic identity start; see
+`FLUID_COACH_WORKFLOW_ADR.md`.
 
 ## Decision
 
@@ -29,9 +32,12 @@ assignments or progression.
 
 ## State machine
 
-- First sign-in in a day creates `ready` progress at the first program item,
-  first exercise, set 1.
-- Starting a server-derived set changes `ready` to `in_set`.
+- Legacy first sign-in creates `ready` progress at the first program item, first
+  exercise, set 1. Scheduled Start Day creates frozen `ready` progress before
+  sign-in.
+- Scheduled identity automatically starts the server-derived Set and changes
+  `ready` to `in_set`; legacy identity does not create a Set and explicit rack start
+  remains the compatibility path. Existing unfinished legacy Sets remain authoritative.
 - Completing a false set returns to `ready` at the same expected set.
 - Completing a qualifying set advances the set number, next exercise, next
   workout, or final `complete` state in that order.
@@ -58,7 +64,7 @@ commit or roll back together.
   `X-Rack-Device-Id` and revalidates the sole assigned screen, set, session,
   athlete, progress, and rack state under the existing rack lock.
 - Generic set creation is limited to simulator-owned sessions. This keeps
-  anonymous legacy writes from consuming limits or blocking a real schema 2 day.
+  anonymous legacy writes from consuming limits or blocking a real athlete day.
 - Start Day writes `MonitoringEvent(reason="session_started")` in its transaction.
 - A future wristband endpoint must call the existing identity service; no second
   progression path is allowed.
@@ -77,12 +83,11 @@ No eligible movement returns a waiting state and empty leaderboard.
 
 ## Reports and PDF
 
-New days use immutable report schema 2 with full assigned program order, stable
-exercise identities, effective targets, final progress, rack participation, and
-persisted results. Rack participation comes only from durable participation rows,
-not final rack state or qualifying sets. Completed false sets remain as explicitly
-flagged schema 2 results with stable bindings, while summaries and completion
-metrics exclude them. Schema 1 remains readable through versioned extractors.
+Legacy athlete-driven days use immutable report schema 2. Scheduled days use
+schema 3 with training date, schedule source/version, frozen plan order/targets,
+frozen progress and Set bindings, rack participation, Sets, and Reps. Completed
+false sets remain explicitly flagged while summaries and completion metrics
+exclude them. Schema 1 and 2 remain readable through versioned extractors.
 
 Generate bounded PDFs from immutable snapshots with pinned ReportLab and built-in
 fonts. Daily and athlete-day endpoints require coach JWT access, return private
@@ -98,12 +103,22 @@ rows. Production rollback requires exporting the removed metadata or restoring a
 backup. Validation must use an explicitly verified disposable PostgreSQL database
 with `docker compose run -e POSTGRES_DB`.
 
+Migration `0014` adds the schedule and frozen-day schema. Its reverse preflight
+aborts before changing rows if an active schema 3 day, active frozen progress, or
+unfinished frozen Set exists. A safe reverse preserves core rows and schema 3
+reports but removes frozen metadata and warns that old application readers cannot
+interpret the preserved schema 3 data. Migration `0015` preserves schedule
+versions with an active tombstone; `0016` adds the bounded identity-event ledger.
+The `0016` reverse preflight blocks active schema-3 execution before dropping retained
+replay metadata.
+
 ## Compatibility
 
 `AthleteWorkoutAssignment`, legacy `Program`, rack catalog assignment, coach rack
-movement selection, and generic simulator set routes remain available for old
-data or simulation. Normal athlete-driven training uses complete
-`WorkoutProgram` assignment, server-owned progress, and rack-bound set routes.
+movement selection, explicit roster Start Day, explicit rack set start, and
+generic simulator set routes remain available for old data or simulation. Normal
+scheduled training uses the preview-derived roster, frozen schema 3 plans,
+server-owned progress, identity-event automatic start, and rack-bound completion.
 
 ## Deferred
 

@@ -4,6 +4,7 @@ from datetime import timedelta
 import json
 from threading import Barrier, Event, Thread
 import time
+import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -12,9 +13,10 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.core.management import call_command
+from django.core.management import call_command, CommandError
 from django.db import DatabaseError, IntegrityError, close_old_connections, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
+from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase, TransactionTestCase
 from django.test import override_settings
@@ -22,19 +24,140 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import Athlete, MonitoringEvent, Node, Program, RackScreen, RackWorkoutState, Rep, Session, Set, Workout, WorkoutExercise, WorkoutProgram, WorkoutProgramItem, AthleteWorkoutAssignment, AthleteWorkoutProgramAssignment, AthleteWorkoutExerciseOverride, AthleteDayProgress, AthleteRackParticipation, DailyReport
+from .models import Athlete, MonitoringEvent, Node, Program, RackScreen, RackWorkoutState, RackIdentityEvent, Rep, Session, Set, Workout, WorkoutExercise, WorkoutProgram, WorkoutProgramItem, AthleteWorkoutAssignment, AthleteWorkoutProgramAssignment, AthleteWorkoutExerciseOverride, AthleteDayProgress, AthleteRackParticipation, AthleteSchedule, AthleteScheduleEntry, AthleteSchedulePlan, AthleteSchedulePlanWorkout, AthleteSchedulePlanExercise, AthleteDayPlan, AthleteDayPlanWorkout, AthleteDayPlanExercise, DailyReport, DemoAthleteSeed
 from .serializers import ProgramSerializer
 from .realtime.broadcast.publisher import DASHBOARD_TOPIC, publish_pending_event
 from .realtime.event_processor.process_pulse import process_pulse_event
-from .realtime.mqtt_ingester.parser import parse_pulse_payload, parse_rep_payload
+from .realtime.mqtt_ingester.parser import parse_motion_payload, parse_pulse_payload, parse_rep_payload
 from .realtime.mqtt_ingester.subscriber import on_message
+from .realtime.serial_bridge import MotionRateLimiter, UsbFrameReader, parse_usb_frame, publish_usb_event
 from .services.training_limits import (
     MAX_REPORT_SNAPSHOT_BYTES,
+    MAX_SESSION_RACK_PARTICIPATIONS,
     MAX_SESSION_ATHLETES,
     MAX_SESSION_REPS,
     MAX_SESSION_SETS,
+    MAX_SCHEDULE_CLIENT_ID_LENGTH,
+    MAX_SCHEDULE_ENTRIES,
+    MAX_SCHEDULE_EXERCISES_PER_WORKOUT,
+    MAX_SCHEDULE_EXERCISES_TOTAL,
+    MAX_SCHEDULE_LOAD_LBS,
+    MAX_SCHEDULE_NAME_LENGTH,
+    MAX_SCHEDULE_PLANS,
+    MAX_SCHEDULE_REPS,
+    MAX_SCHEDULE_SETS,
+    MAX_SCHEDULE_WORKOUTS_PER_PLAN,
 )
 from .services.reports import reports_for_athlete
+from .services.athlete_schedules import ScheduleError, build_preview, prevalidate_schedule_payload
+from .services.training_execution import ExecutionError
+
+
+def rack_identity_payload(device_id, athlete_id, event_id=None, session_id=None):
+    if session_id is None:
+        session_id = Session.objects.get(ended_at=None).id
+    return {
+        "device_id": device_id,
+        "athlete_id": athlete_id,
+        "session_id": session_id,
+        "event_id": str(event_id or uuid.uuid4()),
+    }
+
+
+class UsbSerialBridgeTests(TestCase):
+    def test_accepts_contract_rep_frame(self):
+        topic, payload = parse_usb_frame(
+            b'EDGE_MQTT\tedgeathlete/node/rack-1-c6-01/rep\t'
+            b'{"node_id":"rack-1-c6-01","rep_number":1,"mean_velocity":0.72,'
+            b'"peak_velocity":0.91,"duration_ms":640,"timestamp":"2026-07-26T20:00:00Z"}\n'
+        )
+        self.assertEqual(topic, "edgeathlete/node/rack-1-c6-01/rep")
+        self.assertEqual(json.loads(payload)["mean_velocity"], 0.72)
+
+    def test_accepts_contract_pulse_frame(self):
+        topic, payload = parse_usb_frame(
+            b'EDGE_MQTT\tedgeathlete/node/rack-1-c6-01/pulse\t'
+            b'{"node_id":"rack-1-c6-01","event_type":"pulse","battery_level":100,'
+            b'"signal_strength":0,"firmware_version":"1.0.0","timestamp":"2026-07-26T20:00:00Z"}\r\n'
+        )
+        self.assertEqual(topic, "edgeathlete/node/rack-1-c6-01/pulse")
+        self.assertEqual(json.loads(payload)["event_type"], "pulse")
+
+    def test_accepts_contract_motion_frame(self):
+        topic, payload = parse_usb_frame(
+            b'EDGE_MQTT\tedgeathlete/node/rack-1-c6-01/motion\t'
+            b'{"node_id":"rack-1-c6-01","event_type":"motion","velocity":0.42,'
+            b'"timestamp":"2026-07-26T20:00:00Z"}\n'
+        )
+        self.assertEqual(topic, "edgeathlete/node/rack-1-c6-01/motion")
+        self.assertEqual(json.loads(payload)["velocity"], 0.42)
+
+    def test_motion_parser_rejects_boolean_and_unaware_timestamp(self):
+        with self.assertRaisesMessage(ValueError, "velocity"):
+            parse_motion_payload(
+                b'{"node_id":"rack-1-c6-01","event_type":"motion","velocity":true,'
+                b'"timestamp":"2026-07-26T20:00:00Z"}'
+            )
+        with self.assertRaisesMessage(ValueError, "timezone-aware"):
+            parse_motion_payload(
+                b'{"node_id":"rack-1-c6-01","event_type":"motion","velocity":0.42,'
+                b'"timestamp":"2026-07-26T20:00:00"}'
+            )
+        with self.assertRaisesMessage(ValueError, "unsupported fields"):
+            parse_motion_payload(
+                b'{"node_id":"rack-1-c6-01","event_type":"motion","velocity":0.42,'
+                b'"timestamp":"2026-07-26T20:00:00Z","accel_x":1.2}'
+            )
+
+    def test_motion_rate_limiter_bounds_valid_frame_floods(self):
+        limiter = MotionRateLimiter(minimum_interval=0.1)
+        self.assertTrue(limiter.allows("motion", 1.0))
+        self.assertFalse(limiter.allows("motion", 1.05))
+        self.assertTrue(limiter.allows("motion", 1.1))
+        self.assertTrue(limiter.allows("rep", 1.11))
+
+    def test_rejects_topic_payload_node_mismatch(self):
+        with self.assertRaisesMessage(ValueError, "does not match"):
+            parse_usb_frame(
+                b'EDGE_MQTT\tedgeathlete/node/other-node/rep\t'
+                b'{"node_id":"rack-1-c6-01","rep_number":1,"mean_velocity":0.72,'
+                b'"peak_velocity":0.91,"duration_ms":640,"timestamp":"2026-07-26T20:00:00Z"}\n'
+            )
+
+    def test_rejects_logs_and_oversized_frames(self):
+        with self.assertRaisesMessage(ValueError, "unexpected USB frame"):
+            parse_usb_frame(b"Movement started\n")
+        with self.assertRaisesMessage(ValueError, "size"):
+            parse_usb_frame(b"x" * 2301)
+
+    def test_discards_every_chunk_of_oversized_line_then_recovers(self):
+        valid_frame = (
+            b'EDGE_MQTT\tedgeathlete/node/rack-1-c6-01/pulse\t'
+            b'{"node_id":"rack-1-c6-01","event_type":"pulse","battery_level":100,'
+            b'"signal_strength":0,"firmware_version":"1.0.0","timestamp":"2026-07-26T20:00:00Z"}\n'
+        )
+        device = Mock()
+        device.readline.side_effect = [b"x" * 2301, valid_frame, valid_frame]
+        self.assertEqual(UsbFrameReader().read(device), valid_frame)
+        self.assertEqual(device.readline.call_count, 3)
+
+    def test_publish_requires_mqtt_confirmation(self):
+        client = Mock()
+        result = client.publish.return_value
+        result.rc = 0
+        result.is_published.return_value = False
+        self.assertFalse(publish_usb_event(client, "edgeathlete/node/node-1/rep", "{}"))
+        client.publish.assert_called_once_with("edgeathlete/node/node-1/rep", "{}", qos=0)
+
+    @override_settings(USB_BRIDGE_ENABLED=False)
+    def test_command_requires_explicit_enablement(self):
+        with self.assertRaisesMessage(CommandError, "USB bridge is disabled"):
+            call_command("bridge_usb_node")
+
+    @override_settings(USB_BRIDGE_ENABLED=True)
+    def test_command_rejects_invalid_baud_before_connecting(self):
+        with self.assertRaisesMessage(CommandError, "USB baud"):
+            call_command("bridge_usb_node", baud=1)
 
 
 class SimulatorTests(TestCase):
@@ -247,6 +370,492 @@ class SimulatorTests(TestCase):
 
         self.assertTrue(Athlete.objects.filter(id=athlete.id).exists())
         self.assertTrue(real_session.athletes.filter(id=athlete.id).exists())
+
+
+@override_settings(DEBUG=True)
+class DemoAthleteCommandTests(TestCase):
+    device_id = "30000000-0000-4000-8000-000000000001"
+
+    def setUp(self):
+        self.session = Session.objects.create(label="Wristband demo")
+
+    def seed(self):
+        call_command("seed_demo_athletes", session_id=self.session.id)
+
+    def owned(self):
+        seed = DemoAthleteSeed.objects.get(key="wristband-v1")
+        return seed, [seed.athlete_1, seed.athlete_2, seed.athlete_3, seed.athlete_4]
+
+    def test_seed_creates_exact_owned_graph_and_is_idempotent_without_training_writes(self):
+        from .management.commands.seed_demo_athletes import (
+            DEMO_ATHLETES,
+            DEMO_PROGRAM_NAME,
+            DEMO_WORKOUT_NAME,
+        )
+
+        unrelated = Athlete.objects.create(name="Unrelated")
+        unrelated_set = Set.objects.create(
+            session=self.session, athlete=unrelated, exercise="Existing", set_number=1,
+        )
+        before_rack_state = list(RackWorkoutState.objects.values())
+        self.seed()
+        seed, athletes = self.owned()
+        athlete_ids = [athlete.id for athlete in athletes]
+        workout = Workout.objects.get(name=DEMO_WORKOUT_NAME)
+        program = WorkoutProgram.objects.get(name=DEMO_PROGRAM_NAME)
+        graph_ids = (
+            workout.id,
+            workout.exercises.get().id,
+            program.id,
+            program.items.get().id,
+        )
+
+        self.assertEqual(
+            set(Athlete.objects.filter(id__in=athlete_ids).values_list("name", "nfc_tag_id")),
+            set(DEMO_ATHLETES),
+        )
+        self.assertEqual(set(Athlete.objects.filter(id__in=athlete_ids).values_list("notes", flat=True)), {""})
+        self.assertEqual((seed.session_id, seed.workout_id, seed.workout_program_id), (self.session.id, workout.id, program.id))
+        self.assertEqual(self.session.athletes.filter(id__in=athlete_ids).count(), 4)
+        self.assertEqual(AthleteWorkoutProgramAssignment.objects.filter(
+            athlete_id__in=athlete_ids, workout_program=program,
+        ).count(), 4)
+        self.assertFalse(AthleteDayProgress.objects.exists())
+        self.assertEqual(list(RackWorkoutState.objects.values()), before_rack_state)
+        self.assertFalse(RackIdentityEvent.objects.exists())
+        self.assertFalse(AthleteRackParticipation.objects.exists())
+        self.assertFalse(MonitoringEvent.objects.exists())
+        self.assertEqual(list(Set.objects.values_list("id", flat=True)), [unrelated_set.id])
+        self.assertFalse(Rep.objects.exists())
+
+        self.seed()
+
+        self.assertEqual(
+            [athlete.id for athlete in self.owned()[1]], athlete_ids,
+        )
+        self.assertEqual(
+            (Workout.objects.get(name=DEMO_WORKOUT_NAME).id,
+             WorkoutExercise.objects.get(workout__name=DEMO_WORKOUT_NAME).id,
+             WorkoutProgram.objects.get(name=DEMO_PROGRAM_NAME).id,
+             WorkoutProgramItem.objects.get(workout_program__name=DEMO_PROGRAM_NAME).id),
+            graph_ids,
+        )
+        self.assertEqual(list(Set.objects.values_list("id", flat=True)), [unrelated_set.id])
+
+    def test_seed_rejects_debug_invalid_sessions_and_frozen_schema_three(self):
+        with override_settings(DEBUG=False), self.assertRaisesMessage(CommandError, "DEBUG=True"):
+            call_command("seed_demo_athletes", session_id=self.session.id)
+        with self.assertRaisesMessage(CommandError, "positive integer"):
+            call_command("seed_demo_athletes", session_id=0)
+        with self.assertRaisesMessage(CommandError, "does not exist"):
+            call_command("seed_demo_athletes", session_id=self.session.id + 1000)
+
+        self.session.ended_at = timezone.now()
+        self.session.save(update_fields=["ended_at"])
+        with self.assertRaisesMessage(CommandError, "has ended"):
+            self.seed()
+        self.session.ended_at = None
+        self.session.is_simulated = True
+        self.session.save(update_fields=["ended_at", "is_simulated"])
+        with self.assertRaisesMessage(CommandError, "is simulated"):
+            self.seed()
+        self.session.is_simulated = False
+        self.session.training_date = timezone.localdate()
+        self.session.save(update_fields=["is_simulated", "training_date"])
+        self.seed()
+        call_command(
+            "seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True,
+        )
+        frozen_athlete = Athlete.objects.create(name="Frozen session athlete")
+        AthleteDayPlan.objects.create(
+            session=self.session,
+            athlete=frozen_athlete,
+            schedule_source="weekday",
+            name="Frozen plan",
+        )
+        with self.assertRaisesMessage(CommandError, "frozen schema 3"):
+            self.seed()
+        self.assertFalse(Athlete.objects.filter(name__startswith="[DEMO] ").exists())
+        self.assertFalse(Workout.objects.filter(name__startswith="[DEMO] ").exists())
+
+    def test_seed_reserved_collisions_are_atomic_even_for_exact_shape(self):
+        from .management.commands.seed_demo_athletes import DEMO_ATHLETES, DEMO_WORKOUT_NAME
+
+        Athlete.objects.create(name=DEMO_ATHLETES[2][0], nfc_tag_id=DEMO_ATHLETES[2][1])
+        with self.assertRaisesMessage(CommandError, "without its ownership record"):
+            self.seed()
+        self.assertEqual(Athlete.objects.count(), 1)
+        self.assertFalse(Workout.objects.exists())
+        self.assertFalse(self.session.athletes.exists())
+
+        Athlete.objects.all().delete()
+        Workout.objects.create(name=DEMO_WORKOUT_NAME)
+        with self.assertRaisesMessage(CommandError, "without its ownership record"):
+            self.seed()
+        self.assertFalse(Athlete.objects.exists())
+        self.assertEqual(Workout.objects.count(), 1)
+        self.assertFalse(WorkoutProgram.objects.exists())
+
+    def test_seed_rejects_session_roster_overflow_without_writes(self):
+        existing = Athlete.objects.bulk_create([
+            Athlete(name=f"Existing athlete {index}") for index in range(97)
+        ])
+        self.session.athletes.add(*existing)
+
+        with self.assertRaisesMessage(CommandError, "100-athlete session limit"):
+            self.seed()
+
+        self.assertEqual(self.session.athletes.count(), 97)
+        self.assertFalse(Athlete.objects.filter(name__startswith="[DEMO] ").exists())
+        self.assertFalse(Workout.objects.filter(name__startswith="[DEMO] ").exists())
+        self.assertFalse(WorkoutProgram.objects.filter(name__startswith="[DEMO] ").exists())
+
+    def test_remove_requires_confirmation_and_deletes_only_owned_training_rows(self):
+        self.seed()
+        _seed, athletes = self.owned()
+        demo = athletes[0]
+        program = demo.workout_program_assignment.workout_program
+        item = program.items.get()
+        exercise = item.workout.exercises.get()
+        progress = AthleteDayProgress.objects.create(
+            session=self.session,
+            athlete=demo,
+            workout_program=program,
+            current_program_item=item,
+            current_workout_exercise=exercise,
+            expected_set_number=1,
+        )
+        AthleteRackParticipation.objects.create(session=self.session, athlete=demo, rack_number=1)
+        screen = RackScreen.objects.create(device_id=self.device_id, rack_number=1)
+        demo_set = Set.objects.create(
+            session=self.session,
+            athlete=demo,
+            rack_number=1,
+            exercise=exercise.exercise,
+            set_number=1,
+            weight_lbs=0,
+            athlete_day_progress=progress,
+            workout_program_item=item,
+            workout_exercise=exercise,
+        )
+        Rep.objects.create(
+            set=demo_set,
+            rep_number=1,
+            timestamp=timezone.now(),
+            mean_velocity=0.6,
+            peak_velocity=0.8,
+            duration_ms=500,
+            velocity_color="green",
+        )
+        demo_set.reps_completed = 1
+        demo_set.ended_at = timezone.now()
+        demo_set.save(update_fields=["reps_completed", "ended_at"])
+        RackIdentityEvent.objects.create(
+            screen=screen,
+            event_id=uuid.uuid4(),
+            session=self.session,
+            athlete=demo,
+            rack_number=1,
+            resulting_set=demo_set,
+            result=RackIdentityEvent.RESULT_SET_STARTED,
+        )
+        unrelated = Athlete.objects.create(name="Unrelated cleanup athlete")
+        unrelated_workout = Workout.objects.create(name="Unrelated cleanup workout")
+        unrelated_exercise = WorkoutExercise.objects.create(
+            workout=unrelated_workout, exercise="Press", position=1,
+            sets=1, reps=1, default_weight_lbs=0,
+        )
+        unrelated_set = Set.objects.create(
+            session=self.session, athlete=unrelated, exercise="Press", set_number=1,
+        )
+
+        with self.assertRaisesMessage(CommandError, "--confirm"):
+            call_command("seed_demo_athletes", session_id=self.session.id, remove=True)
+        self.assertTrue(Athlete.objects.filter(id=demo.id).exists())
+        call_command(
+            "seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True,
+        )
+
+        self.assertTrue(Session.objects.filter(id=self.session.id).exists())
+        self.assertTrue(Athlete.objects.filter(id=unrelated.id).exists())
+        self.assertTrue(Workout.objects.filter(id=unrelated_workout.id).exists())
+        self.assertTrue(Set.objects.filter(id=unrelated_set.id).exists())
+        self.assertFalse(DemoAthleteSeed.objects.exists())
+        self.assertFalse(Athlete.objects.filter(id__in=[athlete.id for athlete in athletes]).exists())
+        self.assertFalse(AthleteDayProgress.objects.filter(id=progress.id).exists())
+        self.assertFalse(AthleteRackParticipation.objects.filter(athlete_id=demo.id).exists())
+        self.assertFalse(RackIdentityEvent.objects.filter(athlete_id=demo.id).exists())
+        self.assertFalse(Set.objects.filter(id=demo_set.id).exists())
+        self.assertFalse(Rep.objects.filter(set_id=demo_set.id).exists())
+        self.assertFalse(Workout.objects.filter(name__startswith="[DEMO] ").exists())
+        self.assertFalse(WorkoutProgram.objects.filter(name__startswith="[DEMO] ").exists())
+
+    def test_confirmed_remove_remains_available_when_debug_is_disabled(self):
+        self.seed()
+
+        with override_settings(DEBUG=False):
+            call_command(
+                "seed_demo_athletes", session_id=self.session.id,
+                remove=True, confirm=True,
+            )
+
+        self.assertFalse(DemoAthleteSeed.objects.exists())
+        self.assertFalse(Athlete.objects.filter(name__startswith="[DEMO] ").exists())
+
+    def test_remove_aborts_atomically_for_non_demo_catalog_reference(self):
+        self.seed()
+        _seed, athletes = self.owned()
+        demo_ids = [athlete.id for athlete in athletes]
+        program = WorkoutProgram.objects.get(name="[DEMO] Wristband Program")
+        unrelated = Athlete.objects.create(name="Unsafe reference")
+        AthleteWorkoutProgramAssignment.objects.create(athlete=unrelated, workout_program=program)
+
+        with self.assertRaisesMessage(CommandError, "unsafe references"):
+            call_command(
+                "seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True,
+            )
+
+        self.assertEqual(
+            set(Athlete.objects.filter(id__in=demo_ids).values_list("id", flat=True)),
+            set(demo_ids),
+        )
+        self.assertTrue(WorkoutProgram.objects.filter(id=program.id).exists())
+        self.assertEqual(self.session.athletes.filter(id__in=demo_ids).count(), 4)
+
+    def test_seeded_roster_is_eligible_and_rack_state_remains_privacy_safe(self):
+        from .management.commands.seed_demo_athletes import DEMO_ATHLETES
+
+        prefix_only = Athlete.objects.create(name="[DEMO] Not owned")
+        prefix_workout = Workout.objects.create(name="Prefix-only workout")
+        WorkoutExercise.objects.create(
+            workout=prefix_workout, exercise="Press", position=1, sets=1, reps=1,
+            default_weight_lbs=0,
+        )
+        prefix_program = WorkoutProgram.objects.create(name="Prefix-only program")
+        WorkoutProgramItem.objects.create(
+            workout_program=prefix_program, workout=prefix_workout, position=1,
+        )
+        AthleteWorkoutProgramAssignment.objects.create(
+            athlete=prefix_only, workout_program=prefix_program,
+        )
+        self.session.athletes.add(prefix_only)
+        self.seed()
+        RackScreen.objects.create(device_id=self.device_id, rack_number=1)
+        response = APIClient().get("/api/racks/1/state/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["identity_available"])
+        rows = {row["name"]: row for row in response.data["active_athletes"]}
+        self.assertEqual({name for name, _nfc_tag_id in DEMO_ATHLETES}, {
+            name for name, row in rows.items() if row["demo_wristband_eligible"]
+        })
+        self.assertFalse(rows[prefix_only.name]["demo_wristband_eligible"])
+        self.assertEqual(set(response.data["active_athletes"][0]), {"id", "name", "demo_wristband_eligible"})
+        self.assertNotContains(response, "edgeathlete-demo-wristband-")
+
+    def test_seeded_legacy_identity_creates_progress_but_set_requires_explicit_start(self):
+        self.seed()
+        athlete = self.owned()[1][0]
+        RackScreen.objects.create(device_id=self.device_id, rack_number=1)
+        Node.objects.create(node_id="demo-command-node", rack_number=1)
+
+        identified = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, athlete.id, session_id=self.session.id),
+            format="json",
+        )
+
+        self.assertEqual(identified.status_code, 200)
+        self.assertIsNone(identified.data["set"])
+        self.assertEqual(AthleteDayProgress.objects.filter(
+            session=self.session, athlete=athlete,
+        ).count(), 1)
+        self.assertFalse(Set.objects.exists())
+        started = APIClient().post(
+            "/api/racks/1/sets/", {"device_id": self.device_id}, format="json",
+        )
+        self.assertEqual(started.status_code, 201)
+        self.assertEqual(Set.objects.get().athlete, athlete)
+
+    def test_seed_rerun_rejects_mutated_owned_identity_without_repair(self):
+        self.seed()
+        seed, athletes = self.owned()
+        ids = (seed.workout_id, seed.workout_program_id, *[athlete.id for athlete in athletes])
+        Athlete.objects.filter(id=athletes[0].id).update(notes="changed")
+
+        with self.assertRaisesMessage(CommandError, "owned identity"):
+            self.seed()
+
+        self.assertEqual(
+            (DemoAthleteSeed.objects.get().workout_id, DemoAthleteSeed.objects.get().workout_program_id,
+             *DemoAthleteSeed.objects.values_list("athlete_1_id", "athlete_2_id", "athlete_3_id", "athlete_4_id").get()),
+            ids,
+        )
+        self.assertEqual(Athlete.objects.get(id=athletes[0].id).notes, "changed")
+
+    def test_remove_without_record_is_idempotent_or_rejects_reserved_collision(self):
+        call_command("seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True)
+        from .management.commands.seed_demo_athletes import DEMO_ATHLETES
+        Athlete.objects.create(name=DEMO_ATHLETES[0][0], nfc_tag_id=DEMO_ATHLETES[0][1])
+        with self.assertRaisesMessage(CommandError, "without its ownership record"):
+            call_command("seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True)
+
+    def test_remove_rejects_schedule_override_malformed_set_cross_session_and_selected_rack(self):
+        rejection_builders = (
+            lambda athlete, seed: AthleteSchedule.objects.create(athlete=athlete, active=True),
+            lambda athlete, seed: AthleteSchedule.objects.create(athlete=athlete, active=False),
+            lambda athlete, seed: AthleteWorkoutExerciseOverride.objects.create(
+                athlete=athlete, workout_exercise=seed.workout.exercises.get(), sets=2,
+            ),
+            lambda athlete, seed: Set.objects.create(
+                session=self.session, athlete=athlete, exercise="Wrong", set_number=1,
+            ),
+            lambda athlete, seed: RackWorkoutState.objects.create(
+                rack_number=9, active_session=self.session, selected_athlete=athlete,
+            ),
+        )
+        for build in rejection_builders:
+            self.seed()
+            seed, athletes = self.owned()
+            build(athletes[0], seed)
+            with self.assertRaises(CommandError):
+                call_command("seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True)
+            self.assertTrue(DemoAthleteSeed.objects.exists())
+            # Isolate each representative unsafe shape without using the cleanup under test.
+            RackWorkoutState.objects.all().delete()
+            Set.objects.all().delete()
+            AthleteSchedule.objects.all().delete()
+            AthleteWorkoutExerciseOverride.objects.all().delete()
+            DemoAthleteSeed.objects.all().delete()
+            AthleteWorkoutProgramAssignment.objects.filter(athlete_id__in=[row.id for row in athletes]).delete()
+            Athlete.objects.filter(id__in=[row.id for row in athletes]).delete()
+            seed.workout_program.delete()
+            seed.workout.delete()
+
+        self.seed()
+        seed, athletes = self.owned()
+        other = Session.objects.create(label="Other ended", ended_at=timezone.now())
+        Set.objects.create(session=other, athlete=athletes[0], exercise="Back squat", set_number=1)
+        with self.assertRaisesMessage(CommandError, "another session"):
+            call_command("seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True)
+
+    def test_remove_rejects_manual_configuration_report_and_cross_session_rows(self):
+        rejection_builders = (
+            lambda athlete, seed, other: Program.objects.create(
+                athlete=athlete, exercise="Manual", target_sets=1, target_reps=1,
+                target_weight_lbs=0,
+            ),
+            lambda athlete, seed, other: AthleteWorkoutAssignment.objects.create(
+                athlete=athlete, assigned_workout=seed.workout,
+            ),
+            lambda athlete, seed, other: AthleteRackParticipation.objects.create(
+                session=other, athlete=athlete, rack_number=1,
+            ),
+        )
+        for build in rejection_builders:
+            self.seed()
+            seed, athletes = self.owned()
+            other = Session.objects.create(
+                label="Other cleanup session", ended_at=timezone.now(),
+            )
+            build(athletes[0], seed, other)
+
+            with self.assertRaises(CommandError):
+                call_command(
+                    "seed_demo_athletes", session_id=self.session.id,
+                    remove=True, confirm=True,
+                )
+
+            self.assertTrue(DemoAthleteSeed.objects.exists())
+            Program.objects.all().delete()
+            AthleteWorkoutAssignment.objects.all().delete()
+            AthleteRackParticipation.objects.all().delete()
+            other.delete()
+            DemoAthleteSeed.objects.all().delete()
+            AthleteWorkoutProgramAssignment.objects.filter(
+                athlete_id__in=[row.id for row in athletes],
+            ).delete()
+            Athlete.objects.filter(id__in=[row.id for row in athletes]).delete()
+            seed.workout_program.delete()
+            seed.workout.delete()
+
+        self.seed()
+        DailyReport.objects.create(
+            session=self.session, schema_version=2,
+            snapshot={"schema_version": 2, "athletes": []},
+        )
+        with self.assertRaisesMessage(CommandError, "daily report"):
+            call_command(
+                "seed_demo_athletes", session_id=self.session.id,
+                remove=True, confirm=True,
+            )
+        self.assertTrue(DemoAthleteSeed.objects.exists())
+
+    def test_end_day_requires_cleanup_then_succeeds(self):
+        coach = User.objects.create_user(username="demo-end-coach", password="test", is_staff=True)
+        client = APIClient()
+        client.force_authenticate(coach)
+        self.seed()
+        blocked = client.post(f"/api/sessions/{self.session.id}/end/", {}, format="json")
+        self.assertEqual((blocked.status_code, blocked.data["code"]), (409, "demo_seed_cleanup_required"))
+        call_command("seed_demo_athletes", session_id=self.session.id, remove=True, confirm=True)
+        self.assertEqual(client.post(f"/api/sessions/{self.session.id}/end/", {}, format="json").status_code, 200)
+
+
+@override_settings(DEBUG=True)
+class DemoAthleteSeedDatabaseTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_reserved_name_and_distinct_seed_slots_are_database_constraints(self):
+        from .management.commands.seed_demo_athletes import DEMO_ATHLETES
+
+        first = Athlete.objects.create(name=DEMO_ATHLETES[0][0])
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Athlete.objects.create(name=DEMO_ATHLETES[0][0])
+
+        session = Session.objects.create(label="Constraint demo")
+        workout = Workout.objects.create(name="Constraint workout")
+        program = WorkoutProgram.objects.create(name="Constraint program")
+        others = [Athlete.objects.create(name=f"Constraint athlete {index}") for index in range(3)]
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            DemoAthleteSeed.objects.create(
+                key="wristband-v1", session=session, workout=workout, workout_program=program,
+                athlete_1=first, athlete_2=first, athlete_3=others[1], athlete_4=others[2],
+            )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            DemoAthleteSeed.objects.create(
+                key="not-wristband-v1", session=session, workout=workout, workout_program=program,
+                athlete_1=first, athlete_2=others[0], athlete_3=others[1], athlete_4=others[2],
+            )
+
+    def test_concurrent_seed_commands_create_one_owned_graph(self):
+        session = Session.objects.create(label="Concurrent demo")
+        barrier = Barrier(3)
+        errors = []
+
+        def seed():
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                call_command("seed_demo_athletes", session_id=session.id)
+            except Exception as error:
+                errors.append(error)
+            finally:
+                close_old_connections()
+
+        threads = [Thread(target=seed) for _index in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait(timeout=5)
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        close_old_connections()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(DemoAthleteSeed.objects.count(), 1)
+        self.assertEqual(Athlete.objects.filter(name__startswith="[DEMO] ").count(), 4)
+        self.assertEqual(Workout.objects.filter(name="[DEMO] Wristband Workout").count(), 1)
 
 
 class SessionAdminTests(TestCase):
@@ -1127,7 +1736,7 @@ class AthleteWorkoutAssignmentApiTests(TestCase):
     def identify(self):
         return APIClient().put(
             "/api/racks/1/athlete/",
-            {"device_id": self.device_id, "athlete_id": self.athlete.id},
+            rack_identity_payload(self.device_id, self.athlete.id),
             format="json",
         )
 
@@ -1188,7 +1797,9 @@ class AthleteWorkoutAssignmentApiTests(TestCase):
         before = APIClient().get("/api/racks/1/state/")
         identified = self.identify()
 
-        self.assertEqual(before.data["active_athletes"], [{"id": self.athlete.id, "name": self.athlete.name}])
+        self.assertEqual(before.data["active_athletes"], [{
+            "id": self.athlete.id, "name": self.athlete.name, "demo_wristband_eligible": False,
+        }])
         self.assertTrue(before.data["identity_available"])
         self.assertIsNone(before.data["assignment"])
         self.assertIsNone(before.data["effective_workout"])
@@ -1217,7 +1828,10 @@ class AthleteWorkoutAssignmentApiTests(TestCase):
         rejected = self.identify()
 
         self.assertEqual(assigned_other.status_code, 200)
-        self.assertEqual(state.data["active_athletes"], [{"id": self.other_athlete.id, "name": self.other_athlete.name}])
+        self.assertEqual(state.data["active_athletes"], [{
+            "id": self.other_athlete.id, "name": self.other_athlete.name,
+            "demo_wristband_eligible": False,
+        }])
         self.assertIsNone(state.data["assignment"])
         self.assertIsNone(state.data["effective_workout"])
         self.assertNotContains(state, "Athlete Workout")
@@ -1772,13 +2386,12 @@ class RackCatalogAssignmentApiTests(TestCase):
             format="json",
         )
 
-    def identify(self, athlete=None, device_id=None):
+    def identify(self, athlete=None, device_id=None, event_id=None):
         return APIClient().put(
             "/api/racks/1/athlete/",
-            {
-                "device_id": device_id or self.device_id,
-                "athlete_id": (athlete or self.athlete).id,
-            },
+            rack_identity_payload(
+                device_id or self.device_id, (athlete or self.athlete).id, event_id,
+            ),
             format="json",
         )
 
@@ -2088,7 +2701,7 @@ class RackCatalogAssignmentApiTests(TestCase):
     def test_identity_endpoint_is_throttled(self):
         self.assign()
         client = APIClient()
-        payload = {"device_id": self.device_id, "athlete_id": self.athlete.id}
+        payload = rack_identity_payload(self.device_id, self.athlete.id)
         for _ in range(120):
             self.assertEqual(
                 client.put(
@@ -2572,10 +3185,9 @@ class RackSessionConcurrencyTests(TransactionTestCase):
         )
         identified = APIClient().put(
             "/api/racks/1/athlete/",
-            {
-                "device_id": "00000000-0000-4000-8000-000000000010",
-                "athlete_id": self.athlete.id,
-            },
+            rack_identity_payload(
+                "00000000-0000-4000-8000-000000000010", self.athlete.id,
+            ),
             format="json",
         )
         self.assertEqual(identified.status_code, 200)
@@ -2907,13 +3519,12 @@ class AthleteDrivenFoundationTests(TestCase):
         )
         return assigned, started
 
-    def identify(self, rack_number=1, device_id=None):
+    def identify(self, rack_number=1, device_id=None, event_id=None):
         return APIClient().put(
             f"/api/racks/{rack_number}/athlete/",
-            {
-                "device_id": device_id or self.rack_one_device,
-                "athlete_id": self.athlete.id,
-            },
+            rack_identity_payload(
+                device_id or self.rack_one_device, self.athlete.id, event_id,
+            ),
             format="json",
         )
 
@@ -2979,7 +3590,9 @@ class AthleteDrivenFoundationTests(TestCase):
         self.assertEqual(MonitoringEvent.objects.filter(reason="session_started").count(), 1)
         rack = APIClient().get("/api/racks/1/state/")
         self.assertTrue(rack.data["identity_available"])
-        self.assertEqual(rack.data["active_athletes"], [{"id": self.athlete.id, "name": self.athlete.name}])
+        self.assertEqual(rack.data["active_athletes"], [{
+            "id": self.athlete.id, "name": self.athlete.name, "demo_wristband_eligible": False,
+        }])
         self.assertIsNone(rack.data["assignment"])
 
     def test_legacy_rack_assignment_route_remains_available_but_is_not_required(self):
@@ -3650,6 +4263,932 @@ class AthleteDrivenRoomSnapshotTests(TestCase):
         self.assertEqual(rack["latest_set"]["measured_insights"]["reps_in_zone"], 1)
 
 
+class ScheduledAthleteTrainingTests(TestCase):
+    device_id = "50000000-0000-4000-8000-000000000001"
+
+    def setUp(self):
+        coach = User.objects.create_user(username="schedule-coach", password="test-only", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(coach)
+        self.athlete = Athlete.objects.create(name="Scheduled Athlete")
+        self.fallback_athlete = Athlete.objects.create(name="Fallback Athlete")
+        self.missing_athlete = Athlete.objects.create(name="Missing Athlete")
+        self.workout = Workout.objects.create(name="Scheduled Workout")
+        self.exercise = WorkoutExercise.objects.create(
+            workout=self.workout, exercise="Squat", position=1, sets=3, reps=5,
+            default_weight_lbs=100, velocity_min=0.4, velocity_max=0.8,
+        )
+        self.program = WorkoutProgram.objects.create(name="Scheduled Program")
+        WorkoutProgramItem.objects.create(workout_program=self.program, workout=self.workout, position=1)
+        AthleteWorkoutProgramAssignment.objects.create(
+            athlete=self.fallback_athlete, workout_program=self.program,
+        )
+        RackScreen.objects.create(device_id=self.device_id, rack_number=1)
+        Node.objects.create(node_id="scheduled-node", rack_number=1)
+
+    def schedule_payload(self, **changes):
+        payload = {
+            "expected_version": 0,
+            "plans": [{
+                "client_id": "main",
+                "name": "Athlete-local plan",
+                "workout_program_id": self.program.id,
+                "workouts": [
+                    {"workout_id": self.workout.id, "exercises": [{
+                        "workout_exercise_id": self.exercise.id,
+                        "sets": 1, "reps": 2, "weight_lbs": 0,
+                    }]},
+                    {"workout_id": self.workout.id, "exercises": [{
+                        "workout_exercise_id": self.exercise.id,
+                        "sets": 2, "reps": 4, "weight_lbs": 125,
+                    }]},
+                ],
+            }],
+            "entries": [{"weekday": timezone.localdate().weekday(), "plan_client_id": "main"}],
+        }
+        payload.update(changes)
+        return payload
+
+    def start_scheduled_day(self, label="Identity Day"):
+        created = self.client.put(
+            f"/api/athletes/{self.athlete.id}/schedule/", self.schedule_payload(), format="json",
+        )
+        self.assertEqual(created.status_code, 200)
+        preview = self.client.get("/api/sessions/preview/")
+        started = self.client.post("/api/sessions/", {
+            "label": label, "preview_version": preview.data["preview_version"],
+        }, format="json")
+        self.assertEqual(started.status_code, 201)
+        return Session.objects.get(id=started.data["id"])
+
+    def configure_mixed_500_set_day(self):
+        payload = self.schedule_payload()
+        payload["plans"][0]["workouts"] = [
+            {"workout_id": self.workout.id, "exercises": [{
+                "workout_exercise_id": self.exercise.id, "sets": sets,
+            }]}
+            for sets in (100, 100, 50)
+        ]
+        saved = self.client.put(
+            f"/api/athletes/{self.athlete.id}/schedule/", payload, format="json",
+        )
+        self.assertEqual(saved.status_code, 200)
+        fallback_program = WorkoutProgram.objects.create(name="250 Set Fallback")
+        fallback_exercises = []
+        for position, sets in enumerate((100, 100, 50), start=1):
+            workout = Workout.objects.create(name=f"Fallback Workout {position}")
+            fallback_exercises.append(WorkoutExercise.objects.create(
+                workout=workout, exercise=f"Fallback Exercise {position}",
+                position=1, sets=sets, reps=1, default_weight_lbs=0,
+            ))
+            WorkoutProgramItem.objects.create(
+                workout_program=fallback_program, workout=workout, position=position,
+            )
+        assignment = AthleteWorkoutProgramAssignment.objects.get(athlete=self.fallback_athlete)
+        assignment.workout_program = fallback_program
+        assignment.save(update_fields=["workout_program"])
+        return fallback_exercises[-1]
+
+    def test_preview_and_start_accept_mixed_plans_at_500_prescribed_sets(self):
+        self.configure_mixed_500_set_day()
+
+        preview = self.client.get("/api/sessions/preview/")
+        started = self.client.post("/api/sessions/", {
+            "label": "500 Set Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+
+        self.assertEqual((preview.status_code, started.status_code), (200, 201))
+        self.assertEqual(
+            sum(AthleteDayPlanExercise.objects.filter(
+                workout__day_plan__session_id=started.data["id"],
+            ).values_list("sets", flat=True)),
+            MAX_SESSION_SETS,
+        )
+
+    def test_preview_and_locked_start_reject_mixed_501_sets_without_writes(self):
+        last_fallback_exercise = self.configure_mixed_500_set_day()
+        accepted_preview = self.client.get("/api/sessions/preview/")
+        last_fallback_exercise.sets = 51
+        last_fallback_exercise.save(update_fields=["sets"])
+
+        rejected_preview = self.client.get("/api/sessions/preview/")
+        rejected_start = self.client.post("/api/sessions/", {
+            "label": "Too Large Day",
+            "preview_version": accepted_preview.data["preview_version"],
+        }, format="json")
+
+        for response in (rejected_preview, rejected_start):
+            self.assertEqual((response.status_code, response.data["code"]), (409, "scheduled_day_too_large"))
+            self.assertEqual(response.data["dimensions"], {
+                "sets": MAX_SESSION_SETS + 1,
+                "limits": {"sets": MAX_SESSION_SETS},
+            })
+            self.assertNotIn(self.athlete.name, str(response.data["dimensions"]))
+        self.assertFalse(Session.objects.exists())
+        self.assertFalse(AthleteDayPlan.objects.exists())
+        self.assertFalse(AthleteDayProgress.objects.exists())
+        self.assertFalse(MonitoringEvent.objects.exists())
+
+    def test_start_rejects_oversized_report_baseline_without_writes(self):
+        created = self.client.put(
+            f"/api/athletes/{self.athlete.id}/schedule/",
+            self.schedule_payload(),
+            format="json",
+        )
+        preview = self.client.get("/api/sessions/preview/")
+
+        with patch(
+            "event_handler.services.training_days.MAX_REPORT_BASELINE_BYTES", 1,
+        ):
+            rejected = self.client.post("/api/sessions/", {
+                "label": "Oversized Baseline",
+                "preview_version": preview.data["preview_version"],
+            }, format="json")
+
+        self.assertEqual((created.status_code, preview.status_code), (200, 200))
+        self.assertEqual(
+            (rejected.status_code, rejected.data["code"]),
+            (409, "scheduled_day_too_large"),
+        )
+        self.assertGreater(rejected.data["dimensions"]["snapshot_bytes"], 1)
+        self.assertEqual(rejected.data["dimensions"]["limits"]["snapshot_bytes"], 1)
+        self.assertFalse(Session.objects.exists())
+        self.assertFalse(AthleteDayPlan.objects.exists())
+        self.assertFalse(AthleteDayProgress.objects.exists())
+        self.assertFalse(MonitoringEvent.objects.exists())
+
+    def test_identity_event_replays_immediately_and_after_completion_then_distinct_event_starts_next_set(self):
+        self.start_scheduled_day()
+        event_id = uuid.uuid4()
+        payload = rack_identity_payload(self.device_id, self.athlete.id, event_id)
+
+        first = APIClient().put("/api/racks/1/athlete/", payload, format="json")
+        immediate = APIClient().put("/api/racks/1/athlete/", payload, format="json")
+
+        self.assertEqual((first.status_code, immediate.status_code), (200, 200))
+        first_set_id = first.data["set"]["id"]
+        self.assertEqual(immediate.data["set"]["id"], first_set_id)
+        self.assertEqual(immediate.data["identity_event"]["resulting_set"]["id"], first_set_id)
+        self.assertTrue(immediate.data["identity_event"]["replayed"])
+        self.assertEqual(Set.objects.count(), 1)
+
+        completed = APIClient().post(f"/api/racks/1/sets/{first_set_id}/complete/", {
+            "reps_completed": 0, "is_false_set": False, "reps": [],
+        }, format="json", HTTP_X_RACK_DEVICE_ID=self.device_id)
+        delayed = APIClient().put("/api/racks/1/athlete/", payload, format="json")
+
+        self.assertEqual(completed.status_code, 200)
+        self.assertIsNone(delayed.data["set"])
+        self.assertEqual(delayed.data["identity_event"]["resulting_set"]["id"], first_set_id)
+        self.assertTrue(delayed.data["identity_event"]["replayed"])
+        self.assertEqual(Set.objects.count(), 1)
+
+        next_action = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+        self.assertEqual(next_action.status_code, 200)
+        self.assertNotEqual(next_action.data["set"]["id"], first_set_id)
+        self.assertEqual(Set.objects.count(), 2)
+        superseded = APIClient().put("/api/racks/1/athlete/", payload, format="json")
+        self.assertEqual(superseded.data["set"]["id"], next_action.data["set"]["id"])
+        self.assertEqual(superseded.data["identity_event"]["resulting_set"]["id"], first_set_id)
+
+    def test_identity_event_requires_uuid_rejects_mismatched_payload_and_is_privacy_safe(self):
+        self.athlete.nfc_tag_id = "private-nfc"
+        self.athlete.notes = "private note"
+        self.athlete.save(update_fields=["nfc_tag_id", "notes"])
+        self.start_scheduled_day()
+        RackScreen.objects.create(
+            device_id="50000000-0000-4000-8000-000000000002", rack_number=2,
+        )
+        event_id = uuid.uuid4()
+
+        missing = APIClient().put("/api/racks/1/athlete/", {
+            "device_id": self.device_id, "athlete_id": self.athlete.id,
+            "session_id": Session.objects.get(ended_at=None).id,
+        }, format="json")
+        with self.assertNoLogs("event_handler", level="INFO"):
+            first = APIClient().put(
+                "/api/racks/1/athlete/",
+                rack_identity_payload(self.device_id, self.athlete.id, event_id),
+                format="json",
+            )
+        athlete_mismatch = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.fallback_athlete.id, event_id),
+            format="json",
+        )
+        rack_mismatch = APIClient().put(
+            "/api/racks/2/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id, event_id),
+            format="json",
+        )
+
+        self.assertEqual((missing.status_code, missing.data["code"]), (400, "invalid_event_id"))
+        for response in (athlete_mismatch, rack_mismatch):
+            self.assertEqual((response.status_code, response.data["code"]), (409, "identity_event_conflict"))
+        self.assertEqual(Set.objects.count(), 1)
+        self.assertNotContains(first, self.device_id)
+        self.assertNotContains(first, "private-nfc")
+        self.assertNotContains(first, "private note")
+
+    def test_identity_requires_positive_current_session_before_mutation(self):
+        session = self.start_scheduled_day()
+        base = rack_identity_payload(self.device_id, self.athlete.id)
+        for value in (None, 0, -1, True, "1"):
+            rejected = APIClient().put(
+                "/api/racks/1/athlete/", {**base, "session_id": value}, format="json",
+            )
+            self.assertEqual((rejected.status_code, rejected.data["code"]), (400, "invalid_session_id"))
+        stale = APIClient().put(
+            "/api/racks/1/athlete/", {**base, "session_id": session.id + 1}, format="json",
+        )
+        self.assertEqual((stale.status_code, stale.data["code"]), (409, "identity_session_conflict"))
+        self.assertFalse(Set.objects.exists())
+        self.assertFalse(RackIdentityEvent.objects.exists())
+        self.assertIsNone(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id)
+
+    def test_identity_event_ledger_is_capped_retained_and_scoped_per_session(self):
+        session = self.start_scheduled_day()
+        screen = RackScreen.objects.get(device_id=self.device_id)
+        RackIdentityEvent.objects.bulk_create([
+            RackIdentityEvent(
+                screen=screen, event_id=uuid.uuid4(), session=session,
+                athlete=self.athlete, rack_number=1,
+                result=RackIdentityEvent.RESULT_CONFIRMED,
+            )
+            for _index in range(256)
+        ])
+
+        capped = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+        ended = self.client.post(f"/api/sessions/{session.id}/end/", {}, format="json")
+
+        self.assertEqual((capped.status_code, capped.data["code"]), (429, "identity_event_limit"))
+        self.assertEqual(ended.status_code, 200)
+        self.assertEqual(RackIdentityEvent.objects.filter(session=session).count(), 256)
+        preview = self.client.get("/api/sessions/preview/")
+        later = self.client.post("/api/sessions/", {
+            "label": "Later Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        accepted = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+        self.assertEqual((later.status_code, accepted.status_code), (201, 200))
+        self.assertEqual(RackIdentityEvent.objects.filter(session_id=later.data["id"]).count(), 1)
+
+    def test_identity_rejects_new_participation_after_session_report_bound(self):
+        session = self.start_scheduled_day()
+        AthleteRackParticipation.objects.bulk_create([
+            AthleteRackParticipation(
+                session=session, athlete=self.athlete, rack_number=1000 + index,
+            )
+            for index in range(MAX_SESSION_RACK_PARTICIPATIONS)
+        ])
+
+        rejected = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+
+        self.assertEqual(
+            (rejected.status_code, rejected.data["code"]),
+            (429, "session_rack_participation_limit"),
+        )
+        self.assertEqual(
+            AthleteRackParticipation.objects.filter(session=session).count(),
+            MAX_SESSION_RACK_PARTICIPATIONS,
+        )
+        self.assertFalse(Set.objects.exists())
+        self.assertFalse(RackIdentityEvent.objects.exists())
+        self.assertIsNone(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id)
+
+    def test_stale_cross_session_identity_is_rejected_and_retained_event_cannot_mutate_new_day(self):
+        first_session = self.start_scheduled_day()
+        payload = rack_identity_payload(self.device_id, self.athlete.id)
+        first = APIClient().put("/api/racks/1/athlete/", payload, format="json")
+        APIClient().post(f"/api/racks/1/sets/{first.data['set']['id']}/complete/", {
+            "reps_completed": 0, "is_false_set": False, "reps": [],
+        }, format="json", HTTP_X_RACK_DEVICE_ID=self.device_id)
+        self.client.post(f"/api/sessions/{first_session.id}/end/", {}, format="json")
+        preview = self.client.get("/api/sessions/preview/")
+        later = self.client.post("/api/sessions/", {
+            "label": "New Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+
+        stale = APIClient().put("/api/racks/1/athlete/", payload, format="json")
+
+        self.assertEqual((stale.status_code, stale.data["code"]), (409, "identity_session_conflict"))
+        self.assertEqual(RackIdentityEvent.objects.filter(session=first_session).count(), 1)
+        self.assertFalse(Set.objects.filter(session_id=later.data["id"]).exists())
+        self.assertIsNone(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id)
+
+    def test_schedule_is_coach_only_materialized_versioned_and_atomic(self):
+        url = f"/api/athletes/{self.athlete.id}/schedule/"
+        self.assertEqual(APIClient().get(url).status_code, 401)
+        created = self.client.put(url, self.schedule_payload(), format="json")
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.data["version"], 1)
+        self.assertEqual([row["workout_id"] for row in created.data["plans"][0]["workouts"]], [self.workout.id] * 2)
+        self.assertEqual(created.data["plans"][0]["workouts"][0]["exercises"][0]["weight_lbs"], 0)
+
+        stale = self.client.put(url, self.schedule_payload(), format="json")
+        self.assertEqual((stale.status_code, stale.data["code"]), (409, "schedule_version_conflict"))
+        duplicate = self.schedule_payload(expected_version=1, entries=[
+            {"weekday": 1, "plan_client_id": "main"},
+            {"weekday": 1, "plan_client_id": "main"},
+        ])
+        rejected = self.client.put(url, duplicate, format="json")
+        self.assertEqual((rejected.status_code, rejected.data["code"]), (409, "schedule_conflict"))
+        self.assertEqual(AthleteSchedule.objects.get(athlete=self.athlete).version, 1)
+
+    def test_schedule_read_materializes_existing_fallback_for_editing(self):
+        response = self.client.get(f"/api/athletes/{self.fallback_athlete.id}/schedule/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["version"], 0)
+        self.assertFalse(response.data["active"])
+        self.assertEqual(response.data["resolved"]["source"], "fallback")
+        self.assertEqual(response.data["plans"][0]["workout_program_id"], self.program.id)
+        workout = response.data["plans"][0]["workouts"][0]
+        self.assertEqual(workout["workout_id"], self.workout.id)
+        self.assertEqual(workout["exercises"][0]["weight_lbs"], 100)
+
+    def test_preview_start_identity_progression_and_schema_three_report(self):
+        url = f"/api/athletes/{self.athlete.id}/schedule/"
+        created = self.client.put(url, self.schedule_payload(), format="json")
+        self.assertEqual(created.status_code, 200)
+        preview = self.client.get("/api/sessions/preview/")
+        by_id = {row["athlete"]["id"]: row for row in preview.data["athletes"]}
+        self.assertEqual(by_id[self.athlete.id]["source"], "weekday")
+        self.assertEqual(by_id[self.fallback_athlete.id]["source"], "fallback")
+        self.assertEqual(by_id[self.missing_athlete.id]["source"], "missing")
+
+        started = self.client.post("/api/sessions/", {
+            "label": "Scheduled Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        self.assertEqual(started.status_code, 201)
+        session = Session.objects.get(id=started.data["id"])
+        self.assertEqual(session.training_date, timezone.localdate())
+        self.assertEqual(set(session.athletes.values_list("id", flat=True)), {self.athlete.id, self.fallback_athlete.id})
+        plan = AthleteDayPlan.objects.get(session=session, athlete=self.athlete)
+        self.assertEqual(plan.schedule_source, "weekday")
+        self.assertEqual(list(plan.workouts.values_list("source_workout_id", flat=True)), [self.workout.id, self.workout.id])
+        self.assertEqual(list(AthleteDayPlanExercise.objects.filter(workout__day_plan=plan).values_list("weight_lbs", flat=True)), [0, 125])
+
+        event_id = uuid.uuid4()
+        identified = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id, event_id),
+            format="json",
+        )
+        self.assertEqual(identified.status_code, 200)
+        self.assertIsNotNone(identified.data["set"])
+        workout_set = Set.objects.get(id=identified.data["set"]["id"])
+        self.assertIsNotNone(workout_set.day_plan_exercise_id)
+        repeated = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id, event_id),
+            format="json",
+        )
+        self.assertEqual(repeated.data["set"]["id"], workout_set.id)
+        completed = APIClient().post(f"/api/racks/1/sets/{workout_set.id}/complete/", {
+            "reps_completed": 0, "is_false_set": False, "reps": [],
+        }, format="json", HTTP_X_RACK_DEVICE_ID=self.device_id)
+        self.assertEqual(completed.status_code, 200)
+        progress = AthleteDayProgress.objects.get(day_plan=plan)
+        self.assertEqual(progress.current_day_plan_workout.position, 2)
+
+        ended = self.client.post(f"/api/sessions/{session.id}/end/", {}, format="json")
+        self.assertEqual(ended.status_code, 200)
+        self.assertTrue(RackIdentityEvent.objects.filter(session=session).exists())
+        self.assertEqual(ended.data["schema_version"], 3)
+        report = DailyReport.objects.get(session=session)
+        self.assertEqual(report.snapshot["session"]["training_date"], timezone.localdate().isoformat())
+        detail = self.client.get(f"/api/reports/{report.id}/")
+        self.assertEqual(detail.status_code, 200)
+        athlete_detail = next(
+            row for row in detail.data["athletes"] if row["athlete"]["id"] == self.athlete.id
+        )
+        self.assertEqual(athlete_detail["schedule_source"], "weekday")
+        pdf = self.client.get(f"/api/reports/{report.id}/pdf/")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertTrue(pdf.content.startswith(b"%PDF"))
+
+    def test_exact_rest_overrides_weekday_and_stale_preview_is_rejected(self):
+        entries = [
+            {"weekday": timezone.localdate().weekday(), "plan_client_id": "main"},
+            {"date": timezone.localdate().isoformat(), "is_rest": True},
+        ]
+        payload = self.schedule_payload(entries=entries)
+        self.client.put(f"/api/athletes/{self.athlete.id}/schedule/", payload, format="json")
+        preview = self.client.get("/api/sessions/preview/")
+        row = next(item for item in preview.data["athletes"] if item["athlete"]["id"] == self.athlete.id)
+        self.assertEqual((row["source"], row["is_rest"], row["eligible"]), ("date", True, False))
+        Athlete.objects.create(name="Digest Change")
+        rejected = self.client.post("/api/sessions/", {
+            "label": "Stale Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        self.assertEqual((rejected.status_code, rejected.data["code"]), (409, "schedule_version_conflict"))
+        self.assertFalse(Session.objects.exists())
+
+    def test_exact_plan_precedence_and_removal_restore_weekday_effective_plan(self):
+        replacement = Workout.objects.create(name="Exact Workout")
+        replacement_exercise = WorkoutExercise.objects.create(
+            workout=replacement, exercise="Press", position=1, sets=2, reps=3,
+            default_weight_lbs=45,
+        )
+        payload = self.schedule_payload(
+            plans=self.schedule_payload()["plans"] + [{
+                "client_id": "exact", "name": "Exact plan", "workouts": [{
+                    "workout_id": replacement.id,
+                    "exercises": [{"workout_exercise_id": replacement_exercise.id}],
+                }],
+            }],
+            entries=[
+                {"weekday": timezone.localdate().weekday(), "plan_client_id": "main"},
+                {"date": timezone.localdate().isoformat(), "plan_client_id": "exact"},
+            ],
+        )
+        url = f"/api/athletes/{self.athlete.id}/schedule/"
+        created = self.client.put(url, payload, format="json")
+        self.assertEqual(created.data["resolved"]["source"], "date")
+        self.assertEqual(created.data["resolved"]["effective_plan"]["workouts"][0]["name"], "Exact Workout")
+        payload["expected_version"] = created.data["version"]
+        payload["entries"] = payload["entries"][:1]
+        replaced = self.client.put(url, payload, format="json")
+        self.assertEqual(replaced.data["resolved"]["source"], "weekday")
+        self.assertEqual(replaced.data["resolved"]["effective_plan"]["workouts"][0]["name"], self.workout.name)
+
+    def test_explicit_unmatched_schedule_suppresses_legacy_fallback(self):
+        AthleteWorkoutProgramAssignment.objects.create(athlete=self.athlete, workout_program=self.program)
+        payload = self.schedule_payload(entries=[{
+            "weekday": (timezone.localdate().weekday() + 1) % 7,
+            "plan_client_id": "main",
+        }])
+        self.client.put(f"/api/athletes/{self.athlete.id}/schedule/", payload, format="json")
+        preview = self.client.get("/api/sessions/preview/")
+        row = next(item for item in preview.data["athletes"] if item["athlete"]["id"] == self.athlete.id)
+        self.assertEqual((row["source"], row["state"], row["effective_plan"]), ("missing", "missing", None))
+
+    def test_start_persists_preview_date_without_rereading_clock(self):
+        preview_date = timezone.localdate() - timedelta(days=1)
+        preview = build_preview(preview_date)
+        with patch("event_handler.services.athlete_schedules.build_preview", return_value=preview), patch(
+            "event_handler.services.training_days.timezone.localdate",
+            return_value=timezone.localdate(),
+        ) as localdate:
+            started = self.client.post("/api/sessions/", {
+                "label": "Midnight Day", "preview_version": preview["preview_version"],
+            }, format="json")
+        self.assertEqual(started.status_code, 201)
+        self.assertEqual(Session.objects.get(id=started.data["id"]).training_date, preview_date)
+        localdate.assert_not_called()
+
+    def test_schedule_edit_after_start_does_not_change_frozen_plan(self):
+        url = f"/api/athletes/{self.athlete.id}/schedule/"
+        created = self.client.put(url, self.schedule_payload(), format="json")
+        preview = self.client.get("/api/sessions/preview/")
+        started = self.client.post("/api/sessions/", {
+            "label": "Frozen Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        changed = self.schedule_payload(expected_version=created.data["version"])
+        changed["plans"][0]["workouts"][0]["exercises"][0]["weight_lbs"] = 999
+        self.client.put(url, changed, format="json")
+        frozen = AthleteDayPlanExercise.objects.filter(
+            workout__day_plan__session_id=started.data["id"],
+            workout__day_plan__athlete=self.athlete,
+            workout__position=1,
+        ).get()
+        self.assertEqual(frozen.weight_lbs, 0)
+
+    def test_delete_recreate_uses_monotonic_tombstone_version_and_restores_fallback(self):
+        AthleteWorkoutProgramAssignment.objects.create(athlete=self.athlete, workout_program=self.program)
+        url = f"/api/athletes/{self.athlete.id}/schedule/"
+        created = self.client.put(url, self.schedule_payload(), format="json")
+        deleted = self.client.delete(url, {"expected_version": created.data["version"]}, format="json")
+        self.assertEqual((deleted.status_code, deleted.data["version"]), (200, 2))
+        tombstone = AthleteSchedule.objects.get(athlete=self.athlete)
+        self.assertFalse(tombstone.active)
+        reloaded = self.client.get(url)
+        self.assertEqual((reloaded.status_code, reloaded.data["active"], reloaded.data["version"]), (200, False, 2))
+        self.assertEqual((reloaded.data["plans"], reloaded.data["entries"]), ([], []))
+        self.assertEqual(reloaded.data["resolved"]["source"], "fallback")
+        resolved = build_preview()["_resolved"]
+        self.assertEqual(next(row for row in resolved if row["athlete"] == self.athlete)["source"], "fallback")
+        stale = self.client.put(url, self.schedule_payload(expected_version=1), format="json")
+        self.assertEqual((stale.status_code, stale.data["code"]), (409, "schedule_version_conflict"))
+        recreated = self.client.put(url, self.schedule_payload(expected_version=2), format="json")
+        self.assertEqual(recreated.data["version"], 3)
+
+    def test_legacy_progress_identity_requires_explicit_set_start(self):
+        AthleteWorkoutProgramAssignment.objects.create(athlete=self.athlete, workout_program=self.program)
+        started = self.client.post("/api/sessions/", {
+            "label": "Legacy Progress", "athletes": [self.athlete.id],
+        }, format="json")
+        self.assertEqual(started.status_code, 201)
+        item = self.program.items.get()
+        AthleteDayProgress.objects.create(
+            session_id=started.data["id"], athlete=self.athlete, workout_program=self.program,
+            current_program_item=item, current_workout_exercise=self.exercise, expected_set_number=1,
+        )
+        event_id = uuid.uuid4()
+        first = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id, event_id),
+            format="json",
+        )
+        repeated = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id, event_id),
+            format="json",
+        )
+        self.assertIsNone(first.data["set"])
+        self.assertIsNone(repeated.data["set"])
+        self.assertFalse(Set.objects.exists())
+        started_set = APIClient().post(
+            "/api/racks/1/sets/", {"device_id": self.device_id}, format="json",
+        )
+        self.assertEqual(started_set.status_code, 201)
+        workout_set = Set.objects.get(id=started_set.data["id"])
+        self.assertIsNotNone(workout_set.workout_program_item_id)
+        self.assertIsNone(workout_set.day_plan_exercise_id)
+
+    def test_completed_frozen_identity_returns_no_set(self):
+        payload = self.schedule_payload()
+        payload["plans"][0]["workouts"] = payload["plans"][0]["workouts"][:1]
+        payload["plans"][0]["workouts"][0]["exercises"][0]["sets"] = 1
+        self.client.put(f"/api/athletes/{self.athlete.id}/schedule/", payload, format="json")
+        preview = self.client.get("/api/sessions/preview/")
+        self.client.post("/api/sessions/", {
+            "label": "Complete Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        event_id = uuid.uuid4()
+        identified = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id, event_id),
+            format="json",
+        )
+        completed = APIClient().post(f"/api/racks/1/sets/{identified.data['set']['id']}/complete/", {
+            "reps_completed": 0, "is_false_set": False, "reps": [],
+        }, format="json", HTTP_X_RACK_DEVICE_ID=self.device_id)
+        self.assertEqual(completed.status_code, 200)
+        repeated = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertIsNone(repeated.data["set"])
+        self.assertEqual(AthleteDayProgress.objects.get(athlete=self.athlete).status, AthleteDayProgress.COMPLETE)
+
+    def test_schedule_prevalidation_accepts_exact_limits_and_rejects_every_over_limit(self):
+        exercise = {
+            "sets": MAX_SCHEDULE_SETS,
+            "reps": MAX_SCHEDULE_REPS,
+            "weight_lbs": MAX_SCHEDULE_LOAD_LBS,
+            "velocity_min": 0,
+            "velocity_max": 10,
+        }
+        prevalidate_schedule_payload({
+            "expected_version": 0,
+            "plans": [{"client_id": "c" * MAX_SCHEDULE_CLIENT_ID_LENGTH, "name": "n" * MAX_SCHEDULE_NAME_LENGTH}],
+            "entries": [{"date": "2026-07-22"}],
+        })
+        exact_shapes = [
+            {"plans": [{}] * MAX_SCHEDULE_PLANS, "entries": [{}]},
+            {"plans": [{}], "entries": [{}] * MAX_SCHEDULE_ENTRIES},
+            {"plans": [{"workouts": [{}] * MAX_SCHEDULE_WORKOUTS_PER_PLAN}], "entries": [{}]},
+            {"plans": [{"workouts": [{"exercises": [exercise] * MAX_SCHEDULE_EXERCISES_PER_WORKOUT}]}], "entries": [{}]},
+            {"plans": [{"workouts": [
+                {"exercises": [exercise] * MAX_SCHEDULE_EXERCISES_PER_WORKOUT}
+                for _index in range(MAX_SCHEDULE_EXERCISES_TOTAL // MAX_SCHEDULE_EXERCISES_PER_WORKOUT)
+            ]}], "entries": [{}]},
+        ]
+        for shape in exact_shapes:
+            prevalidate_schedule_payload({"expected_version": 0, **shape})
+
+        over_shapes = [
+            {"plans": [{}] * (MAX_SCHEDULE_PLANS + 1), "entries": [{}]},
+            {"plans": [{}], "entries": [{}] * (MAX_SCHEDULE_ENTRIES + 1)},
+            {"plans": [{"workouts": [{}] * (MAX_SCHEDULE_WORKOUTS_PER_PLAN + 1)}], "entries": [{}]},
+            {"plans": [{"workouts": [{"exercises": [exercise] * (MAX_SCHEDULE_EXERCISES_PER_WORKOUT + 1)}]}], "entries": [{}]},
+            {"plans": [{"workouts": [
+                {"exercises": [exercise] * MAX_SCHEDULE_EXERCISES_PER_WORKOUT}
+                for _index in range(MAX_SCHEDULE_EXERCISES_TOTAL // MAX_SCHEDULE_EXERCISES_PER_WORKOUT + 1)
+            ]}], "entries": [{}]},
+            {"plans": [{"client_id": "c" * (MAX_SCHEDULE_CLIENT_ID_LENGTH + 1)}], "entries": [{}]},
+            {"plans": [{}], "entries": [{"plan_client_id": "c" * (MAX_SCHEDULE_CLIENT_ID_LENGTH + 1)}]},
+            {"plans": [{"name": "n" * (MAX_SCHEDULE_NAME_LENGTH + 1)}], "entries": [{}]},
+            {"plans": [{"workouts": [{"exercises": [{**exercise, "sets": MAX_SCHEDULE_SETS + 1}]}]}], "entries": [{}]},
+            {"plans": [{"workouts": [{"exercises": [{**exercise, "reps": MAX_SCHEDULE_REPS + 1}]}]}], "entries": [{}]},
+            {"plans": [{"workouts": [{"exercises": [{**exercise, "weight_lbs": MAX_SCHEDULE_LOAD_LBS + 1}]}]}], "entries": [{}]},
+        ]
+        for shape in over_shapes:
+            with self.assertRaises(ScheduleError), CaptureQueriesContext(connection) as queries:
+                prevalidate_schedule_payload({"expected_version": 0, **shape})
+            self.assertEqual(len(queries), 0)
+
+    def test_schedule_prevalidation_rejects_unknown_fields_and_nonliteral_dates(self):
+        invalid_payloads = [
+            {"expected_version": 0, "plans": [{}], "entries": [{}], "extra": True},
+            {"expected_version": 0, "plans": [{"extra": True}], "entries": [{}]},
+            {"expected_version": 0, "plans": [{"workouts": [{"extra": True}]}], "entries": [{}]},
+            {"expected_version": 0, "plans": [{"workouts": [{"exercises": [{"extra": True}]}]}], "entries": [{}]},
+            {"expected_version": 0, "plans": [{}], "entries": [{"extra": True}]},
+            {"expected_version": 0, "plans": [{}], "entries": [{"date": "2026-7-22"}]},
+            {"expected_version": 0, "plans": [{}], "entries": [{"date": "2026-02-30"}]},
+            {"expected_version": 0, "plans": [{}], "entries": [{"date": "2026-07-22T00:00:00"}]},
+        ]
+        for payload in invalid_payloads:
+            with self.assertRaises(ScheduleError), CaptureQueriesContext(connection) as queries:
+                prevalidate_schedule_payload(payload)
+            self.assertEqual(len(queries), 0)
+
+    def test_automatic_start_failure_rolls_back_identity_and_participation(self):
+        self.client.put(
+            f"/api/athletes/{self.athlete.id}/schedule/", self.schedule_payload(), format="json",
+        )
+        preview = self.client.get("/api/sessions/preview/")
+        started = self.client.post("/api/sessions/", {
+            "label": "Rollback Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        Node.objects.all().delete()
+
+        rejected = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+
+        self.assertEqual((rejected.status_code, rejected.data["code"]), (409, "automatic_set_start_failed"))
+        self.assertIsNone(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id)
+        self.assertFalse(AthleteRackParticipation.objects.filter(session_id=started.data["id"]).exists())
+        self.assertFalse(Set.objects.exists())
+        progress = AthleteDayProgress.objects.get(session_id=started.data["id"], athlete=self.athlete)
+        self.assertEqual(progress.status, AthleteDayProgress.READY)
+
+    def test_screen_and_progress_failures_roll_back_identity_and_set_start(self):
+        self.client.put(
+            f"/api/athletes/{self.athlete.id}/schedule/", self.schedule_payload(), format="json",
+        )
+        preview = self.client.get("/api/sessions/preview/")
+        started = self.client.post("/api/sessions/", {
+            "label": "Failure Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        RackScreen.objects.all().delete()
+        screen_rejected = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+        self.assertEqual((screen_rejected.status_code, screen_rejected.data["code"]), (409, "rack_screen_conflict"))
+        self.assertFalse(AthleteRackParticipation.objects.filter(session_id=started.data["id"]).exists())
+        RackScreen.objects.create(device_id=self.device_id, rack_number=1)
+        with patch(
+            "event_handler.views.start_expected_set",
+            side_effect=ExecutionError("unexpected_workout_step", "Progress is inconsistent."),
+        ):
+            progress_rejected = APIClient().put(
+                "/api/racks/1/athlete/",
+                rack_identity_payload(self.device_id, self.athlete.id),
+                format="json",
+            )
+        self.assertEqual(
+            (progress_rejected.status_code, progress_rejected.data["code"]),
+            (409, "automatic_set_start_failed"),
+        )
+        self.assertIsNone(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id)
+        self.assertFalse(AthleteRackParticipation.objects.filter(session_id=started.data["id"]).exists())
+        self.assertFalse(Set.objects.exists())
+
+    def test_unfinished_set_blocks_different_identity_then_completion_allows_atomic_switch(self):
+        self.client.put(
+            f"/api/athletes/{self.athlete.id}/schedule/", self.schedule_payload(), format="json",
+        )
+        preview = self.client.get("/api/sessions/preview/")
+        self.client.post("/api/sessions/", {
+            "label": "Switch Day", "preview_version": preview.data["preview_version"],
+        }, format="json")
+        first = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.athlete.id),
+            format="json",
+        )
+
+        blocked = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.fallback_athlete.id),
+            format="json",
+        )
+        self.assertEqual((blocked.status_code, blocked.data["code"]), (409, "unfinished_set"))
+        self.assertEqual(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id, self.athlete.id)
+        self.assertEqual(Set.objects.filter(ended_at=None).get().id, first.data["set"]["id"])
+
+        completed = APIClient().post(f"/api/racks/1/sets/{first.data['set']['id']}/complete/", {
+            "reps_completed": 0, "is_false_set": False, "reps": [],
+        }, format="json", HTTP_X_RACK_DEVICE_ID=self.device_id)
+        switched = APIClient().put(
+            "/api/racks/1/athlete/",
+            rack_identity_payload(self.device_id, self.fallback_athlete.id),
+            format="json",
+        )
+        self.assertEqual(completed.status_code, 200)
+        self.assertEqual(switched.status_code, 200)
+        self.assertEqual(RackWorkoutState.objects.get(rack_number=1).selected_athlete_id, self.fallback_athlete.id)
+        switched_set = Set.objects.get(id=switched.data["set"]["id"])
+        self.assertEqual(switched_set.athlete_id, self.fallback_athlete.id)
+        self.assertIsNotNone(switched_set.day_plan_exercise_id)
+
+    def test_occurrence_constraints_reject_zero_targets_and_partial_velocity(self):
+        schedule = AthleteSchedule.objects.create(athlete=self.athlete)
+        plan = AthleteSchedulePlan.objects.create(
+            schedule=schedule, source_program=self.program, name="Constrained", position=1,
+        )
+        workout = AthleteSchedulePlanWorkout.objects.create(
+            plan=plan, source_workout=self.workout, name=self.workout.name, position=1,
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            AthleteSchedulePlanExercise.objects.create(
+                workout=workout, source_exercise=self.exercise, exercise="Squat",
+                position=1, sets=0, reps=1, weight_lbs=0,
+            )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            AthleteSchedulePlanExercise.objects.create(
+                workout=workout, source_exercise=self.exercise, exercise="Squat",
+                position=1, sets=1, reps=1, weight_lbs=0, velocity_min=0.5,
+            )
+        session = Session.objects.create(label="Constraint Day")
+        day_plan = AthleteDayPlan.objects.create(
+            session=session, athlete=self.athlete, schedule_source="weekday", name="Frozen",
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            AthleteDayPlanWorkout.objects.create(day_plan=day_plan, name="Invalid", position=0)
+
+
+class ScheduledStartConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_start_and_schedule_replacement_serialize_without_mixed_frozen_plan(self):
+        athlete = Athlete.objects.create(name="Concurrent Scheduled Athlete")
+        workout = Workout.objects.create(name="Concurrent Workout")
+        exercise = WorkoutExercise.objects.create(
+            workout=workout, exercise="Squat", position=1, sets=1, reps=1, default_weight_lbs=10,
+        )
+        program = WorkoutProgram.objects.create(name="Concurrent Program")
+        WorkoutProgramItem.objects.create(workout_program=program, workout=workout, position=1)
+
+        def payload(expected_version, weight):
+            return {
+                "expected_version": expected_version,
+                "plans": [{
+                    "client_id": "main", "name": "Concurrent plan", "workouts": [{
+                        "workout_id": workout.id,
+                        "exercises": [{"workout_exercise_id": exercise.id, "weight_lbs": weight}],
+                    }],
+                }],
+                "entries": [{"weekday": timezone.localdate().weekday(), "plan_client_id": "main"}],
+            }
+
+        from .services.athlete_schedules import freeze_resolved_plan as real_freeze
+        from .services.athlete_schedules import replace_schedule
+        from .services.training_days import start_training_day
+
+        replace_schedule(athlete.id, payload(0, 10))
+        preview = build_preview()
+        freeze_entered = Event()
+        release_freeze = Event()
+        results = {}
+        errors = []
+
+        def blocking_freeze(session, resolved):
+            freeze_entered.set()
+            if not release_freeze.wait(timeout=5):
+                raise RuntimeError("Timed out waiting to release frozen-plan creation.")
+            return real_freeze(session, resolved)
+
+        def start():
+            close_old_connections()
+            try:
+                with patch("event_handler.services.athlete_schedules.freeze_resolved_plan", side_effect=blocking_freeze):
+                    results["session"] = start_training_day(
+                        {"label": "Concurrent Day"}, preview_version=preview["preview_version"],
+                    ).id
+            except Exception as error:
+                errors.append(error)
+            finally:
+                close_old_connections()
+
+        def replace():
+            close_old_connections()
+            try:
+                results["schedule"] = replace_schedule(athlete.id, payload(1, 20)).version
+            except Exception as error:
+                errors.append(error)
+            finally:
+                close_old_connections()
+
+        start_thread = Thread(target=start)
+        replace_thread = Thread(target=replace)
+        start_thread.start()
+        self.assertTrue(freeze_entered.wait(timeout=5))
+        replace_thread.start()
+        time.sleep(0.2)
+        self.assertTrue(replace_thread.is_alive())
+        release_freeze.set()
+        start_thread.join(timeout=5)
+        replace_thread.join(timeout=5)
+        self.assertFalse(start_thread.is_alive())
+        self.assertFalse(replace_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results["schedule"], 2)
+        frozen = AthleteDayPlanExercise.objects.get(workout__day_plan__session_id=results["session"])
+        self.assertEqual(frozen.weight_lbs, 10)
+
+
+class RackIdentityEventConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_concurrent_same_event_creates_one_event_and_one_set(self):
+        athlete = Athlete.objects.create(name="Concurrent Identity Athlete")
+        workout = Workout.objects.create(name="Concurrent Identity Workout")
+        exercise = WorkoutExercise.objects.create(
+            workout=workout, exercise="Squat", position=1, sets=2, reps=1,
+            default_weight_lbs=0,
+        )
+        program = WorkoutProgram.objects.create(name="Concurrent Identity Program")
+        item = WorkoutProgramItem.objects.create(
+            workout_program=program, workout=workout, position=1,
+        )
+        AthleteWorkoutProgramAssignment.objects.create(athlete=athlete, workout_program=program)
+        session = Session.objects.create(label="Concurrent Identity Day")
+        session.athletes.add(athlete)
+        day_plan = AthleteDayPlan.objects.create(
+            session=session, athlete=athlete, schedule_source="weekday",
+            source_program=program, name="Concurrent frozen plan",
+        )
+        day_workout = AthleteDayPlanWorkout.objects.create(
+            day_plan=day_plan, source_workout=workout,
+            name=workout.name, position=1,
+        )
+        day_exercise = AthleteDayPlanExercise.objects.create(
+            workout=day_workout, source_exercise=exercise,
+            exercise=exercise.exercise, position=1, sets=2, reps=1, weight_lbs=0,
+        )
+        AthleteDayProgress.objects.create(
+            session=session, athlete=athlete, day_plan=day_plan,
+            current_day_plan_workout=day_workout,
+            current_day_plan_exercise=day_exercise,
+            expected_set_number=1,
+        )
+        device_id = "60000000-0000-4000-8000-000000000001"
+        RackScreen.objects.create(device_id=device_id, rack_number=1)
+        RackWorkoutState.objects.create(rack_number=1, active_session=session)
+        Node.objects.create(node_id="concurrent-identity-node", rack_number=1)
+        event_id = uuid.uuid4()
+        barrier = Barrier(3)
+        responses = []
+        errors = []
+
+        def identify():
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                response = APIClient().put(
+                    "/api/racks/1/athlete/",
+                    rack_identity_payload(device_id, athlete.id, event_id),
+                    format="json",
+                )
+                responses.append((response.status_code, response.data.get("set", {}).get("id")))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                close_old_connections()
+
+        threads = [Thread(target=identify) for _index in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait(timeout=5)
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        close_old_connections()
+
+        self.assertEqual(errors, [])
+        self.assertEqual([status for status, _set_id in responses], [200, 200])
+        self.assertEqual(len({set_id for _status, set_id in responses}), 1)
+        self.assertEqual(RackIdentityEvent.objects.count(), 1)
+        self.assertEqual(Set.objects.count(), 1)
+
+
 class AthleteDrivenConstraintTests(TransactionTestCase):
     def test_selected_athlete_and_unfinished_progress_are_exclusive(self):
         athlete = Athlete.objects.create(name="Exclusive Athlete")
@@ -3725,7 +5264,7 @@ class AthleteDrivenConstraintTests(TransactionTestCase):
                 barrier.wait(timeout=5)
                 response = client.put(
                     f"/api/racks/{rack_number}/athlete/",
-                    {"device_id": devices[rack_number], "athlete_id": athlete.id},
+                    rack_identity_payload(devices[rack_number], athlete.id),
                     format="json",
                 )
                 statuses.append(response.status_code)
@@ -3917,10 +5456,64 @@ class TrainingDayDatabaseTests(TransactionTestCase):
         self.assertEqual(Session.objects.filter(ended_at=None).count(), 1)
 
 
+class Migration0017Tests(TransactionTestCase):
+    migrate_from = ("event_handler", "0016_rack_identity_event")
+    migrate_to = ("event_handler", "0017_demo_athlete_seed")
+
+    def setUp(self):
+        close_old_connections()
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_from])
+        self.apps = executor.loader.project_state([self.migrate_from]).apps
+
+    def tearDown(self):
+        close_old_connections()
+        executor = MigrationExecutor(connection)
+        applied = executor.loader.applied_migrations
+        target = self.migrate_to if self.migrate_to in applied else self.migrate_from
+        apps = executor.loader.project_state([target]).apps
+        apps.get_model("event_handler", "Athlete").objects.filter(
+            Q(name__in=["[DEMO] Avery", "[DEMO] Jordan", "[DEMO] Morgan", "[DEMO] Riley"])
+            | Q(nfc_tag_id__startswith="edgeathlete-demo-wristband-")
+        ).delete()
+        if target == self.migrate_to:
+            apps.get_model("event_handler", "DemoAthleteSeed").objects.all().delete()
+            apps.get_model("event_handler", "WorkoutProgram").objects.filter(
+                normalized_name="[demo] wristband program",
+            ).delete()
+            apps.get_model("event_handler", "Workout").objects.filter(
+                normalized_name="[demo] wristband workout",
+            ).delete()
+        MigrationExecutor(connection).migrate([self.migrate_to])
+        close_old_connections()
+
+    def test_duplicate_reserved_name_preflight_blocks_migration(self):
+        AthleteModel = self.apps.get_model("event_handler", "Athlete")
+        AthleteModel.objects.create(name="[DEMO] Avery")
+        AthleteModel.objects.create(name="[DEMO] Avery")
+
+        with self.assertRaisesMessage(RuntimeError, "reserved demo athlete name is duplicated"):
+            MigrationExecutor(connection).migrate([self.migrate_to])
+
+        self.assertNotIn(self.migrate_to, MigrationExecutor(connection).loader.applied_migrations)
+
+    def test_reverse_guard_blocks_reserved_identity_without_seed(self):
+        MigrationExecutor(connection).migrate([self.migrate_to])
+        apps = MigrationExecutor(connection).loader.project_state([self.migrate_to]).apps
+        apps.get_model("event_handler", "Athlete").objects.create(
+            name="Collision", nfc_tag_id="edgeathlete-demo-wristband-avery",
+        )
+
+        with self.assertRaisesMessage(RuntimeError, "Cannot reverse 0017"):
+            MigrationExecutor(connection).migrate([self.migrate_from])
+
+        self.assertIn(self.migrate_to, MigrationExecutor(connection).loader.applied_migrations)
+
+
 class Migration0010Tests(TransactionTestCase):
     migrate_from = ("event_handler", "0009_athlete_workout_assignments_and_overrides")
     migrate_to = ("event_handler", "0010_daily_report_and_one_active_session")
-    restore_to = ("event_handler", "0012_athlete_driven_training_foundation")
+    restore_to = ("event_handler", "0017_demo_athlete_seed")
 
     def setUp(self):
         close_old_connections()
@@ -4062,6 +5655,7 @@ class Migration0012Tests(TransactionTestCase):
                 seen.add(athlete_id)
             executor = MigrationExecutor(connection)
             executor.migrate([self.migrate_to])
+        MigrationExecutor(connection).migrate([("event_handler", "0017_demo_athlete_seed")])
         close_old_connections()
 
     def test_preflight_rejects_duplicate_sign_ins_without_changing_source_rows(self):
@@ -4122,8 +5716,7 @@ class Migration0013Tests(TransactionTestCase):
     def tearDown(self):
         close_old_connections()
         executor = MigrationExecutor(connection)
-        if self.migrate_to not in executor.loader.applied_migrations:
-            executor.migrate([self.migrate_to])
+        executor.migrate([("event_handler", "0017_demo_athlete_seed")])
         close_old_connections()
 
     def test_forward_reverse_preserves_training_rows_and_drops_participation_metadata(self):
@@ -4167,6 +5760,104 @@ class Migration0013Tests(TransactionTestCase):
         self.assertFalse(reapplied_apps.get_model("event_handler", "AthleteRackParticipation").objects.exists())
 
 
+class Migration0014Tests(TransactionTestCase):
+    migrate_from = ("event_handler", "0013_athlete_rack_participation")
+    migrate_to = ("event_handler", "0014_scheduled_athlete_plans")
+
+    def setUp(self):
+        close_old_connections()
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_from])
+        self.apps = executor.loader.project_state([self.migrate_from]).apps
+
+    def tearDown(self):
+        close_old_connections()
+        MigrationExecutor(connection).migrate([("event_handler", "0017_demo_athlete_seed")])
+        close_old_connections()
+
+    def test_forward_backfills_date_and_reverse_preserves_core_rows(self):
+        athlete = self.apps.get_model("event_handler", "Athlete").objects.create(name="Migration 14 Athlete")
+        session = self.apps.get_model("event_handler", "Session").objects.create(
+            label="Migration 14 Day", ended_at=timezone.now(),
+        )
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_to])
+        apps = executor.loader.project_state([self.migrate_to]).apps
+        session14 = apps.get_model("event_handler", "Session").objects.get(id=session.id)
+        self.assertIsNotNone(session14.training_date)
+        athlete14 = apps.get_model("event_handler", "Athlete").objects.get(id=athlete.id)
+        day_plan = apps.get_model("event_handler", "AthleteDayPlan").objects.create(
+            session=session14, athlete=athlete14, schedule_source="weekday", schedule_version=1, name="Frozen",
+        )
+        workout = apps.get_model("event_handler", "AthleteDayPlanWorkout").objects.create(
+            day_plan=day_plan, name="Workout", position=1,
+        )
+        exercise = apps.get_model("event_handler", "AthleteDayPlanExercise").objects.create(
+            workout=workout, exercise="Squat", position=1, sets=1, reps=1, weight_lbs=0,
+        )
+        progress = apps.get_model("event_handler", "AthleteDayProgress").objects.create(
+            session=session14, athlete=athlete14, day_plan=day_plan,
+            current_day_plan_workout=workout, current_day_plan_exercise=exercise,
+            expected_set_number=1,
+        )
+        workout_set = apps.get_model("event_handler", "Set").objects.create(
+            session=session14, athlete=athlete14, exercise="Squat", set_number=1,
+            athlete_day_progress=progress, day_plan_workout=workout, day_plan_exercise=exercise,
+            ended_at=timezone.now(),
+        )
+        report = apps.get_model("event_handler", "DailyReport").objects.create(
+            session=session14, schema_version=3, snapshot={"schema_version": 3, "athletes": []},
+        )
+
+        transaction.commit()
+        close_old_connections()
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_from])
+        reverse_apps = executor.loader.project_state([self.migrate_from]).apps
+        self.assertTrue(reverse_apps.get_model("event_handler", "Session").objects.filter(id=session.id).exists())
+        preserved = reverse_apps.get_model("event_handler", "Set").objects.get(id=workout_set.id)
+        self.assertIsNone(preserved.athlete_day_progress_id)
+        self.assertFalse(reverse_apps.get_model("event_handler", "AthleteDayProgress").objects.exists())
+        self.assertEqual(reverse_apps.get_model("event_handler", "DailyReport").objects.get(id=report.id).schema_version, 3)
+
+    def test_reverse_guard_is_atomic_for_active_frozen_day(self):
+        athlete = self.apps.get_model("event_handler", "Athlete").objects.create(name="Active Migration Athlete")
+        session = self.apps.get_model("event_handler", "Session").objects.create(label="Active Migration Day")
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_to])
+        apps = executor.loader.project_state([self.migrate_to]).apps
+        day_plan = apps.get_model("event_handler", "AthleteDayPlan").objects.create(
+            session_id=session.id, athlete_id=athlete.id, schedule_source="weekday", name="Frozen",
+        )
+        workout = apps.get_model("event_handler", "AthleteDayPlanWorkout").objects.create(
+            day_plan=day_plan, name="Workout", position=1,
+        )
+        exercise = apps.get_model("event_handler", "AthleteDayPlanExercise").objects.create(
+            workout=workout, exercise="Squat", position=1, sets=1, reps=1, weight_lbs=0,
+        )
+        progress = apps.get_model("event_handler", "AthleteDayProgress").objects.create(
+            session_id=session.id, athlete_id=athlete.id, day_plan=day_plan,
+            current_day_plan_workout=workout, current_day_plan_exercise=exercise,
+            expected_set_number=1,
+        )
+        workout_set = apps.get_model("event_handler", "Set").objects.create(
+            session_id=session.id, athlete_id=athlete.id, exercise="Squat", set_number=1,
+            athlete_day_progress=progress, day_plan_workout=workout, day_plan_exercise=exercise,
+        )
+        transaction.commit()
+        close_old_connections()
+
+        with self.assertRaisesMessage(RuntimeError, "Cannot reverse 0014"):
+            MigrationExecutor(connection).migrate([self.migrate_from])
+
+        current = MigrationExecutor(connection)
+        self.assertIn(self.migrate_to, current.loader.applied_migrations)
+        current_apps = current.loader.project_state([self.migrate_to]).apps
+        self.assertTrue(current_apps.get_model("event_handler", "AthleteDayProgress").objects.filter(id=progress.id).exists())
+        preserved_set = current_apps.get_model("event_handler", "Set").objects.get(id=workout_set.id)
+        self.assertEqual(preserved_set.day_plan_exercise_id, exercise.id)
+
+
 class Migration0011Tests(TransactionTestCase):
     migrate_from = ("event_handler", "0010_daily_report_and_one_active_session")
     migrate_to = ("event_handler", "0011_daily_report_browse_indexes")
@@ -4180,8 +5871,7 @@ class Migration0011Tests(TransactionTestCase):
     def tearDown(self):
         close_old_connections()
         executor = MigrationExecutor(connection)
-        if self.migrate_to not in executor.loader.applied_migrations:
-            executor.migrate([self.migrate_to])
+        executor.migrate([("event_handler", "0017_demo_athlete_seed")])
         close_old_connections()
 
     def _report_index_definitions(self):

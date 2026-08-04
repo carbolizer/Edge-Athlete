@@ -79,7 +79,7 @@ Edge Athlete is real-time barbell velocity tracking for weight rooms that can't 
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.
 3. The **rack screen** subscribes over MQTT-over-WebSockets to its assigned node's rep topic and shows bounded, unsaved feedback for the signed-in athlete's server-selected movement.
-4. The rack starts the athlete's current set through `POST /api/racks/{rack}/sets/`. It completes that set through `POST /api/racks/{rack}/sets/{id}/complete/` with `X-Rack-Device-Id`; Django saves the batch and advances athlete progress atomically. Durable browser buffering remains deferred.
+4. On a schema 3 scheduled day, confirmed rack identity automatically starts the athlete's current set in the same transaction. The rack completes that set through `POST /api/racks/{rack}/sets/{id}/complete/` with `X-Rack-Device-Id`; Django saves the batch and advances athlete progress atomically. Explicit `POST /api/racks/{rack}/sets/` remains for active legacy sessions. Durable browser buffering remains deferred.
 5. The base station writes that set, its reps, and a monitoring-outbox revision to Postgres in one transaction. A dedicated publisher delivers a privacy-safe retained invalidation event to Mosquitto with QoS 1.
 6. The **team dashboard** and **coach tablet** subscribe to `edgeathlete/dashboard/state`, then refetch their privacy-appropriate REST snapshot when its revision increases. PostgreSQL remains authoritative.
 
@@ -103,12 +103,32 @@ atomic batch completion are implemented. Durable local buffering and automatic
 retry after an interrupted completion request remain deferred.
 
 ### Athlete-owned training state
-A coach assigns one complete ordered `WorkoutProgram` to each athlete. Starting a
-day activates uniquely registered racks for athlete sign-in; racks do not own
-normal-operation workout assignments or progression. `AthleteDayProgress` follows
-the athlete between racks and advances after each qualifying completed set.
-Legacy rack catalog assignment and legacy `Program` records remain readable for
-compatibility, but they do not select athlete-driven execution steps.
+A coach can materialize athlete-local plans from shared programs and schedule them
+by exact date or recurring weekday. Exact dates override weekdays; exact-date rest
+excludes the athlete; an unscheduled whole-program assignment is the all-days
+fallback until an active explicit schedule exists. Start Day uses an opaque
+`preview_version`, computes the roster without checkboxes, and freezes schema 3
+plans and targets. `AthleteDayProgress` follows the athlete between racks and
+advances after each qualifying completed set. Legacy roster submission, rack
+catalog assignment, explicit rack set start, and legacy `Program` records remain
+compatibility paths; they do not select scheduled schema 3 execution steps.
+
+### Rack identity starts scheduled work
+`PUT /api/racks/{rack}/athlete/` requires an `event_id` UUID and positive locked
+active Session ID for each confirmed identity action. The transaction selects the athlete, records rack
+participation, and automatically starts the expected schema 3 set. Replaying the
+same screen/event returns immutable historical event metadata, while the top-level
+Set remains the current unfinished Set. A different athlete cannot replace
+an unfinished set; the rack must Save Set or Mark False first. Each screen is
+limited to 256 identity events per active session. End Day retains the global
+screen/event replay ledger, and ended rows do not consume a later session's cap.
+Legacy identity never creates a Set; legacy sessions use explicit Start Expected Set.
+
+Scheduled preview and Start Day reject more than 500 aggregate prescribed sets
+across eligible explicit, fallback, and override occurrences. Start Day recomputes
+the count under lock before writes, rejects a frozen report baseline over 2 MiB,
+and permits at most 500 distinct athlete/rack participations. Overflow dimensions
+contain counts only; End Day retains the final 4 MiB report guard.
 
 ### Automatic wall movement and leaderboard
 The public wall chooses the velocity-targeted stable exercise used by the most
@@ -192,6 +212,7 @@ Anonymous MQTT is accepted only inside the controlled Pi access-point boundary, 
 | Topic | Fires | Payload |
 |---|---|---|
 | `edgeathlete/node/{node_id}/rep` | once per completed rep | `{node_id, rep_number, mean_velocity, peak_velocity, duration_ms, timestamp}` |
+| `edgeathlete/node/{node_id}/motion` | every ~100ms | `{node_id, event_type:"motion", velocity, timestamp}` |
 | `edgeathlete/node/{node_id}/pulse` | every ~5s | `{node_id, event_type:"pulse", battery_level, signal_strength, firmware_version, timestamp}` |
 
 **Published by Django (plain MQTT; browsers consume over WS, port 9001):**
@@ -204,7 +225,7 @@ Anonymous MQTT is accepted only inside the controlled Pi access-point boundary, 
 
 | Client | Subscribes to |
 |---|---|
-| Rack screen | `edgeathlete/node/{current_linked_node_id}/rep` for bounded, unsaved live feedback |
+| Rack screen | `edgeathlete/node/{current_linked_node_id}/rep` and `/motion` for bounded, unsaved live feedback |
 | Team dashboard | `edgeathlete/dashboard/state` |
 | Coach tablet | `edgeathlete/dashboard/state` |
 | Django subscriber | `edgeathlete/node/+/pulse` **only** — never rep topics |
@@ -213,7 +234,7 @@ Anonymous MQTT is accepted only inside the controlled Pi access-point boundary, 
 
 ## Data Models
 
-Nineteen models. All live in `django/event_handler/models.py`.
+Twenty-eight models. All live in `django/event_handler/models.py`.
 
 ```
 Node       — node_id (CharField, unique), rack_number (Int, nullable),
@@ -238,12 +259,22 @@ AthleteWorkoutAssignment — athlete (one-to-one), exactly one assigned_workout
 AthleteWorkoutProgramAssignment — athlete (one-to-one), workout_program
                                   (FK→WorkoutProgram), updated_at; canonical assignment
 AthleteWorkoutExerciseOverride — athlete (FK→Athlete), workout_exercise
-                                  (FK→WorkoutExercise), nullable sets, reps, and
-                                  weight_lbs; at least one override is required
-Session    — label, started_at (auto), ended_at (nullable), athletes (M2M→Athlete), notes
+                                   (FK→WorkoutExercise), nullable sets, reps, and
+                                   weight_lbs; at least one override is required
+AthleteSchedule — athlete (one-to-one), monotonic version, active tombstone state
+AthleteSchedulePlan — schedule-owned materialized plan, ordered within schedule
+AthleteSchedulePlanWorkout — ordered workout occurrence copied from the catalog
+AthleteSchedulePlanExercise — ordered concrete sets/reps/load/velocity targets
+AthleteScheduleEntry — exact date or weekday selector; plan or explicit rest
+Session    — label, started_at (auto), training_date, ended_at (nullable),
+             athletes (M2M→Athlete), notes
+AthleteDayPlan — frozen Session/athlete plan with schedule source/version
+AthleteDayPlanWorkout — ordered frozen workout occurrence
+AthleteDayPlanExercise — ordered frozen exercise targets
 AthleteDayProgress — session (FK→Session), athlete (FK→Athlete), workout_program,
-                     current_program_item, current_workout_exercise,
-                     expected_set_number, status (ready/in_set/complete), timestamps
+                      or frozen day_plan; matching current legacy or frozen
+                      workout/exercise bindings; expected_set_number,
+                      status (ready/in_set/complete), timestamps
 DailyReport — session (one-to-one), schema_version, generated_at, immutable snapshot
 AthleteRackParticipation — session, athlete, rack_number, first_seen_at, last_seen_at;
                            unique per session/athlete/rack
@@ -252,8 +283,10 @@ Set        — session (FK→Session), athlete (FK→Athlete), node (FK→Node, 
               weight_lbs (Float, nullable), started_at, ended_at (nullable),
               reps_completed (Int, default 0), avg_velocity (Float, nullable),
               peak_velocity (Float, nullable), is_false_set (Bool, default False),
-              nullable stable bindings to AthleteDayProgress, WorkoutProgramItem,
-              and WorkoutExercise
+               nullable stable bindings to AthleteDayProgress and either legacy
+               program/exercise or frozen day-plan workout/exercise occurrences
+RackIdentityEvent — screen + event_id replay key, session, athlete, rack,
+                    persisted result, optional resulting Set, created_at
 Rep        — set (FK→Set), rep_number (Int), timestamp, mean_velocity (Float),
              peak_velocity (Float), duration_ms (Int), velocity_color (Char)
 MonitoringEvent — event_id (UUID, unique), reason, occurred_at, published_at
@@ -291,7 +324,7 @@ PATCH /api/racks/{device_id}/          assign rack_number                  (coac
 GET   /api/racks/{rack_number}/state/  selected workout + node readiness   (open)
 PATCH /api/racks/{rack_number}/state/  legacy coach movement selection      (coach only)
 PUT   /api/racks/{rack_number}/assignment/ legacy rack catalog assignment   (coach only)
-PUT   /api/racks/{rack_number}/athlete/ sign in roster athlete by rack device (open/private AP)
+PUT   /api/racks/{rack_number}/athlete/ sign in roster athlete with canonical device_id + event_id UUID (open/private AP)
 DELETE /api/racks/{rack_number}/athlete/ clear selected athlete by rack device (open)
 
 GET   /api/wall-state/                 automatic movement + leaderboard     (open)
@@ -302,6 +335,7 @@ POST  /api/athletes/                   create                             (coach
 PATCH /api/athletes/{id}/              update                             (coach only)
 GET/PUT /api/athletes/{id}/notes/      versioned coach notes              (coach only)
 GET/PUT/DELETE /api/athletes/{id}/workout-assignment/ whole-program assignment (coach only)
+GET/PUT/DELETE /api/athletes/{id}/schedule/   versioned date/weekday aggregate  (coach only)
 GET/PATCH/DELETE /api/athletes/{id}/workout-exercises/{exercise_id}/override/ target override (coach only)
 
 GET   /api/programs/?athlete={id}      list for athlete                   (open read)
@@ -312,11 +346,12 @@ POST  /api/workouts/imports/preview/   validate workout CSV                (coac
 POST  /api/workouts/imports/           import workout CSV atomically       (coach only)
 GET/POST /api/workout-programs/        list/create ordered programs        (coach only)
 
-POST  /api/sessions/                   create session                     (coach only)
+GET   /api/sessions/preview/           schedule aggregate for local day   (coach only)
+POST  /api/sessions/                   Start Day with preview_version; legacy roster shape remains compatible (coach only)
 PATCH /api/sessions/{id}/              end session                        (coach only)
 POST  /api/sessions/{id}/end/          end day + immutable report         (coach only)
 
-POST  /api/racks/{rack}/sets/          start server-derived current set    (open/private AP)
+POST  /api/racks/{rack}/sets/          explicit start for active legacy sessions (open/private AP)
       body: { device_id }
 POST  /api/racks/{rack}/sets/{id}/complete/ batch write + progress         (open/private AP)
       header: X-Rack-Device-Id: canonical rack screen UUID
@@ -331,15 +366,30 @@ POST  /api/sets/{id}/complete/         legacy simulator batch completion   (open
       real athlete-driven days return rack_bound_set_required
 
 GET   /api/reports/                    report summaries                    (coach only)
-GET   /api/reports/{id}/               schema 1/2 report detail             (coach only)
+GET   /api/reports/{id}/               schema 1/2/3 report detail           (coach only)
 GET   /api/reports/{id}/pdf/           immutable daily PDF                 (coach only)
 GET   /api/athletes/{id}/reports/      athlete report summaries            (coach only)
-GET   /api/athletes/{id}/reports/{report_id}/ schema 1/2 athlete detail     (coach only)
+GET   /api/athletes/{id}/reports/{report_id}/ schema 1/2/3 athlete detail   (coach only)
 GET   /api/athletes/{id}/reports/{report_id}/pdf/ athlete-day PDF           (coach only)
 
 GET   /api/analytics/session/{id}/     summary stats                      (coach only)
 GET   /api/analytics/athlete/{id}/     trend data                         (coach only)
 ```
+
+The schedule aggregate resolves exact date before weekday, supports explicit rest,
+and uses the whole-program assignment only when no active explicit schedule
+exists. Replacement and delete require the current version. Delete increments the
+version and keeps an inactive tombstone so stale pre-delete editors cannot recreate
+over newer state. Input is bounded to 32 plans, 400 entries, 32 workouts per plan,
+64 exercises per workout, and 1,024 exercises total; targets allow 1-100 sets,
+1-1,000 reps, and 0-10,000 lb.
+
+Schema 3 report views order content by day summary, athlete, schedule source and
+plan, workout, exercise, qualifying/false Set, then optional Rep detail. PDF
+downloads validate a nonempty `%PDF` body, honor the safe server filename, trigger
+a browser download through a temporary link, and defer object-URL revocation until
+the browser has consumed it. Existing 250-page, 8 MiB, and 10-downloads-per-coach-
+per-minute limits still apply.
 
 **Open on the private AP:** node/rack/wall reads, rack-screen registration and
 polling, rack identity, and rack-bound or simulator set writes. Public rack
@@ -901,10 +951,10 @@ Working directory: esp32/edge_athlete_node/. This is Arduino/C++ for ESP32 + MPU
 
 ### ✅ Phase 9 Exit Checklist
 - [ ] A physical rep produces one `rep` message with a plausible velocity
-- [ ] Payload shape exactly matches `parse_rep_payload`
+- [x] Payload shape exactly matches `parse_rep_payload`
 - [ ] Rack-screen display verified with physical sensor hardware
-- [ ] Pulse updates the `Node` row
-- [ ] Noise-reduction hook clearly marked, not implemented
+- [x] Pulse updates the `Node` row
+- [x] Noise-reduction hook clearly marked, not implemented
 
 **STOP. Do not continue past the handoff gate until it fully passes.**
 

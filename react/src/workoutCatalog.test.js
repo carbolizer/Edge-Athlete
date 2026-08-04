@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addProgramWorkout, buildWorkoutPayload, buildWorkoutProgramPayload, errorLabel, flattenApiErrors, moveProgramWorkout, sameOriginPath } from "./workoutCatalog.js";
+import { addProgramWorkout, buildWorkoutPayload, buildWorkoutProgramPayload, errorLabel, flattenApiErrors, moveProgramWorkout, sameOriginPath, unscopedValidationErrors, validateProgramDraft, validateWorkoutDraft, validationErrorPath, validationErrorsAt } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
   it("trims text, normalizes numbers, and assigns contiguous positions", () => {
@@ -32,6 +32,41 @@ describe("flattenApiErrors", () => {
   it("prefers structured field errors over an envelope detail", () => {
     expect(flattenApiErrors({ detail: "Override data is invalid.", errors: { sets: "sets must be positive." } }, "Failed"))
       .toEqual([{ field: "sets", detail: "sets must be positive." }]);
+  });
+});
+
+describe("workout validation render model", () => {
+  it("maps API rows, structured paths, and conflicts to field-local targets", () => {
+    const errors = [
+      { row: 2, field: "sets", detail: "Invalid sets." },
+      { field: "exercises.0.exercise", detail: "Invalid movement." },
+      { code: "workout_name_conflict", detail: "Already exists." },
+      { detail: "Request failed." },
+    ];
+    expect(validationErrorPath(errors[0], "workout")).toBe("exercises.1.sets");
+    expect(validationErrorsAt(errors, "exercises.1", "workout", false)).toEqual([errors[0]]);
+    expect(validationErrorsAt(errors, "name", "workout")).toEqual([errors[2]]);
+    expect(unscopedValidationErrors(errors, "workout")).toEqual([errors[3]]);
+  });
+
+  it("returns client errors for each affected workout field", () => {
+    const errors = validateWorkoutDraft("", [{ exercise: "", sets: "0", reps: "x", default_weight_lbs: "-1", velocity_min: "1", velocity_max: "" }]);
+    expect(errors.map((error) => error.path)).toEqual([
+      "name",
+      "exercises.0.exercise",
+      "exercises.0.sets",
+      "exercises.0.reps",
+      "exercises.0.default_weight_lbs",
+      "exercises.0.velocity_max",
+    ]);
+  });
+
+  it("keeps program name and item errors local", () => {
+    expect(validateProgramDraft("", [])).toEqual([
+      { path: "name", detail: "Program name is required." },
+      { path: "items", detail: "Add at least one workout." },
+    ]);
+    expect(validationErrorPath({ row: 2, field: "workout_id" }, "program")).toBe("items.1.workout_id");
   });
 });
 

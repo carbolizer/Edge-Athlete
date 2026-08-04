@@ -135,6 +135,11 @@
 .training-report-athletes>section>header { align-items:end; display:flex; gap:12px; justify-content:space-between; }
 .training-report-athletes h4 { flex:1; font-size:18px; margin:0; }
 .training-report-athletes>section>header>b { color:var(--muted); font-size:10px; }
+.training-report-date { color:var(--ink) !important; font-weight:850; }
+.training-report-athlete-context { background:#0b1114; display:grid; gap:1px; grid-template-columns:repeat(3,1fr); margin:10px 0 0; }
+.training-report-athlete-context>div { border-left:2px solid var(--lime); padding:9px 10px; }
+.training-report-athlete-context dt { color:var(--muted); font-size:8px; letter-spacing:.08em; text-transform:uppercase; }
+.training-report-athlete-context dd { font-size:10px; font-weight:850; margin:3px 0 0; text-transform:capitalize; }
 .training-report-prescription { background:#0b1114; border:1px solid var(--line); margin-top:10px; padding:13px; }
 .training-report-prescription h5 { font-size:15px; margin:3px 0 10px; }
 .training-report-prescription>section+section { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; }
@@ -318,6 +323,9 @@
 .workout-remove { background:transparent; border:1px solid var(--line); color:var(--coral); cursor:pointer; min-height:42px; padding:7px 10px; }
 .workout-errors { background:rgba(255,100,107,.09); border:1px solid rgba(255,100,107,.3); color:var(--coral); font-size:11px; line-height:1.5; margin-top:12px; padding:12px 14px; }
 .workout-errors ul { margin:6px 0 0; padding-left:18px; }
+.workout-field-errors { color:var(--coral); grid-column:1/-1; letter-spacing:0; text-transform:none; }
+.workout-field-errors p { font-size:9px; line-height:1.35; margin:3px 0 0; }
+.workout-exercise-list fieldset.has-errors,.program-draft li.has-errors { border-color:var(--coral); }
 .workout-status { color:var(--mint); font-size:11px; margin:12px 0 0; }
 .workout-file { margin-top:18px; }
 .workout-file input { cursor:pointer; padding:7px; }
@@ -359,6 +367,9 @@
 .reports-back,.reports-request-panel button { background:transparent; border:1px solid var(--line); color:var(--lime); cursor:pointer; min-height:42px; padding:8px 13px; }
 .reports-actions { display:flex; gap:8px; }
 .reports-actions>button:not(.reports-back) { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:42px; padding:8px 13px; }
+.reports-download-state { align-items:center; display:flex; gap:12px; justify-content:space-between; margin:0; }
+.reports-download-state p { margin:0; }
+.reports-download-state button { background:transparent; border:1px solid var(--coral); color:var(--coral); cursor:pointer; flex:0 0 auto; min-height:42px; padding:8px 13px; }
 .reports-request-panel { background:var(--panel); border:1px solid var(--line); padding:22px; }
 .reports-request-panel h3 { font-size:20px; margin:0; }
 .reports-request-panel p { color:var(--muted); }
@@ -464,11 +475,13 @@
 .rack-live>header>div>b { background:rgba(255,182,62,.14); color:var(--amber); display:inline-block; font-size:9px; margin-top:7px; padding:4px 7px; text-transform:uppercase; }
 .rack-live>header button { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; padding:8px 14px; }
 .rack-live>header button:disabled { cursor:not-allowed; opacity:.4; }
-.rack-live-grid { display:grid; gap:1px; grid-template-columns:repeat(3,1fr); margin-top:26px; }
+.rack-live-grid { display:grid; gap:1px; grid-template-columns:repeat(4,1fr); margin-top:26px; }
 .rack-live-grid>div { background:#0a1013; display:grid; min-width:0; padding:clamp(14px,2vw,24px); }
 .rack-live-grid span { color:var(--muted); font-size:9px; text-transform:uppercase; }
 .rack-live-grid strong { font-size:clamp(34px,5vw,72px); letter-spacing:-.075em; line-height:1; margin-top:13px; }
 .rack-live-grid small { color:var(--muted); font-size:10px; letter-spacing:0; }
+.rack-live-grid .rack-live-current { background:linear-gradient(145deg,rgba(69,220,179,.18),#0a1013 70%); }
+.rack-live-grid .rack-live-current strong { color:var(--mint); font-size:clamp(42px,6vw,82px); }
 .rack-live-grid>p { background:#151d21; color:var(--muted); font-size:clamp(18px,2.4vw,30px); font-weight:900; grid-column:1/-1; padding:20px; text-align:center; text-transform:uppercase; }
 .rack-live.below-target .rack-live-grid>p { background:rgba(255,100,107,.15); color:var(--coral); }
 .rack-live.on-target .rack-live-grid>p { background:rgba(69,220,179,.14); color:var(--mint); }
@@ -499,6 +512,8 @@
 .rack-identity-confirm h3 { font-size:clamp(30px,5vw,52px); letter-spacing:-.05em; margin:8px 0; }
 .rack-identity-confirm>div { display:flex; gap:10px; margin-top:24px; }
 .rack-identity-confirm button.rack-secondary { background:transparent; border-color:var(--line); color:var(--ink); }
+.rack-demo-tap { background:transparent; border:1px dashed var(--mint); color:var(--mint); cursor:pointer; font-weight:800; margin-top:24px; min-height:48px; padding:10px 18px; }
+.rack-demo-tap:disabled { cursor:not-allowed; opacity:.42; }
 .rack-identity-status { color:var(--mint); font-size:12px; }
 .rack-identity-error { color:var(--coral); font-size:12px; line-height:1.5; }
 .rack-current-heading { align-items:start; display:flex; gap:20px; justify-content:space-between; }
@@ -538,6 +553,53 @@
 .coach-catalog-assignment-fields button { background:var(--lime); border:0; color:#071006; cursor:pointer; font-weight:900; min-height:44px; padding:8px 16px; }
 .coach-catalog-assignment-fields button:disabled { cursor:not-allowed; opacity:.45; }
 
+/* Scheduled planning and fluid draft additions */
+.workout-search { margin-top:14px; max-width:520px; }
+.workout-card-grid.compact>article { padding:12px; }
+.workout-card-grid.compact ol { max-height:105px; overflow:auto; }
+.schedule-source-row { align-items:end; display:grid; gap:12px; grid-template-columns:minmax(260px,1fr) auto auto; }
+.schedule-source-row label,.schedule-add-workout label,.schedule-entry-list label { color:var(--muted); display:grid; font-size:9px; font-weight:850; gap:6px; letter-spacing:.07em; text-transform:uppercase; }
+.schedule-source-row select,.schedule-add-workout select,.schedule-entry-list select,.schedule-entry-list input { background:#0b1114; border:1px solid var(--line); color:var(--ink); min-height:44px; padding:8px 10px; width:100%; }
+.schedule-source-row>b { color:var(--lime); font-size:11px; }
+.schedule-source-row>span { color:var(--amber); font-size:10px; }
+.schedule-entry-list { border-top:1px solid var(--line); margin-top:16px; padding-top:14px; }
+.schedule-entry-list>header { align-items:center; display:flex; justify-content:space-between; }
+.schedule-entry-list h4 { margin:0; }
+.schedule-entry-list button,.schedule-workouts button,.rack-switch-athlete button { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; min-height:38px; padding:7px 10px; }
+.schedule-entry-list fieldset { align-items:end; border:1px solid var(--line); display:grid; gap:10px; grid-template-columns:1fr 1fr auto auto; margin-top:9px; padding:12px; }
+.schedule-entry-list legend { color:var(--lime); font-size:9px; padding:0 5px; text-transform:uppercase; }
+.schedule-rest { align-items:center; display:flex!important; min-height:44px; }
+.schedule-rest input { accent-color:var(--lime); min-height:auto; width:auto; }
+.schedule-entry-list .program-remove,.schedule-workouts .program-remove { color:var(--coral); }
+.schedule-add-workout { max-width:500px; }
+.schedule-workouts { display:grid; gap:10px; list-style:none; margin:14px 0 0; padding:0; }
+.schedule-workouts>li { background:#0b1114; border:1px solid var(--line); padding:13px; }
+.schedule-workouts>li>header { align-items:center; display:grid; gap:10px; grid-template-columns:30px 1fr auto; }
+.schedule-workouts>li>header>span { align-items:center; background:#202b30; color:var(--lime); display:flex; height:30px; justify-content:center; }
+.schedule-workouts h4 { margin:0; }
+.schedule-workouts header>div { display:flex; gap:5px; }
+.schedule-exercises { display:grid; gap:7px; margin-top:10px; }
+.schedule-exercises fieldset { align-items:end; border:1px solid var(--line); display:grid; gap:9px; grid-template-columns:repeat(3,1fr); margin:0; padding:11px; }
+.schedule-exercises legend { color:var(--muted); font-size:10px; padding:0 5px; }
+.schedule-exercises label { color:var(--muted); display:grid; font-size:9px; gap:5px; text-transform:uppercase; }
+.schedule-exercises input { background:var(--panel); border:1px solid var(--line); color:var(--ink); min-height:40px; padding:8px; }
+.schedule-entry-list .has-errors,.schedule-workouts .has-errors,.schedule-exercises .has-errors { border-color:var(--coral); }
+.schedule-field-errors { color:var(--coral); grid-column:1/-1; letter-spacing:0; text-transform:none; }
+.schedule-field-errors p { font-size:9px; line-height:1.35; margin:4px 0 0; }
+input[aria-invalid="true"],select[aria-invalid="true"] { border-color:var(--coral) !important; }
+.training-preview-groups { display:grid; gap:8px; grid-template-columns:repeat(3,1fr); margin:14px 0; }
+.training-preview-groups>section { background:#0b1114; border-top:2px solid var(--line); padding:11px; }
+.training-preview-groups>section:first-child { border-color:var(--mint); }
+.training-preview-groups h4 { align-items:center; display:flex; justify-content:space-between; margin:0 0 8px; }
+.training-preview-groups p { display:grid; gap:2px; margin:7px 0; }
+.training-preview-groups p b { font-size:11px; }
+.training-preview-groups p span { color:var(--muted); font-size:9px; text-transform:capitalize; }
+.training-report-prescription .report-incomplete { border-left:3px solid var(--amber); padding-left:10px; }
+.rack-switch-athlete { align-items:end; border-top:1px solid #2d4837; display:grid; gap:9px; grid-template-columns:1fr auto; margin-top:16px; padding-top:16px; }
+.rack-switch-athlete label { color:var(--muted); display:grid; font-size:9px; gap:6px; text-transform:uppercase; }
+.rack-switch-athlete select { background:#0b1114; border:1px solid var(--line); color:var(--ink); padding:8px; width:100%; }
+.rack-switch-athlete button { border-color:var(--lime); color:var(--lime); }
+
 @media (max-width:1100px) {
   .wall-content { grid-template-columns:minmax(0,1fr) 260px; padding-inline:16px; }
   .wall-rack-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -576,6 +638,7 @@
   .training-day-confirm strong { grid-column:1/-1; }
   .training-report-summary { grid-template-columns:repeat(2,1fr); }
   .training-report-target { grid-template-columns:1fr; }
+  .training-report-athlete-context { grid-template-columns:1fr; }
   .training-report-set li { grid-template-columns:1fr 1fr; }
   .coach-workspace { display:block; } .coach-rack-list { border-bottom:1px solid var(--line); border-right:0; display:flex; gap:6px; overflow-x:auto; padding:10px 12px; } .coach-section-label { display:none; }
   .coach-observation-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -587,6 +650,10 @@
   .athlete-assignment-fields { grid-template-columns:1fr; }
   .athlete-override-list fieldset { grid-template-columns:1fr; }
   .athlete-override-actions { display:grid; grid-template-columns:1fr; }
+  .schedule-source-row,.schedule-entry-list fieldset,.training-preview-groups { grid-template-columns:1fr; }
+  .schedule-workouts>li>header { align-items:start; grid-template-columns:30px 1fr; }
+  .schedule-workouts header>div { grid-column:1/-1; }
+  .schedule-exercises fieldset,.rack-switch-athlete { grid-template-columns:1fr; }
   .history-day-heading { align-items:start; gap:16px; } .history-day-heading dl { gap:12px; }
   .history-workout { padding-inline:10px; }
   .history-set-summary { align-items:start; grid-template-columns:1fr; padding:13px; } .history-set-metrics { grid-column:1/-1; }
@@ -617,6 +684,10 @@
   .reports-heading h2 { font-size:31px; }
   .reports-toolbar { align-items:stretch; display:grid; }
   .reports-toolbar select { min-width:0; width:100%; }
+  .reports-actions { display:grid; grid-template-columns:1fr 1fr; }
+  .reports-actions button { width:100%; }
+  .reports-download-state { align-items:stretch; display:grid; }
+  .training-report>header,.training-report-athletes>section>header { display:grid; }
   .daily-report-list>article,.athlete-day-list>article { grid-template-columns:1fr; }
   .daily-report-list button,.athlete-day-list button { grid-column:auto; }
   .athlete-day-detail>header { align-items:start; display:grid; }

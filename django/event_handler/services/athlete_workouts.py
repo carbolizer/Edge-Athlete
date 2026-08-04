@@ -93,18 +93,35 @@ def serialize_program_assignment(assignment):
 
 
 def serialize_day_progress(progress, *, include_active_set=False):
-    item = progress.current_program_item
-    exercise = progress.current_workout_exercise
-    current_workout = effective_workout(item.workout, progress.athlete) if item else None
-    effective_exercise = None
-    if exercise and current_workout:
-        effective_exercise = next(
-            row for row in current_workout["exercises"] if row["id"] == exercise.id
-        )
+    if progress.day_plan_id:
+        item = progress.current_day_plan_workout
+        exercise = progress.current_day_plan_exercise
+        effective_exercise = ({
+            "id": exercise.id,
+            "source_exercise_id": exercise.source_exercise_id,
+            "exercise": exercise.exercise,
+            "position": exercise.position,
+            "sets": exercise.sets,
+            "reps": exercise.reps,
+            "default_weight_lbs": exercise.weight_lbs,
+            "velocity_min": exercise.velocity_min,
+            "velocity_max": exercise.velocity_max,
+        } if exercise else None)
+    else:
+        item = progress.current_program_item
+        exercise = progress.current_workout_exercise
+        current_workout = effective_workout(item.workout, progress.athlete) if item else None
+        effective_exercise = None
+        if exercise and current_workout:
+            effective_exercise = next(
+                row for row in current_workout["exercises"] if row["id"] == exercise.id
+            )
     persisted_sets = [{
         "id": workout_set.id,
         "workout_program_item_id": workout_set.workout_program_item_id,
         "workout_exercise_id": workout_set.workout_exercise_id,
+        "day_plan_workout_id": workout_set.day_plan_workout_id,
+        "day_plan_exercise_id": workout_set.day_plan_exercise_id,
         "set_number": workout_set.set_number,
         "rack_number": workout_set.rack_number,
         "weight_lbs": workout_set.weight_lbs,
@@ -116,19 +133,27 @@ def serialize_day_progress(progress, *, include_active_set=False):
     } for workout_set in progress.sets.filter(ended_at__isnull=False).order_by("started_at", "id")]
     current_sets = [
         workout_set for workout_set in persisted_sets
-        if exercise and workout_set["workout_exercise_id"] == exercise.id
+        if exercise and (
+            workout_set["day_plan_exercise_id"] == exercise.id
+            if progress.day_plan_id else workout_set["workout_exercise_id"] == exercise.id
+        )
     ]
     active_set = progress.sets.filter(ended_at__isnull=True).order_by("started_at", "id").first()
     return {
         "id": progress.id,
         "status": progress.status,
-        "program": {
+        "program": ({
+            "id": progress.day_plan_id,
+            "name": progress.day_plan.name,
+            "schedule_source": progress.day_plan.schedule_source,
+        } if progress.day_plan_id else {
             "id": progress.workout_program_id,
             "name": progress.workout_program.name,
-        },
+        }),
         "current_workout": ({
-            "id": item.workout_id,
-            "name": item.workout.name,
+            "id": item.id if progress.day_plan_id else item.workout_id,
+            "source_workout_id": item.source_workout_id if progress.day_plan_id else item.workout_id,
+            "name": item.name if progress.day_plan_id else item.workout.name,
             "position": item.position,
         } if item else None),
         "current_exercise": ({

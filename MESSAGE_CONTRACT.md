@@ -40,6 +40,19 @@ publish or consume against this contract.
 - **Consumed by:** the rack tablet, subscribed to *its own linked node's* rep topic.
 - **Not here:** `velocity_color`. The tablet computes that (see Derived values).
 
+### `edgeathlete/node/{node_id}/motion` — derived live velocity, every ~100ms
+```jsonc
+{
+  "node_id": "rack_1",
+  "event_type": "motion",
+  "velocity": 0.42,
+  "timestamp": "2026-07-07T07:23:55Z"
+}
+```
+- **Published by:** node firmware while connected through Wi-Fi or the development USB bridge.
+- **Consumed by:** the assigned rack tablet for immediate current-velocity display.
+- **Never contains:** raw accelerometer axes or samples. This is bounded, on-device derived velocity and is not persisted.
+
 ### `edgeathlete/node/{node_id}/pulse` — heartbeat, every ~5s
 ```jsonc
 {
@@ -131,5 +144,6 @@ this wrong is the most likely way two parts disagree.
 | Topic | Published by | Subscribed by |
 |---|---|---|
 | `edgeathlete/node/{node_id}/rep` | node / simulator | assigned rack tablet for unsaved live feedback |
+| `edgeathlete/node/{node_id}/motion` | node / USB bridge | assigned rack tablet for immediate derived velocity |
 | `edgeathlete/node/{node_id}/pulse` | node / simulator | Django subscriber (`node/+/pulse` only) |
 | `edgeathlete/dashboard/state` | Django monitoring publisher | wall and coach monitoring clients |

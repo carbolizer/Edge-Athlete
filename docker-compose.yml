@@ -93,6 +93,31 @@ services:
       mosquitto:
         condition: service_started
 
+  usb-bridge:
+    profiles: ["hardware"]
+    build: ./django
+    container_name: edgeathlete-usb-bridge
+    environment:
+      - DEBUG=True
+      - EDGEATHLETE_BIND_ADDRESS=127.0.0.1
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - POSTGRES_PASSWORD=change-me-local-only
+      - SECRET_KEY=change-me-local-only
+      - PYTHONUNBUFFERED=1
+      - USB_BRIDGE_ENABLED=True
+      - HOME=/tmp
+    user: "${EDGEATHLETE_HOST_UID:-1000}:${EDGEATHLETE_HOST_GID:-1000}"
+    group_add:
+      - "${EDGEATHLETE_SERIAL_GID:-20}"
+    devices:
+      - "${EDGEATHLETE_SERIAL_DEVICE:-/dev/ttyACM0}:/dev/ttyACM0"
+    command: python manage.py bridge_usb_node --device /dev/ttyACM0
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_started
+
   react:
     build: ./react
     container_name: edgeathlete-react

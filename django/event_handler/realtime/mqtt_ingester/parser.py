@@ -96,3 +96,38 @@ def parse_rep_payload(raw_payload: bytes) -> dict[str, Any]:
         "duration_ms": data["duration_ms"],
         "timestamp": timestamp,
     }
+
+
+def parse_motion_payload(raw_payload: bytes) -> dict[str, Any]:
+    """Decode and validate one derived live-velocity payload."""
+    if len(raw_payload) > 2048:
+        raise ValueError("Motion payload exceeds 2048 bytes")
+    try:
+        data = json.loads(raw_payload.decode("utf-8"))
+    except Exception as error:
+        raise ValueError(f"Invalid payload format: {error}")
+    if not isinstance(data, dict):
+        raise ValueError("Payload must be a JSON object")
+    for field in ["node_id", "event_type", "velocity", "timestamp"]:
+        if field not in data:
+            raise ValueError(f"Missing required field: {field}")
+    if set(data) != {"node_id", "event_type", "velocity", "timestamp"}:
+        raise ValueError("Motion payload contains unsupported fields")
+    node_id = str(data["node_id"]).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise ValueError("node_id contains unsupported characters")
+    if data["event_type"] != "motion":
+        raise ValueError("event_type must be motion")
+    velocity = data["velocity"]
+    if not isinstance(velocity, (int, float)) or isinstance(velocity, bool) or not 0 <= velocity <= 10:
+        raise ValueError("velocity must be a number from 0 to 10")
+    timestamp = str(data["timestamp"]).strip()
+    parsed_timestamp = parse_datetime(timestamp)
+    if parsed_timestamp is None or not timezone.is_aware(parsed_timestamp):
+        raise ValueError("timestamp must be timezone-aware ISO 8601")
+    return {
+        "node_id": node_id,
+        "event_type": "motion",
+        "velocity": float(velocity),
+        "timestamp": timestamp,
+    }

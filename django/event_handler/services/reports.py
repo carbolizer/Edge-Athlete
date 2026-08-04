@@ -10,7 +10,7 @@ from django.utils.dateparse import parse_datetime
 from ..models import DailyReport
 
 
-SUPPORTED_REPORT_SCHEMAS = (1, 2)
+SUPPORTED_REPORT_SCHEMAS = (1, 2, 3)
 ATHLETE_IDS_JSON_PATH = "$.athletes[*].athlete.id"
 
 
@@ -99,6 +99,8 @@ def _workout_set(source, *, include_false_set=False):
         "athlete_day_progress_id": _value(source, "athlete_day_progress_id"),
         "workout_program_item_id": _value(source, "workout_program_item_id"),
         "workout_exercise_id": _value(source, "workout_exercise_id"),
+        "day_plan_workout_id": _value(source, "day_plan_workout_id"),
+        "day_plan_exercise_id": _value(source, "day_plan_exercise_id"),
         "rack_number": _value(source, "rack_number"),
         "exercise": _value(source, "exercise"),
         "set_number": _value(source, "set_number"),
@@ -168,6 +170,9 @@ def _progress(source):
             "position": _value(current_exercise, "position"),
         } if source.get("current_workout_exercise") is not None else None),
         "expected_set_number": _value(source, "expected_set_number"),
+        "day_plan_id": _value(source, "day_plan_id"),
+        "current_day_plan_workout_id": _value(source, "current_day_plan_workout_id"),
+        "current_day_plan_exercise_id": _value(source, "current_day_plan_exercise_id"),
     }
 
 
@@ -182,6 +187,62 @@ def _athlete_v2(source):
         "athlete": _identity(source.get("athlete")),
         "assigned_program": assigned_program,
         "prescriptions": assigned_program["items"] if assigned_program else [],
+        "final_progress": _progress(source.get("final_progress")),
+        "rack_participation": sorted(set(racks)),
+        "sets": [_workout_set(item, include_false_set=True) for item in _items(source.get("sets"))],
+    }
+
+
+def _frozen_plan(source):
+    if source is None:
+        return None
+    source = _object(source)
+    plan = {
+        "id": _value(source, "id"),
+        "name": _value(source, "name"),
+        "schedule_source": _value(source, "schedule_source"),
+        "schedule_version": _value(source, "schedule_version"),
+        "source_program_id": _value(source, "source_program_id"),
+    }
+    workouts = []
+    for workout_source in _items(source.get("workouts")):
+        workout_source = _object(workout_source)
+        workouts.append({
+            "id": _value(workout_source, "id"),
+            "position": _value(workout_source, "position"),
+            "source": "schedule",
+            "program": {"id": plan["source_program_id"], "name": plan["name"]},
+            "workout": {
+                "id": _value(workout_source, "source_workout_id"),
+                "name": _value(workout_source, "name"),
+            },
+            "occurrence_id": _value(workout_source, "id"),
+            "exercises": [{
+                "id": _value(_object(item), "id"),
+                "source_exercise_id": _value(_object(item), "source_exercise_id"),
+                "exercise": _value(_object(item), "exercise"),
+                "position": _value(_object(item), "position"),
+                "sets": _value(_object(item), "sets"),
+                "reps": _value(_object(item), "reps"),
+                "default_weight_lbs": _value(_object(item), "weight_lbs"),
+                "velocity_min": _value(_object(item), "velocity_min"),
+                "velocity_max": _value(_object(item), "velocity_max"),
+            } for item in _items(workout_source.get("exercises"))],
+        })
+    plan["workouts"] = workouts
+    return plan
+
+
+def _athlete_v3(source):
+    source = _object(source)
+    plan = _frozen_plan(source.get("frozen_plan"))
+    racks = [rack for rack in _items(source.get("rack_participation")) if isinstance(rack, int) and not isinstance(rack, bool)]
+    return {
+        "athlete": _identity(source.get("athlete")),
+        "frozen_plan": plan,
+        "assigned_program": plan,
+        "prescriptions": plan["workouts"] if plan else [],
+        "schedule_source": plan["schedule_source"] if plan else None,
         "final_progress": _progress(source.get("final_progress")),
         "rack_participation": sorted(set(racks)),
         "sets": [_workout_set(item, include_false_set=True) for item in _items(source.get("sets"))],
@@ -226,6 +287,7 @@ def _report_parts(report):
     athlete_extractor = {
         1: _athlete_v1,
         2: _athlete_v2,
+        3: _athlete_v3,
     }.get(report.schema_version)
     if athlete_extractor is None:
         raise UnsupportedReportSchema
@@ -235,13 +297,14 @@ def _report_parts(report):
         "label": _value(session, "label"),
         "started_at": _value(session, "started_at"),
         "ended_at": _value(session, "ended_at"),
+        "training_date": _value(session, "training_date"),
     }
     athletes = [athlete_extractor(item) for item in _items(snapshot.get("athletes"))]
     metadata = {
         "id": report.id,
         "schema_version": report.schema_version,
         "generated_at": report.generated_at,
-        "local_date": _local_date(safe_session, report.generated_at),
+        "local_date": safe_session["training_date"] or _local_date(safe_session, report.generated_at),
         "timezone": settings.TIME_ZONE,
         "session": safe_session,
     }

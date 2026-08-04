@@ -55,3 +55,75 @@ export function reportPdfDownload(mode, reportId, athleteId) {
   }
   return { url: `/api/reports/${reportId}/pdf/`, filename: `report-${reportId}.pdf` };
 }
+
+export function reportPdfRequestHeaders(accessToken) {
+  return { Authorization: `Bearer ${accessToken}` };
+}
+
+export function safePdfFilename(contentDisposition, fallback) {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition || "")?.[1];
+  const plain = /filename="?([^";]+)"?/i.exec(contentDisposition || "")?.[1];
+  let value = plain;
+  try { if (encoded) value = decodeURIComponent(encoded); } catch { value = null; }
+  value = value?.replace(/[\\/\x00-\x1f\x7f]/g, "").trim();
+  return value && value.toLowerCase().endsWith(".pdf") ? value.slice(0, 180) : fallback;
+}
+
+export function retryAfterSeconds(value, now = Date.now()) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const instant = Date.parse(value);
+  return Number.isFinite(instant) ? Math.max(0, Math.ceil((instant - now) / 1000)) : null;
+}
+
+export function reportPdfErrorState(error) {
+  const retryable = error?.status !== 403 && error?.status !== 404;
+  const throttle = error?.status === 429 && error?.retryAfter != null
+    ? ` Retry after ${error.retryAfter} second${error.retryAfter === 1 ? "" : "s"}.`
+    : "";
+  return {
+    type: "error",
+    retryable,
+    message: `${error?.message || "Report PDF could not be downloaded."}${throttle}`,
+  };
+}
+
+export function retryReportPdf(state, retry) {
+  if (state?.type !== "error" || !state.retryable) return false;
+  retry();
+  return true;
+}
+
+export function triggerBrowserDownload(blob, filename, browser = {}) {
+  const urlApi = browser.URL || URL;
+  const documentApi = browser.document || document;
+  const schedule = browser.setTimeout || setTimeout;
+  const objectUrl = urlApi.createObjectURL(blob);
+  const link = documentApi.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  documentApi.body.appendChild(link);
+  link.click();
+  link.remove();
+  schedule(() => urlApi.revokeObjectURL(objectUrl), 1_000);
+}
+
+export async function downloadReportPdf({ response, fallbackFilename, browser = {} }) {
+  const contentType = response.headers.get("Content-Type")?.toLowerCase() || "";
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const error = new Error(body.detail || "Report PDF could not be downloaded.");
+    error.status = response.status;
+    error.retryAfter = retryAfterSeconds(response.headers.get("Retry-After"));
+    throw error;
+  }
+  if (!contentType.includes("application/pdf")) throw new Error("The server did not return a PDF file.");
+  const blob = await response.blob();
+  if (!blob.size) throw new Error("The PDF response was empty.");
+  const prefix = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+  if (String.fromCharCode(...prefix) !== "%PDF") throw new Error("The downloaded file is not a valid PDF.");
+  const filename = safePdfFilename(response.headers.get("Content-Disposition"), fallbackFilename);
+  triggerBrowserDownload(blob, filename, browser);
+  return filename;
+}

@@ -2,9 +2,11 @@
 
 ## Status
 
-Approved behavior on 2026-07-16. This specification supersedes rack-owned
-catalog assignment and manual workout-item selection in
-`COACH_WORKOUT_PLANNING.md`.
+Implemented first through migrations `0012`-`0013` and extended by the scheduled,
+frozen schema 3 workflow in migrations `0014`-`0016`. This specification
+supersedes rack-owned catalog assignment and manual workout-item selection in
+`COACH_WORKOUT_PLANNING.md`; `FLUID_COACH_WORKFLOW.md` governs scheduling,
+automatic identity start, and schema 3 reports.
 
 ## Problem
 
@@ -27,8 +29,9 @@ reports must be downloadable.
 ## Assumptions
 
 - One athlete has at most one assigned ordered workout program.
-- Start Day retains an explicit athlete roster and activates every uniquely
-  registered rack for sign-in.
+- Scheduled Start Day computes its roster from exact-date, weekday, rest, missing,
+  and whole-program fallback resolution. The explicit roster request remains a
+  legacy compatibility shape.
 - A persisted, completed, non-false set counts toward progression even when its
   rep count differs from the target. The variance remains visible in reports.
 - Progress is scoped to athlete, active day, assigned program, workout, and
@@ -64,7 +67,9 @@ reports must be downloadable.
 - **AC35:** Assignment reads return the complete ordered program and effective
   athlete targets.
 - **AC36:** Start Day creates one active day and makes every uniquely registered
-  rack available for athlete sign-in without a rack workout assignment.
+  rack available for athlete sign-in without a rack workout assignment. Current
+  scheduled Start Day uses `preview_version`; roster checkboxes are legacy
+  compatibility rather than the normal UI.
 - **AC37:** Start Day publishes a room revision so already-open wall, coach, and
   rack clients enter active-day state without a separate action.
 - **AC38:** Invalid or duplicate rack registrations remain unavailable. A public
@@ -96,10 +101,11 @@ reports must be downloadable.
 - **AC48:** Set creation accepts only the active day, signed-in athlete, current
   stable workout exercise, expected set number, and matching registered rack.
   Client exercise text cannot choose or advance progress.
-- **AC48a:** Athlete-driven set creation uses
-  `POST /api/racks/{rack}/sets/` with only the canonical rack screen UUID as
-  `device_id`; Django derives the athlete, Session, exercise, set number, node,
-  and load.
+- **AC48a:** Frozen schema 3 identity automatically creates the expected Set with
+  a canonical `event_id`; Django derives the athlete, Session, exercise, set
+  number, node, and load. Identity never creates a legacy Set;
+  `POST /api/racks/{rack}/sets/` remains the explicit active legacy-session path,
+  while an existing unfinished legacy Set remains authoritative.
 - **AC49:** Set completion and athlete progress update in one transaction.
 - **AC49a:** Athlete-driven completion uses
   `POST /api/racks/{rack}/sets/{set_id}/complete/` with the canonical rack screen
@@ -169,6 +175,13 @@ reports must be downloadable.
 - Reversing `0013` preserves athletes, Sessions, Sets, Reps, athlete progress,
   assignments, and immutable reports, but intentionally loses participation
   timestamps and rack-visit metadata. Reapplying it starts with an empty table.
+- Migration `0014` adds schedules, frozen day plans, schema 3 bindings, and
+  `Session.training_date`; `0015` adds schedule tombstones; `0016` adds bounded
+  retained identity-event replay with an active schema-3 reverse guard.
+- Reversing `0014` is guarded while an active schema 3 day, active frozen progress,
+  or unfinished frozen Set exists. A safe reverse preserves core training rows and
+  schema 3 reports but removes schedule/frozen metadata. Old readers cannot
+  interpret those preserved schema 3 reports.
 
 ## Failure behavior
 
@@ -218,6 +231,9 @@ reports must be downloadable.
 - Hardware: deferred until the PN532/board/payload contract exists.
 
 ## Validation evidence
+
+This table records the 2026-07-16 schema 2 baseline. Current migration
+`0014`-`0016` results and browser evidence are in `FLUID_COACH_WORKFLOW.md`.
 
 ### Automated
 

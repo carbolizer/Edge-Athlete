@@ -15,6 +15,29 @@ export function repTopic(nodeId) {
   return `edgeathlete/node/${nodeId}/rep`;
 }
 
+export function motionTopic(nodeId) {
+  return `edgeathlete/node/${nodeId}/motion`;
+}
+
+export function parseMotionMessage(rawMessage, topic, expectedNodeId, now = null) {
+  if (!expectedNodeId || topic !== motionTopic(expectedNodeId) || rawMessage.length > 2048) return null;
+  try {
+    const motion = JSON.parse(rawMessage.toString());
+    if (Object.keys(motion).sort().join(",") !== "event_type,node_id,timestamp,velocity") return null;
+    const timestamp = typeof motion?.timestamp === "string" ? Date.parse(motion.timestamp) : NaN;
+    const timezoneAware = typeof motion?.timestamp === "string" && /(Z|[+-]\d{2}:\d{2})$/.test(motion.timestamp);
+    if (
+      motion?.node_id !== expectedNodeId || motion?.event_type !== "motion" ||
+      !Number.isFinite(motion?.velocity) || motion.velocity < 0 || motion.velocity > 10 ||
+      !Number.isFinite(timestamp) || !timezoneAware ||
+      (now !== null && (timestamp < now - 5_000 || timestamp > now + 30_000))
+    ) return null;
+    return motion;
+  } catch {
+    return null;
+  }
+}
+
 export function hasVelocityTarget(program) {
   const minimum = program?.velocity_zone_min ?? program?.velocity_min;
   const maximum = program?.velocity_zone_max ?? program?.velocity_max;
@@ -76,8 +99,23 @@ export function buildRackAssignmentPayload(type, workoutId, workoutProgramId, se
     : { workout_id: Number(workoutId), workout_program_id: null };
 }
 
-export function buildAthleteIdentityPayload(deviceId, athleteId) {
-  return { device_id: deviceId, athlete_id: Number(athleteId) };
+export function buildAthleteIdentityPayload(deviceId, athleteId, sessionId, eventId) {
+  return {
+    device_id: deviceId,
+    athlete_id: Number(athleteId),
+    session_id: Number(sessionId),
+    event_id: eventId,
+  };
+}
+
+export function identityActionEvent(currentAction, actionKey, cryptoObject = globalThis.crypto) {
+  return currentAction?.key === actionKey
+    ? currentAction
+    : { key: actionKey, eventId: createDeviceId(cryptoObject) };
+}
+
+export function authoritativeIdentitySet(response) {
+  return response?.set || null;
 }
 
 export function buildRackSetStartPayload(deviceId) {
@@ -114,6 +152,16 @@ export function athleteNameLabels(athletes) {
   });
 }
 
+export function eligibleDemoAthletes(athletes) {
+  return (athletes || []).filter((athlete) => athlete.demo_wristband_eligible === true);
+}
+
+export function randomDemoAthlete(athletes, random = Math.random) {
+  const eligible = eligibleDemoAthletes(athletes);
+  if (eligible.length === 0) return null;
+  return eligible[Math.min(Math.floor(random() * eligible.length), eligible.length - 1)];
+}
+
 export function orderedEffectiveExercises(effectiveWorkout) {
   return [...(effectiveWorkout?.exercises || [])].sort((left, right) => left.position - right.position);
 }
@@ -133,8 +181,19 @@ export function rackProgressView(progress) {
   };
 }
 
+export function rackSetStartMode(progress) {
+  if (!progress || progress.status === "complete") return "none";
+  if (progress.active_set?.id) return "active";
+  const scheduled = Object.hasOwn(progress.program || {}, "schedule_source")
+    && typeof progress.program.schedule_source === "string"
+    && progress.program.schedule_source.length > 0;
+  return scheduled ? "automatic" : "compatibility";
+}
+
 export function rackAssignmentChanged(currentRackNumber, nextRackNumber) {
   const current = currentRackNumber === null || currentRackNumber === undefined ? null : Number(currentRackNumber);
   const next = nextRackNumber === null || nextRackNumber === undefined ? null : Number(nextRackNumber);
   return current !== next;
 }
+
+export const rackSessionChanged = rackAssignmentChanged;

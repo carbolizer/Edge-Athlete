@@ -56,26 +56,32 @@ migrations before starting the server. The app is reachable at
 ## Training-day flow
 
 1. **Coach setup:** Sign in at `/coach`. Create ordered workouts and a
-   `WorkoutProgram`, assign the complete program to each athlete, and set any
-   athlete exercise overrides. Do not assign normal athlete-driven work to racks.
-2. **Start Day:** Select the athlete roster and start one day. The start
-   transaction activates uniquely registered racks and publishes a
-   `session_started` room revision.
+   `WorkoutProgram`, then materialize each athlete's schedule. Add recurring
+   weekday entries, exact-date plan/rest overrides, and athlete-local workout
+   order or targets. An athlete with no active explicit schedule uses the existing
+   whole-program assignment as an all-days fallback.
+2. **Start Day:** Review the server-local preview and use its one Start Day action.
+   Do not rebuild the roster with athlete checkboxes. Django verifies the opaque
+   `preview_version`, freezes schema 3 plans and progress, activates uniquely
+   registered racks, and publishes a `session_started` room revision.
 3. **Athlete sign-in:** At `/rack`, use manual name selection and explicit
    confirmation. This is the supported identity flow until PN532 hardware,
    wristband payloads, and firmware are verified. A generic
    `rack_screen_conflict` means the rack does not have exactly one registered
    screen; use the authenticated coach room view to inspect registration counts.
-4. **Train and progress:** The rack starts the server-derived current set through
-   `POST /api/racks/{rack}/sets/` and completes it through
+4. **Train and progress:** Confirmed identity automatically starts the
+   server-derived current set for a schema 3 plan. The rack completes it through
    `POST /api/racks/{rack}/sets/{id}/complete/` with `X-Rack-Device-Id`. A
    qualifying completion advances the expected set, exercise, or workout in the
-   same transaction. False or unfinished sets do not advance progress.
+   same transaction. False or unfinished sets do not advance progress. The
+   explicit `POST /api/racks/{rack}/sets/` / Start Expected Set path is retained
+   only for an active legacy session.
 5. **Move racks:** Finish the active set, then confirm the athlete at the new
    rack. Progress follows the athlete; an unfinished set blocks movement.
 6. **End Day:** Resolve unfinished sets, then use End Day. Django ends the day,
-   clears active rack identities, and creates one immutable schema 2 report for
-   athlete-driven days.
+   clears active rack identities, retains identity-event replay rows, and creates
+   one immutable schema 3 report for a frozen scheduled day. Schema 1/2 reports
+   remain readable.
 7. **Download reports:** In the coach report workspace, download the whole-day
    PDF or an athlete-day PDF. JSON report detail remains available if PDF
    rendering fails. All report and PDF routes require an active staff JWT.
@@ -188,6 +194,41 @@ a non-simulation session is active. Continuous mode requires a nonzero cadence,
 has a maximum of 1,000 cycles, and uses 100 cycles by default. Do not put names or
 other personal information in a simulation session label.
 
+## Demo wristband sign-in
+
+Use this debug-only seed while the physical reader is unavailable. The target must
+be an active, non-simulated legacy Session with room for four athletes. A backfilled
+`training_date` does not make a legacy Session frozen; frozen day-plan/progress rows
+do. The command is idempotent and leaves existing Sets, Reps, progress, rack state,
+and identity events unchanged.
+
+```bash
+# Add four [DEMO] athletes and their complete fallback program to Session 8.
+docker compose run --rm --no-deps django \
+  python manage.py seed_demo_athletes --session-id 8
+
+# Remove only ownership-record demo athletes, allowed execution rows, and catalog.
+docker compose run --rm --no-deps django \
+  python manage.py seed_demo_athletes --session-id 8 --remove --confirm
+```
+
+`DemoAthleteSeed(key="wristband-v1")` durably owns the exact Session, catalog, and
+four athlete slots. Reruns validate the complete graph and preserve IDs; they never
+infer ownership from names, NFC values, or notes. At `/rack`, **Simulate wristband
+tap** appears only while the rack is unoccupied and the public rack response marks at
+least one athlete `demo_wristband_eligible: true`. Each press randomly chooses one of
+those rows and sends the existing `PUT /api/racks/{rack}/athlete/` request with the
+current Session and event UUID. Legacy Sessions still require **Start Expected Set**
+after sign-in.
+
+End Day returns `409 demo_seed_cleanup_required` while the ownership row exists.
+Sign every demo athlete out, then run confirmed cleanup. Cleanup aborts on schedules
+or tombstones, day plans, overrides, legacy programs, direct assignments, selected
+racks, malformed execution rows, cross-session references, non-demo catalog
+references, or missing confirmation. Seeding requires `DEBUG=True`; confirmed,
+ownership-validated removal remains available after `DEBUG=False` so operators can
+clear the End Day guard safely.
+
 ## Common failure modes
 
 ### Access point unavailable
@@ -228,12 +269,14 @@ complete must be reconciled from REST rather than submitted as a new set.
 
 ### Training-day limit reached
 
-One training day can persist at most 100 athletes, 500 sets, and 5,000 reps. A
-set or rep overflow returns `session_set_limit` or `session_rep_limit` without a
-partial write. Set creation returns `athlete_not_in_session` when the athlete is
-outside the submitted Session roster. Set create and complete requests from one
-anonymous client share a 120-per-minute throttle and may return HTTP 429 during
-a request burst.
+One training day can persist at most 100 athletes, 500 sets, 5,000 reps, and 500
+distinct athlete/rack participations. Scheduled Start Day also limits aggregate
+prescribed sets to 500 and its frozen zero-result report baseline to 2 MiB. A set,
+rep, or participation overflow returns `session_set_limit`, `session_rep_limit`, or
+`session_rack_participation_limit` without a partial write. Set creation returns
+`athlete_not_in_session` when the athlete is outside the submitted Session roster.
+Set create and complete requests from one anonymous client share a 120-per-minute
+throttle and may return HTTP 429 during a request burst.
 
 Ending a day also caps the compact UTF-8 report snapshot at 4 MiB. A
 `report_too_large` response reports only aggregate dimensions and leaves the day
@@ -247,6 +290,33 @@ rendered only from the immutable report snapshot and are capped at 250 pages and
 leave the stored report unchanged; use the JSON report detail if rendering fails.
 Both PDF routes share a per-coach limit of 10 requests per minute. Requests over
 the limit return HTTP 429 before a report lookup or PDF render.
+
+## Migration 0014 rollback guard and old-reader warning
+
+Migration `0014_scheduled_athlete_plans` refuses to reverse before changing rows
+when an active schema 3 day, active frozen progress, or unfinished frozen Set
+exists. End the day and every frozen Set before a rollback; do not bypass this
+guard in PostgreSQL.
+
+After a safe reverse, core Athlete, Session, Set, Rep, and DailyReport rows remain,
+but schedule/day-plan tables and frozen bindings are removed. Frozen progress that
+cannot satisfy the legacy constraints is deleted. Export schedule metadata or
+restore a matching application/database backup if it must survive. Reversing an
+ended schema 3 day emits a warning because the old application cannot interpret
+the preserved schema 3 report or frozen schedule metadata. Do not deploy an old
+reader against schema 3 data without an explicit compatibility or restore plan.
+
+Migration `0015` supplies the active tombstone that preserves a schedule's
+monotonic version across delete/recreate. Migration `0016` supplies identity-event
+replay metadata retained after End Day. Its reverse preflight independently refuses
+to change rows while an active schema 3 day, active frozen progress, or unfinished
+frozen Set exists. Once safe, reversing `0016` drops only that ledger and preserves
+training rows. Clients must issue a new confirmed identity action after reversal.
+
+Migration `0017` adds durable demo-seed ownership and reserved-name uniqueness.
+Its reverse preflight refuses to remove ownership metadata while the seed or any
+reserved athlete, NFC, workout, or program row remains. Run confirmed demo cleanup
+and resolve unbound reserved collisions before reversing to `0016`.
 
 ## Disposable migration rollback check for 0012/0013
 
@@ -297,8 +367,147 @@ database backup first. Do not treat migration reapplication as data recovery.
 
 ## Firmware flashing
 
-Deferred. The exact ESP32 board, toolchain, USB driver, pin mapping, and flashing
-procedure have not been verified, so this runbook does not prescribe commands.
+The v1 source is in `esp32/edge_athlete_node/`. An ESP32-C6FH4 was detected over
+native USB, compiled, and flashed at `/dev/ttyACM0`. The supplied wiring is
+`GPIO2 -> SDA` and `GPIO1 -> SCL`; the MPU-6050 responded at `0x68`. Confirm the
+carrier's power labeling before reproducing the wiring, and do not use 5 V unless
+the carrier explicitly supports it.
+
+The verified build uses a generic `ESP32C6 Dev Module` target, Espressif Arduino
+core 3.3.11, and PubSubClient 2.8.0. Arduino CLI is not installed by this
+repository. After installing it, compile with USB CDC enabled:
+
+```bash
+arduino-cli config init
+arduino-cli config add board_manager.additional_urls \
+  https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32@3.3.11
+arduino-cli lib install PubSubClient@2.8.0
+# If secrets.h is absent, copy secrets.h.example to secrets.h.
+# Edit the ignored secrets.h with the 2.4 GHz SSID/password and base-station IP.
+arduino-cli compile --fqbn esp32:esp32:esp32c6:CDCOnBoot=cdc \
+  esp32/edge_athlete_node
+```
+
+Run `arduino-cli board list` to identify the current serial port before upload.
+
+```bash
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:esp32c6:CDCOnBoot=cdc \
+  esp32/edge_athlete_node
+arduino-cli monitor -p /dev/ttyACM0 --config baudrate=115200
+```
+
+Bind the stack only to the generated-password private Pi AP address. Do not use
+`0.0.0.0` or expose ports 1883/9001 on a shared or routed LAN; the broker is
+anonymous and plaintext. The current home-network address `192.168.1.127` is for
+temporary isolated development only and is not an approved deployment binding.
+
+Register the compile-time node ID before expecting pulse updates. Create it
+unassigned first so an existing Rack 1 node is not silently displaced:
+
+```bash
+docker compose run --rm --no-deps django python manage.py shell -c \
+  'from event_handler.models import Node; node, created = Node.objects.get_or_create(node_id="rack-1-c6-01", defaults={"mount_type": Node.MOUNT_BAR}); print(node, "created=" + str(created))'
+```
+
+Use the authenticated coach hardware controls to unassign any old Rack 1 sensor
+and assign `rack-1-c6-01` to Rack 1. Then verify both topics from the base station:
+
+```bash
+mosquitto_sub -h 192.168.4.1 -t 'edgeathlete/node/rack-1-c6-01/#' -v
+docker compose logs -f mqtt-listener
+```
+
+Keep the sensor still during its two-second boot calibration. Firmware v1 treats
+the MPU Z axis as vertical, integrates calibrated acceleration on-device, emits
+one rep after 750 ms of stillness, and never publishes raw samples. The default
+battery value is 100 because the current node is USB-powered. Change
+`VERTICAL_AXIS`, thresholds, and filtering only from physical test evidence.
+
+UTC is obtained from the `NTP_SERVER` in `secrets.h`. The node deliberately skips
+pulses and completed reps until its clock synchronizes. `pool.ntp.org` works only
+on an internet-connected development LAN; the offline Pi deployment still needs
+a verified local NTP service. MQTT events are not buffered: a rep completed while
+the broker is unavailable is logged over serial and dropped. Physical velocity
+accuracy, duplicate/missed rep behavior, broker outages, and power interruption
+remain unverified.
+
+### Development USB bridge
+
+Use USB bridge mode when the development laptop must keep its internet Wi-Fi and
+no non-isolating 2.4 GHz network is available. This is a development transport,
+not the offline Pi deployment architecture. Set `USB_BRIDGE_ENABLED 1` only in
+the ignored firmware `secrets.h`; production firmware leaves it at `0` and uses
+Wi-Fi MQTT directly.
+
+USB mode does not join Wi-Fi. The firmware sends bounded `EDGE_MQTT` frames over
+USB, and the bridge validates each topic and payload against the normal MQTT
+contract before publishing it to Mosquitto. The bridge also synchronizes the
+ESP32 clock from the host every 30 seconds. Human-readable serial messages and
+malformed frames are ignored without logging their bodies.
+
+The node also publishes derived current velocity on its `motion` topic every
+100 ms. Rack 1 renders that value as **Current velocity** without waiting for the
+750 ms completed-rep boundary. The stream contains no raw accelerometer axes and
+is never persisted. Twenty idle messages were observed in 2.08 seconds during
+hardware validation; completed-rep counting and velocity calibration remain
+separate concerns.
+
+The rendered Rack 1 tile was manually observed updating during physical motion.
+A simultaneous broker capture recorded nonzero derived velocity `9.944 m/s` and
+the display returned to idle afterward. That value is intentionally treated as
+uncalibrated demo telemetry, not a physically accurate velocity claim.
+
+USB publishes use QoS 0 to match direct firmware: an event is dropped if the
+local broker is unavailable and is never replayed. Never run direct Wi-Fi MQTT
+and the USB bridge for the same node at the same time. USB pulses report signal
+strength `0` because radio RSSI is unavailable in this mode. Rack `ready` reflects
+the latest accepted pulse and assignment; it is not proof that the USB cable is
+still connected.
+
+Close Arduino IDE's Serial Monitor before starting the bridge because only one
+process can own the serial port. Compile and upload with USB CDC enabled:
+
+```bash
+arduino-cli compile --fqbn esp32:esp32:esp32c6:CDCOnBoot=cdc \
+  esp32/edge_athlete_node
+arduino-cli upload -p /dev/ttyACM0 \
+  --fqbn esp32:esp32:esp32c6:CDCOnBoot=cdc \
+  esp32/edge_athlete_node
+docker compose --profile hardware up -d --build usb-bridge
+docker compose logs -f usb-bridge mqtt-listener
+```
+
+If the board enumerates somewhere other than `/dev/ttyACM0`, set
+`EDGEATHLETE_SERIAL_DEVICE` to its `/dev/serial/by-id/...` path when available,
+or to the current `/dev/ttyACM*` path before starting Compose. The bridge container
+runs as an unprivileged host UID with only serial group access and receives no
+project `.env` secrets.
+
+Watch the forwarded topics independently:
+
+```bash
+docker compose exec mosquitto mosquitto_sub -h localhost \
+  -t 'edgeathlete/node/rack-1-c6-01/#' -v
+```
+
+Stop the development bridge without stopping the main stack:
+
+```bash
+docker compose --profile hardware stop usb-bridge
+```
+
+Verified on 2026-07-26 with an ESP32-C6FH4 and MPU-6050: USB-mode firmware
+compiled at 433,464 bytes flash and 24,296 bytes RAM, flashed with hash
+verification, emitted five-second pulses, and updated the registered Django
+`Node`. A physical up/down movement produced a broker-captured Rack 1 rep with
+mean velocity `0.099 m/s`, peak velocity `0.199 m/s`, and duration `1641 ms`.
+Additional rep events occurred during the same handling sequence, so this proves
+physical motion telemetry but not accurate rep counting. The physical node
+`rack-1-c6-01` is the only assigned node and Rack 1 is the only assigned screen.
+Velocity calibration, exact rep counting, broker/USB reconnect, and rendered rack
+feedback remain unverified.
 
 ## Architecture diagram
 
@@ -308,7 +517,8 @@ flowchart LR
     MQTT -->|pulse topic only| Listener[Django pulse listener]
     Listener -->|node health| PG[(PostgreSQL)]
 
-    Node -.->|rep MQTT 1883| Rack[Rack tablet - unsaved display]
+    Node -.->|rep MQTT 1883| MQTT
+    MQTT -.->|rep MQTT WebSockets 9001| Rack[Rack tablet - unsaved display]
     Rack -.->|workout state REST| Nginx[Nginx]
     Nginx --> Django[Django REST]
     Django -->|Set + Rep rows + MonitoringEvent| PG

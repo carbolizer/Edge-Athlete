@@ -149,8 +149,8 @@ class SessionSerializer(serializers.ModelSerializer):
     finish it."""
     class Meta:
         model = Session
-        fields = ["id", "label", "started_at", "ended_at", "athletes", "notes"]
-        read_only_fields = ["id", "started_at"]
+        fields = ["id", "label", "training_date", "started_at", "ended_at", "athletes", "notes"]
+        read_only_fields = ["id", "training_date", "started_at"]
 
     def validate_athletes(self, athletes):
         if len(athletes) > MAX_SESSION_ATHLETES:
@@ -158,6 +158,12 @@ class SessionSerializer(serializers.ModelSerializer):
                 f"A training day may include at most {MAX_SESSION_ATHLETES} athletes."
             )
         return athletes
+
+
+class ScheduledSessionStartSerializer(serializers.Serializer):
+    """Start Day input when the server derives the roster from today's preview."""
+    label = serializers.CharField(max_length=255)
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class NodeSerializer(serializers.ModelSerializer):
