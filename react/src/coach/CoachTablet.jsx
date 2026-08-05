@@ -17,7 +17,6 @@ import {
   shortId,
 } from './api.js'
 import './CoachTablet.css'
-import DevPanel from './DevPanel.jsx'  // ⚠️ DEV-ONLY — delete with the <DevPanel/> below
 
 /** Demo room size — slots are UI numbers, not a DB model. */
 const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -628,8 +627,6 @@ export default function CoachTablet() {
           <>
             <DefaultsBanner token={token} onChangePassword={() => setShowWifi(true)} />
             <RoomLayout token={token} onAuthLost={logout} />
-            {/* ⚠️ DEV-ONLY — delete this line and the DevPanel import above. */}
-            <DevPanel token={token} />
           </>
         )}
         {token && showWifi && (
