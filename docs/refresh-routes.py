@@ -6,15 +6,18 @@ every endpoint the server has. That list has to come from the code, or the first
 route somebody adds goes undocumented and the page slowly becomes fiction.
 
 WHAT IS GENERATED vs WHAT IS YOURS
-Only the facts table — methods, access level, handler — sits between the markers and
-gets replaced on every run:
+Each group gets ONE table — route, methods, access, what it does, handler — and that
+table is what sits between the markers and gets replaced on every run:
 
-    <!-- route:racks-register:start -->
-    | Methods | POST | ...
-    <!-- route:racks-register:end -->
+    <!-- routes:the-room:start -->
+    | Route | Methods | Access | What it does | Handler |
+    <!-- routes:the-room:end -->
 
-Everything else is preserved: the one-line summary under the heading, the longer
-description, and any `####` decisions you attach to a route. Rewrite all of it freely.
+The descriptions come from each view's docstring, so a route is described in exactly
+one place: the code. To reword one, edit the docstring.
+
+Everything OUTSIDE the markers is yours and is never touched — the group blurb, and
+any decisions you write beneath a table.
 
 USAGE
     ./refresh-routes.py            update the facts, keep all prose
@@ -22,9 +25,9 @@ USAGE
     ./refresh-routes.py --rebuild  regenerate the whole section from scratch
                                    (DESTRUCTIVE — discards prose; first-time setup only)
 
-A new route is added under the group its path belongs to, or under "Unsorted" if the
-path matches no group. A route that has been deleted is reported but NOT removed —
-whatever was written about it may still be worth reading or moving.
+A new route appears in its group's table automatically. A whole new group is appended
+with its table. A group that empties out keeps its section, because whatever was
+written under it may still be worth reading.
 """
 import argparse
 import ast
@@ -125,29 +128,37 @@ def group_of(path):
     return len(GROUPS), UNSORTED
 
 
-def generated_body(route):
-    """The facts table — the ONLY thing a refresh overwrites."""
-    access = "🔒 coach only" if route["coach"] else "open — no login"
-    return ("| | |\n|---|---|\n"
-            f"| **Methods** | `{route['methods']}` |\n"
-            f"| **Access** | {access} |\n"
-            f"| **Handler** | `{route['fn']}` |")
+def generated_body(routes):
+    """One table for a whole group — the ONLY thing a refresh overwrites.
+
+    Fully generated, including the descriptions, which come from each view's
+    docstring. To reword one, edit the docstring in the code: that keeps a single
+    source of truth and means the docs improve as the code comments do. Anything you
+    want to write yourself goes OUTSIDE the markers, below the table.
+    """
+    rows = ["| Route | Methods | Access | What it does | Handler |",
+            "|---|---|---|---|---|"]
+    for r in routes:
+        access = "🔒 coach" if r["coach"] else "open"
+        desc = r["doc"].split(". ")[0].rstrip(".") if r["doc"] else "—"
+        desc = desc.replace("|", "\\|")
+        rows.append(f"| `/api/{r['path']}` | `{r['methods']}` | {access} | {desc} | `{r['fn']}` |")
+    return "\n".join(rows)
 
 
-def full_block(route):
-    """A complete entry for a route nobody has written about yet."""
-    summary = route["doc"].split(". ")[0].rstrip(".") if route["doc"] else "No description yet"
-    longer = ""
-    if route["doc"] and len(route["doc"]) > len(summary) + 2:
-        longer = f"\n{route['doc']}\n"
+def group_slug(title):
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def full_group(title, blurb, routes):
+    """A complete section for a group nobody has written about yet."""
+    n = len(routes)
     return (
-        f"### `/api/{route['path']}`\n\n"
-        f"{summary}.\n\n"
-        ":::::{dropdown} Detail\n\n"
-        f"<!-- route:{route['slug']}:start -->\n"
-        f"{generated_body(route)}\n"
-        f"<!-- route:{route['slug']}:end -->\n"
-        f"{longer}\n"
+        f"## {title}\n\n{blurb}\n\n"
+        f":::::{{dropdown}} {n} route{'s' if n != 1 else ''}\n\n"
+        f"<!-- routes:{group_slug(title)}:start -->\n"
+        f"{generated_body(routes)}\n"
+        f"<!-- routes:{group_slug(title)}:end -->\n\n"
         ":::::\n"
     )
 
@@ -164,59 +175,53 @@ it matches what is actually wired up.
 
 
 def build_section(routes):
-    by_slug = {r["slug"]: r for r in routes}
+    """The whole section: one heading + one collapsible table per group."""
     out = [section_header()]
     for i, (title, blurb, _) in enumerate(GROUPS):
         rs = [r for r in routes if group_of(r["path"])[0] == i]
-        if not rs:
-            continue
-        out.append(f"\n## {title}\n\n{blurb}\n")
-        for r in rs:
-            out.append("\n" + full_block(r))
+        if rs:
+            out.append("\n" + full_group(title, blurb, rs))
     leftover = [r for r in routes if group_of(r["path"])[1] == UNSORTED]
     if leftover:
-        out.append(f"\n## {UNSORTED}\n\nNot filed into a group yet. Add a prefix to "
-                   "`GROUPS` in `docs/refresh-routes.py`.\n")
-        for r in leftover:
-            out.append("\n" + full_block(r))
+        out.append("\n" + full_group(
+            UNSORTED,
+            "Not filed into a group yet. Add a prefix to `GROUPS` in "
+            "`docs/refresh-routes.py`.", leftover))
     out.append(f"\n{SECTION_END}\n")
     return "".join(out)
 
 
 def refresh(text, routes):
-    added, updated, orphaned = [], [], []
-    known = {r["slug"] for r in routes}
+    """Replace each group's table in place, leaving everything around it alone."""
+    updated, added = [], []
+    groups = list(GROUPS) + [(UNSORTED,
+                              "Not filed into a group yet. Add a prefix to `GROUPS` in "
+                              "`docs/refresh-routes.py`.", ())]
 
-    for r in routes:
-        pat = re.compile(
-            rf"(<!-- route:{re.escape(r['slug'])}:start -->\n).*?(\n<!-- route:{re.escape(r['slug'])}:end -->)",
-            re.S)
+    for i, (title, blurb, _) in enumerate(groups):
+        rs = ([r for r in routes if group_of(r["path"])[0] == i] if title != UNSORTED
+              else [r for r in routes if group_of(r["path"])[1] == UNSORTED])
+        gs = group_slug(title)
+        pat = re.compile(rf"(<!-- routes:{gs}:start -->\n).*?(\n<!-- routes:{gs}:end -->)", re.S)
+
         if pat.search(text):
-            new = pat.sub(lambda mo: mo.group(1) + generated_body(r) + mo.group(2), text)
+            if not rs:
+                continue          # group emptied out; leave the section and its prose
+            new = pat.sub(lambda mo: mo.group(1) + generated_body(rs) + mo.group(2), text)
             if new != text:
-                updated.append(r["path"])
-            text = new
-        else:
-            block = "\n" + full_block(r)
-            _, title = group_of(r["path"])
-            heading = f"\n## {title}\n"
-            if heading in text:
-                start = text.index(heading) + len(heading)
-                nxt = text.find("\n## ", start)
-                cut = nxt if nxt != -1 else text.index(SECTION_END)
-                text = text[:cut] + block + text[cut:]
-            elif title == UNSORTED:
-                text = text.replace(
-                    SECTION_END,
-                    f"\n## {UNSORTED}\n\nNot filed into a group yet. Add a prefix to "
-                    f"`GROUPS` in `docs/refresh-routes.py`.\n{block}" + SECTION_END)
-            else:
-                text = text.replace(SECTION_END, block + SECTION_END)
-            added.append(r["path"])
+                updated.append(title)
+            # keep the dropdown label's count honest
+            new = re.sub(rf"(:::::\{{dropdown\}} )\d+ routes?(\n\n<!-- routes:{gs}:start)",
+                         rf"\g<1>{len(rs)} route{'s' if len(rs) != 1 else ''}\g<2>", new)
+            if new != text:
+                text = new
+        elif rs:
+            block = "\n" + full_group(title, blurb, rs)
+            text = text.replace(SECTION_END, block + SECTION_END)
+            added.append(title)
 
-    for s in re.findall(r"<!-- route:([\w-]+):start -->", text):
-        if s not in known:
-            orphaned.append(s)
+    orphaned = [g for g in re.findall(r"<!-- routes:([\w-]+):start -->", text)
+                if g not in {group_slug(t) for t, _, _ in groups}]
     return text, {"added": added, "updated": updated, "orphaned": orphaned}
 
 
