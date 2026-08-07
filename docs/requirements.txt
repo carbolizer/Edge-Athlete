@@ -1,0 +1,13 @@
+# Everything needed to build these docs into a website.
+#
+# Read the Docs installs exactly this list, so a build that works on your laptop
+# works there too. Versions are pinned to a minimum rather than an exact number:
+# loose enough to pick up fixes, tight enough that a major release can't silently
+# change the output.
+
+sphinx>=8.1                # the documentation builder itself
+myst-parser[linkify]>=4.0  # lets Sphinx read Markdown (without this, nothing builds).
+                           # The [linkify] extra installs linkify-it-py, which the
+                           # "linkify" setting in conf.py needs. Without the extra the
+                           # build crashes outright, so keep them in step.
+furo>=2024.8.6             # the page theme — see html_theme in conf.py
