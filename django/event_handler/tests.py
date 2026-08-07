@@ -6,28 +6,59 @@
 # that an athlete's CURRENT reference max (and only that) comes back, and that
 # every exercise now resolves through the shared catalog.
 import json
+import base64
+import hashlib
+import os
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import models
+from django.db import IntegrityError, close_old_connections, connection, connections, models, transaction
 from django.db.models import ProtectedError
 from django.utils import timezone
 from django.contrib.auth.models import User
-from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Exercise,
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
-                     TrainingBlockExercise, BlockCategory, TrainingGroupCoach)
+                     TrainingBlockExercise, BlockCategory, TrainingGroupCoach,
+                     MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
 from .management.commands.simulate_node import (MODE_ALWAYS, MODE_CHECKIN, MODE_LIFTING,
-                                                rack_activity, rack_for_node)
+                                                 rack_activity, rack_for_node)
+from .realtime.mqtt_ingester.parser import parse_pulse_payload
+from .realtime.event_processor.process_pulse import process_pulse_event
+from .serializers import AthleteSerializer
+
+
+def controller_token():
+    return base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+
+
+def acquire_controller(client, rack_number, *, device_id=None, client_instance_id="tab-a", token=None):
+    device_id = device_id or f"screen-{rack_number}"
+    token = token or controller_token()
+    RackScreen.objects.get_or_create(device_id=device_id, defaults={"rack_number": rack_number})
+    response = client.post(f"/api/racks/{rack_number}/controller/acquire/", {
+        "device_id": device_id,
+        "client_instance_id": client_instance_id,
+        "controller_token": token,
+    }, format="json")
+    headers = {
+        "X-Rack-Device-ID": device_id,
+        "X-Client-Instance-ID": client_instance_id,
+        "X-Controller-Token": token,
+        "X-Controller-Epoch": str(response.data["controller_epoch"]),
+    }
+    return response, headers
 
 
 def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
@@ -76,6 +107,75 @@ def give_plan(athlete, session, exercise, weight_lbs, sets=5, reps=3,
         session=session, training_program=program,
         defaults={"training_program_workout": workout})
     return row
+
+
+class PulsePayloadTests(APITestCase):
+    def test_hardware_without_battery_or_rssi_telemetry_uses_null(self):
+        payload = parse_pulse_payload(json.dumps({
+            "node_id": "wt901_test_1",
+            "event_type": "pulse",
+            "battery_level": None,
+            "signal_strength": None,
+            "firmware_version": "wt901ble-agent-1",
+            "timestamp": timezone.now().isoformat(),
+        }).encode())
+
+        self.assertIsNone(payload["battery_level"])
+        self.assertIsNone(payload["signal_strength"])
+
+    def test_firmware_metadata_cannot_classify_an_mqtt_node(self):
+        node = Node.objects.create(node_id="wt901_test_1")
+
+        process_pulse_event({
+            "node_id": node.node_id,
+            "battery_level": None,
+            "signal_strength": None,
+            "firmware_version": "wt901ble-agent-1",
+            "timestamp": timezone.now().isoformat(),
+        })
+
+        node.refresh_from_db()
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT)
+        self.assertIsNotNone(node.last_seen)
+
+    def test_mqtt_pulse_cannot_change_wt901_kind_or_freshness(self):
+        node = Node.objects.create(
+            node_id="wt901_test_1", acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            last_seen=timezone.now() - timedelta(seconds=1),
+        )
+        original_last_seen = node.last_seen
+
+        with self.assertRaisesRegex(ValueError, "reject MQTT pulses"):
+            process_pulse_event({
+                "node_id": node.node_id,
+                "battery_level": 50,
+                "signal_strength": -60,
+                "firmware_version": "mqtt-node-2",
+                "timestamp": timezone.now().isoformat(),
+            })
+
+        node.refresh_from_db()
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_WT901_BLE)
+        self.assertEqual(node.last_seen, original_last_seen)
+        self.assertIsNone(node.firmware_version)
+
+    def test_forged_agent_firmware_pulse_cannot_create_fresh_wt901_health(self):
+        node = Node.objects.create(
+            node_id="wt901_test_1", acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+
+        with self.assertRaisesRegex(ValueError, "reject MQTT pulses"):
+            process_pulse_event({
+                "node_id": node.node_id,
+                "battery_level": None,
+                "signal_strength": None,
+                "firmware_version": "wt901ble-agent-1",
+                "timestamp": timezone.now().isoformat(),
+            })
+
+        node.refresh_from_db()
+        self.assertIsNone(node.last_seen)
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_WT901_BLE)
 
 
 class ActiveSessionEndpointTests(APITestCase):
@@ -300,7 +400,19 @@ class RackCheckInEndpointTests(APITestCase):
         return session, athletes
 
     def _checkin(self, rack, athlete):
-        return self.client.post(f"/api/racks/{rack}/checkin/", {"athlete": athlete.id}, format="json")
+        Node.objects.get_or_create(node_id=f"rack-{rack}", defaults={"rack_number": rack})
+        if not hasattr(self, "controller_headers"):
+            self.controller_headers = {}
+        if rack not in self.controller_headers:
+            _, self.controller_headers[rack] = acquire_controller(self.client, rack)
+        headers = self.controller_headers[rack]
+        MonitoringEvent.objects.all().delete()
+        runtime = RackRuntime.objects.get(rack_number=rack)
+        return self.client.post(f"/api/racks/{rack}/checkin/", {
+            "athlete": athlete.id,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
 
     def _hot_list(self, rack):
         return self.client.get(f"/api/racks/{rack}/checkins/")
@@ -310,6 +422,51 @@ class RackCheckInEndpointTests(APITestCase):
         self.assertEqual(self._checkin(3, jordan).status_code, 201)
         self.assertEqual([a["name"] for a in self._hot_list(3).data["athletes"]], ["Jordan"])
         self.assertEqual(self._hot_list(4).data["athletes"], [])   # nobody at rack 4
+
+    def test_checkin_enqueues_a_room_invalidation(self):
+        _, (jordan,) = self._session_with("Jordan")
+
+        self.assertEqual(self._checkin(3, jordan).status_code, 201)
+
+        event = MonitoringEvent.objects.get()
+        self.assertEqual(event.reason, "athlete_checked_in")
+        self.assertIsNone(event.published_at)
+
+    def test_controller_claim_is_blocked_without_an_active_physical_sensor(self):
+        _, (jordan,) = self._session_with("Jordan")
+        RackScreen.objects.create(device_id="screen-8", rack_number=8)
+
+        response = self.client.post("/api/racks/8/controller/acquire/", {
+            "device_id": "screen-8",
+            "client_instance_id": "tab-a",
+            "controller_token": controller_token(),
+        }, format="json")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_sensor_required")
+        self.assertEqual(RackCheckIn.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_simulated_checkin_preserves_provenance(self):
+        session, (jordan,) = self._session_with("Jordan")
+        session.is_simulated = True
+        session.save(update_fields=["is_simulated"])
+
+        self.assertEqual(self._checkin(3, jordan).status_code, 201)
+
+        self.assertTrue(MonitoringEvent.objects.get().is_simulated)
+
+    def test_checkin_rolls_back_if_the_invalidation_cannot_be_written(self):
+        _, (jordan,) = self._session_with("Jordan")
+
+        with patch(
+            "event_handler.views.MonitoringEvent.objects.create",
+            side_effect=RuntimeError("outbox unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self._checkin(3, jordan)
+
+        self.assertEqual(RackCheckIn.objects.count(), 0)
 
     def test_ownership_transfers_to_newest_rack(self):
         _, (jordan,) = self._session_with("Jordan")
@@ -326,16 +483,1419 @@ class RackCheckInEndpointTests(APITestCase):
 
     def test_unknown_and_offroster_athlete_are_404(self):
         self._session_with("Jordan")
+        Node.objects.create(node_id="rack-1", rack_number=1)
+        _, headers = acquire_controller(self.client, 1)
+        self.controller_headers = {1: headers}
+        MonitoringEvent.objects.all().delete()
+        runtime = RackRuntime.objects.get(rack_number=1)
         self.assertEqual(
-            self.client.post("/api/racks/1/checkin/", {"athlete": 999999}, format="json").status_code, 404)
+            self.client.post("/api/racks/1/checkin/", {
+                "athlete": 999999,
+                "expected_state_version": runtime.state_version,
+                "command_id": str(uuid.uuid4()),
+            }, format="json", headers=headers).status_code, 404)
         outsider = Athlete.objects.create(name="Outsider")   # exists but not on the roster
         self.assertEqual(self._checkin(1, outsider).status_code, 404)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
 
     def test_no_active_session_hot_list_is_empty(self):
         res = self._hot_list(1)
         self.assertEqual(res.status_code, 200)
         self.assertIsNone(res.data["session_id"])
         self.assertEqual(res.data["athletes"], [])
+
+    def test_duplicate_semantic_checkin_is_rejected_without_an_event(self):
+        _, (jordan,) = self._session_with("Jordan")
+        self.assertEqual(self._checkin(1, jordan).status_code, 201)
+        MonitoringEvent.objects.all().delete()
+
+        response = self._checkin(1, jordan)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "duplicate_checkin")
+        self.assertEqual(RackCheckIn.objects.count(), 1)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_observer_stale_and_wrong_rack_checkins_write_nothing(self):
+        _, (jordan,) = self._session_with("Jordan")
+        Node.objects.create(node_id="rack-1", rack_number=1)
+        acquired, headers = acquire_controller(self.client, 1)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        body = {
+            "athlete": jordan.id,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        stale_headers = {**headers, "X-Controller-Epoch": str(acquired.data["controller_epoch"] - 1)}
+        Node.objects.create(node_id="rack-2", rack_number=2)
+        _, wrong_rack_headers = acquire_controller(self.client, 2)
+        MonitoringEvent.objects.all().delete()
+
+        observer = self.client.post("/api/racks/1/checkin/", body, format="json")
+        stale = self.client.post(
+            "/api/racks/1/checkin/", body, format="json", headers=stale_headers,
+        )
+        wrong_rack = self.client.post(
+            "/api/racks/1/checkin/", body, format="json", headers=wrong_rack_headers,
+        )
+
+        self.assertEqual(observer.data["code"], "rack_controller_required")
+        self.assertEqual(stale.data["code"], "rack_controller_stale")
+        self.assertEqual(wrong_rack.data["code"], "rack_controller_stale")
+        self.assertEqual(RackCheckIn.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_checkin_command_retry_returns_one_row_and_event(self):
+        _, (jordan,) = self._session_with("Jordan")
+        Node.objects.create(node_id="rack-1", rack_number=1)
+        _, headers = acquire_controller(self.client, 1)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        body = {
+            "athlete": jordan.id,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        MonitoringEvent.objects.all().delete()
+
+        first = self.client.post("/api/racks/1/checkin/", body, format="json", headers=headers)
+        second = self.client.post("/api/racks/1/checkin/", body, format="json", headers=headers)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.data, first.data)
+        self.assertEqual(RackCheckIn.objects.count(), 1)
+        self.assertEqual(MonitoringEvent.objects.count(), 1)
+
+    def test_wt901_checkin_rejects_a_node_that_became_stale_after_acquire(self):
+        _, (jordan,) = self._session_with("Jordan")
+        node = Node.objects.create(
+            node_id="rack-1",
+            rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            last_seen=timezone.now(),
+        )
+        _, headers = acquire_controller(self.client, 1)
+        node.last_seen = timezone.now() - timedelta(seconds=3)
+        node.save(update_fields=["last_seen"])
+        runtime = RackRuntime.objects.get(rack_number=1)
+        MonitoringEvent.objects.all().delete()
+
+        response = self.client.post("/api/racks/1/checkin/", {
+            "athlete": jordan.id,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_sensor_required")
+        self.assertEqual(RackCheckIn.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+
+class RackControllerEndpointTests(APITestCase):
+    def setUp(self):
+        self.screen = RackScreen.objects.create(device_id="screen-1", rack_number=1)
+        self.node = Node.objects.create(node_id="node-1", rack_number=1)
+        self.token = controller_token()
+
+    def _acquire(self, *, device_id="screen-1", instance="tab-a", token=None):
+        return self.client.post("/api/racks/1/controller/acquire/", {
+            "device_id": device_id,
+            "client_instance_id": instance,
+            "controller_token": token or self.token,
+        }, format="json")
+
+    def _headers(self, response, *, device_id="screen-1", instance="tab-a", token=None):
+        return {
+            "X-Rack-Device-ID": device_id,
+            "X-Client-Instance-ID": instance,
+            "X-Controller-Token": token or self.token,
+            "X-Controller-Epoch": str(response.data["controller_epoch"]),
+        }
+
+    def test_acquire_is_idempotent_for_holder_and_busy_for_an_observer(self):
+        first = self._acquire()
+        second = self._acquire()
+        RackScreen.objects.create(device_id="screen-observer", rack_number=1)
+        busy = self._acquire(
+            device_id="screen-observer", instance="tab-b", token=controller_token(),
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.data["controller_epoch"], first.data["controller_epoch"])
+        self.assertEqual(busy.status_code, 409)
+        self.assertEqual(busy.data["code"], "rack_controller_busy")
+        self.assertEqual(MonitoringEvent.objects.filter(reason="controller_acquired").count(), 1)
+
+    def test_snapshot_never_exposes_controller_secret(self):
+        acquired = self._acquire()
+
+        response = self.client.get("/api/racks/1/state/")
+        serialized = json.dumps(response.data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(self.token, serialized)
+        self.assertNotIn(_token_digest_for_test(self.token), serialized)
+        self.assertNotIn("controller_token", serialized)
+        self.assertNotIn("client_instance_id", serialized)
+        self.assertEqual(acquired.data["snapshot"]["rack_number"], 1)
+
+    def test_heartbeat_uses_server_time_and_creates_no_event(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        MonitoringEvent.objects.all().delete()
+
+        response = self.client.post(
+            "/api/racks/1/controller/heartbeat/", {}, format="json", headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("server_time", response.data)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_returns_only_active_roster_athlete_to_controller(self, consume):
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Braydon Callender", nfc_tag_id="04A1B2C3D4E5F6")
+        session.athletes.add(athlete)
+        acquired = self._acquire()
+        consume.return_value = {"schema_version": 1, "status": "tap", "tag_id": "04A1B2C3D4E5F6"}
+
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {}, format="json", headers=self._headers(acquired),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "status": "recognized",
+            "athlete": {"athlete_id": athlete.id, "name": "Braydon Callender"},
+        })
+        self.assertNotIn("04A1B2C3D4E5F6", json.dumps(response.data))
+        self.assertEqual(response["Cache-Control"], "no-store")
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_hides_unknown_and_off_roster_tags(self, consume):
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        Athlete.objects.create(name="Not Today", nfc_tag_id="04A1B2C3D4E5F6")
+        acquired = self._acquire()
+        consume.return_value = {"schema_version": 1, "status": "tap", "tag_id": "04A1B2C3D4E5F6"}
+        off_roster = self.client.post(
+            "/api/racks/1/nfc-tap/", {}, format="json", headers=self._headers(acquired),
+        )
+        consume.return_value = {"schema_version": 1, "status": "tap", "tag_id": "04AAAAAAAAAAAA"}
+        unknown = self.client.post(
+            "/api/racks/1/nfc-tap/", {}, format="json", headers=self._headers(acquired),
+        )
+        self.assertEqual(off_roster.data, {"status": "unknown"})
+        self.assertEqual(unknown.data, {"status": "unknown"})
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_requires_controller_before_consuming(self, consume):
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        response = self.client.post("/api/racks/1/nfc-tap/", {}, format="json")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_controller_required")
+        consume.assert_not_called()
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_reader_outage_is_passive(self, consume):
+        from event_handler.services.nfc_agent import NFCAgentUnavailable
+
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        acquired = self._acquire()
+        consume.side_effect = NFCAgentUnavailable()
+        runtime = RackRuntime.objects.get(rack_number=1)
+        before = (runtime.state_version, runtime.selected_athlete_id)
+
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {}, format="json", headers=self._headers(acquired),
+        )
+
+        runtime.refresh_from_db()
+        self.assertEqual(response.data, {"status": "unavailable"})
+        self.assertEqual((runtime.state_version, runtime.selected_athlete_id), before)
+
+    def test_athlete_serializer_never_emits_nfc_tag(self):
+        athlete = Athlete.objects.create(name="Private Tag", nfc_tag_id="04A1B2C3D4E5F6")
+        self.assertNotIn("nfc_tag_id", AthleteSerializer(athlete).data)
+
+    def test_state_patch_rejects_observer_and_stale_revision_without_events(self):
+        acquired = self._acquire()
+        runtime = RackRuntime.objects.get(rack_number=1)
+        body = {
+            "phase": "countdown",
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        MonitoringEvent.objects.all().delete()
+
+        observer = self.client.patch("/api/racks/1/state/", body, format="json")
+        stale = self.client.patch(
+            "/api/racks/1/state/", {**body, "expected_state_version": runtime.state_version - 1},
+            format="json", headers=self._headers(acquired),
+        )
+
+        self.assertEqual(observer.data["code"], "rack_controller_required")
+        self.assertEqual(stale.data["code"], "rack_state_changed")
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_state_command_retry_returns_one_mutation_and_one_event(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        body = {
+            "phase": "countdown",
+            "rep_count": 0,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        MonitoringEvent.objects.all().delete()
+
+        first = self.client.patch("/api/racks/1/state/", body, format="json", headers=headers)
+        second = self.client.patch("/api/racks/1/state/", body, format="json", headers=headers)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.data, first.data)
+        self.assertEqual(MonitoringEvent.objects.count(), 1)
+        self.assertEqual(RackCommandReceipt.objects.count(), 1)
+
+    def test_expiry_advances_epoch_without_open_set_but_blocks_other_open_set_claim(self):
+        first = self._acquire()
+        runtime = RackRuntime.objects.get(rack_number=1)
+        runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
+        runtime.save(update_fields=["lease_expires_at", "updated_at"])
+        RackScreen.objects.create(device_id="screen-b", rack_number=1)
+
+        second_token = controller_token()
+        claimed = self._acquire(device_id="screen-b", instance="tab-b", token=second_token)
+        self.assertEqual(claimed.status_code, 200)
+        self.assertEqual(claimed.data["controller_epoch"], first.data["controller_epoch"] + 1)
+
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Jordan")
+        exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+        target_set = Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=self.node, set_number=1,
+        )
+        runtime.refresh_from_db()
+        runtime.current_set = target_set
+        runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
+        runtime.save(update_fields=["current_set", "lease_expires_at", "updated_at"])
+        RackScreen.objects.create(device_id="screen-c", rack_number=1)
+
+        blocked = self._acquire(device_id="screen-c", instance="tab-c", token=controller_token())
+
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.data["code"], "rack_recovery_required")
+        self.assertEqual(blocked.data["snapshot"]["phase"], "recovery_required")
+
+        recovered = self._acquire(device_id="screen-b", instance="tab-b", token=second_token)
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(recovered.data["controller_epoch"], claimed.data["controller_epoch"] + 1)
+
+    def test_release_retry_returns_the_prior_result_after_capability_is_cleared(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        body = {
+            "expected_state_version": acquired.data["state_version"],
+            "command_id": str(uuid.uuid4()),
+        }
+        MonitoringEvent.objects.all().delete()
+
+        first = self.client.post(
+            "/api/racks/1/controller/release/", body, format="json", headers=headers,
+        )
+        second = self.client.post(
+            "/api/racks/1/controller/release/", body, format="json", headers=headers,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.data, first.data)
+        self.assertEqual(MonitoringEvent.objects.filter(reason="controller_released").count(), 1)
+
+    def test_wt901_controller_claim_requires_a_pulse_within_two_seconds(self):
+        self.node.acquisition_kind = Node.ACQUISITION_WT901_BLE
+        self.node.save(update_fields=["acquisition_kind"])
+
+        missing = self._acquire()
+        self.node.last_seen = timezone.now() - timedelta(seconds=3)
+        self.node.save(update_fields=["last_seen"])
+        stale = self._acquire()
+        self.node.last_seen = timezone.now()
+        self.node.save(update_fields=["last_seen"])
+        fresh = self._acquire()
+
+        self.assertEqual(missing.data["code"], "rack_sensor_required")
+        self.assertEqual(stale.data["code"], "rack_sensor_required")
+        self.assertEqual(fresh.status_code, 200)
+
+    def test_state_noop_creates_no_version_event_or_receipt(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        MonitoringEvent.objects.all().delete()
+
+        response = self.client.patch("/api/racks/1/state/", {
+            "phase": "idle",
+            "rep_count": 0,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
+
+        runtime.refresh_from_db()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_state_unchanged")
+        self.assertEqual(runtime.state_version, acquired.data["state_version"])
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+        self.assertEqual(RackCommandReceipt.objects.count(), 0)
+
+    def test_controller_commands_are_limited_to_ten_accepted_per_second(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        MonitoringEvent.objects.all().delete()
+        now = timezone.now()
+
+        with patch("event_handler.views.timezone.now", return_value=now):
+            for rep_count in range(1, 11):
+                runtime = RackRuntime.objects.get(rack_number=1)
+                response = self.client.patch("/api/racks/1/state/", {
+                    "rep_count": rep_count,
+                    "expected_state_version": runtime.state_version,
+                    "command_id": str(uuid.uuid4()),
+                }, format="json", headers=headers)
+                self.assertEqual(response.status_code, 200)
+
+            runtime = RackRuntime.objects.get(rack_number=1)
+            limited = self.client.patch("/api/racks/1/state/", {
+                "rep_count": 11,
+                "expected_state_version": runtime.state_version,
+                "command_id": str(uuid.uuid4()),
+            }, format="json", headers=headers)
+
+        self.assertEqual(limited.status_code, 429)
+        self.assertEqual(limited.data["code"], "rack_command_rate_limited")
+        self.assertEqual(RackCommandReceipt.objects.count(), 10)
+        self.assertEqual(MonitoringEvent.objects.count(), 10)
+
+    def test_old_receipts_are_pruned_without_breaking_immediate_retry(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        first = self.client.patch("/api/racks/1/state/", {
+            "phase": "countdown",
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
+        old_receipt = RackCommandReceipt.objects.get()
+        RackCommandReceipt.objects.filter(pk=old_receipt.pk).update(
+            created_at=timezone.now() - timedelta(hours=2),
+        )
+        runtime.refresh_from_db()
+        command_id = str(uuid.uuid4())
+        body = {
+            "phase": "active",
+            "expected_state_version": runtime.state_version,
+            "command_id": command_id,
+        }
+
+        accepted = self.client.patch("/api/racks/1/state/", body, format="json", headers=headers)
+        retried = self.client.patch("/api/racks/1/state/", body, format="json", headers=headers)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(retried.data, accepted.data)
+        self.assertFalse(RackCommandReceipt.objects.filter(pk=old_receipt.pk).exists())
+        self.assertEqual(RackCommandReceipt.objects.count(), 1)
+
+    def test_same_command_is_not_idempotent_after_the_one_hour_window(self):
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        body = {
+            "phase": "countdown",
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        first = self.client.patch("/api/racks/1/state/", body, format="json", headers=headers)
+        receipt = RackCommandReceipt.objects.get()
+        RackCommandReceipt.objects.filter(pk=receipt.pk).update(
+            created_at=timezone.now() - timedelta(hours=1, seconds=1),
+        )
+        MonitoringEvent.objects.all().delete()
+
+        expired_retry = self.client.patch(
+            "/api/racks/1/state/", body, format="json", headers=headers,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(expired_retry.status_code, 409)
+        self.assertEqual(expired_retry.data["code"], "rack_state_changed")
+        self.assertEqual(RackCommandReceipt.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_stale_node_blocks_countdown_and_rep_state_updates(self):
+        self.node.acquisition_kind = Node.ACQUISITION_WT901_BLE
+        self.node.last_seen = timezone.now()
+        self.node.save(update_fields=["acquisition_kind", "last_seen"])
+        acquired = self._acquire()
+        headers = self._headers(acquired)
+        self.node.last_seen = timezone.now() - timedelta(seconds=3)
+        self.node.save(update_fields=["last_seen"])
+        runtime = RackRuntime.objects.get(rack_number=1)
+        MonitoringEvent.objects.all().delete()
+
+        countdown = self.client.patch("/api/racks/1/state/", {
+            "phase": "countdown",
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
+        rep_update = self.client.patch("/api/racks/1/state/", {
+            "rep_count": 1,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
+
+        runtime.refresh_from_db()
+        self.assertEqual(countdown.data["code"], "rack_sensor_required")
+        self.assertEqual(rep_update.data["code"], "rack_sensor_required")
+        self.assertEqual(runtime.state_version, acquired.data["state_version"])
+        self.assertEqual(RackCommandReceipt.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+
+class RackControllerConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def setUp(self):
+        Node.objects.create(node_id="node-1", rack_number=1)
+        RackScreen.objects.create(device_id="screen-a", rack_number=1)
+        RackScreen.objects.create(device_id="screen-b", rack_number=1)
+
+    def test_two_simultaneous_claims_produce_one_controller(self):
+        def claim(device_id):
+            close_old_connections()
+            connections.close_all()
+            try:
+                return APIClient().post("/api/racks/1/controller/acquire/", {
+                    "device_id": device_id,
+                    "client_instance_id": device_id + "-tab",
+                    "controller_token": controller_token(),
+                }, format="json").status_code
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(claim, ["screen-a", "screen-b"]))
+
+        self.assertEqual(sorted(statuses), [200, 409])
+        self.assertEqual(MonitoringEvent.objects.filter(reason="controller_acquired").count(), 1)
+        self.assertEqual(RackRuntime.objects.get(rack_number=1).controller_epoch, 1)
+
+
+def _token_digest_for_test(token):
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+class RackNodeAssignmentTests(APITestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="rack-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.screen = RackScreen.objects.create(device_id="rack-screen-a", rack_number=1)
+        self.node = Node.objects.create(node_id="wt901-a")
+
+    def _assign(self, node_id=None, device_id=None):
+        return self.client.put("/api/racks/node-assignment/", {
+            "device_id": device_id or self.screen.device_id,
+            "node_id": node_id or self.node.node_id,
+        }, format="json")
+
+    def _authenticate_staff(self):
+        self.client.force_authenticate(self.staff)
+
+    def _provision(self, body):
+        return self.client.put(
+            f"/api/nodes/{self.node.node_id}/acquisition-kind/", body, format="json",
+        )
+
+    def _open_set(self, node):
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Jordan")
+        exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+        return Set.objects.create(
+            session=session, athlete=athlete, node=node, exercise=exercise, set_number=1,
+        )
+
+    def test_assignment_requires_authentication(self):
+        response = self._assign()
+
+        self.assertEqual(response.status_code, 401)
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_assignment_requires_active_staff(self):
+        ordinary_user = User.objects.create_user(username="athlete", password="pw")
+        self.client.force_authenticate(ordinary_user)
+        self.assertEqual(self._assign().status_code, 403)
+
+        inactive_staff = User.objects.create_user(
+            username="inactive-coach", password="pw", is_staff=True, is_active=False,
+        )
+        self.client.force_authenticate(inactive_staff)
+        self.assertEqual(self._assign().status_code, 403)
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_screen_assignment_requires_active_staff(self):
+        ordinary_user = User.objects.create_user(username="screen-user", password="pw")
+        self.client.force_authenticate(ordinary_user)
+
+        response = self.client.patch(
+            f"/api/racks/{self.screen.device_id}/", {"rack_number": 2}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 1)
+
+    def test_screen_move_is_blocked_while_its_node_has_an_open_set(self):
+        self._authenticate_staff()
+        self.node.rack_number = 1
+        self.node.save(update_fields=["rack_number"])
+        self._open_set(self.node)
+
+        response = self.client.patch(
+            f"/api/racks/{self.screen.device_id}/", {"rack_number": 2}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_assignment_has_open_set")
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 1)
+
+    def test_retired_generic_node_patch_cannot_change_assignment(self):
+        self._authenticate_staff()
+
+        response = self.client.patch(
+            f"/api/nodes/{self.node.node_id}/", {"rack_number": 2}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_assignment_rejects_extra_or_missing_fields(self):
+        self._authenticate_staff()
+        extra = self.client.put("/api/racks/node-assignment/", {
+            "device_id": self.screen.device_id,
+            "node_id": self.node.node_id,
+            "rack_number": 8,
+        }, format="json")
+        missing = self.client.put("/api/racks/node-assignment/", {
+            "device_id": self.screen.device_id,
+        }, format="json")
+
+        self.assertEqual(extra.status_code, 400)
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(extra.data["code"], "invalid_assignment_request")
+
+        unsafe_node = self.client.put("/api/racks/node-assignment/", {
+            "device_id": self.screen.device_id,
+            "node_id": "rack/+/rep",
+        }, format="json")
+        self.assertEqual(unsafe_node.status_code, 400)
+        self.assertEqual(unsafe_node.data["code"], "invalid_node_id")
+
+    def test_assignment_requires_a_registered_assigned_screen_and_known_node(self):
+        self._authenticate_staff()
+        self.assertEqual(self._assign(device_id="missing-screen").status_code, 404)
+
+        self.screen.rack_number = None
+        self.screen.save(update_fields=["rack_number"])
+        self.assertEqual(self._assign().status_code, 409)
+
+        self.screen.rack_number = 1
+        self.screen.save(update_fields=["rack_number"])
+        response = self._assign(node_id="missing-node")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["code"], "node_not_found")
+
+    def test_assignment_rejects_inactive_and_simulated_nodes(self):
+        self._authenticate_staff()
+        self.node.is_active = False
+        self.node.save(update_fields=["is_active"])
+        self.assertEqual(self._assign().data["code"], "node_inactive")
+
+        self.node.is_active = True
+        self.node.is_simulated = True
+        self.node.save(update_fields=["is_active", "is_simulated"])
+        self.assertEqual(self._assign().data["code"], "simulated_node")
+
+    def test_node_list_exposes_simulation_provenance_to_the_rack_gate(self):
+        self.node.is_simulated = True
+        self.node.save(update_fields=["is_simulated"])
+
+        response = self.client.get("/api/nodes/")
+
+        serialized = next(node for node in response.data if node["node_id"] == self.node.node_id)
+        self.assertIs(serialized["is_simulated"], True)
+        self.assertEqual(serialized["acquisition_kind"], Node.ACQUISITION_MQTT)
+
+    def test_unassigned_wt901_requires_verified_enrollment_even_with_a_fresh_pulse(self):
+        self._authenticate_staff()
+        self.node.acquisition_kind = Node.ACQUISITION_WT901_BLE
+        self.node.save(update_fields=["acquisition_kind"])
+
+        missing = self._assign()
+        self.node.last_seen = timezone.now() - timedelta(seconds=3)
+        self.node.save(update_fields=["last_seen"])
+        stale = self._assign()
+        self.node.last_seen = timezone.now()
+        self.node.save(update_fields=["last_seen"])
+        fresh = self._assign()
+
+        self.assertEqual(missing.status_code, 409)
+        self.assertEqual(missing.data["code"], "wt901_verification_required")
+        self.assertEqual(stale.data["code"], "wt901_verification_required")
+        self.assertEqual(fresh.status_code, 409)
+        self.assertEqual(fresh.data["code"], "wt901_verification_required")
+
+    def test_active_staff_can_provision_acquisition_kind_with_one_audit_event(self):
+        self._authenticate_staff()
+
+        changed = self._provision({"acquisition_kind": "wt901_ble"})
+        unchanged = self._provision({"acquisition_kind": "wt901_ble"})
+
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(changed.data["acquisition_kind"], "wt901_ble")
+        self.assertEqual(unchanged.status_code, 200)
+        self.assertEqual(MonitoringEvent.objects.get().reason, "node_acquisition_changed")
+
+    def test_acquisition_provisioning_requires_staff_and_exact_valid_body(self):
+        unauthenticated = self._provision({"acquisition_kind": "wt901_ble"})
+        self._authenticate_staff()
+        extra = self._provision({"acquisition_kind": "wt901_ble", "firmware_version": "spoof"})
+        invalid = self._provision({"acquisition_kind": "ble"})
+
+        self.assertEqual(unauthenticated.status_code, 401)
+        self.assertEqual(extra.status_code, 400)
+        self.assertEqual(extra.data["code"], "invalid_acquisition_request")
+        self.assertEqual(invalid.data["code"], "invalid_acquisition_kind")
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.acquisition_kind, Node.ACQUISITION_MQTT)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_acquisition_provisioning_is_blocked_during_an_open_set(self):
+        self._authenticate_staff()
+        self._open_set(self.node)
+
+        response = self._provision({"acquisition_kind": "wt901_ble"})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_acquisition_has_open_set")
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.acquisition_kind, Node.ACQUISITION_MQTT)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_assignment_rejects_implicit_transfer(self):
+        self._authenticate_staff()
+        self.node.rack_number = 2
+        self.node.save(update_fields=["rack_number"])
+
+        response = self._assign()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assigned_elsewhere")
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 2)
+
+    def test_assignment_replaces_the_node_at_this_rack_atomically(self):
+        self._authenticate_staff()
+        old_node = Node.objects.create(node_id="old-node", rack_number=1)
+
+        response = self._assign()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["rack_number"], 1)
+        self.assertEqual(response.data["node"]["node_id"], self.node.node_id)
+        old_node.refresh_from_db()
+        self.node.refresh_from_db()
+        self.assertIsNone(old_node.rack_number)
+        self.assertEqual(self.node.rack_number, 1)
+        self.assertEqual(MonitoringEvent.objects.get().reason, "node_assignment_changed")
+
+    def test_assignment_is_idempotent_without_another_invalidation(self):
+        self._authenticate_staff()
+        self.assertEqual(self._assign().status_code, 200)
+
+        response = self._assign()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(MonitoringEvent.objects.count(), 1)
+
+    def test_assignment_is_blocked_by_an_open_set_on_selected_or_replaced_node(self):
+        self._authenticate_staff()
+        self._open_set(self.node)
+        response = self._assign()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assignment_has_open_set")
+
+        Set.objects.all().delete()
+        old_node = Node.objects.create(node_id="old-node", rack_number=1)
+        self._open_set(old_node)
+        response = self._assign()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assignment_has_open_set")
+
+    def test_assignment_rolls_back_if_invalidation_write_fails(self):
+        self._authenticate_staff()
+        with patch(
+            "event_handler.views.MonitoringEvent.objects.create",
+            side_effect=RuntimeError("outbox unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self._assign()
+
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_concurrent_assignment_constraint_returns_a_stable_conflict(self):
+        self._authenticate_staff()
+        with patch("event_handler.views._assign_node_to_rack", side_effect=IntegrityError):
+            response = self._assign()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assignment_conflict")
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+
+class BLEAgentFacadeTests(APITestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="ble-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.screen = RackScreen.objects.create(device_id="rack-screen-1", rack_number=1)
+
+    def _authenticate(self):
+        self.client.force_authenticate(self.staff)
+
+    def _binding(self, **overrides):
+        return {
+            "node_id": "wt901_random_abc123",
+            "label": "WT901BLE",
+            "binding_token": "binding-secret",
+            **overrides,
+        }
+
+    def _select(self, **overrides):
+        return self.client.put("/api/racks/1/ble-selection/", {
+            "device_id": self.screen.device_id,
+            "verification_token": "verification-secret",
+            **overrides,
+        }, format="json")
+
+    @patch("event_handler.views.ble_agent.scan")
+    def test_scan_requires_staff_and_exact_empty_body(self, scan):
+        scan.return_value = {"devices": []}
+        self.assertEqual(self.client.post("/api/ble/scans/", {}, format="json").status_code, 401)
+        self.client.force_authenticate(User.objects.create_user(username="ordinary", password="pw"))
+        self.assertEqual(self.client.post("/api/ble/scans/", {}, format="json").status_code, 403)
+        self._authenticate()
+        invalid = self.client.post("/api/ble/scans/", {"duration": 30}, format="json")
+        valid = self.client.post("/api/ble/scans/", {}, format="json")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(valid.status_code, 200)
+        scan.assert_called_once_with()
+
+    @patch("event_handler.views.ble_agent.scan")
+    def test_scan_response_omits_agent_private_fields(self, scan):
+        self._authenticate()
+        scan.return_value = {"devices": [{
+            "handle": "scan-handle", "label": "WT901BLE",
+            "ble_address": "AA:BB:CC:DD:EE:FF", "rssi": -40,
+        }]}
+        response = self.client.post("/api/ble/scans/", {}, format="json")
+        self.assertEqual(response.data, {
+            "devices": [{"device_handle": "scan-handle", "label": "WT901BLE"}],
+        })
+        self.assertNotIn("AA:BB", json.dumps(response.data))
+
+    @patch("event_handler.views.ble_agent.verify")
+    def test_verification_has_exact_schema_and_safe_response(self, verify):
+        self._authenticate()
+        verify.return_value = {
+            "label": "WT901BLE", "verification_token": "verification-secret",
+            "movement_g": 0.25,
+            "ble_address": "AA:BB:CC:DD:EE:FF",
+        }
+        invalid = self.client.post("/api/ble/verifications/", {
+            "device_handle": "handle", "extra": True,
+        }, format="json")
+        response = self.client.post("/api/ble/verifications/", {
+            "device_handle": "handle",
+        }, format="json")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(response.data), {
+            "label", "verification_token", "movement_g", "verified",
+        })
+        verify.assert_called_once_with("handle")
+
+    @patch("event_handler.views.ble_agent.verify")
+    def test_verification_preserves_movement_not_confirmed_conflict(self, verify):
+        from .services.ble_agent import BLEAgentConflict
+
+        self._authenticate()
+        verify.side_effect = BLEAgentConflict(
+            "movement_not_confirmed",
+            "sensor movement was not confirmed; move the sensor and verify again",
+        )
+
+        response = self.client.post("/api/ble/verifications/", {
+            "device_handle": "handle",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data, {
+            "code": "movement_not_confirmed",
+            "detail": "sensor movement was not confirmed; move the sensor and verify again",
+        })
+
+    @patch("event_handler.views.ble_agent.bind")
+    def test_verified_selection_creates_and_assigns_wt901_node(self, bind):
+        self._authenticate()
+        bind.return_value = self._binding()
+        response = self._select()
+        node = Node.objects.get(node_id="wt901_random_abc123")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(node.rack_number, 1)
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_WT901_BLE)
+        self.assertNotIn("binding_token", response.data)
+        bind.assert_called_once_with("verification-secret", 1, None)
+
+    @patch("event_handler.views.ble_agent.bind")
+    def test_verified_selection_replaces_legacy_mqtt_node_without_agent_identity(self, bind):
+        self._authenticate()
+        old_node = Node.objects.create(node_id="rack_1", rack_number=1)
+        bind.return_value = self._binding()
+
+        response = self._select()
+
+        self.assertEqual(response.status_code, 200)
+        old_node.refresh_from_db()
+        self.assertIsNone(old_node.rack_number)
+        bind.assert_called_once_with("verification-secret", 1, None)
+
+    @patch("event_handler.views.ble_agent.bind")
+    def test_verified_selection_replaces_the_expected_wt901_binding(self, bind):
+        self._authenticate()
+        old_node = Node.objects.create(
+            node_id="old-wt901", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+        bind.return_value = self._binding()
+
+        response = self._select()
+
+        self.assertEqual(response.status_code, 200)
+        old_node.refresh_from_db()
+        self.assertIsNone(old_node.rack_number)
+        self.assertEqual(Node.objects.get(node_id="wt901_random_abc123").rack_number, 1)
+        bind.assert_called_once_with("verification-secret", 1, "old-wt901")
+
+    @patch("event_handler.views.ble_agent.bind")
+    def test_open_set_conflict_does_not_bind_with_the_agent(self, bind):
+        self._authenticate()
+        old_node = Node.objects.create(
+            node_id="old-node", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        Set.objects.create(
+            session=session, athlete=Athlete.objects.create(name="Jordan"), node=old_node,
+            exercise=Exercise.objects.get_or_create(name="Back Squat")[0], set_number=1,
+        )
+        response = self._select()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assignment_has_open_set")
+        bind.assert_not_called()
+        self.assertFalse(Node.objects.filter(node_id="wt901_random_abc123").exists())
+
+    @patch("event_handler.views.ble_agent.rollback")
+    @patch("event_handler.views.ble_agent.bind")
+    def test_database_failure_rolls_back_agent_binding(self, bind, rollback):
+        self._authenticate()
+        bind.return_value = self._binding()
+        with patch(
+            "event_handler.views.MonitoringEvent.objects.create",
+            side_effect=RuntimeError("outbox unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self._select()
+        rollback.assert_called_once_with("binding-secret")
+        self.assertFalse(Node.objects.filter(node_id="wt901_random_abc123").exists())
+
+    @patch("event_handler.views.ble_agent.rollback")
+    @patch("event_handler.views.ble_agent.bind")
+    def test_assignment_race_rolls_back_and_requires_binding_reconciliation(self, bind, rollback):
+        self._authenticate()
+        old_node = Node.objects.create(
+            node_id="old-wt901", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+
+        def race_assignment(*_args):
+            old_node.rack_number = None
+            old_node.save(update_fields=["rack_number"])
+            Node.objects.create(
+                node_id="racing-wt901", rack_number=1,
+                acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            )
+            return self._binding()
+
+        bind.side_effect = race_assignment
+        response = self._select()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "binding_reconciliation_required")
+        rollback.assert_called_once_with("binding-secret")
+        self.assertFalse(Node.objects.filter(node_id="wt901_random_abc123").exists())
+
+    @patch("event_handler.views.ble_agent.rollback")
+    @patch("event_handler.views.ble_agent.bind")
+    def test_open_set_race_after_bind_rolls_back(self, bind, rollback):
+        self._authenticate()
+        old_node = Node.objects.create(
+            node_id="old-wt901", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+
+        def race_open_set(*_args):
+            Set.objects.create(
+                session=TrainingSession.objects.create(label="Live", started_at=timezone.now()),
+                athlete=Athlete.objects.create(name="Jordan"), node=old_node,
+                exercise=Exercise.objects.get_or_create(name="Back Squat")[0], set_number=1,
+            )
+            return self._binding()
+
+        bind.side_effect = race_open_set
+        response = self._select()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assignment_has_open_set")
+        rollback.assert_called_once_with("binding-secret")
+
+    @patch("event_handler.views.ble_agent.rollback")
+    @patch("event_handler.views.ble_agent.bind")
+    def test_failed_rollback_returns_stable_reconciliation_error_and_event(self, bind, rollback):
+        from .services.ble_agent import BLEAgentUnavailable
+
+        self._authenticate()
+        bind.return_value = self._binding()
+        rollback.side_effect = BLEAgentUnavailable()
+        with patch("event_handler.views._apply_ble_binding", side_effect=IntegrityError):
+            response = self._select()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["code"], "ble_reconciliation_required")
+        self.assertTrue(MonitoringEvent.objects.filter(
+            reason="ble_reconciliation_required",
+        ).exists())
+
+    @patch("event_handler.views.ble_agent.rollback")
+    @patch("event_handler.views.ble_agent.bind")
+    def test_selection_is_idempotent_and_rejects_cross_rack_binding(self, bind, rollback):
+        self._authenticate()
+        bind.return_value = self._binding()
+        self.assertEqual(self._select().status_code, 200)
+        self.assertEqual(self._select().status_code, 200)
+        self.assertEqual(MonitoringEvent.objects.count(), 1)
+        RackScreen.objects.create(device_id="rack-screen-2", rack_number=2)
+        conflict = self.client.put("/api/racks/2/ble-selection/", {
+            "device_id": "rack-screen-2", "verification_token": "verification-secret",
+        }, format="json")
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.data["code"], "node_assigned_elsewhere")
+        rollback.assert_called_once_with("binding-secret")
+
+    @patch("event_handler.services.ble_agent._call")
+    def test_agent_bind_body_includes_exact_expected_node_identity(self, call):
+        from .services import ble_agent
+
+        ble_agent.bind("verification-secret", 7, "old-wt901")
+
+        call.assert_called_once_with("POST", "/v1/bindings", {
+            "verification_token": "verification-secret",
+            "rack_number": 7,
+            "expected_node_id": "old-wt901",
+        })
+
+    @patch("event_handler.views.ble_agent.scan", side_effect=Exception)
+    def test_agent_unavailable_is_stable(self, scan):
+        from .services.ble_agent import BLEAgentUnavailable
+        scan.side_effect = BLEAgentUnavailable()
+        self._authenticate()
+        response = self.client.post("/api/ble/scans/", {}, format="json")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data, {
+            "code": "ble_agent_unavailable", "detail": "BLE Agent is unavailable",
+        })
+
+    @patch("event_handler.views.ble_agent.health")
+    def test_health_requires_the_assigned_screen_and_hides_agent_private_fields(self, health):
+        node = Node.objects.create(
+            node_id="wt901_random_abc123", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+        health.return_value = {
+            "node_id": "wt901_random_abc123", "label": "WT901BLE",
+            "state": "live", "sample_age_ms": 20, "movement_g": 0.25,
+            "ble_address": "AA:BB:CC:DD:EE:FF", "binding_token": "secret",
+        }
+        denied = self.client.get(
+            "/api/racks/1/sensor-health/", headers={"X-Rack-Device-ID": "wrong-screen"},
+        )
+        response = self.client.get(
+            "/api/racks/1/sensor-health/",
+            headers={"X-Rack-Device-ID": self.screen.device_id},
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "node_id": "wt901_random_abc123", "label": "WT901BLE",
+            "state": "live", "sample_age_ms": 20, "movement_g": 0.25,
+        })
+        health.assert_called_once_with(1)
+        node.refresh_from_db()
+        self.assertIsNotNone(node.last_seen)
+
+    @patch("event_handler.views.ble_agent.health")
+    def test_health_rejects_device_identity_in_the_query_string(self, health):
+        response = self.client.get(
+            f"/api/racks/1/sensor-health/?device_id={self.screen.device_id}",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        health.assert_not_called()
+
+    def test_legacy_assignment_cannot_select_an_unassigned_wt901_node(self):
+        self._authenticate()
+        node = Node.objects.create(
+            node_id="legacy-wt901", acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            last_seen=timezone.now(),
+        )
+        response = self.client.put("/api/racks/node-assignment/", {
+            "device_id": self.screen.device_id, "node_id": node.node_id,
+        }, format="json")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "wt901_verification_required")
+
+
+class LiveRoomInvalidationTests(APITestCase):
+    def setUp(self):
+        self.session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        self.athlete = Athlete.objects.create(name="Jordan")
+        self.session.athletes.add(self.athlete)
+        self.exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+        self.node = Node.objects.create(node_id="rack_1", rack_number=1)
+        _, self.controller_headers = acquire_controller(self.client, 1)
+        MonitoringEvent.objects.all().delete()
+
+    def _start_set(self, **overrides):
+        payload = {
+            "session": self.session.id,
+            "athlete": self.athlete.id,
+            "node": self.node.id,
+            "rack_number": 1,
+            "exercise": self.exercise.id,
+            "set_number": 1,
+            "weight_lbs": 225,
+            "expected_state_version": RackRuntime.objects.get(rack_number=1).state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        payload.update(overrides)
+        return self.client.post(
+            "/api/sets/", payload, format="json", headers=self.controller_headers,
+        )
+
+    def _complete_set(self, set_id, *, false=False, command_id=None):
+        reps = [] if false else [{
+            "rep_number": 1,
+            "mean_velocity": 0.7,
+            "peak_velocity": 0.9,
+            "duration_ms": 700,
+            "timestamp": timezone.now().isoformat(),
+            "velocity_color": "green",
+        }]
+        return self.client.post(f"/api/sets/{set_id}/complete/", {
+            "reps_completed": 0 if false else 1,
+            "avg_velocity": None if false else 0.7,
+            "peak_velocity": None if false else 0.9,
+            "is_false_set": false,
+            "reps": reps,
+            "expected_state_version": RackRuntime.objects.get(rack_number=1).state_version,
+            "command_id": command_id or str(uuid.uuid4()),
+        }, format="json", headers=self.controller_headers)
+
+    def test_set_start_enqueues_a_room_invalidation(self):
+        response = self._start_set()
+
+        self.assertEqual(response.status_code, 201)
+        event = MonitoringEvent.objects.get()
+        self.assertEqual(event.reason, "set_started")
+        self.assertFalse(event.is_simulated)
+
+    def test_observer_cannot_start_a_sensor_set(self):
+        payload = {
+            "session": self.session.id,
+            "athlete": self.athlete.id,
+            "node": self.node.id,
+            "rack_number": 1,
+            "exercise": self.exercise.id,
+            "set_number": 1,
+            "weight_lbs": 225,
+            "expected_state_version": RackRuntime.objects.get(rack_number=1).state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+
+        response = self.client.post("/api/sets/", payload, format="json")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_controller_required")
+        self.assertEqual(Set.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_second_open_set_at_the_rack_is_rejected_without_an_event(self):
+        self.assertEqual(self._start_set().status_code, 201)
+        MonitoringEvent.objects.all().delete()
+
+        response = self._start_set(set_number=2)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "open_set_exists")
+        self.assertEqual(Set.objects.count(), 1)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_set_start_command_retry_returns_one_set_and_event(self):
+        command_id = str(uuid.uuid4())
+        first = self._start_set(command_id=command_id)
+        second = self._start_set(command_id=command_id)
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.data, first.data)
+        self.assertEqual(Set.objects.count(), 1)
+        self.assertEqual(MonitoringEvent.objects.count(), 1)
+
+    def test_wt901_set_start_rejects_node_that_became_stale_after_acquire(self):
+        self.node.acquisition_kind = Node.ACQUISITION_WT901_BLE
+        self.node.last_seen = timezone.now() - timedelta(seconds=3)
+        self.node.save(update_fields=["acquisition_kind", "last_seen"])
+
+        response = self._start_set()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_sensor_required")
+        self.assertEqual(Set.objects.count(), 0)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_sensor_backed_set_start_requires_the_current_rack_assignment(self):
+        missing_rack = self._start_set(rack_number=None)
+        wrong_rack = self._start_set(rack_number=2)
+
+        self.assertEqual(missing_rack.status_code, 400)
+        self.assertEqual(missing_rack.data["code"], "rack_number_required")
+        self.assertEqual(wrong_rack.status_code, 409)
+        self.assertEqual(wrong_rack.data["code"], "node_assignment_changed")
+        self.assertEqual(Set.objects.count(), 0)
+
+    def test_simulated_set_lifecycle_preserves_provenance(self):
+        self.session.is_simulated = True
+        self.session.save(update_fields=["is_simulated"])
+
+        response = self._start_set()
+
+        self.assertEqual(response.status_code, 201)
+        target_set = Set.objects.get(id=response.data["id"])
+        self.assertTrue(target_set.is_simulated)
+        self.assertTrue(MonitoringEvent.objects.get(reason="set_started").is_simulated)
+
+        self.assertEqual(self._complete_set(target_set.id).status_code, 200)
+        self.assertTrue(MonitoringEvent.objects.get(reason="set_completed").is_simulated)
+
+    def test_set_start_rolls_back_if_the_invalidation_cannot_be_written(self):
+        with patch(
+            "event_handler.views.MonitoringEvent.objects.create",
+            side_effect=RuntimeError("outbox unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self._start_set()
+
+        self.assertEqual(Set.objects.count(), 0)
+
+    def test_invalid_set_start_enqueues_nothing(self):
+        response = self.client.post("/api/sets/", {}, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_set_completion_enqueues_one_room_invalidation(self):
+        set_id = self._start_set().data["id"]
+        MonitoringEvent.objects.all().delete()
+
+        response = self._complete_set(set_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Rep.objects.filter(set_id=set_id).count(), 1)
+        self.assertEqual(
+            list(MonitoringEvent.objects.values_list("reason", flat=True)),
+            ["set_completed"],
+        )
+
+    def test_completion_publishes_to_the_rack_captured_before_a_later_node_move(self):
+        set_id = self._start_set().data["id"]
+
+        def move_node_after_commit(*_args, **_kwargs):
+            Node.objects.filter(pk=self.node.pk).update(rack_number=2)
+
+        with patch("event_handler.views.publish_rack_state", side_effect=move_node_after_commit) as publish:
+            response = self._complete_set(set_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(publish.call_args.args[0], 1)
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 2)
+
+    def test_false_set_completion_still_invalidates_without_reps(self):
+        set_id = self._start_set().data["id"]
+        MonitoringEvent.objects.all().delete()
+
+        response = self._complete_set(set_id, false=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Rep.objects.filter(set_id=set_id).count(), 0)
+        self.assertEqual(MonitoringEvent.objects.get().reason, "set_completed")
+
+    def test_repeated_completion_is_a_conflict_without_duplicate_reps_or_events(self):
+        set_id = self._start_set().data["id"]
+        MonitoringEvent.objects.all().delete()
+        self.assertEqual(self._complete_set(set_id).status_code, 200)
+
+        response = self._complete_set(set_id)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "set_already_completed")
+        self.assertEqual(Rep.objects.filter(set_id=set_id).count(), 1)
+        self.assertEqual(MonitoringEvent.objects.filter(reason="set_completed").count(), 1)
+
+    def test_retried_completion_command_returns_prior_success_without_duplicates(self):
+        set_id = self._start_set().data["id"]
+        MonitoringEvent.objects.all().delete()
+        command_id = str(uuid.uuid4())
+
+        first = self._complete_set(set_id, command_id=command_id)
+        second = self._complete_set(set_id, command_id=command_id)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.data, first.data)
+        self.assertEqual(Rep.objects.filter(set_id=set_id).count(), 1)
+        self.assertEqual(MonitoringEvent.objects.filter(reason="set_completed").count(), 1)
+
+    def test_observer_stale_and_wrong_rack_completion_write_nothing(self):
+        set_id = self._start_set().data["id"]
+        runtime = RackRuntime.objects.get(rack_number=1)
+        body = {
+            "reps_completed": 1,
+            "avg_velocity": 0.7,
+            "peak_velocity": 0.9,
+            "is_false_set": False,
+            "reps": [{
+                "rep_number": 1,
+                "mean_velocity": 0.7,
+                "peak_velocity": 0.9,
+                "duration_ms": 700,
+                "timestamp": timezone.now().isoformat(),
+                "velocity_color": "green",
+            }],
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        stale_headers = {**self.controller_headers, "X-Controller-Epoch": "0"}
+        Node.objects.create(node_id="rack_2", rack_number=2)
+        _, wrong_rack_headers = acquire_controller(self.client, 2)
+        MonitoringEvent.objects.all().delete()
+
+        observer = self.client.post(f"/api/sets/{set_id}/complete/", body, format="json")
+        stale = self.client.post(
+            f"/api/sets/{set_id}/complete/", body, format="json", headers=stale_headers,
+        )
+        wrong_rack = self.client.post(
+            f"/api/sets/{set_id}/complete/", body, format="json", headers=wrong_rack_headers,
+        )
+
+        self.assertEqual(observer.data["code"], "rack_controller_required")
+        self.assertEqual(stale.data["code"], "rack_controller_stale")
+        self.assertEqual(wrong_rack.data["code"], "rack_controller_stale")
+        self.assertEqual(Rep.objects.filter(set_id=set_id).count(), 0)
+        self.assertIsNone(Set.objects.get(id=set_id).ended_at)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_completion_remains_allowed_after_wt901_health_becomes_stale(self):
+        self.node.acquisition_kind = Node.ACQUISITION_WT901_BLE
+        self.node.last_seen = timezone.now()
+        self.node.save(update_fields=["acquisition_kind", "last_seen"])
+        set_id = self._start_set().data["id"]
+        self.node.last_seen = timezone.now() - timedelta(seconds=3)
+        self.node.save(update_fields=["last_seen"])
+        MonitoringEvent.objects.all().delete()
+
+        response = self._complete_set(set_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(Set.objects.get(id=set_id).ended_at)
+        self.assertEqual(MonitoringEvent.objects.get().reason, "set_completed")
+
+    def test_completion_rolls_back_if_the_invalidation_cannot_be_written(self):
+        target_set = Set.objects.create(
+            session=self.session,
+            athlete=self.athlete,
+            node=self.node,
+            exercise=self.exercise,
+            set_number=1,
+        )
+        runtime = RackRuntime.objects.get(rack_number=1)
+        runtime.current_set = target_set
+        runtime.phase = RackRuntime.PHASE_ACTIVE
+        runtime.save(update_fields=["current_set", "phase", "updated_at"])
+
+        with patch(
+            "event_handler.views.MonitoringEvent.objects.create",
+            side_effect=RuntimeError("outbox unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self._complete_set(target_set.id)
+
+        target_set.refresh_from_db()
+        self.assertIsNone(target_set.ended_at)
+        self.assertEqual(target_set.reps_completed, 0)
+        self.assertEqual(Rep.objects.filter(set=target_set).count(), 0)
+
+    def test_invalid_completion_enqueues_nothing(self):
+        target_set = Set.objects.create(
+            session=self.session,
+            athlete=self.athlete,
+            node=self.node,
+            exercise=self.exercise,
+            set_number=1,
+        )
+
+        response = self.client.post(
+            f"/api/sets/{target_set.id}/complete/",
+            {"reps_completed": 1},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
 
 
 class SessionStatusEndpointTests(APITestCase):
@@ -512,6 +2072,74 @@ class RoomStateEndpointTests(APITestCase):
         rack = next(r for r in res.data["racks"] if r["rack_number"] == 1)
         self.assertEqual(rack["status"], "complete")
         self.assertEqual(rack["status_color"], "green")
+
+    def test_active_set_includes_transient_runtime_rep_metrics(self):
+        session, athlete, squat = self._room()
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=1)
+        live_set = Set.objects.create(
+            session=session, athlete=athlete, exercise=squat, set_number=1,
+        )
+        RackRuntime.objects.create(
+            rack_number=1,
+            phase=RackRuntime.PHASE_ACTIVE,
+            current_set=live_set,
+            rep_count=3,
+            latest_mean_velocity=0.71,
+            latest_peak_velocity=0.93,
+            latest_color="green",
+        )
+
+        rack = next(
+            item for item in self.client.get("/api/room-state/").data["racks"]
+            if item["rack_number"] == 1
+        )
+
+        self.assertEqual(rack["latest_set"]["reps_completed"], 0)
+        self.assertEqual(rack["live"], {
+            "rep_count": 3,
+            "latest_mean_velocity": 0.71,
+            "latest_peak_velocity": 0.93,
+            "latest_color": "green",
+        })
+        self.assertEqual(rack["status_color"], "green")
+
+    def test_room_state_hides_runtime_metrics_outside_matching_active_set(self):
+        session, athlete, squat = self._room()
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=1)
+        displayed_set = Set.objects.create(
+            session=session, athlete=athlete, exercise=squat, set_number=1,
+        )
+        other_set = Set.objects.create(
+            session=session, athlete=athlete, exercise=squat, set_number=2,
+        )
+        runtime = RackRuntime.objects.create(
+            rack_number=1,
+            phase=RackRuntime.PHASE_REST,
+            current_set=displayed_set,
+            rep_count=9,
+            latest_mean_velocity=2.9,
+            latest_peak_velocity=3.0,
+            latest_color="red",
+        )
+
+        def live_payload():
+            rack = next(
+                item for item in self.client.get("/api/room-state/").data["racks"]
+                if item["rack_number"] == 1
+            )
+            return rack["live"]
+
+        self.assertIsNone(live_payload())
+        runtime.phase = RackRuntime.PHASE_ACTIVE
+        runtime.current_set = displayed_set
+        runtime.save()
+        self.assertIsNone(live_payload())  # Set 2 is the displayed newest set.
+        runtime.current_set = other_set
+        runtime.save()
+        self.assertIsNotNone(live_payload())
+        other_set.ended_at = timezone.now()
+        other_set.save()
+        self.assertIsNone(live_payload())
 
     def test_wall_view_is_open_but_hides_ids_and_roster(self):
         """The wall screen hangs in the gym with nobody logged in, so it gets
@@ -1642,7 +3270,87 @@ class TrainingGroupCoachMigrationTests(TransactionTestCase):
     def tearDown(self):
         # Leave the database at the latest migration, or every test that runs
         # after this class sees a half-migrated schema.
-        self._migrate([("event_handler", "0015_traininggroupcoach")])
+        self._migrate([("event_handler", "0021_node_acquisition_and_receipt_index")])
+
+
+class NodeAssignmentMigrationTests(TransactionTestCase):
+    migrate_from = [("event_handler", "0017_slot_day_cascade")]
+    migrate_to = [("event_handler", "0019_safe_assigned_node_ids")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_duplicate_and_unsafe_legacy_assignments_require_fresh_rack_setup(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldNode = old_apps.get_model("event_handler", "Node")
+        OldNode.objects.create(node_id="duplicate-a", rack_number=1)
+        OldNode.objects.create(node_id="duplicate-b", rack_number=1)
+        OldNode.objects.create(node_id="unsafe/+/node", rack_number=2)
+
+        new_apps = self._migrate(self.migrate_to)
+        NewNode = new_apps.get_model("event_handler", "Node")
+
+        self.assertEqual(NewNode.objects.exclude(rack_number=None).count(), 0)
+
+    def test_constraint_allows_unassigned_nodes_but_rejects_invalid_assignments(self):
+        new_apps = self._migrate(self.migrate_to)
+        NewNode = new_apps.get_model("event_handler", "Node")
+        NewNode.objects.create(node_id="rack-a", rack_number=1)
+        NewNode.objects.create(node_id="unsafe/+/node")
+        NewNode.objects.create(node_id="another-unassigned")
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            NewNode.objects.create(node_id="rack-b", rack_number=1)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            NewNode.objects.filter(node_id="unsafe/+/node").update(rack_number=2)
+
+    def test_reverse_keeps_current_mapping_without_recreating_cleared_legacy_data(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldNode = old_apps.get_model("event_handler", "Node")
+        OldNode.objects.create(node_id="duplicate-a", rack_number=1)
+        OldNode.objects.create(node_id="duplicate-b", rack_number=1)
+        new_apps = self._migrate(self.migrate_to)
+        NewNode = new_apps.get_model("event_handler", "Node")
+        NewNode.objects.create(node_id="current", rack_number=2)
+
+        rolled_back_apps = self._migrate(self.migrate_from)
+        RolledBackNode = rolled_back_apps.get_model("event_handler", "Node")
+
+        self.assertEqual(RolledBackNode.objects.get(node_id="current").rack_number, 2)
+        self.assertIsNone(RolledBackNode.objects.get(node_id="duplicate-a").rack_number)
+        self.assertIsNone(RolledBackNode.objects.get(node_id="duplicate-b").rack_number)
+
+    def tearDown(self):
+        self._migrate([("event_handler", "0021_node_acquisition_and_receipt_index")])
+
+
+class NodeAcquisitionMigrationTests(TransactionTestCase):
+    migrate_from = [("event_handler", "0020_rack_controller_runtime")]
+    migrate_to = [("event_handler", "0021_node_acquisition_and_receipt_index")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_wt901_firmware_is_classified_without_changing_other_nodes(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldNode = old_apps.get_model("event_handler", "Node")
+        OldNode.objects.create(node_id="wt901", firmware_version="wt901ble-agent-1")
+        OldNode.objects.create(node_id="mqtt", firmware_version="esp32-1")
+
+        new_apps = self._migrate(self.migrate_to)
+        NewNode = new_apps.get_model("event_handler", "Node")
+
+        self.assertEqual(NewNode.objects.get(node_id="wt901").acquisition_kind, "wt901_ble")
+        self.assertEqual(NewNode.objects.get(node_id="mqtt").acquisition_kind, "mqtt")
+
+    def tearDown(self):
+        self._migrate(self.migrate_to)
 
 
 class OneOpenSessionTests(APITestCase):
@@ -2434,9 +4142,15 @@ class ScheduleRouteTests(APITestCase):
         """End to end: the prepared day, once started, behaves like any other."""
         session_id = self._create_session(self.slots[0])
         self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+        Node.objects.create(node_id="rack-1", rack_number=1)
+        _, headers = acquire_controller(self.client, 1)
+        runtime = RackRuntime.objects.get(rack_number=1)
 
-        res = self.client.post("/api/racks/1/checkin/", {"athlete": self.jordan.id},
-                               format="json")
+        res = self.client.post("/api/racks/1/checkin/", {
+            "athlete": self.jordan.id,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
         self.assertEqual(res.status_code, 201)
 
 
@@ -2516,8 +4230,14 @@ class UnstartedSessionTests(APITestCase):
         """The heart of it. A future session holding the racks is canon D18 with
         a calendar bolted on: sets would attach to a day nobody is training."""
         self._unstarted()
-        res = self.client.post("/api/racks/1/checkin/", {"athlete": self.athlete.id},
-                               format="json")
+        Node.objects.create(node_id="rack-1", rack_number=1)
+        _, headers = acquire_controller(self.client, 1)
+        runtime = RackRuntime.objects.get(rack_number=1)
+        res = self.client.post("/api/racks/1/checkin/", {
+            "athlete": self.athlete.id,
+            "expected_state_version": runtime.state_version,
+            "command_id": str(uuid.uuid4()),
+        }, format="json", headers=headers)
         self.assertEqual(res.status_code, 400)
 
     def test_an_unstarted_session_does_not_block_starting_today(self):

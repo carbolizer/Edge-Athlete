@@ -79,6 +79,7 @@ class AthleteSerializer(serializers.ModelSerializer):
         model = Athlete
         fields = ["id", "name", "nfc_tag_id", "created_at", "notes"]
         read_only_fields = ["id", "created_at"]
+        extra_kwargs = {"nfc_tag_id": {"write_only": True}}
 
 
 class TrainingSessionSerializer(serializers.ModelSerializer):
@@ -141,7 +142,8 @@ class NodeSerializer(serializers.ModelSerializer):
         # as the `node` foreign key when it creates a Set — the tablet only knows
         # the sensor by its string node_id otherwise.
         fields = ["id", "node_id", "rack_number", "mount_type", "firmware_version",
-                  "battery_level", "signal_strength", "last_seen", "is_active"]
+                  "acquisition_kind", "battery_level", "signal_strength", "last_seen",
+                  "is_active", "is_simulated"]
 
 
 # ─────────────────────────── planning (Training* hierarchy) ───────────────────────────

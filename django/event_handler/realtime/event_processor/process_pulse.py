@@ -13,13 +13,15 @@ def process_pulse_event(payload):
     timestamp = parse_datetime(payload["timestamp"])
     if timestamp is None or not timezone.is_aware(timestamp):
         raise ValueError("timestamp must be timezone-aware ISO 8601")
-    if timestamp > timezone.now() + timedelta(minutes=5):
+    now = timezone.now()
+    if timestamp > now + timedelta(minutes=5):
         raise ValueError("timestamp is too far in the future")
-
     with transaction.atomic():
         existing = Node.objects.select_for_update().filter(node_id=payload["node_id"]).first()
         if existing is None:
             raise ValueError("node is not registered")
+        if existing.acquisition_kind == Node.ACQUISITION_WT901_BLE:
+            raise ValueError("WT901 BLE nodes reject MQTT pulses")
         if existing.last_seen and timestamp <= existing.last_seen:
             return existing
         materially_changed = (
@@ -27,14 +29,16 @@ def process_pulse_event(payload):
             or existing.firmware_version != payload.get("firmware_version")
             or not existing.is_active
             or existing.last_seen is None
-            or existing.last_seen < timezone.now() - timedelta(seconds=15)
+            or existing.last_seen < now - timedelta(seconds=15)
         )
         existing.battery_level = payload.get("battery_level")
         existing.signal_strength = payload.get("signal_strength")
         existing.firmware_version = payload.get("firmware_version")
         existing.last_seen = timestamp
         existing.is_active = True
-        existing.save(update_fields=["battery_level", "signal_strength", "firmware_version", "last_seen", "is_active"])
+        existing.save(update_fields=[
+            "battery_level", "signal_strength", "firmware_version", "last_seen", "is_active",
+        ])
         if materially_changed:
             MonitoringEvent.objects.create(reason="node_health_changed", is_simulated=existing.is_simulated)
     return existing

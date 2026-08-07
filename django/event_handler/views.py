@@ -26,11 +26,17 @@ Grouped by who uses them:
 Open vs coach-only follows _SPEC.md; shapes live in _MESSAGE_CONTRACT.md.
 """
 import json
+import base64
+import hashlib
+import hmac
+import math
+import re
+import uuid
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.utils.dateparse import parse_date
-from django.db import transaction
+from django.db import IntegrityError, models, transaction
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -43,11 +49,11 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, BlockCategory, TrainingGroupCoach,
-                     ScheduledSession)
+                     ScheduledSession, MonitoringEvent, RackRuntime, RackCommandReceipt)
 
 # Coaches are Django users; there is no separate coach table. See _SPEC.md.
 User = get_user_model()
-from .permissions import IsCoach
+from .permissions import IsActiveStaff, IsCoach
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
@@ -68,6 +74,188 @@ from .services.plan_resolution import (movements_for_athlete as plan_movements_f
 from .services.planning import apply_order, instantiate_block, promote_program_to_block, touch_block
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 from .services.tuning import RESTING_WINDOW
+from .services.node_health import node_is_usable
+from .services import ble_agent, nfc_agent
+
+CONTROLLER_LEASE = timedelta(seconds=20)
+CONTROLLER_COMMANDS_PER_SECOND = 10
+COMMAND_RECEIPT_RETRY_WINDOW = timedelta(hours=1)
+CONTROLLER_HEADERS = {
+    "device_id": "X-Rack-Device-ID",
+    "client_instance_id": "X-Client-Instance-ID",
+    "controller_token": "X-Controller-Token",
+    "controller_epoch": "X-Controller-Epoch",
+}
+
+
+def _canonical_controller_token(value):
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", value) is None:
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(value + "=")
+    except ValueError:
+        return False
+    return len(decoded) == 32 and base64.urlsafe_b64encode(decoded).decode().rstrip("=") == value
+
+
+def _token_digest(token):
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def _runtime_has_open_set(runtime):
+    return bool(runtime.current_set_id and runtime.current_set.ended_at is None)
+
+
+def _runtime_snapshot(runtime, now=None, *, recovery_required=False):
+    now = now or timezone.now()
+    lease_active = bool(runtime.lease_expires_at and runtime.lease_expires_at > now)
+    phase = RackRuntime.PHASE_RECOVERY_REQUIRED if recovery_required else runtime.phase
+    return {
+        "rack_number": runtime.rack_number,
+        "controller_active": lease_active,
+        "controller_epoch": runtime.controller_epoch,
+        "lease_expires_at": runtime.lease_expires_at.isoformat() if runtime.lease_expires_at else None,
+        "state_version": runtime.state_version,
+        "phase": phase,
+        "selected_athlete": (
+            {"id": runtime.selected_athlete_id, "name": runtime.selected_athlete.name}
+            if runtime.selected_athlete_id else None
+        ),
+        "selected_exercise": (
+            {"id": runtime.selected_exercise_id, "name": runtime.selected_exercise.name}
+            if runtime.selected_exercise_id else None
+        ),
+        "current_set": runtime.current_set_id,
+        "rep_count": runtime.rep_count,
+        "latest_mean_velocity": runtime.latest_mean_velocity,
+        "latest_peak_velocity": runtime.latest_peak_velocity,
+        "latest_color": runtime.latest_color or None,
+        "phase_started_at": runtime.phase_started_at.isoformat() if runtime.phase_started_at else None,
+        "updated_at": runtime.updated_at.isoformat() if runtime.updated_at else None,
+        "server_time": now.isoformat(),
+    }
+
+
+def _controller_conflict(code, detail, runtime, now=None, *, recovery_required=False):
+    return Response({
+        "code": code,
+        "detail": detail,
+        "snapshot": _runtime_snapshot(runtime, now, recovery_required=recovery_required),
+    }, status=409)
+
+
+def _controller_identity(request):
+    values = {key: request.headers.get(header) for key, header in CONTROLLER_HEADERS.items()}
+    if not all(values.values()) or not _canonical_controller_token(values["controller_token"]):
+        return None
+    try:
+        values["controller_epoch"] = int(values["controller_epoch"])
+    except (TypeError, ValueError):
+        return None
+    return values
+
+
+def _require_controller(request, runtime, now=None):
+    now = now or timezone.now()
+    identity = _controller_identity(request)
+    if identity is None:
+        return _controller_conflict(
+            "rack_controller_required", "a valid rack controller capability is required", runtime, now,
+        )
+    token_matches = hmac.compare_digest(
+        runtime.controller_token_digest, _token_digest(identity["controller_token"]),
+    )
+    holder_matches = bool(
+        runtime.controller_screen_id
+        and runtime.controller_screen.device_id == identity["device_id"]
+        and runtime.controller_screen.rack_number == runtime.rack_number
+        and runtime.client_instance_id == identity["client_instance_id"]
+        and runtime.controller_epoch == identity["controller_epoch"]
+        and token_matches
+    )
+    if not holder_matches:
+        return _controller_conflict(
+            "rack_controller_stale", "the controller capability is stale", runtime, now,
+        )
+    if not runtime.lease_expires_at or runtime.lease_expires_at <= now:
+        recovery = _runtime_has_open_set(runtime)
+        return _controller_conflict(
+            "rack_recovery_required" if recovery else "rack_controller_stale",
+            "the controller lease expired during an open set" if recovery else "the controller lease expired",
+            runtime, now, recovery_required=recovery,
+        )
+    return None
+
+
+def _command_identity(request):
+    command_id = request.data.get("command_id")
+    expected = request.data.get("expected_state_version")
+    try:
+        command_id = uuid.UUID(str(command_id))
+        expected = int(expected)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if isinstance(request.data.get("expected_state_version"), bool) or expected < 0:
+        return None
+    return command_id, expected
+
+
+def _existing_receipt(request, runtime, command_id):
+    receipt = RackCommandReceipt.objects.filter(runtime=runtime, command_id=command_id).first()
+    if receipt is None:
+        return None
+    identity = _controller_identity(request)
+    if (
+        identity is None
+        or identity["controller_epoch"] != receipt.controller_epoch
+        or identity["device_id"] != receipt.controller_device_id
+        or identity["client_instance_id"] != receipt.client_instance_id
+        or not hmac.compare_digest(
+            _token_digest(identity["controller_token"]), receipt.controller_token_digest,
+        )
+    ):
+        return _controller_conflict(
+            "rack_controller_stale", "the controller capability is stale", runtime,
+        )
+    if receipt.created_at <= timezone.now() - COMMAND_RECEIPT_RETRY_WINDOW:
+        receipt.delete()
+        return None
+    return Response(receipt.response_body, status=receipt.response_status)
+
+
+def _state_version_conflict(runtime, expected, now=None):
+    if runtime.state_version == expected:
+        return None
+    return _controller_conflict(
+        "rack_state_changed", "rack state changed; reconcile and retry", runtime, now,
+    )
+
+
+def _command_rate_limit(runtime, now=None):
+    now = now or timezone.now()
+    receipts = RackCommandReceipt.objects.filter(runtime=runtime)
+    receipts.filter(created_at__lt=now - COMMAND_RECEIPT_RETRY_WINDOW).delete()
+    if receipts.filter(created_at__gte=now - timedelta(seconds=1)).count() < CONTROLLER_COMMANDS_PER_SECOND:
+        return None
+    return Response({
+        "code": "rack_command_rate_limited",
+        "detail": "rack controller command rate exceeded",
+        "retry_after_seconds": 1,
+    }, status=429)
+
+
+def _save_receipt(request, runtime, command_id, response_body, response_status):
+    identity = _controller_identity(request)
+    RackCommandReceipt.objects.create(
+        runtime=runtime,
+        command_id=command_id,
+        controller_epoch=identity["controller_epoch"],
+        controller_device_id=identity["device_id"],
+        client_instance_id=identity["client_instance_id"],
+        controller_token_digest=_token_digest(identity["controller_token"]),
+        response_status=response_status,
+        response_body=response_body,
+    )
 
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
@@ -110,18 +298,722 @@ def racks_unassigned(request):
 
 
 @api_view(["PATCH"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def rack_assign(request, device_id):
     """Coach-only: give a waiting tablet its rack number. Body: { rack_number }."""
-    screen = RackScreen.objects.filter(device_id=device_id).first()
-    if screen is None:
-        return Response({"error": "rack screen not found"}, status=404)
     rack_number = request.data.get("rack_number")
     if rack_number is None:
         return Response({"error": "rack_number is required"}, status=400)
-    screen.rack_number = rack_number
-    screen.save()
+    try:
+        rack_number = int(rack_number)
+    except (TypeError, ValueError):
+        return Response({"error": "rack_number must be an integer"}, status=400)
+    with transaction.atomic():
+        screen = RackScreen.objects.select_for_update().filter(device_id=device_id).first()
+        if screen is None:
+            return Response({"error": "rack screen not found"}, status=404)
+        affected_racks = {number for number in (screen.rack_number, rack_number) if number is not None}
+        affected_nodes = Node.objects.select_for_update().filter(rack_number__in=affected_racks)
+        if Set.objects.select_for_update().filter(node__in=affected_nodes, ended_at=None).exists():
+            return Response({
+                "code": "rack_assignment_has_open_set",
+                "detail": "finish the open set before moving this rack screen",
+            }, status=409)
+        screen.rack_number = rack_number
+        screen.save(update_fields=["rack_number"])
     return Response(RackScreenSerializer(screen).data)
+
+
+@api_view(["PUT"])
+@permission_classes([IsActiveStaff])
+def rack_node_assignment(request):
+    """Select this physical rack's registered node. Body: {device_id, node_id}."""
+    allowed_fields = {"device_id", "node_id"}
+    if set(request.data) != allowed_fields:
+        return Response({
+            "code": "invalid_assignment_request",
+            "detail": "exactly device_id and node_id are required",
+        }, status=400)
+
+    device_id = request.data.get("device_id")
+    node_id = request.data.get("node_id")
+    if not isinstance(device_id, str) or not device_id.strip():
+        return Response({"code": "invalid_device_id", "detail": "device_id must be a non-empty string"}, status=400)
+    if not isinstance(node_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id) is None:
+        return Response({
+            "code": "invalid_node_id",
+            "detail": "node_id may contain only letters, numbers, underscores, and hyphens",
+        }, status=400)
+
+    try:
+        return _assign_node_to_rack(device_id, node_id)
+    except IntegrityError:
+        return Response({
+            "code": "node_assignment_conflict",
+            "detail": "another sensor assignment changed this rack; refresh and try again",
+        }, status=409)
+
+
+@transaction.atomic
+def _assign_node_to_rack(device_id, node_id):
+    screen = RackScreen.objects.select_for_update().filter(device_id=device_id).first()
+    if screen is None:
+        return Response({"code": "rack_screen_not_found", "detail": "rack screen not found"}, status=404)
+    if screen.rack_number is None:
+        return Response({"code": "rack_screen_unassigned", "detail": "rack screen has no rack number"}, status=409)
+
+    assigned_nodes = list(
+        Node.objects.select_for_update()
+        .filter(models.Q(node_id=node_id) | models.Q(rack_number=screen.rack_number))
+        .order_by("id")
+    )
+    selected = next((node for node in assigned_nodes if node.node_id == node_id), None)
+    if selected is None:
+        return Response({"code": "node_not_found", "detail": "node not found"}, status=404)
+    if not selected.is_active:
+        return Response({"code": "node_inactive", "detail": "inactive nodes cannot be assigned"}, status=409)
+    if selected.is_simulated:
+        return Response({"code": "simulated_node", "detail": "simulated nodes cannot be assigned to a physical rack"}, status=409)
+    if selected.acquisition_kind == Node.ACQUISITION_WT901_BLE and selected.rack_number is None:
+        return Response({
+            "code": "wt901_verification_required",
+            "detail": "unassigned WT901 nodes must be selected through verified BLE enrollment",
+        }, status=409)
+    if not node_is_usable(selected):
+        return Response({
+            "code": "wt901_node_stale",
+            "detail": "WT901 BLE nodes require a pulse within the last 2 seconds",
+        }, status=409)
+    if selected.rack_number not in (None, screen.rack_number):
+        return Response({
+            "code": "node_assigned_elsewhere",
+            "detail": f"node is already assigned to rack {selected.rack_number}",
+        }, status=409)
+
+    replaced = next(
+        (node for node in assigned_nodes if node.rack_number == screen.rack_number and node.pk != selected.pk),
+        None,
+    )
+    affected_nodes = [node for node in (selected, replaced) if node is not None]
+    if Set.objects.select_for_update().filter(node__in=affected_nodes, ended_at=None).exists():
+        return Response({
+            "code": "node_assignment_has_open_set",
+            "detail": "finish the open set before changing this sensor assignment",
+        }, status=409)
+
+    if selected.rack_number == screen.rack_number:
+        return Response({"rack_number": screen.rack_number, "node": NodeSerializer(selected).data})
+
+    if replaced is not None:
+        replaced.rack_number = None
+        replaced.save(update_fields=["rack_number"])
+    selected.rack_number = screen.rack_number
+    selected.save(update_fields=["rack_number"])
+    MonitoringEvent.objects.create(reason="node_assignment_changed")
+
+    return Response({"rack_number": screen.rack_number, "node": NodeSerializer(selected).data})
+
+
+def _ble_error_response(exc):
+    if isinstance(exc, ble_agent.BLEAgentConflict):
+        return Response({"code": exc.code, "detail": exc.detail}, status=409)
+    return Response({
+        "code": "ble_agent_unavailable", "detail": "BLE Agent is unavailable",
+    }, status=503)
+
+
+def _nonempty_bounded_string(value, maximum=255):
+    return isinstance(value, str) and 0 < len(value) <= maximum and value == value.strip()
+
+
+@api_view(["POST"])
+@permission_classes([IsActiveStaff])
+def ble_scans(request):
+    if request.data not in ({}, None):
+        return Response({
+            "code": "invalid_ble_scan_request", "detail": "request body must be empty",
+        }, status=400)
+    try:
+        result = ble_agent.scan()
+    except (ble_agent.BLEAgentConflict, ble_agent.BLEAgentUnavailable) as exc:
+        return _ble_error_response(exc)
+    devices = result.get("devices") if isinstance(result, dict) else None
+    if not isinstance(devices, list) or len(devices) > 100:
+        return _ble_error_response(ble_agent.BLEAgentUnavailable())
+    safe_devices = []
+    for device in devices:
+        if (
+            not isinstance(device, dict)
+            or not _nonempty_bounded_string(device.get("handle"))
+            or not _nonempty_bounded_string(device.get("label"))
+        ):
+            return _ble_error_response(ble_agent.BLEAgentUnavailable())
+        safe_devices.append({
+            "device_handle": device["handle"], "label": device["label"],
+        })
+    return Response({"devices": safe_devices})
+
+
+@api_view(["POST"])
+@permission_classes([IsActiveStaff])
+def ble_verifications(request):
+    if set(request.data) != {"device_handle"} or not _nonempty_bounded_string(
+        request.data.get("device_handle"),
+    ):
+        return Response({
+            "code": "invalid_ble_verification_request",
+            "detail": "exactly one non-empty device_handle is required",
+        }, status=400)
+    try:
+        result = ble_agent.verify(request.data["device_handle"])
+    except (ble_agent.BLEAgentConflict, ble_agent.BLEAgentUnavailable) as exc:
+        return _ble_error_response(exc)
+    required = {"label", "verification_token", "movement_g"}
+    if (
+        not isinstance(result, dict)
+        or not required.issubset(result)
+        or not _nonempty_bounded_string(result.get("label"))
+        or not _nonempty_bounded_string(result.get("verification_token"), 512)
+        or not isinstance(result.get("movement_g"), (int, float))
+        or isinstance(result.get("movement_g"), bool)
+        or not math.isfinite(result["movement_g"])
+        or not 0 <= result["movement_g"] <= 16
+    ):
+        return _ble_error_response(ble_agent.BLEAgentUnavailable())
+    return Response({key: result[key] for key in required} | {"verified": True})
+
+
+@api_view(["PUT"])
+@permission_classes([IsActiveStaff])
+def rack_ble_selection(request, rack_number):
+    if set(request.data) != {"device_id", "verification_token"} or not all((
+        _nonempty_bounded_string(request.data.get("device_id")),
+        _nonempty_bounded_string(request.data.get("verification_token"), 512),
+    )):
+        return Response({
+            "code": "invalid_ble_selection_request",
+            "detail": "exactly device_id and verification_token are required",
+        }, status=400)
+    preflight = _preflight_ble_binding(
+        rack_number, request.data["device_id"],
+    )
+    if isinstance(preflight, Response):
+        return preflight
+    expected_node_id, expected_agent_node_id = preflight
+
+    try:
+        binding = ble_agent.bind(
+            request.data["verification_token"], rack_number, expected_agent_node_id,
+        )
+    except (ble_agent.BLEAgentConflict, ble_agent.BLEAgentUnavailable) as exc:
+        return _ble_error_response(exc)
+
+    if (
+        not isinstance(binding, dict)
+        or not _nonempty_bounded_string(binding.get("node_id"), 64)
+        or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", binding["node_id"]) is None
+        or not _nonempty_bounded_string(binding.get("label"))
+        or not _nonempty_bounded_string(binding.get("binding_token"), 512)
+    ):
+        return _ble_error_response(ble_agent.BLEAgentUnavailable())
+
+    binding_token = binding["binding_token"]
+    try:
+        response = _apply_ble_binding(
+            rack_number, request.data["device_id"], binding["node_id"], expected_node_id,
+        )
+    except IntegrityError:
+        rollback_error = _rollback_ble_binding(binding_token)
+        if rollback_error:
+            return rollback_error
+        return Response({
+            "code": "node_assignment_conflict",
+            "detail": "another sensor assignment changed this rack; refresh and try again",
+        }, status=409)
+    except Exception:
+        rollback_error = _rollback_ble_binding(binding_token)
+        if rollback_error:
+            return rollback_error
+        raise
+    if response.status_code >= 400:
+        rollback_error = _rollback_ble_binding(binding_token)
+        if rollback_error:
+            return rollback_error
+        return response
+    response.data["label"] = binding["label"]
+    return response
+
+
+@transaction.atomic
+def _preflight_ble_binding(rack_number, device_id):
+    screen = RackScreen.objects.select_for_update().filter(
+        device_id=device_id, rack_number=rack_number,
+    ).first()
+    if screen is None:
+        return Response({
+            "code": "rack_screen_not_found", "detail": "assigned rack screen not found",
+        }, status=404)
+    current = Node.objects.select_for_update().filter(rack_number=rack_number).first()
+    if current is not None and Set.objects.select_for_update().filter(
+        node=current, ended_at=None,
+    ).exists():
+        return Response({
+            "code": "node_assignment_has_open_set",
+            "detail": "finish the open set before changing this sensor assignment",
+        }, status=409)
+    expected_node_id = current.node_id if current is not None else None
+    expected_agent_node_id = (
+        current.node_id
+        if current is not None and current.acquisition_kind == Node.ACQUISITION_WT901_BLE
+        else None
+    )
+    return expected_node_id, expected_agent_node_id
+
+
+def _rollback_ble_binding(binding_token):
+    try:
+        ble_agent.rollback(binding_token)
+    except (ble_agent.BLEAgentConflict, ble_agent.BLEAgentUnavailable):
+        MonitoringEvent.objects.create(reason="ble_reconciliation_required")
+        return Response({
+            "code": "ble_reconciliation_required",
+            "detail": "BLE binding rollback failed; reconcile this rack before retrying",
+        }, status=503)
+    return None
+
+
+@transaction.atomic
+def _apply_ble_binding(rack_number, device_id, node_id, expected_node_id):
+    screen = RackScreen.objects.select_for_update().filter(
+        device_id=device_id, rack_number=rack_number,
+    ).first()
+    if screen is None:
+        return Response({"code": "rack_screen_not_found", "detail": "assigned rack screen not found"}, status=404)
+    nodes = list(
+        Node.objects.select_for_update()
+        .filter(models.Q(node_id=node_id) | models.Q(rack_number=rack_number))
+        .order_by("id")
+    )
+    selected = next((node for node in nodes if node.node_id == node_id), None)
+    current = next((node for node in nodes if node.rack_number == rack_number), None)
+    if (current.node_id if current is not None else None) != expected_node_id:
+        return Response({
+            "code": "binding_reconciliation_required",
+            "detail": "rack sensor assignment changed during BLE binding",
+        }, status=409)
+    if selected is not None and selected.acquisition_kind != Node.ACQUISITION_WT901_BLE:
+        return Response({
+            "code": "node_identity_conflict", "detail": "logical node identity is already in use",
+        }, status=409)
+    if selected is not None and (not selected.is_active or selected.is_simulated):
+        return Response({"code": "node_unavailable", "detail": "sensor node is unavailable"}, status=409)
+    if selected is not None and selected.rack_number not in (None, rack_number):
+        return Response({
+            "code": "node_assigned_elsewhere", "detail": "sensor is already assigned to another rack",
+        }, status=409)
+    replaced = next(
+        (
+            node for node in nodes
+            if node.rack_number == rack_number and (selected is None or node.pk != selected.pk)
+        ),
+        None,
+    )
+    affected = [node for node in (selected, replaced) if node is not None]
+    if Set.objects.select_for_update().filter(node__in=affected, ended_at=None).exists():
+        return Response({
+            "code": "node_assignment_has_open_set",
+            "detail": "finish the open set before changing this sensor assignment",
+        }, status=409)
+    if selected is None:
+        selected = Node.objects.create(
+            node_id=node_id, acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+    if selected.rack_number == rack_number:
+        return Response({"rack_number": rack_number, "node": NodeSerializer(selected).data})
+    if replaced is not None:
+        replaced.rack_number = None
+        replaced.save(update_fields=["rack_number"])
+    selected.rack_number = rack_number
+    selected.save(update_fields=["rack_number"])
+    MonitoringEvent.objects.create(reason="node_assignment_changed")
+    return Response({"rack_number": rack_number, "node": NodeSerializer(selected).data})
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def rack_sensor_health(request, rack_number):
+    device_id = request.headers.get("X-Rack-Device-ID")
+    if request.query_params or not _nonempty_bounded_string(device_id):
+        return Response({
+            "code": "invalid_sensor_health_request",
+            "detail": "X-Rack-Device-ID header is required and query parameters are not allowed",
+        }, status=400)
+    if not RackScreen.objects.filter(
+        device_id=device_id, rack_number=rack_number,
+    ).exists():
+        return Response({
+            "code": "rack_screen_not_assigned", "detail": "screen is not assigned to this rack",
+        }, status=403)
+    node = Node.objects.filter(
+        rack_number=rack_number, acquisition_kind=Node.ACQUISITION_WT901_BLE,
+    ).first()
+    if node is None:
+        return Response({"code": "sensor_not_found", "detail": "rack BLE sensor not found"}, status=404)
+    try:
+        health = ble_agent.health(rack_number)
+    except (ble_agent.BLEAgentConflict, ble_agent.BLEAgentUnavailable) as exc:
+        return _ble_error_response(exc)
+    allowed = {"state", "sample_age_ms", "movement_g", "label"}
+    if (
+        not isinstance(health, dict)
+        or not allowed.issubset(health)
+        or health["state"] not in {"bound", "live", "stale", "reconnecting"}
+        or (
+            health["sample_age_ms"] is not None
+            and (
+                not isinstance(health["sample_age_ms"], int)
+                or isinstance(health["sample_age_ms"], bool)
+                or health["sample_age_ms"] < 0
+            )
+        )
+        or (
+            health["movement_g"] is not None
+            and (
+                not isinstance(health["movement_g"], (int, float))
+                or isinstance(health["movement_g"], bool)
+                or not math.isfinite(health["movement_g"])
+                or not 0 <= health["movement_g"] <= 16
+            )
+        )
+        or not _nonempty_bounded_string(health["label"])
+        or health.get("node_id") != node.node_id
+    ):
+        return _ble_error_response(ble_agent.BLEAgentUnavailable())
+    if health["state"] == "live":
+        observed_at = timezone.now() - timedelta(milliseconds=health["sample_age_ms"] or 0)
+        Node.objects.filter(pk=node.pk).update(last_seen=observed_at)
+    return Response({"node_id": node.node_id, **{key: health[key] for key in allowed}})
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([AllowAny])
+def rack_state(request, rack_number):
+    """Read the authoritative rack mirror or apply one fenced state transition."""
+    if request.method == "GET":
+        runtime = RackRuntime.objects.select_related(
+            "selected_athlete", "selected_exercise", "current_set",
+        ).filter(rack_number=rack_number).first()
+        if runtime is None:
+            known_rack = (
+                Node.objects.filter(rack_number=rack_number).exists()
+                or RackScreen.objects.filter(rack_number=rack_number).exists()
+            )
+            if not known_rack:
+                return Response({"code": "rack_not_found", "detail": "rack not found"}, status=404)
+            runtime = RackRuntime.objects.create(rack_number=rack_number)
+        recovery = bool(
+            runtime.lease_expires_at
+            and runtime.lease_expires_at <= timezone.now()
+            and _runtime_has_open_set(runtime)
+        )
+        return Response(_runtime_snapshot(runtime, recovery_required=recovery))
+
+    allowed = {
+        "expected_state_version", "command_id", "phase", "selected_athlete",
+        "selected_exercise", "rep_count", "latest_mean_velocity",
+        "latest_peak_velocity", "latest_color",
+    }
+    visible_fields = allowed - {"expected_state_version", "command_id"}
+    if not set(request.data).issubset(allowed) or not set(request.data).intersection(visible_fields):
+        return Response({
+            "code": "invalid_rack_state", "detail": "provide only supported rack state fields",
+        }, status=400)
+    command = _command_identity(request)
+    if command is None:
+        return Response({
+            "code": "invalid_controller_command",
+            "detail": "command_id and expected_state_version are required",
+        }, status=400)
+    command_id, expected = command
+
+    with transaction.atomic():
+        locked_node = Node.objects.select_for_update().filter(rack_number=rack_number).first()
+        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+        if runtime is None:
+            return Response({"code": "rack_not_found", "detail": "rack not found"}, status=404)
+        conflict = _require_controller(request, runtime)
+        if conflict:
+            return conflict
+        receipt = _existing_receipt(request, runtime, command_id)
+        if receipt:
+            return receipt
+        limited = _command_rate_limit(runtime)
+        if limited:
+            return limited
+        conflict = _state_version_conflict(runtime, expected)
+        if conflict:
+            return conflict
+
+        phase = request.data.get("phase", runtime.phase)
+        transitions = {
+            RackRuntime.PHASE_IDLE: {RackRuntime.PHASE_IDLE, RackRuntime.PHASE_COUNTDOWN},
+            RackRuntime.PHASE_COUNTDOWN: {
+                RackRuntime.PHASE_COUNTDOWN, RackRuntime.PHASE_ACTIVE, RackRuntime.PHASE_IDLE,
+            },
+            RackRuntime.PHASE_ACTIVE: {
+                RackRuntime.PHASE_ACTIVE, RackRuntime.PHASE_SUMMARY,
+                RackRuntime.PHASE_RECOVERY_REQUIRED,
+            },
+            RackRuntime.PHASE_SUMMARY: {
+                RackRuntime.PHASE_SUMMARY, RackRuntime.PHASE_REST, RackRuntime.PHASE_IDLE,
+            },
+            RackRuntime.PHASE_REST: {
+                RackRuntime.PHASE_REST, RackRuntime.PHASE_IDLE, RackRuntime.PHASE_COUNTDOWN,
+            },
+            RackRuntime.PHASE_RECOVERY_REQUIRED: {
+                RackRuntime.PHASE_RECOVERY_REQUIRED, RackRuntime.PHASE_IDLE,
+            },
+        }
+        if phase not in transitions.get(runtime.phase, set()):
+            return Response({
+                "code": "invalid_phase_transition",
+                "detail": f"cannot transition from {runtime.phase} to {phase}",
+            }, status=409)
+
+        athlete = runtime.selected_athlete
+        if "selected_athlete" in request.data:
+            athlete_id = request.data["selected_athlete"]
+            athlete = None if athlete_id is None else Athlete.objects.filter(id=athlete_id).first()
+            if athlete_id is not None and athlete is None:
+                return Response({"code": "athlete_not_found", "detail": "athlete not found"}, status=404)
+            session = _active_session()
+            if athlete is not None and (session is None or not session.athletes.filter(id=athlete.id).exists()):
+                return Response({
+                    "code": "athlete_not_in_active_session",
+                    "detail": "athlete is not in the active session",
+                }, status=409)
+        exercise = runtime.selected_exercise
+        if "selected_exercise" in request.data:
+            exercise_id = request.data["selected_exercise"]
+            exercise = None if exercise_id is None else Exercise.objects.filter(id=exercise_id).first()
+            if exercise_id is not None and exercise is None:
+                return Response({"code": "exercise_not_found", "detail": "exercise not found"}, status=404)
+
+        rep_count = request.data.get("rep_count", runtime.rep_count)
+        try:
+            rep_count = int(rep_count)
+        except (TypeError, ValueError):
+            rep_count = -1
+        if isinstance(request.data.get("rep_count"), bool) or rep_count < 0:
+            return Response({"code": "invalid_rep_count", "detail": "rep_count must be non-negative"}, status=400)
+        metrics = {}
+        for field in ("latest_mean_velocity", "latest_peak_velocity"):
+            value = request.data.get(field, getattr(runtime, field))
+            if value is not None:
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    value = -1
+                if not math.isfinite(value) or value < 0:
+                    return Response({"code": "invalid_velocity", "detail": f"{field} must be finite and non-negative"}, status=400)
+            metrics[field] = value
+        color = request.data.get("latest_color", runtime.latest_color)
+        if color not in ("", None, "green", "yellow", "red", "neutral"):
+            return Response({"code": "invalid_velocity_color", "detail": "latest_color is invalid"}, status=400)
+
+        requires_usable_node = (
+            (phase != runtime.phase and phase in {
+                RackRuntime.PHASE_COUNTDOWN, RackRuntime.PHASE_ACTIVE,
+            })
+            or bool(set(request.data).intersection({
+                "rep_count", "latest_mean_velocity", "latest_peak_velocity", "latest_color",
+            }))
+        )
+        if requires_usable_node and (locked_node is None or not node_is_usable(locked_node)):
+            return _controller_conflict(
+                "rack_sensor_required", "rack state update requires a usable assigned sensor", runtime,
+            )
+
+        if (
+            phase == runtime.phase
+            and (athlete.id if athlete else None) == runtime.selected_athlete_id
+            and (exercise.id if exercise else None) == runtime.selected_exercise_id
+            and rep_count == runtime.rep_count
+            and metrics["latest_mean_velocity"] == runtime.latest_mean_velocity
+            and metrics["latest_peak_velocity"] == runtime.latest_peak_velocity
+            and (color or "") == runtime.latest_color
+        ):
+            return _controller_conflict(
+                "rack_state_unchanged", "rack state command made no visible change", runtime,
+            )
+
+        now = timezone.now()
+        if phase != runtime.phase:
+            runtime.phase_started_at = now
+        runtime.phase = phase
+        runtime.selected_athlete = athlete
+        runtime.selected_exercise = exercise
+        runtime.rep_count = rep_count
+        runtime.latest_mean_velocity = metrics["latest_mean_velocity"]
+        runtime.latest_peak_velocity = metrics["latest_peak_velocity"]
+        runtime.latest_color = color or ""
+        runtime.state_version += 1
+        runtime.save()
+        MonitoringEvent.objects.create(reason="rack_state_changed")
+        body = _runtime_snapshot(runtime, now)
+        _save_receipt(request, runtime, command_id, body, 200)
+    return Response(body)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def rack_controller_acquire(request, rack_number):
+    """Claim or renew ownership after validating the physical rack identity."""
+    required = {"device_id", "client_instance_id", "controller_token"}
+    if set(request.data) != required:
+        return Response({
+            "code": "invalid_controller_claim",
+            "detail": "exactly device_id, client_instance_id, and controller_token are required",
+        }, status=400)
+    device_id = request.data.get("device_id")
+    client_instance_id = request.data.get("client_instance_id")
+    token = request.data.get("controller_token")
+    if (
+        not isinstance(device_id, str) or not device_id or len(device_id) > 255
+        or not isinstance(client_instance_id, str) or not client_instance_id or len(client_instance_id) > 255
+        or not _canonical_controller_token(token)
+    ):
+        return Response({
+            "code": "invalid_controller_claim", "detail": "controller claim fields are invalid",
+        }, status=400)
+
+    with transaction.atomic():
+        screen = RackScreen.objects.select_for_update().filter(device_id=device_id).first()
+        if screen is None or screen.rack_number != rack_number:
+            return Response({
+                "code": "rack_screen_not_assigned", "detail": "screen is not assigned to this rack",
+            }, status=409)
+        node = Node.objects.select_for_update().filter(rack_number=rack_number).first()
+        if node is None or not node_is_usable(node):
+            return Response({
+                "code": "rack_sensor_required", "detail": "rack requires an active physical sensor",
+            }, status=409)
+        RackRuntime.objects.get_or_create(rack_number=rack_number)
+        runtime = RackRuntime.objects.select_for_update().get(rack_number=rack_number)
+        now = timezone.now()
+        digest = _token_digest(token)
+        same_holder = bool(
+            runtime.controller_screen_id == screen.id
+            and runtime.client_instance_id == client_instance_id
+            and hmac.compare_digest(runtime.controller_token_digest, digest)
+        )
+        lease_active = bool(runtime.lease_expires_at and runtime.lease_expires_at > now)
+        if lease_active and same_holder:
+            return Response({
+                "controller_epoch": runtime.controller_epoch,
+                "lease_expires_at": runtime.lease_expires_at,
+                "state_version": runtime.state_version,
+                "server_time": now,
+                "snapshot": _runtime_snapshot(runtime, now),
+            })
+        if lease_active:
+            return _controller_conflict(
+                "rack_controller_busy", "another browser controls this rack", runtime, now,
+            )
+        if _runtime_has_open_set(runtime) and not same_holder:
+            return _controller_conflict(
+                "rack_recovery_required",
+                "the expired open set can only be recovered by its original controller",
+                runtime, now, recovery_required=True,
+            )
+
+        runtime.controller_screen = screen
+        runtime.client_instance_id = client_instance_id
+        runtime.controller_token_digest = digest
+        runtime.controller_epoch += 1
+        runtime.lease_expires_at = now + CONTROLLER_LEASE
+        runtime.state_version += 1
+        runtime.save()
+        MonitoringEvent.objects.create(reason="controller_acquired")
+        body = {
+            "controller_epoch": runtime.controller_epoch,
+            "lease_expires_at": runtime.lease_expires_at,
+            "state_version": runtime.state_version,
+            "server_time": now,
+            "snapshot": _runtime_snapshot(runtime, now),
+        }
+    return Response(body)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def rack_controller_heartbeat(request, rack_number):
+    """Extend the current lease using server time; heartbeats are not visible events."""
+    if request.data:
+        return Response({"code": "invalid_heartbeat", "detail": "heartbeat body must be empty"}, status=400)
+    with transaction.atomic():
+        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+        if runtime is None:
+            return Response({"code": "rack_not_found", "detail": "rack not found"}, status=404)
+        now = timezone.now()
+        conflict = _require_controller(request, runtime, now)
+        if conflict:
+            return conflict
+        runtime.lease_expires_at = now + CONTROLLER_LEASE
+        runtime.save(update_fields=["lease_expires_at", "updated_at"])
+        body = {
+            "controller_epoch": runtime.controller_epoch,
+            "lease_expires_at": runtime.lease_expires_at,
+            "state_version": runtime.state_version,
+            "server_time": now,
+        }
+    return Response(body)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def rack_controller_release(request, rack_number):
+    """Release a quiet rack without allowing an open set to lose its owner."""
+    if set(request.data) != {"expected_state_version", "command_id"}:
+        return Response({
+            "code": "invalid_controller_command",
+            "detail": "exactly command_id and expected_state_version are required",
+        }, status=400)
+    command = _command_identity(request)
+    if command is None:
+        return Response({"code": "invalid_controller_command", "detail": "controller command is invalid"}, status=400)
+    command_id, expected = command
+    with transaction.atomic():
+        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+        if runtime is None:
+            return Response({"code": "rack_not_found", "detail": "rack not found"}, status=404)
+        receipt = _existing_receipt(request, runtime, command_id)
+        if receipt:
+            return receipt
+        conflict = _require_controller(request, runtime)
+        if conflict:
+            return conflict
+        limited = _command_rate_limit(runtime)
+        if limited:
+            return limited
+        conflict = _state_version_conflict(runtime, expected)
+        if conflict:
+            return conflict
+        if _runtime_has_open_set(runtime):
+            return _controller_conflict(
+                "rack_recovery_required", "an open set must be completed before release",
+                runtime, recovery_required=True,
+            )
+        runtime.controller_screen = None
+        runtime.client_instance_id = ""
+        runtime.controller_token_digest = ""
+        runtime.lease_expires_at = None
+        runtime.state_version += 1
+        runtime.save()
+        MonitoringEvent.objects.create(reason="controller_released")
+        body = _runtime_snapshot(runtime)
+        _save_receipt(request, runtime, command_id, body, 200)
+    return Response(body)
 
 
 # "Which training day is live?" lives in services/active_session.py, NOT here —
@@ -139,20 +1031,62 @@ def rack_checkin(request, rack_number):
     writes a new RackCheckIn, which makes THIS rack the athlete's current one for the
     session (newest wins). This is the one thing that "moves" an athlete to a rack —
     a hand tap on the check-in screen today, an NFC tap later. Body: { athlete }."""
-    session = _active_session()
-    if session is None:
-        return Response({"error": "no active session"}, status=400)
-    athlete = Athlete.objects.filter(id=request.data.get("athlete")).first()
-    if athlete is None:
-        return Response({"error": "athlete not found"}, status=404)
-    if not session.athletes.filter(id=athlete.id).exists():
-        return Response({"error": "athlete is not in the active session"}, status=404)
-    RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=rack_number)
-    return Response({
-        "session_id": session.id,
-        "athlete": {"id": athlete.id, "name": athlete.name},
-        "rack_number": rack_number,
-    }, status=201)
+    command = _command_identity(request)
+    if command is None:
+        return Response({
+            "code": "invalid_controller_command",
+            "detail": "command_id and expected_state_version are required",
+        }, status=400)
+    command_id, expected = command
+    with transaction.atomic():
+        locked_node = Node.objects.select_for_update().filter(rack_number=rack_number).first()
+        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+        if runtime is None:
+            return Response({"code": "rack_controller_required", "detail": "rack has no controller"}, status=409)
+        conflict = _require_controller(request, runtime)
+        if conflict:
+            return conflict
+        receipt = _existing_receipt(request, runtime, command_id)
+        if receipt:
+            return receipt
+        limited = _command_rate_limit(runtime)
+        if limited:
+            return limited
+        conflict = _state_version_conflict(runtime, expected)
+        if conflict:
+            return conflict
+        session = _active_session()
+        if session is None:
+            return Response({"error": "no active session"}, status=400)
+        if locked_node is None or not node_is_usable(locked_node):
+            return Response({
+                "code": "rack_sensor_required",
+                "detail": "select an active physical sensor before athlete check-in",
+            }, status=409)
+        athlete = Athlete.objects.filter(id=request.data.get("athlete")).first()
+        if athlete is None:
+            return Response({"error": "athlete not found"}, status=404)
+        if not session.athletes.filter(id=athlete.id).exists():
+            return Response({"error": "athlete is not in the active session"}, status=404)
+        if runtime.selected_athlete_id == athlete.id:
+            return _controller_conflict(
+                "duplicate_checkin", "athlete is already selected at this rack revision", runtime,
+            )
+        RackCheckIn.objects.create(session=session, athlete=athlete, rack_number=rack_number)
+        runtime.selected_athlete = athlete
+        runtime.state_version += 1
+        runtime.save(update_fields=["selected_athlete", "state_version", "updated_at"])
+        MonitoringEvent.objects.create(
+            reason="athlete_checked_in",
+            is_simulated=session.is_simulated,
+        )
+        body = {
+            "session_id": session.id,
+            "athlete": {"id": athlete.id, "name": athlete.name},
+            "rack_number": rack_number,
+        }
+        _save_receipt(request, runtime, command_id, body, 201)
+    return Response(body, status=201)
 
 
 @api_view(["GET"])
@@ -179,6 +1113,40 @@ def rack_checkins(request, rack_number):
     return Response({"session_id": session.id, "rack_number": rack_number, "athletes": athletes})
 
 
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def rack_nfc_tap(request, rack_number):
+    if request.query_params or request.data != {}:
+        return Response({"code": "invalid_nfc_request", "detail": "empty JSON body required"}, status=400)
+    runtime = RackRuntime.objects.select_related("controller_screen").filter(rack_number=rack_number).first()
+    if runtime is None:
+        return Response({"code": "rack_controller_required", "detail": "rack has no controller"}, status=409)
+    conflict = _require_controller(request, runtime)
+    if conflict:
+        return conflict
+    session = _active_session()
+    if session is None:
+        return Response({"status": "none"})
+    try:
+        tap = nfc_agent.consume(rack_number)
+    except nfc_agent.NFCAgentUnavailable:
+        response = Response({"status": "unavailable"})
+        response["Cache-Control"] = "no-store"
+        return response
+    if tap["status"] == "none":
+        response = Response({"status": "none"})
+        response["Cache-Control"] = "no-store"
+        return response
+    athlete = Athlete.objects.filter(nfc_tag_id=tap["tag_id"]).first()
+    if athlete is None or not session.athletes.filter(id=athlete.id).exists():
+        body = {"status": "unknown"}
+    else:
+        body = {"status": "recognized", "athlete": {"athlete_id": athlete.id, "name": athlete.name}}
+    response = Response(body)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 # ─────────────────────────── nodes ───────────────────────────
 
 @api_view(["GET"])
@@ -188,24 +1156,38 @@ def nodes_list(request):
     return Response(NodeSerializer(Node.objects.all(), many=True).data)
 
 
-@api_view(["PATCH"])
-@permission_classes([IsCoach])
-def node_detail(request, node_id):
-    """Coach-only: reassign a node to a different rack (or update its fields)."""
-    node = Node.objects.filter(node_id=node_id).first()
-    if node is None:
-        return Response({"error": "node not found"}, status=404)
-    form = NodeSerializer(node, data=request.data, partial=True)
-    form.is_valid(raise_exception=True)
-    saved_node = form.save()
+@api_view(["PUT"])
+@permission_classes([IsActiveStaff])
+def node_acquisition_kind(request, node_id):
+    """Provision the transport trusted to supply one registered node's health."""
+    if set(request.data) != {"acquisition_kind"}:
+        return Response({
+            "code": "invalid_acquisition_request",
+            "detail": "exactly acquisition_kind is required",
+        }, status=400)
+    acquisition_kind = request.data.get("acquisition_kind")
+    valid_kinds = {choice[0] for choice in Node.ACQUISITION_CHOICES}
+    if acquisition_kind not in valid_kinds:
+        return Response({
+            "code": "invalid_acquisition_kind",
+            "detail": "acquisition_kind must be mqtt or wt901_ble",
+        }, status=400)
 
-    if saved_node.rack_number is not None: 
-        publish_rack_state(saved_node.rack_number, {
-            "type": "node_reassigned", 
-            "node_id": saved_node.node_id,
-        })
-    
-    return Response(NodeSerializer(saved_node).data)
+    with transaction.atomic():
+        node = Node.objects.select_for_update().filter(node_id=node_id).first()
+        if node is None:
+            return Response({"code": "node_not_found", "detail": "node not found"}, status=404)
+        if Set.objects.select_for_update().filter(node=node, ended_at=None).exists():
+            return Response({
+                "code": "node_acquisition_has_open_set",
+                "detail": "finish the open set before changing acquisition kind",
+            }, status=409)
+        if node.acquisition_kind == acquisition_kind:
+            return Response(NodeSerializer(node).data)
+        node.acquisition_kind = acquisition_kind
+        node.save(update_fields=["acquisition_kind"])
+        MonitoringEvent.objects.create(reason="node_acquisition_changed")
+    return Response(NodeSerializer(node).data)
 
 
 # ─────────────────────────── athletes ───────────────────────────
@@ -729,9 +1711,91 @@ def set_create(request):
     """Start a set: create the empty set record when an athlete begins, so the
     finish endpoint has something to fill in. Body: session, athlete, exercise,
     set_number, and optionally node + weight_lbs."""
-    form = SetSerializer(data=request.data)
+    expected_rack = request.data.get("rack_number")
+    control_fields = {"rack_number", "command_id", "expected_state_version"}
+    form = SetSerializer(data={key: value for key, value in request.data.items() if key not in control_fields})
     form.is_valid(raise_exception=True)
-    new_set = form.save()
+    with transaction.atomic():
+        selected_node = form.validated_data.get("node")
+        runtime = None
+        command_id = None
+        if selected_node is not None:
+            if expected_rack is None:
+                return Response({
+                    "code": "rack_number_required",
+                    "detail": "rack_number is required when starting a sensor-backed set",
+                }, status=400)
+            selected_node = Node.objects.select_for_update().get(pk=selected_node.pk)
+            try:
+                rack_number = int(expected_rack)
+            except (TypeError, ValueError):
+                return Response({"code": "invalid_rack_number", "detail": "rack_number must be an integer"}, status=400)
+            if selected_node.rack_number != rack_number:
+                return Response({
+                    "code": "node_assignment_changed",
+                    "detail": "the selected node is no longer assigned to this rack",
+                }, status=409)
+            if not node_is_usable(selected_node):
+                return Response({
+                    "code": "rack_sensor_required",
+                    "detail": "sensor-backed set start requires a usable assigned sensor",
+                }, status=409)
+            runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+            if runtime is None:
+                return Response({"code": "rack_controller_required", "detail": "rack has no controller"}, status=409)
+            conflict = _require_controller(request, runtime)
+            if conflict:
+                return conflict
+            command = _command_identity(request)
+            if command is None:
+                return Response({
+                    "code": "invalid_controller_command",
+                    "detail": "command_id and expected_state_version are required",
+                }, status=400)
+            command_id, expected = command
+            receipt = _existing_receipt(request, runtime, command_id)
+            if receipt:
+                return receipt
+            limited = _command_rate_limit(runtime)
+            if limited:
+                return limited
+            conflict = _state_version_conflict(runtime, expected)
+            if conflict:
+                return conflict
+            athlete = Athlete.objects.select_for_update().get(pk=form.validated_data["athlete"].pk)
+            if Set.objects.filter(
+                models.Q(node__rack_number=rack_number) | models.Q(athlete=athlete),
+                ended_at=None,
+                is_coach_adjustment=False,
+            ).exists():
+                return _controller_conflict(
+                    "open_set_exists", "rack or athlete already has an open set", runtime,
+                )
+        new_set = form.save(node=selected_node) if selected_node is not None else form.save()
+        new_set.is_simulated = new_set.session.is_simulated or bool(
+            new_set.node and new_set.node.is_simulated
+        )
+        if new_set.is_simulated:
+            new_set.save(update_fields=["is_simulated"])
+        MonitoringEvent.objects.create(
+            reason="set_started",
+            is_simulated=new_set.is_simulated,
+        )
+        if runtime is not None:
+            now = timezone.now()
+            runtime.current_set = new_set
+            runtime.selected_athlete = new_set.athlete
+            runtime.selected_exercise = new_set.exercise
+            runtime.phase = RackRuntime.PHASE_ACTIVE
+            runtime.phase_started_at = now
+            runtime.rep_count = 0
+            runtime.latest_mean_velocity = None
+            runtime.latest_peak_velocity = None
+            runtime.latest_color = ""
+            runtime.state_version += 1
+            runtime.save()
+            body = dict(SetSerializer(new_set).data)
+            _save_receipt(request, runtime, command_id, body, 201)
     
     rack_number = new_set.node.rack_number if new_set.node else None 
     if rack_number is not None: 
@@ -751,16 +1815,58 @@ def set_complete(request, set_id):
     database in ONE all-or-nothing step (if anything fails, nothing saves). This
     is the only code path that creates Rep rows. A false set saves zero reps.
     We also flag whether it was the athlete's best-ever velocity or weight."""
-    target_set = Set.objects.filter(id=set_id).first()
-    if target_set is None:
-        return Response({"error": "set not found"}, status=404)
-
-    form = SetCompleteSerializer(data=request.data)
+    form = SetCompleteSerializer(data={
+        key: value for key, value in request.data.items()
+        if key not in {"command_id", "expected_state_version"}
+    })
     form.is_valid(raise_exception=True)
     data = form.validated_data
 
-    # all-or-nothing: either the whole set saves, or none of it does
+    node_id = Set.objects.filter(id=set_id).values_list("node_id", flat=True).first()
+
+    # Assignment takes the node lock before the set lock. Completion uses the same
+    # order and captures the rack before commit so a later move cannot reroute it.
     with transaction.atomic():
+        locked_node = Node.objects.select_for_update().filter(id=node_id).first() if node_id else None
+        runtime = None
+        command_id = None
+        if locked_node and locked_node.rack_number is not None:
+            runtime = RackRuntime.objects.select_for_update().filter(
+                rack_number=locked_node.rack_number,
+            ).first()
+            if runtime is None:
+                return Response({"code": "rack_controller_required", "detail": "rack has no controller"}, status=409)
+            conflict = _require_controller(request, runtime)
+            if conflict:
+                return conflict
+            command = _command_identity(request)
+            if command is None:
+                return Response({
+                    "code": "invalid_controller_command",
+                    "detail": "command_id and expected_state_version are required",
+                }, status=400)
+            command_id, expected = command
+            receipt = _existing_receipt(request, runtime, command_id)
+            if receipt:
+                return receipt
+            limited = _command_rate_limit(runtime)
+            if limited:
+                return limited
+            conflict = _state_version_conflict(runtime, expected)
+            if conflict:
+                return conflict
+        target_set = Set.objects.select_for_update().filter(id=set_id).first()
+        if target_set is None:
+            return Response({"error": "set not found"}, status=404)
+        if target_set.ended_at is not None:
+            return Response({
+                "code": "set_already_completed",
+                "detail": "set has already been completed",
+            }, status=409)
+        if runtime is not None and runtime.current_set_id != target_set.id:
+            return _controller_conflict(
+                "rack_state_changed", "set is not the rack runtime's current set", runtime,
+            )
         if data["is_false_set"]:
             # false start — record it as false, save no reps
             target_set.is_false_set = True
@@ -783,7 +1889,35 @@ def set_complete(request, set_id):
             target_set.save()
             is_velocity_pr, is_weight_pr = _personal_records(target_set)
 
-    rack_number = target_set.node.rack_number if target_set.node else None
+        MonitoringEvent.objects.create(
+            reason="set_completed",
+            is_simulated=target_set.is_simulated,
+        )
+        completion_rack_number = locked_node.rack_number if locked_node else None
+
+        if runtime is not None:
+            now = timezone.now()
+            runtime.current_set = None
+            runtime.phase = (
+                RackRuntime.PHASE_IDLE if target_set.is_false_set else RackRuntime.PHASE_SUMMARY
+            )
+            runtime.phase_started_at = now
+            runtime.rep_count = target_set.reps_completed
+            runtime.latest_mean_velocity = target_set.avg_velocity
+            runtime.latest_peak_velocity = target_set.peak_velocity
+            runtime.latest_color = (
+                data["reps"][-1]["velocity_color"] if data["reps"] else ""
+            )
+            runtime.state_version += 1
+            runtime.save()
+
+        body = dict(SetSerializer(target_set).data)
+        body["is_velocity_pr"] = is_velocity_pr
+        body["is_weight_pr"] = is_weight_pr
+        if runtime is not None:
+            _save_receipt(request, runtime, command_id, body, 200)
+
+    rack_number = completion_rack_number
     athlete_summary = {"id": target_set.athlete.id, "name": target_set.athlete.name}
 
     if rack_number is not None:
@@ -809,9 +1943,6 @@ def set_complete(request, set_id):
         "is_weight_pr": is_weight_pr,
     })
 
-    body = SetSerializer(target_set).data
-    body["is_velocity_pr"] = is_velocity_pr
-    body["is_weight_pr"] = is_weight_pr
     return Response(body)
 
 

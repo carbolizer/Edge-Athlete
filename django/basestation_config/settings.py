@@ -147,6 +147,11 @@ DATABASES = {
 MQTT_HOST = os.environ.get('MQTT_HOST', 'mosquitto')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 
+# The host Agent is reachable only through this provisioned local socket. This is
+# intentionally not configurable by a request or environment-provided URL.
+BLE_AGENT_SOCKET_PATH = "/run/edgeathlete/ble-agent.sock"
+NFC_AGENT_SOCKET_PATH = "/run/edgeathlete/nfc-agent.sock"
+
 # (Ntfy settings removed in merge phase P2 / D5 — the motion-alert notification
 # path was inherited from this project's fork parent and never served Edge
 # Athlete. Real-time delivery now goes through the MonitoringEvent outbox in

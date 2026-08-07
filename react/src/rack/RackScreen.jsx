@@ -22,14 +22,17 @@
 // Styling matches the team's `.monitor` design system (see theme.js).
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, getNodes, createSet, completeSet, getSessionStatus } from '../api/client.js'
+import { getAthleteProgress, getActiveSession, getRackHotList, checkInAthlete, consumeNfcTap, createSet, completeSet, getSessionStatus } from '../api/client.js'
 import { subscribeNodeReps } from '../mqtt/client.js'
 import { addRep, clearBuffer, getBufferedReps } from '../db/repBuffer.js'
 import { velocityColor, VELOCITY_HEX } from './velocity.js'
 import Idle from './Idle.jsx'
 import CheckInList from './CheckInList.jsx'
 import WeightPad from './WeightPad.jsx'
+import { controllerCommand } from './controller.js'
 import { T } from '../theme.js'
+import { useRackAgentStatus } from './rackAgent.js'
+import { handleNfcPollResult } from './nfc.js'
 
 const REST_SECONDS = 120 // default rest between sets (real behaviour lands in Step 5)
 
@@ -88,8 +91,9 @@ function CountdownPhase({ onDone }) {
   )
 }
 
-function ActivePhase({ movementName, repCount, lastVelocity, lastColor, onEnd, onFalseSet }) {
+function ActivePhase({ movementName, repCount, lastVelocity, lastColor, sensorMovementG, sensorState, onEnd, onFalseSet }) {
   const hex = VELOCITY_HEX[lastColor]
+  const hasSensorMovement = sensorMovementG != null && Number.isFinite(Number(sensorMovementG))
   return (
     <PhaseBody>
       {movementName && <div style={{ ...LABEL, color: T.lime, marginBottom: 8 }}>{movementName}</div>}
@@ -106,6 +110,21 @@ function ActivePhase({ movementName, repCount, lastVelocity, lastColor, onEnd, o
         </div>
         <span style={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '.1em',
           padding: '6px 12px', borderRadius: 999, background: hex + '22', color: hex }}>{lastColor}</span>
+      </div>
+
+      <div style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${T.line}`,
+        background: T.panel, marginBottom: 16, textAlign: 'center' }}>
+        <div style={{ ...LABEL, marginBottom: 6 }}>WT901 movement</div>
+        <div style={{ fontSize: 24, fontWeight: 850, letterSpacing: '-.03em', color: T.mint,
+          fontVariantNumeric: 'tabular-nums' }}>
+          {hasSensorMovement ? Number(sensorMovementG).toFixed(3) : '—'}
+          <span style={{ fontSize: 12, fontWeight: 800, color: T.muted, marginLeft: 5 }}>g</span>
+        </div>
+        <div style={{ color: T.muted, fontSize: 11, marginTop: 6 }}>
+          {sensorState === 'live'
+            ? 'Diagnostic motion only. Rep counting is not enabled yet.'
+            : `Sensor ${sensorState || 'checking'}`}
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
@@ -191,7 +210,8 @@ function PhaseBody({ children }) {
 
 // ─────────────────────────── the state machine host ───────────────────────────
 
-export default function RackScreen({ rackNumber, session }) {
+export default function RackScreen({ rackNumber, session, node, controller }) {
+  const agent = useRackAgentStatus(node)
   const [phase, setPhase] = useState('idle')
 
   // Step 2 selection: who's lifting + which movement, plus that athlete's day view.
@@ -217,14 +237,40 @@ export default function RackScreen({ rackNumber, session }) {
 
   // Step 3 live-set data: the linked sensor node, the created set's id, and the
   // live rep readout (count + latest velocity + its color).
-  const [node, setNode] = useState(null)
   const [setId, setSetId] = useState(null)
   const [repCount, setRepCount] = useState(0)
   const [lastVelocity, setLastVelocity] = useState(null)
   const [lastColor, setLastColor] = useState('green')
   const [buffered, setBuffered] = useState(0)
   const [summary, setSummary] = useState(null)   // { reps, avg, peak } for the summary screen
+  const [setStartError, setSetStartError] = useState('')
+  const [nfcStatus, setNfcStatus] = useState('')
   const finishingRef = useRef(false)             // guards EXACTLY ONE complete POST per set
+  const repQueueRef = useRef(Promise.resolve())
+
+  useEffect(() => {
+    const snapshot = controller.snapshot
+    if (!snapshot) return
+    setPhase(snapshot.phase === 'recovery_required' ? 'active' : snapshot.phase)
+    setSelectedAthlete(snapshot.selected_athlete
+      ? (roster.find((athlete) => athlete.athlete_id === snapshot.selected_athlete.id) || {
+          athlete_id: snapshot.selected_athlete.id,
+          name: snapshot.selected_athlete.name,
+        })
+      : null)
+    setSelectedExerciseId(snapshot.selected_exercise?.id ?? null)
+    setSetId(snapshot.current_set)
+    setRepCount(snapshot.rep_count ?? 0)
+    setLastVelocity(snapshot.latest_mean_velocity)
+    setLastColor(snapshot.latest_color || 'green')
+    if (snapshot.phase === 'summary') {
+      setSummary({
+        reps: snapshot.rep_count ?? 0,
+        avg: snapshot.latest_mean_velocity,
+        peak: snapshot.latest_peak_velocity,
+      })
+    }
+  }, [controller.snapshot, roster])
 
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
@@ -244,15 +290,30 @@ export default function RackScreen({ rackNumber, session }) {
     return () => { cancelled = true }
   }, [selectedAthlete])
 
+  useEffect(() => {
+    if (phase !== 'idle' || selectedExerciseId == null || !controller.canControl) return
+    if (controller.snapshot?.selected_exercise?.id === selectedExerciseId) return
+    controller.updateState({ selected_exercise: selectedExerciseId }).catch(() => {})
+  }, [phase, selectedExerciseId, controller.canControl, controller.snapshot, controller.updateState])
+
   // Tapping a name IS the check-in: record it (this rack now owns the athlete),
   // then open their day view. Called from the check-in screen AND the rest screen
   // (handing the rack to the next lifter), so it always lands on idle. NFC later
   // calls this same path.
-  function selectAthlete(a) {
-    checkInAthlete(rackNumber, a.athlete_id).catch(() => { /* harmless if it fails */ })
-    setSelectedAthlete(a)
-    setPhase('idle')
-  }
+  const selectAthlete = useCallback(async (a) => {
+    try {
+      await controller.runMutation((capability, version) => checkInAthlete(
+        rackNumber,
+        a.athlete_id,
+        controllerCommand({}, version),
+        capability,
+      ))
+      if (phase !== 'idle') await controller.updateState({ phase: 'idle' })
+      return true
+    } catch {
+      return false
+    }
+  }, [controller.runMutation, controller.updateState, phase, rackNumber])
 
   // Freshness-only refresh of the roster, hot list, and live statuses: picks up a
   // coach adding/removing a session athlete, someone checking in elsewhere, and each
@@ -272,21 +333,42 @@ export default function RackScreen({ rackNumber, session }) {
   // screen (where the next lifter can tap in).
   const showCheckInList = (phase === 'idle' && !selectedAthlete) || phase === 'rest'
   useEffect(() => {
+    if (!showCheckInList || !controller.canControl) {
+      setNfcStatus('')
+      return
+    }
+    let cancelled = false
+    let timer
+    async function poll() {
+      let delay = 500
+      try {
+        const result = await controller.runControlled((capability) => consumeNfcTap(rackNumber, capability))
+        if (cancelled) return
+        const outcome = await handleNfcPollResult(result, selectAthlete)
+        if (cancelled) return
+        setNfcStatus(outcome.message)
+        if (outcome.stop) return
+        delay = outcome.delay
+      } catch {
+        if (!cancelled) {
+          setNfcStatus('Card reader unavailable')
+          delay = 2000
+        }
+      }
+      if (!cancelled) timer = setTimeout(poll, delay)
+    }
+    poll()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [showCheckInList, controller.canControl, controller.runControlled, rackNumber, selectAthlete])
+  useEffect(() => {
     if (!showCheckInList) return
     refreshCheckIn()
     const id = setInterval(refreshCheckIn, 5000)
     return () => clearInterval(id)
   }, [showCheckInList, refreshCheckIn])
-
-  // Find this rack's linked sensor once — its node_id for the rep topic, its integer
-  // pk for linking the Set on create.
-  useEffect(() => {
-    let cancelled = false
-    getNodes().then((nodes) => {
-      if (!cancelled) setNode(nodes.find((n) => n.rack_number === rackNumber) || null)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [rackNumber])
 
   // The movement the athlete is about to do (from the day view) — drives the set's
   // exercise, weight, and set number, and the velocity zone reps are colored against.
@@ -311,7 +393,7 @@ export default function RackScreen({ rackNumber, session }) {
   async function beginActiveSet() {
     await clearBuffer()
     setRepCount(0); setLastVelocity(null); setLastColor('green'); setBuffered(0); setSetId(null)
-    setPhase('active')
+    setSetStartError('')
     const body = {
       session: session?.session_id,
       athlete: selectedAthlete.athlete_id,
@@ -319,9 +401,18 @@ export default function RackScreen({ rackNumber, session }) {
       set_number: selectedMovement?.next_set_number ?? 1,
       weight_lbs: effectiveLoad ?? null,   // actual load (override or target), not the prescription itself
       is_makeup: !!selectedAthlete?.has_data,
+      rack_number: rackNumber,
     }
     if (node?.id != null) body.node = node.id
-    createSet(body).then((s) => setSetId(s.id)).catch(() => { /* the retry story is a Known Open Item */ })
+    try {
+      const createdSet = await controller.runMutation((capability, version) => (
+        createSet(body, controllerCommand({}, version), capability)
+      ))
+      setSetId(createdSet.id)
+    } catch {
+      setSetStartError('The set could not start. Confirm the rack sensor assignment and try again.')
+      if (controller.canControl) controller.updateState({ phase: 'idle' }).catch(() => {})
+    }
   }
 
   // Set end: build the ONE batch complete from the buffered reps and send it. Reps
@@ -343,10 +434,10 @@ export default function RackScreen({ rackNumber, session }) {
       }))
       const avg = reps.length ? reps.reduce((s, x) => s + x.mean_velocity, 0) / reps.length : null
       const peak = reps.length ? Math.max(...reps.map((x) => x.peak_velocity)) : null
-      await completeSet(setId, {
-        reps_completed: reps.length, avg_velocity: avg, peak_velocity: peak,
-        is_false_set: isFalseSet, reps,
-      })
+      await controller.runMutation((capability, version) => completeSet(setId, {
+          reps_completed: reps.length, avg_velocity: avg, peak_velocity: peak,
+          is_false_set: isFalseSet, reps,
+        }, controllerCommand({}, version), capability))
       await clearBuffer()                        // only AFTER a successful POST
       setBuffered(0)
       setSummary({ reps: reps.length, avg, peak })
@@ -362,7 +453,6 @@ export default function RackScreen({ rackNumber, session }) {
           }
         }).catch(() => {})
       }
-      setPhase(isFalseSet ? 'idle' : 'summary')
     } catch {
       // POST failed — leave the buffer intact so the set can be retried (no defined
       // retry/backoff yet; it's a Known Open Item).
@@ -375,19 +465,43 @@ export default function RackScreen({ rackNumber, session }) {
   // set: reps arriving in idle/countdown/rest are never captured. Each rep is
   // written to the durable buffer FIRST, then updates the live readout.
   useEffect(() => {
-    if (phase !== 'active' || !node) return
-    const onRep = async (rep) => {
-      await addRep(rep)
-      setRepCount((n) => n + 1)
-      setLastVelocity(rep.mean_velocity)
-      setLastColor(velocityColor(rep.mean_velocity, zoneMin))
-      getBufferedReps().then((rows) => setBuffered(rows.length))
+    if (phase !== 'active' || !node || !controller.canControl || !agent.ready) return
+    const onRep = (rep) => {
+      repQueueRef.current = repQueueRef.current.then(async () => {
+        await addRep(rep)
+        const rows = await getBufferedReps()
+        const color = velocityColor(rep.mean_velocity, zoneMin)
+        await controller.updateState({
+          phase: 'active',
+          rep_count: rows.length,
+          latest_mean_velocity: rep.mean_velocity,
+          latest_peak_velocity: rep.peak_velocity,
+          latest_color: color,
+        })
+        setBuffered(rows.length)
+      }).catch(() => {})
     }
     const unsub = subscribeNodeReps(node.node_id, onRep)
     return () => unsub()
-  }, [phase, node, zoneMin])
+  }, [phase, node, zoneMin, controller.canControl, controller.updateState, agent.ready])
 
   const badge = PHASE_BADGE[phase]
+
+  if (agent.required && !agent.ready) {
+    return (
+      <div style={{ minHeight: '100vh', background: T.bg, color: T.ink, fontFamily: T.sans,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ maxWidth: 440, textAlign: 'center' }}>
+          <div style={{ ...LABEL, color: T.amber, marginBottom: 12 }}>Rack {rackNumber} sensor unavailable</div>
+          <div style={{ fontSize: 28, fontWeight: 850, marginBottom: 10 }}>Controls are paused</div>
+          <div style={{ color: T.muted }}>
+            The local WT901 stream is {agent.health?.state || 'checking'}. Existing set data is preserved;
+            check-in and set controls return when fresh BLE samples resume.
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div style={{ minHeight: '100vh', background: T.bg, color: T.ink, fontFamily: T.sans,
@@ -415,6 +529,19 @@ export default function RackScreen({ rackNumber, session }) {
       </div>
 
       {/* the current phase */}
+      {setStartError && (
+        <div role="alert" style={{ margin: '14px 24px 0', padding: '12px 14px', borderRadius: 10,
+          border: '1px solid #7f3636', background: '#2b1717', color: '#ffb4b4', fontSize: 13 }}>
+          {setStartError}
+        </div>
+      )}
+      {showCheckInList && nfcStatus && (
+        <div aria-live="polite" style={{ margin: '14px 24px 0', padding: '10px 14px', borderRadius: 10,
+          border: `1px solid ${T.line}`, background: T.panel, color: T.muted, fontSize: 13,
+          textAlign: 'center' }}>
+          {nfcStatus}
+        </div>
+      )}
       {phase === 'idle' && (
         <Idle
           roster={roster}
@@ -423,14 +550,25 @@ export default function RackScreen({ rackNumber, session }) {
           statusMap={statusMap}
           selectedAthlete={selectedAthlete}
           onSelectAthlete={selectAthlete}
-          onClearAthlete={() => setSelectedAthlete(null)}
+          onClearAthlete={() => controller.updateState({
+            selected_athlete: null,
+            selected_exercise: null,
+          }).catch(() => {})}
           progress={progress}
           progressLoading={progressLoading}
           selectedExerciseId={selectedExerciseId}
-          onSelectMovement={setSelectedExerciseId}
+          onSelectMovement={(exerciseId) => controller.updateState({ selected_exercise: exerciseId }).catch(() => {})}
           effectiveLoad={effectiveLoad}
           onEditWeight={() => setEditingWeight(true)}
-          onStart={() => setPhase('countdown')}
+          onStart={() => controller.updateState({
+            phase: 'countdown',
+            selected_athlete: selectedAthlete?.athlete_id,
+            selected_exercise: selectedExerciseId,
+            rep_count: 0,
+            latest_mean_velocity: null,
+            latest_peak_velocity: null,
+            latest_color: null,
+          }).catch(() => {})}
         />
       )}
       {phase === 'countdown' && <CountdownPhase onDone={beginActiveSet} />}
@@ -440,14 +578,17 @@ export default function RackScreen({ rackNumber, session }) {
           repCount={repCount}
           lastVelocity={lastVelocity}
           lastColor={lastColor}
+          sensorMovementG={agent.health?.movement_g}
+          sensorState={agent.health?.state}
           onEnd={() => finishSet(false)}
           onFalseSet={() => finishSet(true)}
         />
       )}
-      {phase === 'summary' && <SummaryPhase summary={summary} onRest={() => setPhase('rest')} />}
+      {phase === 'summary' && <SummaryPhase summary={summary}
+        onRest={() => controller.updateState({ phase: 'rest' }).catch(() => {})} />}
       {phase === 'rest' && (
         <RestPhase
-          onDone={() => setPhase('idle')}
+          onDone={() => controller.updateState({ phase: 'idle' }).catch(() => {})}
           movementName={selectedMovement?.name}
           nextSetNumber={selectedMovement?.next_set_number}
           roster={roster}

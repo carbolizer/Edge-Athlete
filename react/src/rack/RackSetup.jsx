@@ -16,6 +16,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { registerRack, getRackNumber } from '../api/client.js'
 import { getDeviceId, applyRoleIdentity } from '../device.js'
+import { setCoachToken } from '../coach/api.js'
 import { navigate } from '../router.js'
 import { Centered } from '../ui.jsx'
 import { T } from '../theme.js'
@@ -64,6 +65,7 @@ function Waiting() {
 
   useEffect(() => {
     localStorage.setItem('device_role', 'rack')
+    setCoachToken(null)
     applyRoleIdentity('rack')
 
     let timer = null

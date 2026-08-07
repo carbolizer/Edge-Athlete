@@ -17,3 +17,4 @@ services:
   django:
     volumes:
       - /var/lib/edgeathlete:/var/lib/edgeathlete
+      - /run/edgeathlete:/run/edgeathlete

@@ -38,7 +38,7 @@ from django.db.models.functions import Lower
 from django.utils import timezone
 
 from event_handler.models import (MonitoringEvent, Node, RackCheckIn,
-                                  RackScreen, Rep, TrainingSession, Set)
+                                  RackRuntime, RackScreen, Rep, TrainingSession, Set)
 from event_handler.services.plan_resolution import velocity_zones_by_athlete
 
 # Hard ceilings so one absurd gym (or a bad import) can never make this endpoint
@@ -161,7 +161,9 @@ def _target_zone_for(zones, athlete_id, exercise_id):
     return zones.get(athlete_id, {}).get(exercise_id)
 
 
-def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by_rack, zones):
+def _rack_body(
+    rack_number, athlete, latest_set, reps, include_details, nodes_by_rack, zones, runtime,
+):
     """One rack's tile on the dashboard."""
     status = _set_status(latest_set)
     body = {
@@ -169,6 +171,7 @@ def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by
         "status": status,
         "status_color": _status_color(reps),
         "latest_set": None,
+        "live": None,
     }
 
     if athlete is not None:
@@ -198,6 +201,22 @@ def _rack_body(rack_number, athlete, latest_set, reps, include_details, nodes_by
                 "velocity_color": rep.velocity_color if rep.velocity_color in _REAL_COLORS else "neutral",
             } for rep in reps],
         }
+
+    if (
+        runtime is not None
+        and latest_set is not None
+        and latest_set.ended_at is None
+        and runtime.current_set_id == latest_set.id
+        and runtime.phase == RackRuntime.PHASE_ACTIVE
+    ):
+        live_color = runtime.latest_color if runtime.latest_color in _REAL_COLORS else "neutral"
+        body["live"] = {
+            "rep_count": runtime.rep_count,
+            "latest_mean_velocity": runtime.latest_mean_velocity,
+            "latest_peak_velocity": runtime.latest_peak_velocity,
+            "latest_color": live_color,
+        }
+        body["status_color"] = live_color
 
     if include_details:
         node = nodes_by_rack.get(rack_number)
@@ -337,6 +356,11 @@ def room_state_snapshot(include_details):
         for node in Node.objects.filter(rack_number__in=rack_numbers).order_by("rack_number", "node_id"):
             nodes_by_rack.setdefault(node.rack_number, node)
 
+    runtimes_by_rack = {
+        runtime.rack_number: runtime
+        for runtime in RackRuntime.objects.filter(rack_number__in=rack_numbers)
+    }
+
     racks = []
     shown_sets = []
     for rack_number in rack_numbers:
@@ -346,7 +370,8 @@ def room_state_snapshot(include_details):
             shown_sets.append(latest_set)
         racks.append(_rack_body(rack_number, athlete, latest_set,
                                 reps_by_set.get(latest_set.id, []) if latest_set else [],
-                                include_details, nodes_by_rack, zones))
+                                include_details, nodes_by_rack, zones,
+                                runtimes_by_rack.get(rack_number)))
 
     exercise_id, movement = _selected_movement(shown_sets, include_details, zones)
     leaderboard, leaderboard_truncated = _leaderboard(session, exercise_id, include_details)

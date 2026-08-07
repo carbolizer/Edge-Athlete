@@ -1,12 +1,11 @@
 # `docs/` — the reference shelf
 
-Write-ups of work that is **done**, and guides for doing common things. One file
-per topic.
+Write-ups of completed work, implementation guides, and ADRs explicitly linked
+from the governing specification. One file per topic.
 
-This is not the place for plans, designs, or open questions — those live in
-[`../_SPEC.md`](../_SPEC.md), the single authority for the system. (The merge canon
-was folded into it on 2026-07-30.) A document only arrives here once the work it
-describes is finished and on the branch.
+[`../_SPEC.md`](../_SPEC.md) remains the authority. Feature specs and ADRs in this
+directory refine only the slices that `_SPEC.md` explicitly delegates to them;
+open items in those documents are not accepted product behavior.
 
 ## Start here
 

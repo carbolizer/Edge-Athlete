@@ -154,6 +154,14 @@ These conventions were established up front and must be followed by any agent wo
 
 Edge Athlete is real-time barbell velocity tracking for weight rooms that can't afford GymAware ($3,880) or Perch ($1,995/unit + $3,000/yr). A Raspberry Pi runs the whole stack and broadcasts its own private WiFi network — no internet, no cloud, no subscription. ESP32 + MPU-6050 sensor nodes clip to a bar, waist, or wrist and compute how fast an athlete is moving. Athletes see live feedback on a tablet at their rack. A coach carries a tablet with full control. A shared "bowling-alley scoreboard" display shows the room a leaderboard.
 
+**WT901 central-host override:** For nodes provisioned with
+`acquisition_kind="wt901_ble"`, `docs/_ADR_RACK_BLE_LIVE_WORKFLOW.md` supersedes
+the ESP32/node transport below. One central Pi/laptop owns BlueZ discovery and
+connections; rack screens are browser clients and TVs mirror the dashboard.
+Discovery and health are accepted. WT901 rep detection, accepted-event transport,
+and eight-sensor adapter capacity remain deferred. The MQTT flow below still
+describes nodes provisioned with `acquisition_kind="mqtt"`.
+
 ### End-to-end user flow
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.
@@ -210,7 +218,7 @@ Do **not** rename or port Privacy-Dots-V2's git history. Privacy-Dots-V2 stays u
 
 ## §2. Hard constraints (never violated)
 
-### §2.1 Frozen files — do not edit, reformat, or "clean up"
+### §2.1 Rack files — preserve behavior unless an approved feature spec changes it
 
 ```
 react/src/rack/RackScreen.jsx      react/src/rack/Idle.jsx
@@ -220,12 +228,12 @@ react/src/db/repBuffer.js          react/src/device.js
 react/src/ (service worker + manifest.* + icons)
 ```
 
-**Verify you haven't touched them** before every commit:
-```bash
-# Use origin/SprintBranch — a fresh clone has no LOCAL SprintBranch branch (only the remote-tracking one).
-git diff --name-only origin/SprintBranch -- react/src/rack react/src/db/repBuffer.js react/src/device.js
-```
-That command must print **nothing**. If it prints a file, your change is wrong — find another way.
+The merge-era freeze is lifted only for behavior governed by an accepted feature
+spec and ADR. `docs/_RACK_BLE_LIVE_WORKFLOW_SPEC.md` and its ADR authorize the
+rack-local sensor gate, rack-mode credential cleanup, and the minimal
+`RackScreen.jsx` set-start integration. It also authorizes the controller/observer
+changes required by AC16-AC24: one fenced controller and read-only mirrors.
+Unrelated cleanup or redesign of these files remains out of scope.
 
 ### §2.2 Frozen API contracts
 These endpoints keep their **exact response shape** (key names, nesting, types). Their *internals* may be
@@ -233,6 +241,9 @@ rewritten and their *coverage* may widen, but a rack tablet must not be able to 
 `/sessions/active/`, `/sessions/active/status/`, `/sessions/active/athlete/{id}/progress/`, `/sets/`,
 `/sets/{id}/complete/`, `/racks/{n}/checkin/`. The exact frozen shape of the progress endpoint is written out
 in §6.3 — that one is the highest-risk seam in the merge.
+
+Rack controller rollout may add required controller headers/envelopes and stable
+`409` responses to rack mutations while preserving every successful response shape.
 
 ### §2.3 Other hard constraints
 - **The role splash / device-role picker stays.** The boot screen every role lands on is ours and remains the
@@ -366,6 +377,7 @@ All live in `django/event_handler/models.py`.
 
 ```
 Node       — node_id (CharField, unique), rack_number (Int, nullable),
+             acquisition_kind (provisioning-owned mqtt/wt901_ble; mqtt default),
              mount_type (choices: bar/waist/wrist), firmware_version,
              battery_level (Int, nullable), signal_strength (Int, nullable),
              last_seen (DateTime, nullable), is_active (Bool, default True)
@@ -928,7 +940,8 @@ POST  /api/auth/login/                 coach login → {access, refresh}  (alrea
 POST  /api/auth/refresh/               → {access}
 
 GET   /api/nodes/                      list nodes                         (open)
-PATCH /api/nodes/{node_id}/            reassign rack_number               (coach only)
+PUT   /api/racks/node-assignment/      select node for this rack screen   (active staff only)
+      body: { device_id, node_id }
 
 POST  /api/racks/register/             rack screen announces itself       (open)
       body: { device_id }
@@ -965,7 +978,8 @@ GET   /api/analytics/athlete/{id}/     athlete + summary + per-exercise
 ```
 
 **Open (no auth):** node/rack/dashboard reads, rack-screen self-registration + assignment polling, and the set-complete write.
-**Coach-only (JWT):** athlete/program writes, node reassignment, rack-screen assignment, session create/end, analytics.
+**Coach-only (JWT):** athlete/program writes, session create/end, and analytics.
+**Active-staff-only:** rack-screen assignment and rack-local node selection.
 
 ### Extended in Phase 5+ endpoints
 
@@ -1504,8 +1518,8 @@ timestamp, velocity_color) and a SetCompleteSerializer with:
   reps = RepInputSerializer(many=True)
 
 ## permissions.py
-IsCoach permission: allows the request only if request.user is authenticated
-(JWT). Use it on coach-only endpoints below.
+IsCoach covers legacy authenticated coach endpoints. IsActiveStaff requires an
+authenticated, active staff user and gates rack screen/sensor assignment.
 
 ## views.py + urls.py — endpoints
 Open (AllowAny):
@@ -1517,15 +1531,17 @@ Open (AllowAny):
   POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, weight_lbs, started_at=now)
   POST  /api/sets/{id}/complete/      *** batch write, see below ***
 Coach-only (IsCoach):
-  PATCH /api/nodes/{node_id}/         reassign rack_number
   GET   /api/racks/unassigned/        list RackScreen rows where rack_number is null
-  PATCH /api/racks/{device_id}/       assign rack_number
   POST  /api/athletes/  PATCH /api/athletes/{id}/
   POST  /api/prescriptions/
   POST  /api/sessions/  PATCH /api/sessions/{id}/   (end = set ended_at=now)
   GET   /api/analytics/session/{id}/  aggregate: total sets, reps, avg velocity per athlete
   GET   /api/analytics/athlete/{id}/  the coach athlete+history context (widened
                                      in merge P13 from a flat velocity trend)
+Active-staff-only (IsActiveStaff):
+  PATCH /api/racks/{device_id}/       assign rack_number
+  PUT   /api/racks/node-assignment/   select this screen's registered node;
+                                      exact body {device_id, node_id}
 
 ## The batch write — POST /api/sets/{id}/complete/
 Body:
@@ -1556,7 +1572,6 @@ curl -sX POST localhost/api/sessions/ -H "Authorization: Bearer $T" ...       # 
 curl -sX POST localhost/api/sets/ -d '{...}'                                   # create set (open)
 curl -sX POST localhost/api/sets/1/complete/ -d '{"reps":[...5 reps...],...}'  # batch write
 # Rep.objects.count() == 5 after ONE complete call; check it was one bulk_create
-curl -sX PATCH localhost/api/nodes/rack_1/ -d '{"rack_number":2}'              # 401 without token
 # rack screen registration + assignment
 curl -sX POST localhost/api/racks/register/ -d '{"device_id":"abc123"}'       # 200, rack_number null (open)
 curl -sX GET  'localhost/api/racks/racknumber/?device_id=abc123'                    # {rack_number: null}
@@ -1940,9 +1955,7 @@ fire-and-forget; log failures, never raise into the request path.
      publish_rack_state(rack_number, {type:"set_complete", set_id, athlete,
        reps_completed, avg_velocity, peak_velocity, is_false_set})
      publish_dashboard_state({type:"leaderboard_update", ...set summary...})
-2. Node reassignment (PATCH /api/nodes/{node_id}/):
-     publish_rack_state(new_rack_number, {type:"node_reassigned", node_id})
-3. Athlete check-in (however a Set/TrainingSession ties an athlete to a rack — publish on
+2. Athlete check-in (however a Set/TrainingSession ties an athlete to a rack — publish on
    set create): publish_rack_state(rack_number, {type:"athlete_checkin", athlete, rack_number})
 
 Import the publisher into views.py and replace the Phase 4 marker comment with
@@ -1951,12 +1964,12 @@ the real calls. Every file opens with a WHY comment.
 
 ### Verify
 - `mosquitto_sub -t 'edgeathlete/rack/#' -v` and `-t 'edgeathlete/dashboard/state' -v` in two terminals.
-- PATCH a node's `rack_number` → a `node_reassigned` `rack/{n}/state` message appears within 1s.
+- PUT a rack node assignment → a durable `node_assignment_changed` room invalidation is queued.
 - POST a set-complete → both a `rack/{n}/state` (`set_complete`) and a `dashboard/state` (`leaderboard_update`) message appear.
 
 ### ✅ Phase 9 Exit Checklist
 - [ ] `publisher.py` exposes the three publish helpers, single reused client
-- [ ] Reassigning a node produces a `rack/{n}/state` message within 1s
+- [ ] Assigning a node queues a durable room invalidation
 - [ ] Completing a set produces both a `rack/{n}/state` and a `dashboard/state` message
 - [ ] Publish failures are logged, never raised into the HTTP response
 - [ ] Every file has a WHY comment
@@ -2483,13 +2496,11 @@ alerts/suggestions and basic graphs in one consolidated view — no multi-page
 tabs for this section, per the original spec's deferred "separate Room/
 Athletes/Racks/Analytics tabs" scope, which stays deferred.
 
-## Room Layout — drag-and-drop
-Grid of rack slots (1..N) plus two source pools: "Unassigned Screens"
-(GET /api/racks/unassigned/, shown by short device id — the same id the rack
-screen displays on its own waiting-for-assignment state) and nodes available
-for reassignment (GET /api/nodes/). Dragging a screen onto a slot calls
-PATCH /api/racks/{device_id}/; dragging a node calls PATCH /api/nodes/{node_id}/.
-One shared drag-and-drop component for both entity types.
+## Room Layout
+Coach setup assigns waiting screens to rack slots with
+`PATCH /api/racks/{device_id}/`. Sensor selection is intentionally absent here:
+an active staff coach selects the registered sensor beside the physical rack,
+before athlete check-in, through `PUT /api/racks/node-assignment/`.
 
 ## Group/Block/TrainingSession browsing
 1. Groups list — GET /api/groups/, each row shows a rolled-up status dot.

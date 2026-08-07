@@ -2,7 +2,7 @@
  * CoachTablet.jsx — route /coach/setup
  * --------------------------------
  * Coach Room Layout: JWT login gate, then a dropdown-and-assign UI that wires
- * unassigned rack screens and nodes into numbered rack slots via coach PATCH
+ * unassigned rack screens into numbered rack slots via coach PATCH
  * endpoints. Group / block / session drill-down stay out of scope.
  */
 
@@ -340,10 +340,7 @@ function RoomLayout({ token, onAuthLost }) {
   const [msg, setMsg] = useState({ text: '', kind: '' })
   const [screenId, setScreenId] = useState('')
   const [screenSlot, setScreenSlot] = useState('')
-  const [nodeId, setNodeId] = useState('')
-  const [nodeSlot, setNodeSlot] = useState('')
   const [busyScreen, setBusyScreen] = useState(false)
-  const [busyNode, setBusyNode] = useState(false)
   const [screenBySlot, setScreenBySlot] = useState({})
 
   // `silent` is for the background poll below: refresh the lists without flipping
@@ -424,42 +421,7 @@ function RoomLayout({ token, onAuthLost }) {
     }
   }
 
-  async function assignNode() {
-    if (!nodeId || nodeSlot === '') return
-    setBusyNode(true)
-    setMsg({ text: '', kind: '' })
-    try {
-      const rack_number = Number(nodeSlot)
-      const result = await coachFetch(`/api/nodes/${encodeURIComponent(nodeId)}/`, {
-        token,
-        method: 'PATCH',
-        body: { rack_number },
-      })
-      setMsg({
-        text: `Node ${result.node_id} → rack ${result.rack_number}`,
-        kind: 'ok',
-      })
-      setNodeId('')
-      setNodeSlot('')
-      await load({ clearMessage: false })
-    } catch (err) {
-      const text = err.message || 'assign failed'
-      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
-      else setMsg({ text, kind: 'err' })
-    } finally {
-      setBusyNode(false)
-    }
-  }
-
   const screenOptions = screens.map((s) => ({ key: s.device_id, ...s }))
-  const nodeOptions = [...nodes]
-    .sort((a, b) => {
-      const au = a.rack_number == null ? 0 : 1
-      const bu = b.rack_number == null ? 0 : 1
-      if (au !== bu) return au - bu
-      return String(a.node_id).localeCompare(String(b.node_id))
-    })
-    .map((n) => ({ key: n.node_id, ...n }))
 
   return (
     <section className="coach-card">
@@ -475,13 +437,12 @@ function RoomLayout({ token, onAuthLost }) {
         </button>
       </div>
       <p className="coach-card-sub">
-        Pick an unassigned screen or a node, pick a rack slot, then Assign.
+        Assign waiting screens to rack slots here. Sensor selection happens at the
+        physical rack before athlete check-in.
         Waiting tablets pick up a new rack number within about three seconds.
       </p>
       <p className="coach-hint">
         Screens: <code>{'PATCH /api/racks/{device_id}/'}</code>
-        {' · '}
-        Nodes: <code>{'PATCH /api/nodes/{node_id}/'}</code>
       </p>
 
       {loading && screens.length === 0 && nodes.length === 0 ? (
@@ -501,24 +462,6 @@ function RoomLayout({ token, onAuthLost }) {
             busy={busyScreen}
           />
 
-          <hr className="coach-divider" />
-
-          <AssignRow
-            label="Assign node"
-            entityLabel="Node"
-            entities={nodeOptions}
-            entityValue={nodeId}
-            onEntityChange={setNodeId}
-            getOptionLabel={(n) =>
-              n.rack_number == null
-                ? `${n.node_id} (unassigned)`
-                : `${n.node_id} (rack ${n.rack_number})`
-            }
-            slotValue={nodeSlot}
-            onSlotChange={setNodeSlot}
-            onAssign={assignNode}
-            busy={busyNode}
-          />
         </>
       )}
 

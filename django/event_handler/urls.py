@@ -6,9 +6,9 @@ This is the full base-station REST list so far: tablets register/poll/start/fini
 sets and read training plans; coaches manage athletes, plans, sessions, nodes, and
 rack assignments; and there are two analytics summaries. See _SPEC.md -> "REST API".
 
-Note: the catch-all routes ("racks/<device_id>/", "nodes/<node_id>/") come LAST on
-purpose — the specific routes above them (register, racknumber, unassigned, list)
-must match first or they'd get swallowed.
+Note: the catch-all rack route ("racks/<device_id>/") comes LAST on purpose — the
+specific routes above it (register, racknumber, unassigned, assignment) must match
+first or they'd get swallowed.
 """
 from django.urls import path
 
@@ -35,11 +35,28 @@ urlpatterns = [
     path('racks/register/', views.rack_register, name='rack_register'),
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),
     path('racks/unassigned/', views.racks_unassigned, name='racks_unassigned'),
+    path('racks/node-assignment/', views.rack_node_assignment, name='rack_node_assignment'),
+    path('ble/scans/', views.ble_scans, name='ble_scans'),
+    path('ble/verifications/', views.ble_verifications, name='ble_verifications'),
+    path('racks/<int:rack_number>/ble-selection/', views.rack_ble_selection,
+         name='rack_ble_selection'),
+    path('racks/<int:rack_number>/sensor-health/', views.rack_sensor_health,
+         name='rack_sensor_health'),
+    path('racks/<int:rack_number>/state/', views.rack_state, name='rack_state'),
+    path('racks/<int:rack_number>/controller/acquire/', views.rack_controller_acquire,
+         name='rack_controller_acquire'),
+    path('racks/<int:rack_number>/controller/heartbeat/', views.rack_controller_heartbeat,
+         name='rack_controller_heartbeat'),
+    path('racks/<int:rack_number>/controller/release/', views.rack_controller_release,
+         name='rack_controller_release'),
     path('racks/<int:rack_number>/checkin/', views.rack_checkin, name='rack_checkin'),
     path('racks/<int:rack_number>/checkins/', views.rack_checkins, name='rack_checkins'),
+    path('racks/<int:rack_number>/nfc-tap/', views.rack_nfc_tap, name='rack_nfc_tap'),
 
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),
+    path('nodes/<str:node_id>/acquisition-kind/', views.node_acquisition_kind,
+         name='node_acquisition_kind'),
 
     # live room picture (derived; no room-state table). ONE route for both the
     # wall display and the coach tablet — `?details=true` switches to the
@@ -159,5 +176,4 @@ urlpatterns = [
 
     # catch-alls LAST
     path('racks/<str:device_id>/', views.rack_assign, name='rack_assign'),
-    path('nodes/<str:node_id>/', views.node_detail, name='node_detail'),
 ]
