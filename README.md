@@ -101,13 +101,13 @@ Two deliberate exclusions, both explained in `tuning.py`:
 
 | | |
 |---|---|
-| [`_SPEC.md`](_SPEC.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
+| [`docs/reference/spec.md`](docs/reference/spec.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
 | [`docs/reference/message-contract.md`](docs/reference/message-contract.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
 | [`docs/guides/base-station.md`](docs/guides/base-station.md) | Services, start/stop, operational notes. |
 | [`docs/_HANDOFF.md`](docs/_HANDOFF.md) | The non-obvious things, for whoever picks this up. Start here if you are new. |
 | [`docs/`](docs/) | Write-ups of finished work — patch notes, the database tour, the migration playbook, the import guide. |
 
-**Two documents are authoritative and everything else defers to them:** `_SPEC.md`
+**Two documents are authoritative and everything else defers to them:** `docs/reference/spec.md`
 for *why the system is shaped this way*, `docs/reference/message-contract.md` for *what a request
 looks like*. If another file disagrees with those two, those two are right.
 
@@ -142,7 +142,7 @@ About fifty routes, grouped:
 `IsCoach` currently means **"is authenticated"** — not "is a coach of *this*
 group". Coach assignment is recorded and used to *filter* views, and it is not
 enforced as a permission. That is a deliberate choice for a single-gym offline
-box, written up in `_SPEC.md` §9 and Phase 16. Don't mistake it for an oversight,
+box, written up in `docs/reference/spec.md` §9 and Phase 16. Don't mistake it for an oversight,
 and don't assume a group-coach row protects anything.
 
 ---

@@ -1,4 +1,18 @@
 # Spec: Edge Athlete — Real-Time Barbell Velocity Tracking — v2
+
+:::{note}
+**This is the original spec, kept verbatim.** It is here so nothing is lost while it is
+rewritten — not because it is the best entry point.
+
+Two different things live in it. The **governing rules** near the top — hard
+constraints, principles, coding standards, the derivation rules — are current. The
+**Phase 1–18 build prompts** further down are historical: where the merge rebuilt
+something, the phase text is out of date and says so.
+
+For the curated version of the same ground, start at {doc}`../orientation` and the
+{doc}`journal <../journal/index>`. For the narrative, see {doc}`../history`.
+:::
+
 **Stack:** Django (sync `runserver`, DRF) + React (Vite) + PostgreSQL + Mosquitto (MQTT) + Nginx, all in Docker | **Hardware:** Raspberry Pi base station (owns a private WiFi AP) + ESP32 + MPU-6050 sensor nodes | **Served by:** the Pi, no internet, no cloud, no subscription | **Environment:** macOS dev host → deploy target is Raspberry Pi OS (arm64) | **Team:** 4 people | **Timeline:** 6 sprints × 2.5 weeks
 
 **v2 note:** Phases 1–4 are built and unchanged from v1. Phase 5 onward is
@@ -54,7 +68,6 @@ Phases 1–4 are complete. Phases 5–13 (through the Sprint 4 handoff gate) are
 
 ---
 
----
 
 ## ⚑ Where the build actually is (2026-07-30)
 
@@ -206,7 +219,6 @@ Do **not** rename or port Privacy-Dots-V2's git history. Privacy-Dots-V2 stays u
 
 ---
 
----
 
 ## §2. Hard constraints (never violated)
 
@@ -246,7 +258,6 @@ If a resolution would change any of the above, **the resolution is wrong.**
 
 ---
 
----
 
 ## §3. Governing principles (apply in order when a case isn't spelled out)
 
@@ -488,8 +499,8 @@ Set      EXTENDED — is_makeup (Bool, default False) — excluded from
 > | Left behind | Where it lives now |
 > |---|---|
 > | Branch mechanics, `git show`/checkout recipes | The merge is done; git history |
-> | The P0–P15 phase plan and its gates | [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md) |
-> | Endpoint reconciliation (which of his routes we kept) | [`docs/reference/message-contract.md`](docs/reference/message-contract.md) has the real shapes |
+> | The P0–P15 phase plan and its gates | [`docs/_PATCH_NOTES.md`](https://github.com/carbolizer/Edge-Athlete/blob/main/docs/_PATCH_NOTES.md) |
+> | Endpoint reconciliation (which of his routes we kept) | [`docs/reference/message-contract.md`](message-contract.md) has the real shapes |
 > | Migration plan (`0008`→`0017`) | The migration files themselves |
 
 ## §4. The `Training*` hierarchy
@@ -577,7 +588,6 @@ the block carries `duration_weeks` + `cadence_days_of_week`, the program carries
 ---
 
 
----
 
 ## §5. Schema rules that are easy to get wrong
 
@@ -788,7 +798,7 @@ This is the highest-risk seam in the merge. Today `athlete_progress` in `views.p
 `Program.objects.filter(athlete_id=...)`. In **P5** that loop is replaced by the §6.2 chain and §6.1 targets.
 **The response shape must not change by even one key.** It is, and must remain, exactly:
 
-```jsonc
+```json5
 {
   "session_id": 12,                     // null when no active session
   "athlete": { "id": 3, "name": "..." },
@@ -917,7 +927,6 @@ session**, not before the session row exists.
 ---
 
 
----
 
 ## REST API
 
@@ -1095,9 +1104,8 @@ Edge-Athlete/
 ```
 
 ---
----
 
-# The build, in the order it actually happened
+## The build, in the order it actually happened
 
 Two numbering systems exist and both are real. **Phases 1–18** were the original
 build order, written up front. **The merge (P0–P15)** was a fifteen-phase piece of
@@ -1141,7 +1149,7 @@ Where that is true it is said so in the phase itself. **§2–§10 above, and TH
 MERGE below, are current and authoritative; a phase prompt is not.**
 
 
-# THE MERGE (P0–P15) · Owner: Devin · ✅ COMPLETE
+## THE MERGE (P0–P15) · Owner: Devin · ✅ COMPLETE
 
 **This is not one of the numbered phases, and it is written up here on purpose.**
 Everything below `# SPRINT 1` is history — the prompts the system was built from.
@@ -1181,11 +1189,11 @@ The two things that could not be lost, and did not:
 | Tags | `p1-complete` … `p15-complete` |
 | Frozen-file check | clean at all fifteen gates |
 
-> **Detail lives in [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md)** — each sub-phase
+> **Detail lives in [`docs/_PATCH_NOTES.md`](https://github.com/carbolizer/Edge-Athlete/blob/main/docs/_PATCH_NOTES.md)** — each sub-phase
 > with the files it touched and a click path to see it working. It is not repeated
 > here; two copies would drift.
 
-### Sub-phases
+#### Sub-phases
 
 | | Sub-phase | What it did | Left behind |
 |---|---|---|---|
@@ -1198,7 +1206,7 @@ The two things that could not be lost, and did not:
 | **P6** | Retirement + the delete fix | Dropped the legacy `Program` table; `Set.session` → `PROTECT` (`0011`) | A `Set` is the only permanent record an athlete trained |
 | **P7** | Coach frontend on the real API | Rewired his screens; folded 6 of his routes, dropped 3; `ErrorBoundary`; router race fixed | **Seven bugs found by clicking, none by a green suite** |
 | **P8** | Verify on a fresh database | Cold build, rack loop end to end, replaced invented test fixtures with live payloads | |
-| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`_NAMING_CHANGES.md`](docs/_NAMING_CHANGES.md) · a blunt sed shadows model imports |
+| **P9** | Naming alignment | Routes and models renamed to match what they serve (`0012`) | [`_NAMING_CHANGES.md`](https://github.com/carbolizer/Edge-Athlete/blob/main/docs/_NAMING_CHANGES.md) · a blunt sed shadows model imports |
 | **P10** | Catalog editing + reordering | Rename/reorder/delete days and rows; `updated_at` (`0013`) | Reorder sends the **whole list** — non-deferrable unique constraint |
 | **P11** | Multi-coach | `?coach=me` lens, block categories M2M (`0014`), `TrainingGroupCoach` join (`0015`) | **Filter, not fence** — see the Phase 16 rewrite below |
 | **P12** | One open training day | 409 on a second open day; end-time correction after a power cut | D18 |
@@ -1206,7 +1214,7 @@ The two things that could not be lost, and did not:
 | **P14** | Scheduling | `ScheduledSession` calendar; `started_at` nullable (`0016`, `0017`) | D20 · **"active" means STARTED**, and NULLs sort first descending |
 | **P15** | Promote a program into a block | Copies days and rows **up** into a new block | D21 · pointing the FK alone leaves an empty block |
 
-### What the merge deliberately did not do
+#### What the merge deliberately did not do
 
 - **No permission boundary.** `IsCoach` still means "is authenticated" — a choice,
   not an oversight. See Phase 16.
@@ -1221,14 +1229,14 @@ The two things that could not be lost, and did not:
 
 > **Everything from here down is the original build history.**
 
-# SPRINT 1 — Foundation
+## SPRINT 1 — Foundation
 
-## Phase 1 — Repo Bootstrap, Broker WS Upgrade & RUNBOOK · Owner: Devin
+### Phase 1 — Repo Bootstrap, Broker WS Upgrade & RUNBOOK · Owner: Devin
 
-### Goal
+#### Goal
 Bootstrap the Edge Athlete stack from Privacy-Dots-V2 patterns (not history), fix the reference's duplicate-listener bug, add the WebSocket broker listener, and start the RUNBOOK the Sprint 3 handoff depends on.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Read the reference project Privacy-Dots-V2 (read-only, sibling directory) before
 writing anything. We are bootstrapping a FRESH repo — do NOT copy its git history.
@@ -1286,12 +1294,12 @@ line-by-line description.
 Every source file opens with a short WHY comment (see coding standards).
 ```
 
-### Verify
+#### Verify
 - `docker compose up --build` starts clean; **zero** `privacydots` references remain (`grep -ri privacydots .` returns nothing outside the reference repo).
 - From a browser console, an `mqtt.js` client connected to `ws://<pi-ip>:9001` receives a message published with `mosquitto_pub -t edgeathlete/node/test/pulse -m '{}'`.
 - Only ONE MQTT listener service exists in `docker-compose.yml`.
 
-### ✅ Phase 1 Exit Checklist — COMPLETE (2026-07-06)
+#### ✅ Phase 1 Exit Checklist — COMPLETE (2026-07-06)
 - [x] `docker compose up --build` starts clean, no `privacydots` references remain
 - [x] `mosquitto.conf` has both the 1883 and 9001 (websockets) listeners; 9001 exposed in compose
 - [x] Browser `mqtt.js` client on `ws://<pi-ip>:9001` receives a test publish
@@ -1308,12 +1316,12 @@ reshaped to spec in Phases 2–4 (subscriber → pulse-only in Phase 3). Proceed
 
 ---
 
-## Phase 2 — Data Models & Migrations · Owner: Carl
+### Phase 2 — Data Models & Migrations · Owner: Carl
 
-### Goal
+#### Goal
 Replace the reference's `Device`/`MotionEvent` schema with the seven Edge Athlete models. No endpoints yet — models + migrations + a shell-verified FK chain.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. Read the reference models.py first.
 
@@ -1389,7 +1397,7 @@ Copy the generated migration file back into django/event_handler/migrations/ and
 commit it.
 ```
 
-### Verify (Django shell)
+#### Verify (Django shell)
 ```python
 a = Athlete.objects.create(name="Test A")
 p = Program.objects.create(athlete=a, exercise="Squat", target_sets=3,
@@ -1402,7 +1410,7 @@ r = Rep.objects.create(set=st, rep_number=1, timestamp="2026-01-01T00:00:00Z",
 # FK chain resolves: r.set.session.athletes.first() == a
 ```
 
-### ✅ Phase 2 Exit Checklist
+#### ✅ Phase 2 Exit Checklist
 - [ ] All seven models migrated cleanly
 - [ ] Django shell creates one of each and the FK chain `Athlete → Program`, `TrainingSession → Set → Rep`, `Set → Node` resolves
 - [ ] `Rep` has no direct-creation endpoint anywhere (only ever via set-complete, built Phase 4)
@@ -1413,12 +1421,12 @@ r = Rep.objects.create(set=st, rep_number=1, timestamp="2026-01-01T00:00:00Z",
 
 ---
 
-## Phase 3 — MQTT Pulse Pipeline & Node Simulator · Owner: Derrilon
+### Phase 3 — MQTT Pulse Pipeline & Node Simulator · Owner: Derrilon
 
-### Goal
+#### Goal
 Finish the pulse pipeline against the new `Node` model, add a rep-payload parser (shared contract for simulator + firmware), lock the subscriber to pulse-only, and ship a `simulate_node` command so all frontend work runs without hardware.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. Read the reference parser.py,
 subscriber.py, process_pulse.py, and the two management commands first.
@@ -1467,12 +1475,12 @@ Create management/commands/simulate_node.py:
 Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - `mosquitto_pub` a real pulse to `edgeathlete/node/rack_1/pulse` → the `rack_1` `Node` row updates (`last_seen`, `battery_level`).
 - `python manage.py simulate_node --node-id rack_1 --rack 1` publishes both topics; a `mosquitto_sub -t 'edgeathlete/#' -v` terminal shows rep + pulse messages on a realistic cadence.
 - After running the simulator for a minute, `Rep.objects.count() == 0` and `Set.objects.count() == 0` — the Django subscriber never wrote rep data.
 
-### ✅ Phase 3 Exit Checklist
+#### ✅ Phase 3 Exit Checklist
 - [ ] A real pulse message updates the correct `Node` row
 - [ ] `parse_rep_payload` exists and returns the exact contract above; `parse_motion_payload` deleted
 - [ ] Subscriber subscribes to `edgeathlete/node/+/pulse` ONLY
@@ -1484,14 +1492,14 @@ Every file opens with a WHY comment.
 
 ---
 
-# SPRINT 2 — Real-Time Backbone
+## SPRINT 2 — Real-Time Backbone
 
-## Phase 4 — Full REST API + Batch Set-Complete Write · Owner: Carl
+### Phase 4 — Full REST API + Batch Set-Complete Write · Owner: Carl
 
-### Goal
+#### Goal
 Build every endpoint in the REST API section, with the batch `POST /api/sets/{id}/complete/` write as the centerpiece, plus JWT-gated coach-only permissions.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. JWT login/refresh are already wired in
 basestation_config/urls.py via simplejwt — reuse them, do not re-add.
@@ -1547,7 +1555,7 @@ Every file opens with a WHY comment. No premature abstraction — don't build
 analytics helpers you don't call.
 ```
 
-### Verify (curl, through nginx)
+#### Verify (curl, through nginx)
 ```bash
 # get a token
 curl -sX POST localhost/api/auth/login/ -d 'username=coach&password=...' | jq .access
@@ -1564,7 +1572,7 @@ curl -sX PATCH localhost/api/racks/abc123/ -H "Authorization: Bearer $T" -d '{"r
 curl -sX GET  'localhost/api/racks/racknumber/?device_id=abc123'                    # {rack_number: 3}
 ```
 
-### ✅ Phase 4 Exit Checklist
+#### ✅ Phase 4 Exit Checklist
 - [ ] Full lifecycle via curl: create session → create set → complete set with 5 reps in ONE POST → `Rep.objects.count()` matches, created by a single `bulk_create`
 - [ ] `complete/` runs in one `transaction.atomic()`; false set records the set and creates zero reps
 - [ ] Coach-only endpoints return 401 without a token; open endpoints work without one
@@ -1576,7 +1584,7 @@ curl -sX GET  'localhost/api/racks/racknumber/?device_id=abc123'                
 
 ---
 
-# SPRINT 2 (EXTENDED) — Group/TrainingSession Data Layer
+## SPRINT 2 (EXTENDED) — Group/TrainingSession Data Layer
 
 Phases 5–8 extend the models and API Phase 4 already built. They run before
 the broadcast/rack-screen phases because Phase 10's rack screen and Phase 14's
@@ -1594,15 +1602,15 @@ fully independent of Track A. **Convergence point:** Phase 11 needs both
 tracks finished, since its picker and target-weight calculation depend on
 the `/api/sessions/active/` response shape Track B builds.
 
-## Phase 5 — Group/Block/TrainingSession Hierarchy, Exercise Catalog, Athlete Max & Insights Scaffold · Owner: TBD
+### Phase 5 — Group/Block/TrainingSession Hierarchy, Exercise Catalog, Athlete Max & Insights Scaffold · Owner: TBD
 
-### Goal
+#### Goal
 Introduce the coach → group → block → session hierarchy, replace free-text
 exercise names with a real catalog + tag system, add append-only athlete max
 tracking, and scaffold the local-insights model (real schema, no real ML yet
 — same pattern as the existing fatigue stub from Phase 15).
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. Read models.py first — these are
 ADDITIONS and EXTENSIONS to the existing seven models from Phase 2, not
@@ -1711,13 +1719,13 @@ a 2-4 line WHY comment.
 Run makemigrations/migrate, copy the migration file back, commit.
 ```
 
-### Verify
+#### Verify
 - `TrainingGroup → Block → TrainingSession` FK chain resolves in the Django shell.
 - `Athlete.group` can be reassigned without altering any existing `TrainingSession`/`Set`/`Rep` rows tied to that athlete's history.
 - Creating an `Exercise` with `is_stub=True` and no tags works; deleting it removes it cleanly with no ID-reuse logic anywhere.
 - `generate_insights(session_id)` is callable and returns `[]`.
 
-### ✅ Phase 5 Exit Checklist
+#### ✅ Phase 5 Exit Checklist
 - [ ] All new models migrated; no existing model's prior fields removed or renamed
 - [ ] `Athlete.group` reassignment does not touch historical TrainingSession/Set data
 - [ ] `Exercise` uses standard auto-increment; no custom ID-walking logic anywhere in the codebase
@@ -1728,14 +1736,14 @@ Run makemigrations/migrate, copy the migration file back, commit.
 
 ---
 
-## Phase 6 — CSV Import Pipeline · Owner: TBD
+### Phase 6 — CSV Import Pipeline · Owner: TBD
 
-### Goal
+#### Goal
 Let a coach upload the CSV export (one row per planned exercise) and have it
 create/reuse the full Group → Block → TrainingSession → SessionExercise chain in one
 transaction, stubbing unrecognized exercises rather than rejecting the row.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. Builds on Phase 5 models.
 
@@ -1785,14 +1793,14 @@ empty/absent body treated as reject.
 Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - Uploading a CSV with a brand-new group/block/session/exercise combination creates all four levels in one call.
 - Uploading a second CSV for the same group/block reuses the existing `TrainingGroup`/`Block` rows rather than duplicating them.
 - An exercise name not in the catalog creates a stub `Exercise` (`is_stub=True`) and the response lists it for confirmation.
 - Confirming a stub sets `is_stub=False`; rejecting it deletes the `Exercise` and its `SessionExercise` rows with no orphaned references left behind.
 - TrainingSession roster (`TrainingSession.athletes`) matches the group's membership at upload time, unaffected by later `Athlete.group` reassignment.
 
-### ✅ Phase 6 Exit Checklist
+#### ✅ Phase 6 Exit Checklist
 - [ ] Full CSV upload creates/reuses Group → Block → TrainingSession → SessionExercise correctly in one transaction
 - [ ] Repeat upload for the same group/block reuses existing rows, no duplication
 - [ ] Unrecognized exercises stub cleanly; confirm/reject both work with no orphaned rows
@@ -1803,14 +1811,14 @@ Every file opens with a WHY comment.
 
 ---
 
-## Phase 7 — TrainingSession Status, Roster, Makeup Flow & Athlete Max Entry · Owner: TBD
+### Phase 7 — TrainingSession Status, Roster, Makeup Flow & Athlete Max Entry · Owner: TBD
 
-### Goal
+#### Goal
 Compute red/yellow/green completion status at the TrainingSession/Block/Group level
 (derived, not stored), support the retroactive makeup-session flow, implement
 the team_completion_time rule, and open the athlete-max write/read endpoints.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. Builds on Phases 5/6.
 
@@ -1858,14 +1866,14 @@ no new model, no new write path. Powers the progression chart in the Phase
 Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - A session with 0 of N roster athletes completed reports red; some-but-not-all reports yellow; all reports green.
 - A `Block` with a mix of red/green child `TrainingSession`s reports yellow; a `TrainingGroup` reflects the same rollup one level up.
 - Roster-status endpoint correctly flags athletes with no completed Set.
 - A makeup Set (`is_makeup=True`) completes normally but does not affect `team_completion_time`; a session where every Set is a makeup returns `team_completion_time: null`.
 - `POST /api/athlete-maxes/` creates a new row without touching any prior row for the same athlete/exercise pair; `GET /api/athlete-maxes/?athlete=&exercise=` returns the full ordered history.
 
-### ✅ Phase 7 Exit Checklist
+#### ✅ Phase 7 Exit Checklist
 - [ ] Status is computed at request time at all three levels (TrainingSession/Block/Group), never stored
 - [ ] Roster-status endpoint correctly identifies missing athletes
 - [ ] `is_makeup` flows through set creation and completion correctly
@@ -1877,13 +1885,13 @@ Every file opens with a WHY comment.
 
 ---
 
-## Phase 8 — Wire Insights Generation · Owner: TBD
+### Phase 8 — Wire Insights Generation · Owner: TBD
 
-### Goal
+#### Goal
 Call the Phase 5 insights scaffold at the point a session is considered
 "done," and persist the (currently empty) result as `SessionInsight` rows.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/. Builds on Phase 5's
 ml/analyze_session.py and Phase 7's status computation.
@@ -1901,11 +1909,11 @@ here should need to change when that happens.
 Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - Marking a session done (either via reaching green status or the explicit endpoint) calls `generate_insights` exactly once and creates zero rows today (since it returns `[]`), with no errors.
 - Re-marking an already-done session done again does not duplicate the call unnecessarily (idempotent or guarded).
 
-### ✅ Phase 8 Exit Checklist
+#### ✅ Phase 8 Exit Checklist
 - [ ] Both trigger paths (auto-green and explicit mark-done) call `generate_insights` correctly
 - [ ] Call is safely no-op today, requires no future code changes at the call site when a real model is added
 - [ ] Every file has a WHY comment
@@ -1914,14 +1922,14 @@ Every file opens with a WHY comment.
 
 ---
 
-# SPRINT 3 — Real-Time Backbone
+## SPRINT 3 — Real-Time Backbone
 
-## Phase 9 — Django Broadcast Publisher · Owner: Derrilon
+### Phase 9 — Django Broadcast Publisher · Owner: Derrilon
 
-### Goal
+#### Goal
 Give Django a single publish helper and fire broadcast events to the rack / dashboard / coach topics on the relevant model changes, so browsers get live push without polling.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: django/event_handler/notification_flow/broadcast/.
 
@@ -1949,12 +1957,12 @@ Import the publisher into views.py and replace the Phase 4 marker comment with
 the real calls. Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - `mosquitto_sub -t 'edgeathlete/rack/#' -v` and `-t 'edgeathlete/dashboard/state' -v` in two terminals.
 - PATCH a node's `rack_number` → a `node_reassigned` `rack/{n}/state` message appears within 1s.
 - POST a set-complete → both a `rack/{n}/state` (`set_complete`) and a `dashboard/state` (`leaderboard_update`) message appear.
 
-### ✅ Phase 9 Exit Checklist
+#### ✅ Phase 9 Exit Checklist
 - [ ] `publisher.py` exposes the three publish helpers, single reused client
 - [ ] Reassigning a node produces a `rack/{n}/state` message within 1s
 - [ ] Completing a set produces both a `rack/{n}/state` and a `dashboard/state` message
@@ -1965,12 +1973,12 @@ the real calls. Every file opens with a WHY comment.
 
 ---
 
-## Phase 10 — Rack Screen PWA Shell · Owner: Braydon
+### Phase 10 — Rack Screen PWA Shell · Owner: Braydon
 
-### Goal
+#### Goal
 Stand up the shared device-role picker every screen type boots into, the installable rack-screen PWA behind it (manifest, service worker, IndexedDB rep buffer, an `mqtt.js` client wired to the Phase 3 simulator), the rack-registration/assignment-wait flow, and a one-shot fetch of the active session's roster/exercise/max data — driving a live rep counter with no real hardware. Picker/lifecycle logic (full flow, batch POST) comes in Phase 11.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: react/. There is a starting-point layout draft at
 `edge_athlete_rack_ui.html` in the wider project folder — treat it as a flow/
@@ -2063,7 +2071,7 @@ Every file opens with a WHY comment (the repBuffer.js comment is a great place
 for the "durability boundary" analogy).
 ```
 
-### Verify
+#### Verify
 - On first load with no `device_role` set, the picker renders; picking "Rack Tablet" registers the device and shows its id on a "waiting for assignment" screen.
 - Manually PATCHing that device's rack_number (simulating the Phase 14 coach action) causes the polling screen to pick it up within ~3s and move into the live rep panel.
 - Chrome shows an install prompt once a role is picked; installed app launches fullscreen.
@@ -2071,7 +2079,7 @@ for the "durability boundary" analogy).
 - Every simulated rep lands in IndexedDB (`getBufferedReps()` grows); killing WiFi mid-stream and reconnecting does not lose already-buffered reps and the mqtt client reconnects.
 - `/api/sessions/active/` is fetched exactly once after rack assignment, result stored in state, no polling.
 
-### ✅ Phase 10 Exit Checklist
+#### ✅ Phase 10 Exit Checklist
 - [ ] Device role picker renders on first load; choice persists across reload via localStorage
 - [ ] Picking a role swaps the manifest link tag to the matching file
 - [ ] Rack registration generates a device_id, POSTs it once, and displays it clearly while awaiting assignment
@@ -2086,7 +2094,7 @@ for the "durability boundary" analogy).
 
 **STOP. Review the above before moving to Phase 11.**
 
-### Built — implementation notes (2026-07-18, branch `rack-screen-and-active-session`)
+#### Built — implementation notes (2026-07-18, branch `rack-screen-and-active-session`)
 What actually shipped for the Phase 10 shell, and the decisions that extend/adjust the prompt above:
 
 - **URL routing (added).** A tiny dependency-free router (`react/src/router.js`, History API — NOT React Router) makes the address bar the source of truth:
@@ -2102,14 +2110,14 @@ What actually shipped for the Phase 10 shell, and the decisions that extend/adju
 
 ---
 
-# SPRINT 4 — First Vertical Slice + Handoff (Devin's last sprint)
+## SPRINT 4 — First Vertical Slice + Handoff (Devin's last sprint)
 
-## Phase 11 — Rack Screen End-to-End · Owner: Braydon
+### Phase 11 — Rack Screen End-to-End · Owner: Braydon
 
-### Goal
+#### Goal
 Turn the shell into the full rack flow: idle → countdown → active set → summary → rest, with the real batch POST at set end, false-set undo, rest timer, a session/group-scoped athlete/exercise picker, automatic makeup detection, and per-athlete target-weight calculation.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: react/src/rack/. Build on the Phase 10 shell. The batch
 endpoint is POST /api/sets/{id}/complete/ (see below). edge_athlete_rack_ui.html
@@ -2192,7 +2200,7 @@ only clear it if the coach/athlete explicitly changes it.
 Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - With no athlete/exercise selected, "idle" shows the picker (sourced from the active session, not open lists) and set start is disabled.
 - Selecting an athlete + exercise, then running a full simulated session (idle → countdown → active → summary → rest) produces **exactly one** `POST /api/sets/{id}/complete/`, and the created `Set` row has the correct `athlete`/`exercise` values.
 - Selecting an athlete with `has_data: true` automatically creates a Set with `is_makeup: true`.
@@ -2202,7 +2210,7 @@ Every file opens with a WHY comment.
 - Rest timer counts down and returns to idle, keeping the same athlete/exercise selected for the next set.
 - No repeated calls to `/api/sessions/active/` occur during a full cycle.
 
-### ✅ Phase 11 Exit Checklist
+#### ✅ Phase 11 Exit Checklist
 - [ ] Athlete/exercise picker sources only from the active session's roster/exercises, never the open list endpoints; set start is disabled until both are chosen
 - [ ] Full flow idle → countdown → active → summary → rest works against the simulator
 - [ ] Exactly one `complete/` POST per set, with correct rep count, summary stats, athlete, and exercise
@@ -2238,9 +2246,9 @@ Every file opens with a WHY comment.
 > the reason `react/src/rack/` is frozen. This is where it was decided and why.
 >
 > For what is true today: **§6** (the derivation rules) and
-> [`docs/reference/message-contract.md`](docs/reference/message-contract.md).
+> [`docs/reference/message-contract.md`](message-contract.md).
 
-### Built — Phase 11 minimal-path corrections (authoritative *as of July 2026* — see the banner above)
+#### Built — Phase 11 minimal-path corrections (authoritative *as of July 2026* — see the banner above)
 The Phase 11 prompt above was written against the FULL Phase 5 contract (SessionExercise + percent×max + an athlete-maxes endpoint). The vertical slice was built on the MINIMAL models instead (see the design memory + the exercise-identity note in Data Models), so several steps above are stale. Build to THIS:
 
 - **Target weight — READ, don't compute.** The tablet reads `roster[athlete].targets[exercise_id]` — an already-resolved absolute weight (from the athlete's `Program`) — and never computes `percent × max`. `session_exercises[]` has NO `target_weight_percent`. (Supersedes §1412–1414. Resolution is server-side; a future percent×max swap leaves the tablet unchanged — the settled "seam".)
@@ -2253,7 +2261,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 - **Blueprint extras are OUT of minimal scope:** the "suggested next set" insight card (insights are Phase 8/15), the "3 of 5" sets-progress dots, the rep-by-rep velocity breakdown, and the elapsed/duration timer. Keep only: idle picker → countdown (3-2-1) → active (rep count + velocity color) → summary (`reps_completed`, avg/peak) → rest (countdown).
 - **`GET /api/sessions/active/` exact shape** is pinned in docs/reference/message-contract.md §3.
 
-### Built — Phase 11 Step 2 redesign: athlete-centric day view (authoritative *as of July 2026* — see the banner above)
+#### Built — Phase 11 Step 2 redesign: athlete-centric day view (authoritative *as of July 2026* — see the banner above)
 
 **Why this changed.** The idle/picker was originally a bare athlete+exercise dropdown read off the one-shot session snapshot. Real training is fluid — athletes rotate between stations, superset across racks, and don't finish one movement before touching another — and the rack is a **vertical tablet read at a glance**, so density is the enemy. Step 2 is therefore rebuilt around the athlete's *live, server-derived progress*, shown the same way at every rack. This deliberately borrows the good ideas from Braydon's athlete-driven screen (`braydons-dev-branch`) **without his extra tables** — everything below derives from the existing `Program` + `Set` rows.
 
@@ -2262,7 +2270,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 2. **Fetch-on-check-in, plus a light roster poll.** The initial `GET /api/sessions/active/` loads the roster + session exercises. When an athlete **checks in**, the tablet fetches that athlete's derived progress (endpoint below); because it's server truth, they see the same up-to-date view wherever they check in. While the **check-in screen** is showing, the tablet also **polls the roster + hot list (~every 5s)** purely for freshness — to pick up a coach adding/removing a session athlete, and to drop an athlete who has since checked in at another rack. Progress itself is never polled: the **single-rack rule** (item 6) guarantees an athlete's progress can't change anywhere else while they're the one selected here, so fetch-on-check-in is sufficient. (This RETIRES the old "2b" live cross-rack push — see Known Open Items.)
 
 3. **New derived endpoint (no new tables):** `GET /api/sessions/active/athlete/{athlete_id}/progress/` (open, like active-session). Shape:
-   ```jsonc
+   ```json5
    {
      "session_id": 1,
      "athlete": { "id": 4, "name": "Jordan Lee" },
@@ -2302,7 +2310,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 9. **On-the-fly working weight + session carry-forward (authoritative; SUPERSEDES the "missing target → inline starting weight" fallback).** `Program.target_weight_lbs` is `NOT NULL` and the day view only lists a lifter's `Program` movements, so the old "missing target" case is unreachable — that inline-entry fallback is retired. In its place, a general edit: a **pencil beside LOAD** opens a full-screen themed numpad (`rack/WeightPad.jsx`) where the athlete sets what they're ACTUALLY loading. **Storage — no schema change:** the entered value becomes the set's `weight_lbs` at create (the "actual load lifted" column), a DIFFERENT slot from `Program.target_weight_lbs` (the prescription, never touched). It feeds weight-PR + future-target math downstream; the plan stays clean.
    - **Next-set default = `last_weight_lbs ?? target_weight_lbs`.** The progress endpoint returns `last_weight_lbs` — the actual load of the athlete's newest **non-false** set of that movement **this session** (null before their first). So a weight change carries forward across sets, tablet reloads, and rack moves — but is **session-scoped**: a prior session's loads are never read (the endpoint only queries the active session), so every session opens at the prescription. A local numpad edit (client `weightOverrides`, per exercise, reset on athlete change) takes precedence until the set is created. The LOAD reads lime whenever it differs from the prescribed target.
 
-### Built — Phase 11 Steps 3–5 + room state (authoritative *as of July 2026* — see the banner above)
+#### Built — Phase 11 Steps 3–5 + room state (authoritative *as of July 2026* — see the banner above)
 
 The full set lifecycle + rotation, on branch `phase-11-set-lifecycle`. State machine: `idle → countdown → active → summary → rest`.
 
@@ -2328,12 +2336,12 @@ The full set lifecycle + rotation, on branch `phase-11-set-lifecycle`. State mac
 
 ---
 
-## Phase 12 — Team Dashboard Kiosk · Owner: Devin
+### Phase 12 — Team Dashboard Kiosk · Owner: Devin
 
-### Goal
+#### Goal
 Build the base station's own kiosk display — the read-only room scoreboard — subscribing to `edgeathlete/dashboard/state`.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: react/src/dashboard/. Route /dashboard. No login, read-only.
 Subscribe over mqtt.js (Phase 10 client) to edgeathlete/dashboard/state.
@@ -2365,12 +2373,12 @@ station boot into the dashboard — the manifest.json fullscreen setting from
 Phase 10 does not do this on its own.
 ```
 
-### Verify
+#### Verify
 - With the simulator + a rack screen running, completing a set updates the rack status grid within 2s and moves the leaderboard.
 - Coach alerts render in their own visually separated section.
 - Rebooting the Pi lands directly on the fullscreen dashboard with no manual steps.
 
-### ✅ Phase 12 Exit Checklist
+#### ✅ Phase 12 Exit Checklist
 - [ ] Rack status grid updates within 2s of a simulated set completing
 - [ ] Leaderboard, fun-facts/insights (prominent), and summary block all update live
 - [ ] Coach alerts render in their own separated section
@@ -2382,12 +2390,12 @@ Phase 10 does not do this on its own.
 
 ---
 
-## Phase 13 — Real ESP32 Firmware v1 · Owner: Derrilon
+### Phase 13 — Real ESP32 Firmware v1 · Owner: Derrilon
 
-### Goal
+#### Goal
 Replace the simulator with real hardware: MPU-6050 velocity computation on-device, a 0.75s-stillness rep boundary, and MQTT publish matching the `parse_rep_payload` contract from Phase 3.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: esp32/edge_athlete_node/. Delete the reference PIR/motion
 firmware. This is Arduino/C++ for ESP32 + MPU-6050.
@@ -2411,12 +2419,12 @@ firmware. This is Arduino/C++ for ESP32 + MPU-6050.
 Top-of-file comment: 2-4 lines, WHY this firmware exists, beginner-readable.
 ```
 
-### Verify
+#### Verify
 - A physical barbell rep produces exactly one `rep` MQTT message with a plausible velocity value (`mosquitto_sub -t 'edgeathlete/node/+/rep' -v`).
 - The same rep appears on the rack screen within 1s (swap the simulator for the real node in the Phase 10/11 flow).
 - Pulse messages update the node's `Node` row via the Django subscriber.
 
-### ✅ Phase 13 Exit Checklist
+#### ✅ Phase 13 Exit Checklist
 - [ ] A physical rep produces one `rep` message with a plausible velocity
 - [ ] Payload shape exactly matches `parse_rep_payload`
 - [ ] Same rep appears on the rack screen within 1s
@@ -2428,7 +2436,7 @@ Top-of-file comment: 2-4 lines, WHY this firmware exists, beginner-readable.
 
 ---
 
-## Sprint 4 Handoff Gate · Owner: Devin
+### Sprint 4 Handoff Gate · Owner: Devin
 
 This is the gate before Devin exits. All of it must pass.
 
@@ -2441,14 +2449,14 @@ This is the gate before Devin exits. All of it must pass.
 
 ---
 
-# SPRINTS 5–6 — Team Alone
+## SPRINTS 5–6 — Team Alone
 
-## Phase 14 — Coach Tablet · Owner: Braydon · ⚠️ BUILT, BUT NOT AS WRITTEN
+### Phase 14 — Coach Tablet · Owner: Braydon · ⚠️ BUILT, BUT NOT AS WRITTEN
 
 > **Delivered by THE MERGE (P0–P15), which diverged from this prompt.** The
 > deliverable exists and works; the prompt below is the original design and is
 > kept for provenance. Where the two disagree, **the built product wins** — read
-> [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md) P7/P10/P11/P13/P14.
+> [`docs/_PATCH_NOTES.md`](https://github.com/carbolizer/Edge-Athlete/blob/main/docs/_PATCH_NOTES.md) P7/P10/P11/P13/P14.
 >
 > | This prompt says | What was built |
 > |---|---|
@@ -2459,7 +2467,7 @@ This is the gate before Devin exits. All of it must pass.
 > | `GET /api/racks/unassigned/`, Room Layout drag-and-drop | ✅ accurate — both exist, at `/coach/setup` |
 > | Athlete max entry, max progression chart | Max entry exists; the progression chart was **not** built |
 
-### Goal
+#### Goal
 Build the coach tablet: PWA shell (`manifest.coach.json`, route `/coach`, JWT
 login gate), the consolidated live-room-state view (subscribe
 `edgeathlete/coach/state`, alerts, basic graphs), the Room Layout drag-and-drop
@@ -2467,7 +2475,7 @@ rack/screen assignment section, group/block/session browsing, CSV upload with
 stub-exercise confirmation, red/yellow/green status dots, athlete max entry,
 and the max progression chart.
 
-### Prompt to paste into Claude
+#### Prompt to paste into Claude
 ```
 Working directory: react/src/coach/. Builds on Phase 9 (broadcast), Phase 4
 (coach-only endpoints), and Phases 6/7 (CSV import, status, roster-status,
@@ -2532,14 +2540,14 @@ GET endpoint.
 Every file opens with a WHY comment.
 ```
 
-### Verify
+#### Verify
 - Login gate, live room state, and Room Layout drag-and-drop rack/node assignment all work as originally specified.
 - Navigating Group → Block → TrainingSession shows correctly rolled-up status dots at every level, matching the backend's computed status.
 - Uploading a CSV with one new exercise surfaces exactly one confirmation modal; confirming updates the catalog, rejecting removes the stub and its SessionExercise link with no leftover references in the UI.
 - Selecting a "no data" athlete from a session's roster successfully routes a makeup set to a chosen rack, reusing the existing assignment pattern.
 - Athlete max entry form posts correctly; progression chart renders full history for a selected exercise.
 
-### ✅ Phase 14 Exit Checklist
+#### ✅ Phase 14 Exit Checklist
 - [ ] Login gate, live room state, and original drag-and-drop rack/node assignment all work
 - [ ] Groups/Blocks/Sessions browsable with correctly rolled-up status dots
 - [ ] CSV upload + stub-exercise confirmation works end-to-end, no orphaned records after rejection
@@ -2552,9 +2560,9 @@ Every file opens with a WHY comment.
 
 ---
 
-## Phase 15 — Fatigue Scaffold · Owner: Carl
+### Phase 15 — Fatigue Scaffold · Owner: Carl
 
-### Goal
+#### Goal
 `django/event_handler/ml/inference.py` with a REAL function signature (e.g. `predict_fatigue(set_summary: dict) -> dict`) and a real call site firing after set-complete (Phase 4/9). Returns a **stub** value. Not a trained model — training is explicitly out of scope.
 
 **Note — do not conflate with the Phase 5/8 insights scaffold:** this fatigue
@@ -2567,7 +2575,7 @@ trigger points — do not merge them into one function or one call site.
 
 ---
 
-## Phase 16 — Security Hardening · Owner: whole team · ⛔ NOT BUILT
+### Phase 16 — Security Hardening · Owner: whole team · ⛔ NOT BUILT
 
 > ⚠️ **Rewritten 2026-07-30.** The original prompt said "verify JWT covers all
 > coach-only endpoints (should already be true)". That is still true and is no
@@ -2575,7 +2583,7 @@ trigger points — do not merge them into one function or one call site.
 > what "hardening" means here, and verifying the old sentence would have someone
 > confirm something the team decided *not* to do.
 
-### What the merge decided, and why it matters here
+#### What the merge decided, and why it matters here
 
 **Authentication is enforced. Authorization is not, on purpose.** `IsCoach` means
 "is a logged-in user" and nothing more. Any authenticated coach can read and edit
@@ -2589,7 +2597,7 @@ to destroy another's work.
 There are tests that assert the **non**-enforcement, so adding a boundary is a
 deliberate change rather than a mystery failure.
 
-### The actual work
+#### The actual work
 
 1. **Decide whether authorization is now wanted.** If the answer is yes, it is
    additive on top of the filter — the filter does not have to be undone first.
@@ -2608,14 +2616,14 @@ deliberate change rather than a mystery failure.
 
 ---
 
-## Phase 17 — Firmware Hardening & Additional Mounts · Owner: Derrilon
+### Phase 17 — Firmware Hardening & Additional Mounts · Owner: Derrilon
 Waist and wrist mount thresholds, WiFi reconnect logic, enclosure v1. Resolve (or keep hooked) the noise-reduction location decision.
 
 **STOP. Review before moving to Phase 18.**
 
 ---
 
-## Phase 18 — Full Integration Test & Demo Prep · Owner: whole team
+### Phase 18 — Full Integration Test & Demo Prep · Owner: whole team
 Seed script, one-command `start.sh`, `DEMO_SCRIPT.md`, screen-recording backup. The full session script must run clean at least twice in a row before demo day.
 
 Add to the seed script and `DEMO_SCRIPT.md`: seed at least one TrainingGroup
@@ -2629,9 +2637,8 @@ updating correctly at all three hierarchy levels.
 
 ---
 
----
 
-## §9. Decision log
+### §9. Decision log
 
 - **D1 — Exercise catalog is canonical.** Keep `Exercise`(+`Tag`); his CharFields → `FK→Exercise`. No backfill;
   seed starter movements in the migration (§5.4).
@@ -2775,7 +2782,7 @@ updating correctly at all three hierarchy levels.
 
 ---
 
-### D18–D21 — the four found late, all now built
+#### D18–D21 — the four found late, all now built
 
 These four were raised after the decision log above was written, while the merge
 was already running. All four are **built**; they are recorded here because the
@@ -2816,7 +2823,7 @@ merge P15** as `promote_program_to_block()`.
 
 ---
 
-## §10. Explicitly deferred / out of scope
+### §10. Explicitly deferred / out of scope
 
 Do not build these. If you think one is needed, escalate (§11) rather than expanding scope.
 
@@ -2829,7 +2836,7 @@ Do not build these. If you think one is needed, escalate (§11) rather than expa
 
 ---
 
-## Stretch Goals / Explicitly Deferred (only after all phases complete)
+### Stretch Goals / Explicitly Deferred (only after all phases complete)
 
 Don't let these block a phase — they're intentionally punted:
 
@@ -2842,7 +2849,7 @@ Don't let these block a phase — they're intentionally punted:
 
 ---
 
-## v2 Changelog (summary)
+### v2 Changelog (summary)
 
 For quick reference — the full detail for each item lives in its phase above.
 

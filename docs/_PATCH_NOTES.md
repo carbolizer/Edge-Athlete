@@ -396,7 +396,7 @@ catalog below, ready to deploy to another group.
 
 ## Known gaps
 
-Recorded rather than hidden. All four are in [`../_SPEC.md`](../_SPEC.md) — §9
+Recorded rather than hidden. All four are in [`../docs/reference/spec.md`](docs/reference/spec.md) — §9
 (the decision log) and "Known Open Items".
 
 1. **Braydon needs telling** the CSV contract changed: `default_weight_lbs` →

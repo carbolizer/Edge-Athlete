@@ -4,7 +4,7 @@ urls.py — the address book: which web address goes to which handler in views.p
 Requests starting with /api/ are forwarded here from basestation_config/urls.py.
 This is the full base-station REST list so far: tablets register/poll/start/finish
 sets and read training plans; coaches manage athletes, plans, sessions, nodes, and
-rack assignments; and there are two analytics summaries. See _SPEC.md -> "REST API".
+rack assignments; and there are two analytics summaries. See docs/reference/spec.md -> "REST API".
 
 Note: the catch-all routes ("racks/<device_id>/", "nodes/<node_id>/") come LAST on
 purpose — the specific routes above them (register, racknumber, unassigned, list)

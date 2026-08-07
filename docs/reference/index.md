@@ -10,12 +10,17 @@ the journal page that explains *why*.
 **{doc}`database`**
 : A plain-English tour of every table and how they connect.
 
+**{doc}`spec`**
+: The original specification, kept verbatim while it is rewritten. Governing rules and
+  constraints up top; the historical Phase 1–18 build prompts below them.
+
 ```{toctree}
 :maxdepth: 1
 :hidden:
 
 message-contract
 database
+spec
 ```
 
 ---

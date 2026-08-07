@@ -3,7 +3,7 @@
 Written 2026-07-30, at the end of Sprint 3, on branch `merge-braydon`.
 
 This is the short list of things that are **not obvious from the code** and that
-cost real time to work out. Everything else is in [`../_SPEC.md`](../_SPEC.md) and
+cost real time to work out. Everything else is in [`../docs/reference/spec.md`](docs/reference/spec.md) and
 [`_PATCH_NOTES.md`](_PATCH_NOTES.md).
 
 ---
