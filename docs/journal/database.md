@@ -47,9 +47,9 @@ The physical things in the gym, and the screens standing at them.
 
 ### `Node`
 
-:::::{dropdown} An ESP32 + sensor unit on a rack
+An ESP32 + sensor unit on a rack. Identified by node_id; a coach links it to a physical rack via rack_number. Its live fields are updated by pulses.
 
-**What it is.** An ESP32 + sensor unit on a rack. Identified by node_id; a coach links it to a physical rack via rack_number. Its live fields are updated by pulses.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:Node:start -->
 | Column | Type | Notes |
@@ -74,9 +74,9 @@ The physical things in the gym, and the screens standing at them.
 
 ### `RackScreen`
 
-:::::{dropdown} A tablet PWA standing at a rack
+A tablet PWA standing at a rack. Its device_id is generated in the browser on first setup; rack_number is null until a coach assigns it. Separate from Node — a screen and its sensor are assigned independently.
 
-**What it is.** A tablet PWA standing at a rack. Its device_id is generated in the browser on first setup; rack_number is null until a coach assigns it. Separate from Node — a screen and its sensor are assigned independently.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:RackScreen:start -->
 | Column | Type | Notes |
@@ -94,9 +94,9 @@ The physical things in the gym, and the screens standing at them.
 
 ### `RackCheckIn`
 
-:::::{dropdown} A record that an athlete signed in ("checked in") at a rack during a session
+A record that an athlete signed in ("checked in") at a rack during a session. ADD-ONLY, newest-wins — the same shape as AthleteReferenceMax. An athlete's CURRENT rack for a session is simply their newest row for that session. Because a newer check-in supersedes the older one, an athlete is only ever "owned" by one rack at a time: we assume they can't lift at two racks at once, so checking in somewhere new just moves them there. This is what a rack's HOT LIST (the fast re-pick shortcut on the check-in screen) reads from — the athletes whose newest check-in is that rack. Nothing here is meant to outlive the session.
 
-**What it is.** A record that an athlete signed in ("checked in") at a rack during a session. ADD-ONLY, newest-wins — the same shape as AthleteReferenceMax. An athlete's CURRENT rack for a session is simply their newest row for that session. Because a newer check-in supersedes the older one, an athlete is only ever "owned" by one rack at a time: we assume they can't lift at two racks at once, so checking in somewhere new just moves them there. This is what a rack's HOT LIST (the fast re-pick shortcut on the check-in screen) reads from — the athletes whose newest check-in is that rack. Nothing here is meant to outlive the session.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:RackCheckIn:start -->
 | Column | Type | Notes |
@@ -124,9 +124,9 @@ Who lifts, who coaches, and who trains together.
 
 ### `Athlete`
 
-:::::{dropdown} A lifter
+A lifter. Optionally carries an NFC tag id for tap-to-identify at a rack.
 
-**What it is.** A lifter. Optionally carries an NFC tag id for tap-to-identify at a rack.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:Athlete:start -->
 | Column | Type | Notes |
@@ -147,9 +147,9 @@ Who lifts, who coaches, and who trains together.
 
 ### `TrainingGroup`
 
-:::::{dropdown} A NAMED SUBSET of athletes who train together on one program — e.g
+A NAMED SUBSET of athletes who train together on one program — e.g. "Varsity Football" or "Freshman Speed". ⚠️ This is NOT the list of everyone in the system. Every registered person lives in the Athlete table; a TrainingGroup is a slice of them that a coach hangs a TrainingProgram on. A gym runs many groups at once, each on its own program, and several groups can share one session (see SessionParticipation). Membership lives on Athlete.training_groups (M2M), not here — an athlete can be in several groups at once. Long-lived: a group outlives many blocks/programs. It carries no dates and no workouts itself — it's "who trains together," not a schedule. ⚠️ The staff who run a group live in TrainingGroupCoach, not in a field here. This used to be a single `coach` FK, which could not say what a real weight room does every day: "Sarah and Mike both run Varsity".
 
-**What it is.** A NAMED SUBSET of athletes who train together on one program — e.g. "Varsity Football" or "Freshman Speed". ⚠️ This is NOT the list of everyone in the system. Every registered person lives in the Athlete table; a TrainingGroup is a slice of them that a coach hangs a TrainingProgram on. A gym runs many groups at once, each on its own program, and several groups can share one session (see SessionParticipation). Membership lives on Athlete.training_groups (M2M), not here — an athlete can be in several groups at once. Long-lived: a group outlives many blocks/programs. It carries no dates and no workouts itself — it's "who trains together," not a schedule. ⚠️ The staff who run a group live in TrainingGroupCoach, not in a field here. This used to be a single `coach` FK, which could not say what a real weight room does every day: "Sarah and Mike both run Varsity".
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingGroup:start -->
 | Column | Type | Notes |
@@ -179,9 +179,9 @@ most common first misunderstanding of this schema.
 
 ### `TrainingGroupCoach`
 
-:::::{dropdown} Which staff run a TrainingGroup, and in what capacity
+Which staff run a TrainingGroup, and in what capacity. A join table rather than a field on TrainingGroup because a real weight room puts several people on one group — a head coach plus assistants — and a single FK can only ever name one of them. That FK is what this replaced; its value was carried over as the head coach of each group it named. ⚠️ Being listed here is currently a STATEMENT, not a permission. Nothing in the API asks this table whether a write is allowed — `IsCoach` still means "is authenticated", same as before. The canon calls this filter-not-fence, and it is deliberate: recording who runs what is useful on its own, and a real boundary can be added on top later without undoing any of this. Do not read a row here as authorization until something actually enforces it.
 
-**What it is.** Which staff run a TrainingGroup, and in what capacity. A join table rather than a field on TrainingGroup because a real weight room puts several people on one group — a head coach plus assistants — and a single FK can only ever name one of them. That FK is what this replaced; its value was carried over as the head coach of each group it named. ⚠️ Being listed here is currently a STATEMENT, not a permission. Nothing in the API asks this table whether a write is allowed — `IsCoach` still means "is authenticated", same as before. The canon calls this filter-not-fence, and it is deliberate: recording who runs what is useful on its own, and a real boundary can be added on top later without undoing any of this. Do not read a row here as authorization until something actually enforces it.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingGroupCoach:start -->
 | Column | Type | Notes |
@@ -208,9 +208,9 @@ The shared vocabulary every plan and every set points at.
 
 ### `Exercise`
 
-:::::{dropdown} The catalog entry for one movement — the single official identity that every training plan, set, and reference max points at, instead of each one hand-typing the name
+The catalog entry for one movement — the single official identity that every training plan, set, and reference max points at, instead of each one hand-typing the name. This is what stops "Back Squat" and "back squat" from drifting into two different movements. `is_stub` marks a row auto-created from an unrecognized import that a coach hasn't confirmed yet (used later, Phase 6).
 
-**What it is.** The catalog entry for one movement — the single official identity that every training plan, set, and reference max points at, instead of each one hand-typing the name. This is what stops "Back Squat" and "back squat" from drifting into two different movements. `is_stub` marks a row auto-created from an unrecognized import that a coach hasn't confirmed yet (used later, Phase 6).
+:::::{dropdown} Schema and decisions
 
 <!-- schema:Exercise:start -->
 | Column | Type | Notes |
@@ -229,9 +229,9 @@ The shared vocabulary every plan and every set points at.
 
 ### `Tag`
 
-:::::{dropdown} A label for grouping movements (e.g
+A label for grouping movements (e.g. 'lower', 'push'). Just a name for now; a coach hangs these on Exercises so they can be filtered later.
 
-**What it is.** A label for grouping movements (e.g. 'lower', 'push'). Just a name for now; a coach hangs these on Exercises so they can be filtered later.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:Tag:start -->
 | Column | Type | Notes |
@@ -247,9 +247,9 @@ The shared vocabulary every plan and every set points at.
 
 ### `BlockCategory`
 
-:::::{dropdown} A label for finding things in the shared block catalog — "Off-season", "Football", "Freshman"
+A label for finding things in the shared block catalog — "Off-season", "Football", "Freshman". ⚠️ This is deliberately NOT the existing `Tag` model, even though both are "a name you hang on something". `Tag`'s vocabulary is movement labels for Exercises ("lower", "push") and its `name` is globally unique, so reusing it would put two unrelated vocabularies in one namespace and make a word like "Upper" mean a body region or a grade level depending on what it hangs off. Two small tables are cheaper than one ambiguous one. A block has MANY of these, not one, because real categories sit on different axes: a block is honestly both "Off-season" AND "Football", and those are not competing answers to the same question. Forcing one would mean inventing combination rows ("Off-season Football"), which multiplies badly.
 
-**What it is.** A label for finding things in the shared block catalog — "Off-season", "Football", "Freshman". ⚠️ This is deliberately NOT the existing `Tag` model, even though both are "a name you hang on something". `Tag`'s vocabulary is movement labels for Exercises ("lower", "push") and its `name` is globally unique, so reusing it would put two unrelated vocabularies in one namespace and make a word like "Upper" mean a body region or a grade level depending on what it hangs off. Two small tables are cheaper than one ambiguous one. A block has MANY of these, not one, because real categories sit on different axes: a block is honestly both "Off-season" AND "Football", and those are not competing answers to the same question. Forcing one would mean inventing combination rows ("Off-season Football"), which multiplies badly.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:BlockCategory:start -->
 | Column | Type | Notes |
@@ -274,9 +274,9 @@ Reusable training, written once and redeployed.
 
 ### `TrainingBlock`
 
-:::::{dropdown} A reusable, timeless TEMPLATE a coach designs once and redeploys (tweak last year's block, run it again next year)
+A reusable, timeless TEMPLATE a coach designs once and redeploys (tweak last year's block, run it again next year). Deliberately has no group and no dates — those only exist once a TrainingProgram instantiates it. ⚠️ This name is intentionally the OPPOSITE of the old, retired meaning ("Block" used to be a dated phase owned by a group) — here it's purely the template. Carries a duration/cadence so a future calendar-generator feature can auto-place sessions from it later. That generator isn't built yet — this just keeps the door open without inventing more structure than needed today.
 
-**What it is.** A reusable, timeless TEMPLATE a coach designs once and redeploys (tweak last year's block, run it again next year). Deliberately has no group and no dates — those only exist once a TrainingProgram instantiates it. ⚠️ This name is intentionally the OPPOSITE of the old, retired meaning ("Block" used to be a dated phase owned by a group) — here it's purely the template. Carries a duration/cadence so a future calendar-generator feature can auto-place sessions from it later. That generator isn't built yet — this just keeps the door open without inventing more structure than needed today.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingBlock:start -->
 | Column | Type | Notes |
@@ -322,9 +322,9 @@ misread this database.
 
 ### `TrainingBlockWorkout`
 
-:::::{dropdown} One ordered workout inside a block's template (e.g
+One ordered workout inside a block's template (e.g. "Day 1: Squat").
 
-**What it is.** One ordered workout inside a block's template (e.g. "Day 1: Squat").
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingBlockWorkout:start -->
 | Column | Type | Notes |
@@ -347,9 +347,9 @@ misread this database.
 
 ### `TrainingBlockExercise`
 
-:::::{dropdown} One prescription row inside a block workout — the MASTER copy a program snapshot-copies from at instantiation
+One prescription row inside a block workout — the MASTER copy a program snapshot-copies from at instantiation. Always a percent of the athlete's reference max plus a velocity zone, never an absolute weight.
 
-**What it is.** One prescription row inside a block workout — the MASTER copy a program snapshot-copies from at instantiation. Always a percent of the athlete's reference max plus a velocity zone, never an absolute weight.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingBlockExercise:start -->
 | Column | Type | Notes |
@@ -381,9 +381,9 @@ A block scheduled for a real group, on real dates.
 
 ### `TrainingProgram`
 
-:::::{dropdown} A scheduled INSTANCE for a group, placed in time
+A scheduled INSTANCE for a group, placed in time. Usually instantiated from a TrainingBlock (its prescription gets snapshot-copied down at creation time), but training_block is NULLABLE — a coach can also build a standalone one-off program with its own prescription and no template behind it. Both are permanent, first-class paths, not a migration shim. ⚠️ This docstring used to claim that promoting a one-off into a reusable template was "just adding a TrainingBlock row and pointing this FK at it". **That was false**, and it was repeated in several places before anyone checked. Setting `training_block` records where a program CAME FROM; it copies nothing. Pointing it at a fresh block would produce a block claiming to be the source of this program while containing zero days — and deploying that block would hand a group an empty plan. Promotion is `instantiate_block()` run backwards: create the block, copy every day and prescription row UP into it, and only then point the FK. That is `promote_program_to_block()` in services/planning.py (P15).
 
-**What it is.** A scheduled INSTANCE for a group, placed in time. Usually instantiated from a TrainingBlock (its prescription gets snapshot-copied down at creation time), but training_block is NULLABLE — a coach can also build a standalone one-off program with its own prescription and no template behind it. Both are permanent, first-class paths, not a migration shim. ⚠️ This docstring used to claim that promoting a one-off into a reusable template was "just adding a TrainingBlock row and pointing this FK at it". **That was false**, and it was repeated in several places before anyone checked. Setting `training_block` records where a program CAME FROM; it copies nothing. Pointing it at a fresh block would produce a block claiming to be the source of this program while containing zero days — and deploying that block would hand a group an empty plan. Promotion is `instantiate_block()` run backwards: create the block, copy every day and prescription row UP into it, and only then point the FK. That is `promote_program_to_block()` in services/planning.py (P15).
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingProgram:start -->
 | Column | Type | Notes |
@@ -404,9 +404,9 @@ A block scheduled for a real group, on real dates.
 
 ### `TrainingProgramWorkout`
 
-:::::{dropdown} The editable copy of a TrainingBlockWorkout, living on this program instance
+The editable copy of a TrainingBlockWorkout, living on this program instance. Editing this affects only this program; editing the block affects future instances instantiated from it later.
 
-**What it is.** The editable copy of a TrainingBlockWorkout, living on this program instance. Editing this affects only this program; editing the block affects future instances instantiated from it later.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingProgramWorkout:start -->
 | Column | Type | Notes |
@@ -429,9 +429,9 @@ A block scheduled for a real group, on real dates.
 
 ### `TrainingProgramExercise`
 
-:::::{dropdown} The editable copy of a TrainingBlockExercise — the runtime prescription row
+The editable copy of a TrainingBlockExercise — the runtime prescription row. The absolute target is always DERIVED at read time (target_percent × the athlete's CURRENT AthleteReferenceMax, which itself keeps updating as new session data comes in) — never stored here as a fixed number.
 
-**What it is.** The editable copy of a TrainingBlockExercise — the runtime prescription row. The absolute target is always DERIVED at read time (target_percent × the athlete's CURRENT AthleteReferenceMax, which itself keeps updating as new session data comes in) — never stored here as a fixed number.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingProgramExercise:start -->
 | Column | Type | Notes |
@@ -463,9 +463,9 @@ out *when the screen asks for it*, against that athlete's own current max.
 
 ### `AthleteWorkoutExerciseOverride`
 
-:::::{dropdown} A coach-set per-athlete EXCEPTION for one prescription row — for the rare outlier where a percent doesn't fit that specific athlete
+A coach-set per-athlete EXCEPTION for one prescription row — for the rare outlier where a percent doesn't fit that specific athlete. Overrides the PERCENT, never a static weight — the derivation still multiplies whatever's overridden here against the athlete's current reference max, so it stays dynamic instead of freezing a number in time. Most athletes need no override at all; this is a thin escape hatch, not the common path.
 
-**What it is.** A coach-set per-athlete EXCEPTION for one prescription row — for the rare outlier where a percent doesn't fit that specific athlete. Overrides the PERCENT, never a static weight — the derivation still multiplies whatever's overridden here against the athlete's current reference max, so it stays dynamic instead of freezing a number in time. Most athletes need no override at all; this is a thin escape hatch, not the common path.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:AthleteWorkoutExerciseOverride:start -->
 | Column | Type | Notes |
@@ -490,9 +490,9 @@ out *when the screen asks for it*, against that athlete's own current max.
 
 ### `ScheduledSession`
 
-:::::{dropdown} One planned training slot: this program's day N, on this date
+One planned training slot: this program's day N, on this date. WHAT THIS IS FOR, plainly: a coach deploys an 8-week block that trains Mon/Wed/Fri and wants to see it on a calendar. Before this, nothing turned `start_date` + cadence into actual dates — `cadence_days_of_week` and `duration_weeks` were written and never read by anything. ⚠️ THE SLOT IS A PLAN; THE SESSION IS THE REAL THING. `session` is nullable and stays null until a coach actually creates that day. This separation is why the change is small: no model is asked to mean two things, and a `TrainingSession` still only exists when someone means to run it. ⚠️ SLOTS ARE FROZEN ONCE GENERATED. Editing the block's cadence afterwards moves no existing slot — the same independence rule as a deployed program. Once a program is an instance it is its own thing; a coach who wants the new cadence deploys the block again. Moving a single slot is one `date` write and regenerates nothing.
 
-**What it is.** One planned training slot: this program's day N, on this date. WHAT THIS IS FOR, plainly: a coach deploys an 8-week block that trains Mon/Wed/Fri and wants to see it on a calendar. Before this, nothing turned `start_date` + cadence into actual dates — `cadence_days_of_week` and `duration_weeks` were written and never read by anything. ⚠️ THE SLOT IS A PLAN; THE SESSION IS THE REAL THING. `session` is nullable and stays null until a coach actually creates that day. This separation is why the change is small: no model is asked to mean two things, and a `TrainingSession` still only exists when someone means to run it. ⚠️ SLOTS ARE FROZEN ONCE GENERATED. Editing the block's cadence afterwards moves no existing slot — the same independence rule as a deployed program. Once a program is an instance it is its own thing; a coach who wants the new cadence deploys the block again. Moving a single slot is one `date` write and regenerates nothing.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:ScheduledSession:start -->
 | Column | Type | Notes |
@@ -521,9 +521,9 @@ The live session, and which groups are on it.
 
 ### `TrainingSession`
 
-:::::{dropdown} One training session in the gym — a window of time containing many sets across the athletes who took part
+One training session in the gym — a window of time containing many sets across the athletes who took part. A session is SHARED: several TrainingGroups can be on the same one, each via its own SessionParticipation row pointing at that group's program and the day they are running. The session itself belongs to nobody. ⚠️ `started_at` IS NULLABLE, and that is the whole of P14's schema change: **a session can exist before it runs.** Null means "created, not started yet" — Thursday's session, set up on Tuesday. It is set when a coach actually starts the day. Because of that, "the active session" means STARTED and not ended, never merely existing — see services/active_session.py. A future session that could capture check-ins is exactly the D18 failure, and nullable `started_at` is what makes it structurally impossible rather than merely guarded against. ⚠️ Never order sessions by `-started_at` without excluding nulls: Postgres sorts NULLs FIRST descending, so an unstarted future session would come back as the newest thing in the room.
 
-**What it is.** One training session in the gym — a window of time containing many sets across the athletes who took part. A session is SHARED: several TrainingGroups can be on the same one, each via its own SessionParticipation row pointing at that group's program and the day they are running. The session itself belongs to nobody. ⚠️ `started_at` IS NULLABLE, and that is the whole of P14's schema change: **a session can exist before it runs.** Null means "created, not started yet" — Thursday's session, set up on Tuesday. It is set when a coach actually starts the day. Because of that, "the active session" means STARTED and not ended, never merely existing — see services/active_session.py. A future session that could capture check-ins is exactly the D18 failure, and nullable `started_at` is what makes it structurally impossible rather than merely guarded against. ⚠️ Never order sessions by `-started_at` without excluding nulls: Postgres sorts NULLs FIRST descending, so an unstarted future session would come back as the newest thing in the room.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:TrainingSession:start -->
 | Column | Type | Notes |
@@ -551,9 +551,9 @@ shared-session case.
 
 ### `SessionParticipation`
 
-:::::{dropdown} The join between a shared session and one group's program — this is what lets many groups be on the same session at once instead of a session belonging to just one group
+The join between a shared session and one group's program — this is what lets many groups be on the same session at once instead of a session belonging to just one group. Deliberately carries NO snapshot blob: what was actually performed already lives in Set/Rep, and what was prescribed gets frozen for the whole session by DailyReport at end-of-day. Storing a third copy here would be two write paths for one guarantee (see merge canon D14).
 
-**What it is.** The join between a shared session and one group's program — this is what lets many groups be on the same session at once instead of a session belonging to just one group. Deliberately carries NO snapshot blob: what was actually performed already lives in Set/Rep, and what was prescribed gets frozen for the whole session by DailyReport at end-of-day. Storing a third copy here would be two write paths for one guarantee (see merge canon D14).
+:::::{dropdown} Schema and decisions
 
 <!-- schema:SessionParticipation:start -->
 | Column | Type | Notes |
@@ -580,9 +580,9 @@ Performed work, and the numbers derived from it.
 
 ### `Set`
 
-:::::{dropdown} One set an athlete performed
+One set an athlete performed. Created when the set starts; its summary fields (reps_completed, velocities, is_false_set) are filled in by the batch set-complete write when the set ends.
 
-**What it is.** One set an athlete performed. Created when the set starts; its summary fields (reps_completed, velocities, is_false_set) are filled in by the batch set-complete write when the set ends.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:Set:start -->
 | Column | Type | Notes |
@@ -616,9 +616,9 @@ Performed work, and the numbers derived from it.
 
 ### `Rep`
 
-:::::{dropdown} One completed rep inside a set
+One completed rep inside a set. Written only in bulk by the set-complete endpoint. velocity_color is the green/yellow/red zone read for the rep.
 
-**What it is.** One completed rep inside a set. Written only in bulk by the set-complete endpoint. velocity_color is the green/yellow/red zone read for the rep.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:Rep:start -->
 | Column | Type | Notes |
@@ -644,9 +644,9 @@ Performed work, and the numbers derived from it.
 
 ### `AthleteReferenceMax`
 
-:::::{dropdown} An athlete's CURRENT WORKING reference for one movement — the anchor number programs multiply against to build target weights
+An athlete's CURRENT WORKING reference for one movement — the anchor number programs multiply against to build target weights. This is deliberately NOT a lifetime personal best: it tracks what the athlete can do about NOW, so it can go DOWN as well as up (a rough patch should pull prescribed weights back). Lifetime bests are a separate concept, already derivable from Set history and surfaced via the is_weight_pr / is_velocity_pr flags — do not conflate the two. ADD-ONLY history table: every recorded reference writes a NEW row, and an athlete's "current reference" for a movement is simply their newest row for it (a newer, lower number legitimately supersedes an older, higher one). We never edit or delete an old row. Progression over time is graphable for free, and a live session reads a stable snapshot (everyone's newest row) while a value entered mid-session just becomes that athlete's newest row and applies forward. A reference can be a coach-entered number OR one the system estimates from velocity data later — both live here, told apart by `source`, so you can graph how close the estimate lands to the manual value. `rep_basis` keeps the honest original fact (a 3-rep effort is not a 1-rep effort); targets convert to a common 1-rep basis when they're computed. `source_session` links an estimated row back to the session that produced it, so a later coach "publish"/re-publish (a future phase) can trace and supersede its own estimates without mutating history. Null for manual entries and for estimates not tied to a single session; SET_NULL so the reference survives if that session is ever deleted. `exercise` links to the Exercise catalog (same as Program and Set) so every reference points at one official movement identity, not a loose name string.
 
-**What it is.** An athlete's CURRENT WORKING reference for one movement — the anchor number programs multiply against to build target weights. This is deliberately NOT a lifetime personal best: it tracks what the athlete can do about NOW, so it can go DOWN as well as up (a rough patch should pull prescribed weights back). Lifetime bests are a separate concept, already derivable from Set history and surfaced via the is_weight_pr / is_velocity_pr flags — do not conflate the two. ADD-ONLY history table: every recorded reference writes a NEW row, and an athlete's "current reference" for a movement is simply their newest row for it (a newer, lower number legitimately supersedes an older, higher one). We never edit or delete an old row. Progression over time is graphable for free, and a live session reads a stable snapshot (everyone's newest row) while a value entered mid-session just becomes that athlete's newest row and applies forward. A reference can be a coach-entered number OR one the system estimates from velocity data later — both live here, told apart by `source`, so you can graph how close the estimate lands to the manual value. `rep_basis` keeps the honest original fact (a 3-rep effort is not a 1-rep effort); targets convert to a common 1-rep basis when they're computed. `source_session` links an estimated row back to the session that produced it, so a later coach "publish"/re-publish (a future phase) can trace and supersede its own estimates without mutating history. Null for manual entries and for estimates not tied to a single session; SET_NULL so the reference survives if that session is ever deleted. `exercise` links to the Exercise catalog (same as Program and Set) so every reference points at one official movement identity, not a loose name string.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:AthleteReferenceMax:start -->
 | Column | Type | Notes |
@@ -726,9 +726,9 @@ weight for any athlete whose max was recorded at more than one rep.
 
 ### `DailyReport`
 
-:::::{dropdown} The permanent record of one finished training day — written once, never edited
+The permanent record of one finished training day — written once, never edited. WHY THIS IS STORED RATHER THAN DERIVED (the one deliberate exception to this codebase's derive-don't-store rule): a report has to keep saying what was true on the day it was generated. If we recomputed it on demand, a coach editing next week's program — or an athlete's max drifting — would silently rewrite last month's history. Immutability IS the feature here, so the whole day gets frozen into `snapshot` at the moment the session ends. `snapshot` holds the entire report as JSON (roster, each athlete's sets and reps, which racks they used, room totals) so reading a report never depends on the live tables it came from. `schema_version` lets an older stored snapshot still be read correctly after the shape evolves.
 
-**What it is.** The permanent record of one finished training day — written once, never edited. WHY THIS IS STORED RATHER THAN DERIVED (the one deliberate exception to this codebase's derive-don't-store rule): a report has to keep saying what was true on the day it was generated. If we recomputed it on demand, a coach editing next week's program — or an athlete's max drifting — would silently rewrite last month's history. Immutability IS the feature here, so the whole day gets frozen into `snapshot` at the moment the session ends. `snapshot` holds the entire report as JSON (roster, each athlete's sets and reps, which racks they used, room totals) so reading a report never depends on the live tables it came from. `schema_version` lets an older stored snapshot still be read correctly after the shape evolves.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:DailyReport:start -->
 | Column | Type | Notes |
@@ -757,9 +757,9 @@ Plumbing, not training data.
 
 ### `MonitoringEvent`
 
-:::::{dropdown} A durable record that "something changed" — written the instant it happens; a separate publisher loop delivers it to the dashboard afterward and marks it published
+A durable record that "something changed" — written the instant it happens; a separate publisher loop delivers it to the dashboard afterward and marks it published. Adopted from Braydon's realtime/ layer: sturdier than a fire-and-forget MQTT publish, because a dropped connection just leaves the row unpublished for the next attempt instead of losing the update outright.
 
-**What it is.** A durable record that "something changed" — written the instant it happens; a separate publisher loop delivers it to the dashboard afterward and marks it published. Adopted from Braydon's realtime/ layer: sturdier than a fire-and-forget MQTT publish, because a dropped connection just leaves the row unpublished for the next attempt instead of losing the update outright.
+:::::{dropdown} Schema and decisions
 
 <!-- schema:MonitoringEvent:start -->
 | Column | Type | Notes |

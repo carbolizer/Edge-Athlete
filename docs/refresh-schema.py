@@ -186,14 +186,18 @@ def cluster_of(name):
 
 
 def full_block(model):
-    """A complete entry for a table nobody has written about yet: a heading with the
-    table's name, then a dropdown holding the schema and the writing about it."""
-    summary = model["doc"].split(". ")[0].rstrip(".") if model["doc"] else ""
-    label = summary if summary else "Schema"
-    what = f"**What it is.** {model['doc']}\n\n" if model["doc"] else ""
+    """A complete entry for one table.
+
+    The shape is deliberate: the table's name as a heading, then what it is in plain
+    text right underneath — visible without clicking, so the page can be skimmed
+    top to bottom. The dropdown below it is the detail: columns, rules, and the
+    decisions attached to the table.
+    """
+    what = f"{model['doc']}\n\n" if model["doc"] else ""
     return (
         f"### `{model['name']}`\n\n"
-        f":::::{{dropdown}} {label}\n\n{what}"
+        f"{what}"
+        f":::::{{dropdown}} Schema and decisions\n\n"
         f"<!-- schema:{model['name']}:start -->\n"
         f"{generated_body(model)}\n"
         f"<!-- schema:{model['name']}:end -->\n\n"
