@@ -1,54 +1,11 @@
 # The database
 
-The part of the system where a wrong assumption does lasting damage, because it
-changes numbers a coach then trains people against.
+The part of the system where a wrong assumption does lasting damage, because it changes
+numbers a coach then trains people against.
 
-Most of this page is the table-by-table reference below — every table collapsed, with
-its schema and the decisions attached to it. The few ideas at the top are the ones that
-cut across several tables, so they cannot live inside any single one.
-
-## The one idea to take away
-
-**A plan stores a percentage. It never stores a weight.**
-
-A coach prescribes "Back Squat 5×3 at 80%" once, for a whole group. There is no
-target-weight column anywhere in the database. The actual number on the bar is worked
-out *when the screen asks for it*, against that athlete's own current max.
-
-## The three weights
-
-Confusing any two of these is the most expensive mistake available on this project. It
-derailed an earlier attempt at the system, which is why it is written down this plainly.
-
-| | Weight | Where it lives | What moves it |
-|---|---|---|---|
-| **a** | **Reference max** — what the athlete can lift *now* | Stored in `AthleteReferenceMax`. Add-only, newest wins. | A coach entering a new one, or the recalculation when a session ends |
-| **b** | **Prescribed target** — what the plan says to lift today | **Nowhere. Always derived** as a percentage of (a) | Move (a), or set a per-athlete override |
-| **c** | **Actual load** — what is on the bar right now | Stored on `Set` | The athlete's number pad, or a coach adjusting today's load |
-
-**The rule:** to change the *prescription*, move **(a)**. To change only what someone is
-lifting *right now*, move **(c)**. **(b) is derived and never written.**
-
-When a coach says "change their weight" they mean one of two different things, and the
-system offers a separate lever for each. They do not compete: (a) rewrites future
-targets, (c) nudges today without touching the plan.
-
-## Reading the hierarchy
-
-Four table names carry most of the confusion, because **they are inverted from common
-gym usage on purpose**. Each one's dropdown explains itself; the shape is:
-
-```
-TrainingBlock   →   TrainingProgram   →   TrainingGroup   →   TrainingSession
-  template            instance             squad              one shared timeslot
-```
-
-:::{warning}
-**That arrow is "bigger idea → smaller idea." It is NOT the foreign-key direction.**
-The actual keys point differently, and deliberately so. Reading one as the other
-produces a confidently wrong mental model of the whole schema — the most likely way to
-misread this database.
-:::
+**This page is the tables.** Every one is collapsed below, carrying its own schema and
+the decisions attached to it — open the ones you need. The only thing kept out here is
+the tuning file, because it is not a table.
 
 ## Where the training numbers live
 
@@ -284,6 +241,23 @@ template**, and `TrainingProgram` is the dated instance created from it.
 Anyone arriving with coaching background reads this backwards at first. It is the
 single most likely source of a misreading in the whole schema.
 
+### Reading the hierarchy
+
+Four table names carry most of the confusion, because **they are inverted from common
+gym usage on purpose**. Each one's dropdown explains itself; the shape is:
+
+```
+TrainingBlock   →   TrainingProgram   →   TrainingGroup   →   TrainingSession
+  template            instance             squad              one shared timeslot
+```
+
+:::{warning}
+**That arrow is "bigger idea → smaller idea." It is NOT the foreign-key direction.**
+The actual keys point differently, and deliberately so. Reading one as the other
+produces a confidently wrong mental model of the whole schema — the most likely way to
+misread this database.
+:::
+
 :::::
 
 :::::{dropdown} `TrainingBlockWorkout` — One ordered workout inside a block's template (e.g
@@ -430,7 +404,11 @@ single most likely source of a misreading in the whole schema.
 
 **Why it exists.** Where a prescription actually lives — the movement, the sets and reps, and **the percentage**. Note what is *not* here: any column holding a weight in pounds. Weight (b) in the three-weights table is derived from this row plus the athlete's reference max, and never stored.
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+### A plan stores a percentage, never a weight
+
+A coach prescribes "Back Squat 5×3 at 80%" once, for a whole group. There is no
+target-weight column anywhere in the database. The actual number on the bar is worked
+out *when the screen asks for it*, against that athlete's own current max.
 
 :::::
 
@@ -567,6 +545,23 @@ shared-session case.
 
 **Why it exists.** The anchor. **Every prescribed weight in the entire system is a percentage of a row in this table.** Nothing else in the schema plays that role, which is why so much care is spent on it.
 
+### The three weights, and which lever moves which
+
+Confusing any two of these is the most expensive mistake available on this project. It
+derailed an earlier attempt at the system, which is why it is written down this plainly.
+
+| | Weight | Where it lives | What moves it |
+|---|---|---|---|
+| **a** | **Reference max** — what the athlete can lift *now* | Stored in `AthleteReferenceMax`. Add-only, newest wins. | A coach entering a new one, or the recalculation when a session ends |
+| **b** | **Prescribed target** — what the plan says to lift today | **Nowhere. Always derived** as a percentage of (a) | Move (a), or set a per-athlete override |
+| **c** | **Actual load** — what is on the bar right now | Stored on `Set` | The athlete's number pad, or a coach adjusting today's load |
+
+**The rule:** to change the *prescription*, move **(a)**. To change only what someone is
+lifting *right now*, move **(c)**. **(b) is derived and never written.**
+
+When a coach says "change their weight" they mean one of two different things, and the
+system offers a separate lever for each. They do not compete: (a) rewrites future
+targets, (c) nudges today without touching the plan.
 ### It is allowed to go down
 
 **What forced it.** This could have been a personal record — the best an athlete has
@@ -603,6 +598,7 @@ keeps one missing number from breaking a whole rack's session.
 
 **Step 2 is the one people skip**, and skipping it silently inflates every prescribed
 weight for any athlete whose max was recorded at more than one rep.
+
 
 :::::
 
