@@ -21,12 +21,12 @@ A guided path, in order. You do not need anything else to start being useful.
    how a single rep travels from the barbell to a screen, and the vocabulary. Read
    this one properly; everything else assumes it.
 2. **One journal page — 20 minutes.** Whichever part you are about to touch. Not all
-   six. Each opens with what that piece is and why it exists.
-3. **{doc}`guides/quickstart` — 20 minutes.** Get it running. Reading about a
+   seven. Each opens with what that piece is and why it exists.
+3. **{doc}`guides/base-station` — 20 minutes.** Get it running. Reading about a
    distributed system is no substitute for watching a rep land on a screen.
 
 If you are joining to *maintain* rather than to add something specific, read
-{doc}`build-story` after step 1 — it is the narrative of how the project actually
+{doc}`history` after step 1 — it is the narrative of how the project actually
 went, including the parts that changed course.
 
 ## How this site is organised
@@ -59,41 +59,10 @@ from re-opening a settled question.
 
 ```{toctree}
 :maxdepth: 2
-:caption: Start here
 
 orientation
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: The journal
-
 journal/index
-build-story
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Reference
-
-reference/message-contract
-reference/database
-reference/rest-api
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Guides
-
-guides/quickstart
-guides/runbook
-guides/migrations
-guides/importing-spreadsheets
-```
-
-```{toctree}
-:maxdepth: 1
-:caption: About
-
-contributions
+reference/index
+guides/index
+history
 ```

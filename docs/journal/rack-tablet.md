@@ -92,20 +92,21 @@ Worth knowing before changing anything nearby:
 
 ---
 
-## Decision: a tablet and a sensor are separate identities
+## Known bug: a tablet can only be assigned once
 
-There is **no link** between a tablet and the sensor at the same rack. Both are
-independently told "you are rack 3" by a coach.
+A tablet and its sensor are separate identities, each told "you are rack 3"
+independently by a coach — see {doc}`coach-tablet` for why that is a screen rather
+than configuration.
 
-**Why this is worth stating:** it means a rack showing no data is usually an
-**assignment problem, not a hardware problem** — and that is the first thing to check
-before anyone starts debugging a sensor.
+The consequence lands here: **there is no way to un-assign a tablet.** Once it has a
+rack number, sending it back to setup does not clear that number, and the coach's list
+of waiting tablets only shows ones with *no* number. The tablet becomes invisible and
+cannot be reassigned.
 
-**What it cost.** There is currently **no way to un-assign a tablet.** Once it has a
-rack number, sending it back to setup does not clear that number, and the coach's
-list of waiting tablets only shows ones with no number — so the tablet becomes
-invisible and cannot be reassigned. Clearing the browser's site data "fixes" it only
-because that gives the tablet a brand-new identity the server has never seen.
+Clearing the browser's site data appears to fix it, but that is a coincidence worth
+understanding: it erases the tablet's stored identity, so it invents a new one the
+server has never seen and gets created fresh with no rack. You are not repairing the
+tablet, you are replacing it.
 
 ---
 

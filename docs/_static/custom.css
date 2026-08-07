@@ -1,0 +1,115 @@
+/* custom.css — readability overrides for the furo theme.
+ *
+ * WHY THIS FILE EXISTS
+ * Furo's stock dark mode is low contrast: body text is a dull grey (#cfd0d0) on a
+ * near-black background, secondary text is dimmer still (#81868d), and the sidebar
+ * is almost the same colour as the page, so nothing separates. The result reads as
+ * flat and is tiring on a long reference page.
+ *
+ * These are a neutral grey palette with the contrast deliberately pushed up:
+ *   - body text goes to near-white
+ *   - secondary/muted text is lifted well clear of the background
+ *   - the sidebar is a distinctly darker shade than the content, so the page has
+ *     structure instead of one continuous wash
+ *   - borders are actually visible, which matters because these docs are full of
+ *     tables
+ *
+ * Light mode gets the same treatment in the other direction: near-black on white,
+ * with a link colour dark enough to read on a pale background.
+ *
+ * HOW IT WORKS
+ * Furo exposes its palette as CSS variables and scopes them to `body[data-theme=…]`.
+ * This file is loaded after the theme's own stylesheet, so matching those selectors
+ * with the same specificity is enough to win. Do not add `!important` here — if an
+ * override stops working, check the selector matches furo's, not the priority.
+ */
+
+/* ── light mode ─────────────────────────────────────────────────────────── */
+body,
+body[data-theme="light"] {
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #f4f6f8;   /* sidebar */
+  --color-background-hover: #e8ecf0;
+  --color-background-border: #d6dce2;
+  --color-background-item: #eef1f4;
+
+  --color-foreground-primary: #14181c;     /* body text — near-black */
+  --color-foreground-secondary: #39424a;
+  --color-foreground-muted: #57616b;       /* lifted; furo ships #6b6f76 */
+  --color-foreground-border: #c3cad1;
+
+  --color-brand-primary: #0b5cad;
+  --color-brand-content: #0b5cad;          /* links */
+  --color-brand-visited: #6b4fa8;
+
+  --color-inline-code-background: #eff2f5;
+  --color-admonition-background: #f4f6f8;
+  --color-card-background: #f8fafb;
+  --color-card-border: #d6dce2;
+}
+
+/* ── dark mode: explicit toggle ─────────────────────────────────────────── */
+body[data-theme="dark"] {
+  --color-background-primary: #1b1e22;     /* content — a real grey, not near-black */
+  --color-background-secondary: #15181b;   /* sidebar — clearly darker than content */
+  --color-background-hover: #272c31;
+  --color-background-border: #394047;      /* visible, for all the tables */
+  --color-background-item: #262b30;
+
+  --color-foreground-primary: #f6f8fa;     /* near-white; furo ships #cfd0d0 */
+  --color-foreground-secondary: #c6ccd3;
+  --color-foreground-muted: #a3acb5;       /* lifted; furo ships #81868d */
+  --color-foreground-border: #4a525a;
+
+  --color-brand-primary: #7cc4ff;
+  --color-brand-content: #7cc4ff;          /* links — bright enough to read */
+  --color-brand-visited: #c0a8e8;
+
+  --color-inline-code-background: #262b31;
+  --color-admonition-background: #22272c;
+  --color-card-background: #22272c;
+  --color-card-border: #394047;
+}
+
+/* ── dark mode: following the reader's OS setting ───────────────────────── */
+/* Furo scopes its auto-dark rules this way; matching it keeps ours winning. */
+@media (prefers-color-scheme: dark) {
+  body:not([data-theme="light"]) {
+    --color-background-primary: #1b1e22;
+    --color-background-secondary: #15181b;
+    --color-background-hover: #272c31;
+    --color-background-border: #394047;
+    --color-background-item: #262b30;
+
+    --color-foreground-primary: #f6f8fa;
+    --color-foreground-secondary: #c6ccd3;
+    --color-foreground-muted: #a3acb5;
+    --color-foreground-border: #4a525a;
+
+    --color-brand-primary: #7cc4ff;
+    --color-brand-content: #7cc4ff;
+    --color-brand-visited: #c0a8e8;
+
+    --color-inline-code-background: #262b31;
+    --color-admonition-background: #22272c;
+    --color-card-background: #22272c;
+    --color-card-border: #394047;
+  }
+}
+
+/* ── tables ─────────────────────────────────────────────────────────────── */
+/* These docs lean heavily on tables (route lists, field references). Give them a
+   header that reads as a header and rules that are actually visible. */
+table.docutils th {
+  background: var(--color-background-secondary);
+  font-weight: 600;
+}
+table.docutils th,
+table.docutils td {
+  border-color: var(--color-background-border);
+}
+
+/* Numbers line up in the route and field tables. */
+table.docutils td code {
+  font-variant-numeric: tabular-nums;
+}

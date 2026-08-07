@@ -1,7 +1,7 @@
 # The APIs
 
 How everything talks to the server. For the exact request and response shapes, see
-{doc}`../reference/rest-api`; this page is about the rules behind them.
+{doc}`../reference/index`; this page is about the rules behind them.
 
 ## The shape of it
 
@@ -117,8 +117,6 @@ for.
 
 ## Known gap
 
-There is **no way to un-assign a rack.** The assignment endpoint only ever sets a rack
-number; nothing clears one. Combined with the coach's waiting list showing only
-tablets that have *no* number, a tablet that has been assigned once can never return
-to that list. See {doc}`rack-tablet` for the full deadlock and why clearing browser
-data appears to fix it.
+The assignment endpoint only ever *sets* a rack number — **nothing clears one**, so a
+tablet can never be returned to the waiting list. See the deadlock this creates in
+{doc}`rack-tablet`.

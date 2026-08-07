@@ -20,7 +20,13 @@ author = "Devin Walton"
 # myst_parser is the Markdown reader. Everything else here is standard Sphinx.
 extensions = [
     "myst_parser",
+    "sphinxcontrib.mermaid",   # draws the ```mermaid diagrams as pictures
+    "sphinx_design",           # collapsible {dropdown} blocks
 ]
+
+# Treat a ```mermaid fence as the mermaid directive rather than code to highlight.
+# Without this Sphinx looks for a "mermaid" syntax highlighter, fails, and warns.
+myst_fence_as_directive = ["mermaid"]
 
 # Accept both, so a future `.rst` page would still work.
 source_suffix = {
@@ -53,6 +59,9 @@ myst_heading_anchors = 3
 # warnings. Remove these entries as each file is retired.
 exclude_patterns = [
     "_build",
+    # The local preview toolchain (see serve.sh) installs into docs/venv. Without
+    # this, Sphinx parses every Markdown file inside every installed package.
+    "venv",
     "Thumbs.db",
     ".DS_Store",
     "_HANDOFF.md",
@@ -72,5 +81,13 @@ exclude_patterns = [
 html_theme = "furo"
 html_title = "Edge Athlete — Developer Journal"
 
-# Silence the "no static files" warning; we ship no custom CSS yet.
-html_static_path = []
+# Furo's stock palette is low contrast in dark mode — dull grey text on near-black,
+# with the sidebar almost the same shade as the page. custom.css replaces it with a
+# neutral grey palette with the contrast pushed up, in both modes.
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+
+# Match the syntax highlighting to the theme; without the second line code blocks
+# keep a light background on a dark page.
+pygments_style = "default"
+pygments_dark_style = "github-dark"

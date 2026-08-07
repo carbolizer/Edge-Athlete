@@ -153,4 +153,4 @@ You are oriented. Now read the one journal page for whatever you are about to to
 - The wall display → {doc}`journal/dashboard`
 
 If you would rather understand how the project got here before changing it, read
-{doc}`build-story` instead.
+{doc}`history` instead.
