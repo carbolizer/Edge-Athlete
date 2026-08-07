@@ -102,13 +102,13 @@ Two deliberate exclusions, both explained in `tuning.py`:
 | | |
 |---|---|
 | [`_SPEC.md`](_SPEC.md) | **The single authority.** Constraints, the hierarchy, the derivation rules, the decision log, and the full build timeline. Start here. |
-| [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
-| [`_RUNBOOK.md`](_RUNBOOK.md) | Services, start/stop, operational notes. |
+| [`docs/reference/message-contract.md`](docs/reference/message-contract.md) | Exact request/response shape of every endpoint and MQTT topic. The authority for wire formats. |
+| [`docs/guides/base-station.md`](docs/guides/base-station.md) | Services, start/stop, operational notes. |
 | [`docs/_HANDOFF.md`](docs/_HANDOFF.md) | The non-obvious things, for whoever picks this up. Start here if you are new. |
 | [`docs/`](docs/) | Write-ups of finished work — patch notes, the database tour, the migration playbook, the import guide. |
 
 **Two documents are authoritative and everything else defers to them:** `_SPEC.md`
-for *why the system is shaped this way*, `_MESSAGE_CONTRACT.md` for *what a request
+for *why the system is shaped this way*, `docs/reference/message-contract.md` for *what a request
 looks like*. If another file disagrees with those two, those two are right.
 
 ---
@@ -133,7 +133,7 @@ About fifty routes, grouped:
 | **Analytics** | per-session summary, per-athlete history |
 | **Imports** | preview then commit — roster, maxes, and workout-plan CSVs |
 
-> **Route-by-route detail is in [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md), not
+> **Route-by-route detail is in [`docs/reference/message-contract.md`](docs/reference/message-contract.md), not
 > here.** This README used to list every endpoint and quietly went out of date;
 > one copy is the fix.
 
@@ -157,11 +157,11 @@ TrainingBlock (template) → TrainingProgram (deployed, dated) → TrainingGroup
 
 A plain-English tour of every table — what it is, why it exists, and the two or
 three things that surprise people — is in
-[`docs/_DATABASE-OVERVIEW.md`](docs/_DATABASE-OVERVIEW.md). The source of truth is
+[`docs/reference/database.md`](docs/reference/database.md). The source of truth is
 [`django/event_handler/models.py`](django/event_handler/models.py), which carries
 the reasoning in comments.
 
-Changing the schema? Read [`docs/_MIGRATION_PLAYBOOK.md`](docs/_MIGRATION_PLAYBOOK.md)
+Changing the schema? Read [`docs/guides/migrations.md`](docs/guides/migrations.md)
 first — the Django container **bakes its source at build time**, which makes
 `makemigrations` behave in a way that has already cost this project a migration.
 

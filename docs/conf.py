@@ -64,13 +64,11 @@ exclude_patterns = [
     "venv",
     "Thumbs.db",
     ".DS_Store",
+    # Still on disk, still NOT absorbed into the site. Excluded until their content
+    # has a home here — see the retirement note in the repo README.
     "_HANDOFF.md",
     "_PATCH_NOTES.md",
-    "_DATABASE-OVERVIEW.md",
-    "_MIGRATION_PLAYBOOK.md",
     "_NAMING_CHANGES.md",
-    "_IMPORTING_SPREADSHEETS.md",
-    "README.md",
 ]
 
 # ── how it looks ────────────────────────────────────────────────────────────

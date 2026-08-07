@@ -23,7 +23,7 @@ Grouped by who uses them:
     - manage athletes, programs, sessions, and nodes; assign racks; and pull
       the analytics summaries.
 
-Open vs coach-only follows _SPEC.md; shapes live in _MESSAGE_CONTRACT.md.
+Open vs coach-only follows _SPEC.md; shapes live in docs/reference/message-contract.md.
 """
 import json
 from datetime import timedelta

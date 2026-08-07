@@ -26,9 +26,9 @@ when it disagrees with a comment in the code, this wins and the comment gets fix
 | Document | What it holds |
 |---|---|
 | **`_SPEC.md`** (this) | The system: architecture, hierarchy, schema, and the derivation rules |
-| `_MESSAGE_CONTRACT.md` | Exact request/response shapes for every endpoint |
+| `docs/reference/message-contract.md` | Exact request/response shapes for every endpoint |
 | `docs/_PATCH_NOTES.md` | What changed on the merge branch, by phase, with a click path each |
-| `_RUNBOOK.md` | Operating the base station |
+| `docs/guides/base-station.md` | Operating the base station |
 
 > **The merge canon was folded into this document on 2026-07-30** and its files
 > were deleted. Sections carrying a **§ number** (§2 … §10) came from it and are
@@ -60,7 +60,7 @@ Phases 1–4 are complete. Phases 5–13 (through the Sprint 4 handoff gate) are
 
 **This document is now the single authority for the system.** The merge canon was
 folded into it on 2026-07-30 and its files were removed. The two companions stay
-separate on purpose: `_MESSAGE_CONTRACT.md` holds
+separate on purpose: `docs/reference/message-contract.md` holds
 exact request/response shapes, and `docs/_PATCH_NOTES.md` holds what changed on the
 merge branch with a click path for each thing.
 
@@ -98,8 +98,8 @@ These are real gaps, not stretch goals — they were deliberately deferred to ge
 
 - **Batch-POST failure/retry (affects Phase 11, hardens in Phase 16/18):** if `POST /api/sets/{id}/complete/` fails (e.g. an AP drop at the exact moment a set ends), there is currently no defined retry/backoff — the buffer only clears on success, but nothing describes what happens on failure. Fine for a controlled demo; needs a real answer before unattended/production use.
 - **Live cross-rack progress refresh (RESOLVED — retired 2026-07-20):** was deferred as "2b" — pushing a live update to a rack already displaying an athlete when that same athlete completes a set at a *different* rack. **Retired** by the Phase 11 Step 2 **single-rack ownership rule**: an athlete can only be checked in at one rack at a time (checking in elsewhere transfers ownership via a newer `RackCheckIn`), so their progress can't change anywhere else while they're displayed here. Fetch-on-check-in is sufficient; no live cross-rack push is needed. Kept here as a record of the decision.
-- ✅ **RESOLVED for the athlete route (merge P13, 2026-07-29): Analytics response contract.** `.../athlete/{id}/` now has an exact field list in `_MESSAGE_CONTRACT.md` — athlete, summary, per-exercise aggregates, and per-set reps. The worry recorded here was real and came true in the other direction: the coach front end was written against a shape nobody had pinned down, and it broke on arrival. **`GET /api/analytics/session/{id}/` is still prose-only** — same trap, still unsprung.
-- ⚠️ **The `edgeathlete/coach/state` channel is unused at both ends (found 2026-07-30).** `_MESSAGE_CONTRACT.md` documents the topic, and `publish_coach_state()` exists in `realtime/broadcast/publisher.py` — but **nothing ever calls it**, and no client subscribes to it. The coach view takes its live updates from `edgeathlete/dashboard/state` like the wall does. This is plausibly deliberate headroom: the contract reserves the topic for fatigue alerts, which are Phase 15 and not built. **The decision to make:** wire it up when Phase 15 lands, or delete the helper and the contract entry. Leaving a documented topic that no code path reaches is how someone later spends an afternoon debugging a message that was never sent.
+- ✅ **RESOLVED for the athlete route (merge P13, 2026-07-29): Analytics response contract.** `.../athlete/{id}/` now has an exact field list in `docs/reference/message-contract.md` — athlete, summary, per-exercise aggregates, and per-set reps. The worry recorded here was real and came true in the other direction: the coach front end was written against a shape nobody had pinned down, and it broke on arrival. **`GET /api/analytics/session/{id}/` is still prose-only** — same trap, still unsprung.
+- ⚠️ **The `edgeathlete/coach/state` channel is unused at both ends (found 2026-07-30).** `docs/reference/message-contract.md` documents the topic, and `publish_coach_state()` exists in `realtime/broadcast/publisher.py` — but **nothing ever calls it**, and no client subscribes to it. The coach view takes its live updates from `edgeathlete/dashboard/state` like the wall does. This is plausibly deliberate headroom: the contract reserves the topic for fatigue alerts, which are Phase 15 and not built. **The decision to make:** wire it up when Phase 15 lands, or delete the helper and the contract entry. Leaving a documented topic that no code path reaches is how someone later spends an afternoon debugging a message that was never sent.
 - **No rack "unassign" path (affects Phase 14):** only registration + assignment exist; there's no way to free a rack number back to the unassigned pool if a screen is retired or replaced.
 - **Clock reliability on the offline Pi (affects Phase 1/RUNBOOK, Phase 18):** the base station never touches the internet, so there's no NTP sync. If it lacks a hardware RTC, a cold boot could start with a wrong system clock, silently corrupting every `timestamp` field. Needs either an RTC module or a manual time-set step documented in the boot procedure.
 - **Stale `RackScreen` rows (affects Phase 16):** if a screen's `localStorage` is ever wiped, it registers a brand-new `device_id` and the old row is orphaned at its old rack number with no cleanup.
@@ -258,7 +258,7 @@ If a resolution would change any of the above, **the resolution is wrong.**
    **derived endpoint in `services/`** — do **not** add a table to store it. New tables are only for data that
    is genuinely *authored* and not derivable.
 5. **Backend style & docs → ours.** Refactor his features to our conventions and document every new route in
-   `_SPEC.md` + `_MESSAGE_CONTRACT.md`.
+   `_SPEC.md` + `docs/reference/message-contract.md`.
 6. **Database → additive union.** Tack columns onto existing tables; where two tables collide, keep whichever
    is least work and drop the other. One table at a time.
 7. **Still tied → keep the canon** (clean / documented / reusable). Prefer deleting *duplicated* effort over
@@ -489,7 +489,7 @@ Set      EXTENDED — is_makeup (Bool, default False) — excluded from
 > |---|---|
 > | Branch mechanics, `git show`/checkout recipes | The merge is done; git history |
 > | The P0–P15 phase plan and its gates | [`docs/_PATCH_NOTES.md`](docs/_PATCH_NOTES.md) |
-> | Endpoint reconciliation (which of his routes we kept) | [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md) has the real shapes |
+> | Endpoint reconciliation (which of his routes we kept) | [`docs/reference/message-contract.md`](docs/reference/message-contract.md) has the real shapes |
 > | Migration plan (`0008`→`0017`) | The migration files themselves |
 
 ## §4. The `Training*` hierarchy
@@ -959,7 +959,7 @@ POST  /api/sets/{id}/complete/         *** THE BATCH WRITE ***            (open)
 GET   /api/analytics/session/{id}/     summary stats                      (coach only)
 GET   /api/analytics/athlete/{id}/     athlete + summary + per-exercise
                                       aggregates + per-set reps          (coach only)
-                                      Exact shape: _MESSAGE_CONTRACT.md (P13).
+                                      Exact shape: docs/reference/message-contract.md (P13).
                                       Summary spans ALL history; `sets` is the
                                       50 most recent. 404 if no such athlete.
 ```
@@ -1009,7 +1009,7 @@ GET   /api/athlete-maxes/?athlete={id}&exercise={id}   full max history,     (co
 `GET /api/sessions/active/` being open (not JWT-gated) matches the existing
 open/coach-only split: it's read by an unauthenticated rack tablet, the same
 trust tier as the other rack-facing endpoints above it. **The exact AS-BUILT
-minimal response shape is pinned in _MESSAGE_CONTRACT.md §3** — it returns resolved
+minimal response shape is pinned in docs/reference/message-contract.md §3** — it returns resolved
 absolute target weights (from `Program`) keyed by catalog `exercise_id`, not the
 `target_weight_percent` × max form the Phase 10/11 prompts describe; see the seam
 note there.
@@ -1023,7 +1023,7 @@ Edge-Athlete/
 ├── docker-compose.yml
 ├── .env                          # gitignored — runtime values
 ├── .env.example                  # committed — template with stubbed keys
-├── _RUNBOOK.md                    # started Phase 1, completed by Sprint 4 handoff
+├── docs/guides/base-station.md                    # started Phase 1, completed by Sprint 4 handoff
 ├── README.md
 ├── mosquitto/
 │   └── mosquitto.conf            # two listeners: 1883 (mqtt) + 9001 (websockets)
@@ -1271,8 +1271,8 @@ And expose 9001 in docker-compose.yml on the mosquitto service, same pattern as
     - "9001:9001"
 Do NOT add an Nginx WebSocket proxy — browsers hit 9001 directly.
 
-## 4. Start _RUNBOOK.md
-Create _RUNBOOK.md at repo root. Sections (fill what's known now, leave TODO
+## 4. Start docs/guides/base-station.md
+Create docs/guides/base-station.md at repo root. Sections (fill what's known now, leave TODO
 markers for the rest): Services (one line each: postgres, mosquitto, django,
 mqtt-listener, react, nginx — port + purpose), Start/Stop procedure, Config
 files and where they live, MQTT test commands, Common failure modes (TODO),
@@ -1296,7 +1296,7 @@ Every source file opens with a short WHY comment (see coding standards).
 - [x] `mosquitto.conf` has both the 1883 and 9001 (websockets) listeners; 9001 exposed in compose
 - [x] Browser `mqtt.js` client on `ws://<pi-ip>:9001` receives a test publish
 - [x] Exactly one MQTT listener service in `docker-compose.yml`; `mosquitto-subscriber` service gone
-- [x] `_RUNBOOK.md` exists and covers all services + start/stop
+- [x] `docs/guides/base-station.md` exists and covers all services + start/stop
 - [x] `.env` gitignored, `.env.example` committed
 - [x] Every new/changed file has a WHY comment
 
@@ -2093,7 +2093,7 @@ What actually shipped for the Phase 10 shell, and the decisions that extend/adju
   `/` (picker/dispatcher) · `/rack/setup` · `/rack/:n` · `/coach` · `/dashboard` · `/connection-test`.
   Nginx already serves `index.html` for any path (its SPA fallback), so hard-loads/refresh of `/rack/1` work with no nginx change. localStorage still remembers identity (role, device id, rack number) so a cold boot at `/` redirects to the right screen — but the URL decides the view. This supersedes the prompt's "localStorage determines routing, not the URL," and aligns with the folder-structure sketch (`/rack/:n`, `/coach`, `/dashboard`).
 - **`/rack/setup` (was "registration/wait").** Rack-scoped registration + assignment-wait, and reachable any time to (re)home a tablet. **Non-destructive:** it only leaves when the server's rack number *changes* from what it was on arrival (a coach override), so an assigned rack that lands here just shows its id. **Role guard:** if the device is already an established coach/wall device, it does NOT silently convert — it asks first ("Set it up as a Rack instead?"), which prevents hijack and doubles as the deliberate switch. The **"Change device role" escape** lives here (and on the coach/wall stubs), NOT on the live rack screen, so athletes can't knock a rack out of mode mid-set. Changing a device's role leaves its old `RackScreen` row orphaned — see the "Stale RackScreen rows" known open item.
-- **Remote command channel (new MQTT topic).** Every tablet subscribes to `edgeathlete/rack/command` from boot; `{type:"enter_setup", target}` sends matching tablets to `/rack/setup` (target = `all` | device_id | rack_number). Sender is a coach button → Django publish in Phase 14; the receiver is built + testable now via `mosquitto_pub`. A future `identify` command is reserved. Full shape in _MESSAGE_CONTRACT.md.
+- **Remote command channel (new MQTT topic).** Every tablet subscribes to `edgeathlete/rack/command` from boot; `{type:"enter_setup", target}` sends matching tablets to `/rack/setup` (target = `all` | device_id | rack_number). Sender is a coach button → Django publish in Phase 14; the receiver is built + testable now via `mosquitto_pub`. A future `identify` command is reserved. Full shape in docs/reference/message-contract.md.
 - **Orientation: portrait.** The rack manifest is `"orientation": "portrait"` (matches the `edge_athlete_rack_ui.html` mockup, which is a 540×720 portrait device). The wall stays landscape; the coach tablet portrait.
 - **Aesthetic: the `.monitor` design system.** The rack screen matches the team's coach/wall look (near-black `#070b0e`, lime `#a9f04d`, mint/amber/coral status, Inter bundled locally so it renders on the offline Pi network). Palette centralized in `react/src/theme.js`.
 - **Rep buffer uses Dexie.** The IndexedDB durability buffer is written with Dexie (`react/src/db/repBuffer.js`) for readability. Service worker caches the app shell (network-first, skips `/api/`).
@@ -2238,7 +2238,7 @@ Every file opens with a WHY comment.
 > the reason `react/src/rack/` is frozen. This is where it was decided and why.
 >
 > For what is true today: **§6** (the derivation rules) and
-> [`_MESSAGE_CONTRACT.md`](_MESSAGE_CONTRACT.md).
+> [`docs/reference/message-contract.md`](docs/reference/message-contract.md).
 
 ### Built — Phase 11 minimal-path corrections (authoritative *as of July 2026* — see the banner above)
 The Phase 11 prompt above was written against the FULL Phase 5 contract (SessionExercise + percent×max + an athlete-maxes endpoint). The vertical slice was built on the MINIMAL models instead (see the design memory + the exercise-identity note in Data Models), so several steps above are stale. Build to THIS:
@@ -2251,7 +2251,7 @@ The Phase 11 prompt above was written against the FULL Phase 5 contract (Session
 - **`node` on set-create is the Node's INTEGER pk, not `node_id`.** `NodeSerializer` doesn't expose the pk, so either add `"id"` to it, or OMIT `node` (nullable — the set still saves; only the `set_complete`/`athlete_checkin` broadcasts, which need `node.rack_number` and feed the Phase 12 dashboard, won't fire). Omitting is fine for the minimal rack flow.
 - **`session_exercises` is DERIVED from `Program` per request** — there is no `SessionExercise` table (deferred). Don't query one.
 - **Blueprint extras are OUT of minimal scope:** the "suggested next set" insight card (insights are Phase 8/15), the "3 of 5" sets-progress dots, the rep-by-rep velocity breakdown, and the elapsed/duration timer. Keep only: idle picker → countdown (3-2-1) → active (rep count + velocity color) → summary (`reps_completed`, avg/peak) → rest (countdown).
-- **`GET /api/sessions/active/` exact shape** is pinned in _MESSAGE_CONTRACT.md §3.
+- **`GET /api/sessions/active/` exact shape** is pinned in docs/reference/message-contract.md §3.
 
 ### Built — Phase 11 Step 2 redesign: athlete-centric day view (authoritative *as of July 2026* — see the banner above)
 
@@ -2432,8 +2432,8 @@ Top-of-file comment: 2-4 lines, WHY this firmware exists, beginner-readable.
 
 This is the gate before Devin exits. All of it must pass.
 
-- [ ] `_RUNBOOK.md` complete: start/stop, firmware flashing, MQTT test commands, full integration-test steps, common failure modes
-- [ ] Architecture diagram present (Mermaid, in `_RUNBOOK.md`) showing nodes → broker → Django/Postgres and broker → browser clients over WS
+- [ ] `docs/guides/base-station.md` complete: start/stop, firmware flashing, MQTT test commands, full integration-test steps, common failure modes
+- [ ] Architecture diagram present (Mermaid, in `docs/guides/base-station.md`) showing nodes → broker → Django/Postgres and broker → browser clients over WS
 - [ ] A dry run of the full session flow with **Devin observing only, not helping**
 - [ ] Every teammate has flashed firmware once and run the integration test once
 
@@ -2795,7 +2795,7 @@ tabs were written against an analytics payload nobody had ever pinned down;
 `analytics/athlete/{id}/` returned only a flat velocity trend, so selecting an
 athlete threw and took the whole coach view down with it. **Built in merge P13:**
 the endpoint returns the athlete, a summary, per-exercise aggregates and per-set
-reps, with the exact field list in `_MESSAGE_CONTRACT.md`. ⚠️ The same trap is still
+reps, with the exact field list in `docs/reference/message-contract.md`. ⚠️ The same trap is still
 unsprung on `GET /api/analytics/session/{id}/`, which remains prose-only.
 
 **D20 — scheduling.** See §"The training calendar" below and `docs/_PATCH_NOTES.md`

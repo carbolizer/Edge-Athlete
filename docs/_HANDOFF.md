@@ -107,7 +107,7 @@ constant in the repo into one file makes things harder to find, not easier. Keep
 | **`default_weight_lbs` is a v1-report field only** | Reports read it for schema-version-1 snapshots. Nothing writes it any more. It is *not* a live plan field — the live plan stores `target_percent` |
 | **Coach adjustments look exactly like real sets** | `Set.is_coach_adjustment` marks a row a coach wrote to move an athlete's working weight. It has `ended_at` and `weight_lbs` like any completed set. **Every** new query over `Set` must consciously include or exclude it — SPEC §6.5 has the exhaustive list |
 | **NULLs sort FIRST descending in Postgres** | `started_at` is nullable now. Order by `-started_at` without excluding nulls and an unstarted future session comes back as "newest" |
-| **The containers bake their source** | No volume mounts. `makemigrations` writes *inside* the container — copy it back or it vanishes on rebuild. [`_MIGRATION_PLAYBOOK.md`](_MIGRATION_PLAYBOOK.md). Same trap with `docker compose run` — it will happily reuse a stale image, so pass `--build` after changing code |
+| **The containers bake their source** | No volume mounts. `makemigrations` writes *inside* the container — copy it back or it vanishes on rebuild. [`docs/guides/migrations.md`](docs/guides/migrations.md). Same trap with `docker compose run` — it will happily reuse a stale image, so pass `--build` after changing code |
 | **`http://basestation` will not resolve on your laptop** | That name is handed out by the base station's own dnsmasq, so it exists only on the gym network — nothing is broken. The stack itself is already correct for it (`basestation` is in `ALLOWED_HOSTS`, nginx has no `server_name` restriction). Test it from a dev host without editing `/etc/hosts`: `curl --resolve basestation:80:127.0.0.1 http://basestation/` |
 
 ---
@@ -119,7 +119,7 @@ Not bugs — decisions nobody made yet, or work that stopped at a sensible line.
 - **No group-staff UI.** The API takes several coaches per group
   (`TrainingGroupCoach`); adding an assistant needs Django admin. The backend is
   done; the screen is not.
-- **`GET /api/analytics/session/{id}/` is prose-only** in `_MESSAGE_CONTRACT.md`.
+- **`GET /api/analytics/session/{id}/` is prose-only** in `docs/reference/message-contract.md`.
   Every other route has an exact shape. This one still needs writing up.
 - **Overnight-open-day policy is undecided.** A day left open has no defined
   behaviour. Auto-closing it would write an immutable `DailyReport` with nobody
