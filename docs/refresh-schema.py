@@ -210,7 +210,7 @@ def full_block(model):
 def section_header():
     return f"""{SECTION_START}
 
-# The tables
+<!-- Clusters below are ## so this document keeps a single H1. -->
 
 Grouped by what they are for. Every table's schema comes straight from `models.py`, so
 it cannot drift; the writing around it is ours.

@@ -1,66 +1,32 @@
 # The journal
 
-One page per part of the system, ordered so the groundwork comes first.
-
-**Read the backend pages before the screens.** Every screen is a view onto the same
-database, the same endpoints, and the same message broker — and most of the decisions
-that shape a screen were actually made underneath it. Reading a screen page first
-means reading about consequences before causes.
+Why the system is the way it is: each decision, what it displaced, and what it cost.
 
 ## The groundwork
 
-**{doc}`database`**
-: The training hierarchy, the three different weights, and the rules that turn a
-  percentage into a number on a bar.
+What everything else sits on. Read the relevant one before the screen that uses it.
 
-**{doc}`apis`**
-: The endpoints, who is allowed to call them, and where authentication lives.
-
-**{doc}`real-time`**
-: The message broker, what publishes to it, and why the server deliberately ignores
-  most of it.
-
-**{doc}`scripts`**
-: The base station itself — provisioning, the Wi-Fi network it broadcasts, and how a
-  gym gets from a blank machine to a running system.
+- {doc}`database` — tables, the three weights, how a target is derived
+- {doc}`apis` — endpoints, permissions, where auth lives
+- {doc}`real-time` — the message broker, and what actually listens to it
+- {doc}`scripts` — the base station, its Wi-Fi, and how a gym gets one
 
 ## The screens
 
-**{doc}`rack-tablet`**
-: What the athlete uses. Also where the system's durability actually lives.
+Each one is a view onto the groundwork above.
 
-**{doc}`coach-tablet`**
-: Login, wiring the room together, planning training, and spreadsheet upload.
-
-**{doc}`dashboard`**
-: The wall display.
-
-## How each decision is written
-
-Every entry follows the same four beats:
-
-1. **What forced it** — the constraint, the bug, or the thing that broke
-2. **What we chose**
-3. **What we rejected, and why** — so nobody re-litigates a settled question
-4. **What it cost** — the trade accepted, and what to watch for
-
-The third beat is the one that matters most. A decision without its rejected
-alternatives is just a description of the code.
+- {doc}`rack-tablet` — what the athlete uses, and where durability lives
+- {doc}`coach-tablet` — login, room setup, planning, spreadsheet import
+- {doc}`dashboard` — the wall display
 
 ```{toctree}
 :maxdepth: 2
-:caption: The groundwork
+:hidden:
 
 database
 apis
 real-time
 scripts
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: The screens
-
 rack-tablet
 coach-tablet
 dashboard
