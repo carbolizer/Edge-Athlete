@@ -33,7 +33,15 @@
 set -uo pipefail        # NOT -e: a failed step must still hit the trap and restore the AP
 
 # ── EDIT THESE TWO LINES ────────────────────────────────────────────────────
-HOTSPOT_SSID="CHANGE_ME"
+# SSID_MATCH is a distinctive PIECE of the hotspot name, not the whole thing —
+# "iPhone" is usually enough. The exact name is then read off the live scan.
+#
+# WHY NOT JUST TYPE THE NAME: an iPhone hotspot is called "Devin's iPhone" with a
+# CURLY apostrophe (U+2019), not the straight ' you get from a keyboard. They are
+# different characters, so a hand-typed name silently never matches and the join
+# fails for a reason nothing in the output would explain. Matching a substring and
+# taking the SSID verbatim from the scan sidesteps that, and any other odd character.
+SSID_MATCH="iPhone"
 HOTSPOT_PASS="CHANGE_ME"
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -46,8 +54,8 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 if [ "$(id -u)" -ne 0 ]; then
     echo "needs root — run it with sudo"; exit 1
 fi
-if [ "$HOTSPOT_SSID" = "CHANGE_ME" ]; then
-    echo "edit HOTSPOT_SSID and HOTSPOT_PASS at the top of this file first"; exit 1
+if [ "$HOTSPOT_PASS" = "CHANGE_ME" ]; then
+    echo "set SSID_MATCH and HOTSPOT_PASS at the top of this file first"; exit 1
 fi
 
 WIFI_IFACE="$(nmcli -t -f DEVICE,TYPE device | grep ':wifi$' | cut -d: -f1 | head -n1)"
@@ -75,11 +83,21 @@ restore_ap() {
 trap restore_ap EXIT
 
 # ── 1. join the phone ───────────────────────────────────────────────────────
-log "leaving the gym network and joining '$HOTSPOT_SSID' — your SSH session ends now"
+log "leaving the gym network — your SSH session ends now"
 nmcli connection down "$AP_PROFILE" >/dev/null 2>&1 || true
 sleep 2
-nmcli device wifi rescan >/dev/null 2>&1 || true
-sleep 5
+
+# Read the hotspot's REAL name off the scan rather than trusting a typed one.
+log "scanning for a network matching '$SSID_MATCH'..."
+HOTSPOT_SSID=""
+for _ in 1 2 3; do
+    HOTSPOT_SSID="$(nmcli -t -f SSID device wifi list --rescan yes 2>/dev/null \
+                    | grep -F "$SSID_MATCH" | head -n1)"
+    [ -n "$HOTSPOT_SSID" ] && break
+    sleep 5
+done
+[ -n "$HOTSPOT_SSID" ] || { log "no network matching '$SSID_MATCH' — is the hotspot on?"; exit 1; }
+log "found: '$HOTSPOT_SSID'"
 
 joined=0
 for attempt in 1 2 3; do
