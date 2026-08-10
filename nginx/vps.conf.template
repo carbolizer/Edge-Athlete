@@ -30,6 +30,17 @@ server {
 }
 
 server {
+    listen 80;
+    server_name ${BLE_LAB_DOMAIN};
+
+    if ($request_method !~ ^(GET|HEAD)$) {
+        return 405;
+    }
+
+    return 308 https://${BLE_LAB_DOMAIN}$request_uri;
+}
+
+server {
     listen 443 ssl default_server;
     server_name _;
     ssl_reject_handshake on;
@@ -51,7 +62,7 @@ server {
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy no-referrer always;
-    add_header Permissions-Policy "camera=(), geolocation=(), microphone=()" always;
+    add_header Permissions-Policy "bluetooth=(), camera=(), geolocation=(), microphone=()" always;
 
     location = /api/gateway/v1/events/ {
         client_max_body_size 256k;
@@ -132,6 +143,10 @@ server {
         return 404;
     }
 
+    location = /ble-lab.html {
+        return 404;
+    }
+
     location / {
         proxy_pass http://vps_react;
         proxy_http_version 1.1;
@@ -142,5 +157,45 @@ server {
         proxy_set_header X-Request-ID $request_id;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${BLE_LAB_DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${BLE_LAB_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${BLE_LAB_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:BLELabTLS:2m;
+    ssl_session_timeout 1h;
+    ssl_session_tickets off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; connect-src 'none'; frame-ancestors 'none'; img-src 'none'; object-src 'none'; worker-src 'none'" always;
+    add_header Permissions-Policy "bluetooth=(self), camera=(), geolocation=(), microphone=()" always;
+    add_header Referrer-Policy no-referrer always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+
+    location = / {
+        proxy_pass http://vps_react/ble-lab.html;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+    }
+
+    location ^~ /assets/ {
+        proxy_pass http://vps_react;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+    }
+
+    location / {
+        return 404;
     }
 }

@@ -77,7 +77,8 @@ services:
     container_name: edgeathlete-vps-nginx
     environment:
       VPS_DOMAIN: ${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}
-      NGINX_ENVSUBST_FILTER: ^VPS_DOMAIN$$
+      BLE_LAB_DOMAIN: ${BLE_LAB_DOMAIN:?set BLE_LAB_DOMAIN in .env.vps}
+      NGINX_ENVSUBST_FILTER: ^(VPS_DOMAIN|BLE_LAB_DOMAIN)$$
     ports:
       - "80:80"
       - "443:443"

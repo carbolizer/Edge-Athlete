@@ -14,6 +14,15 @@ export default defineConfig({
     global: 'globalThis',
   },
 
+  build: {
+    rollupOptions: {
+      input: {
+        app: 'index.html',
+        bleLab: 'ble-lab.html',
+      },
+    },
+  },
+
   server: {
     // Allow the Vite dev server to listen on all container interfaces.
     // Without this, nginx and other Docker containers cannot reach Vite.

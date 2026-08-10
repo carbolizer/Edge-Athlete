@@ -1,0 +1,35 @@
+.ble-lab { --lab-bg:#090d10; --lab-panel:#11181c; --lab-line:#29353a; --lab-ink:#f4f7f2; --lab-muted:#8e9ba1; --lab-lime:#a9f04d; background:linear-gradient(135deg,#090d10 0,#0c1215 55%,#132018 100%); color:var(--lab-ink); font-family:Inter,ui-sans-serif,system-ui,sans-serif; min-height:100vh; padding:clamp(20px,4vw,64px); }
+.ble-lab * { box-sizing:border-box; }
+.ble-lab>header { align-items:center; border-bottom:1px solid var(--lab-line); display:flex; justify-content:space-between; padding-bottom:20px; }
+.ble-lab>header span,.ble-lab-intro span,.ble-lab-vector>span,.ble-lab-metrics span { color:var(--lab-muted); font-size:10px; font-weight:850; letter-spacing:.13em; text-transform:uppercase; }
+.ble-lab h1 { font-size:18px; letter-spacing:.03em; margin:4px 0 0; text-transform:uppercase; }
+.ble-lab-status { border:1px solid var(--lab-line); color:var(--lab-muted); font-size:10px; letter-spacing:.12em; padding:8px 11px; text-transform:uppercase; }
+.ble-lab-status.live { border-color:#45dcb3; color:#45dcb3; }
+.ble-lab-status.stalled,.ble-lab-status.error { border-color:#ffb63e; color:#ffb63e; }
+.ble-lab-intro { display:grid; gap:clamp(24px,5vw,80px); grid-template-columns:minmax(0,1.4fr) minmax(260px,.6fr); padding:clamp(48px,8vw,110px) 0 42px; }
+.ble-lab-intro h2 { font-size:clamp(46px,7.2vw,104px); letter-spacing:-.075em; line-height:.88; margin:12px 0 24px; max-width:11ch; }
+.ble-lab-intro p { color:var(--lab-muted); line-height:1.65; max-width:64ch; }
+.ble-lab-intro aside { align-self:end; border-left:3px solid var(--lab-lime); padding:8px 0 8px 20px; }
+.ble-lab-intro aside strong { color:var(--lab-lime); }
+.ble-lab-controls { align-items:center; border-bottom:1px solid var(--lab-line); border-top:1px solid var(--lab-line); display:flex; flex-wrap:wrap; gap:12px; padding:18px 0; }
+.ble-lab-controls button { background:var(--lab-lime); border:1px solid var(--lab-lime); color:#071006; cursor:pointer; font:inherit; font-weight:900; padding:12px 18px; }
+.ble-lab-controls button.secondary { background:transparent; border-color:var(--lab-line); color:var(--lab-ink); }
+.ble-lab-controls button:disabled { cursor:not-allowed; opacity:.45; }
+.ble-lab-controls p { color:var(--lab-muted); flex:1; font-size:12px; margin:0 0 0 8px; min-width:260px; }
+.ble-lab-metrics { display:grid; gap:1px; grid-template-columns:repeat(4,1fr); margin-top:28px; }
+.ble-lab-metrics article { background:var(--lab-panel); min-height:120px; padding:20px; }
+.ble-lab-metrics strong { display:block; font-size:clamp(30px,4vw,54px); letter-spacing:-.06em; margin-top:20px; }
+.ble-lab-metrics small { color:var(--lab-muted); font-size:12px; letter-spacing:0; }
+.ble-lab-vectors { display:grid; gap:12px; grid-template-columns:repeat(3,1fr); margin-top:12px; }
+.ble-lab-vector { border:1px solid var(--lab-line); padding:20px; }
+.ble-lab-vector>div { display:grid; gap:5px; margin-top:14px; }
+.ble-lab-vector p { align-items:baseline; background:var(--lab-panel); display:grid; grid-template-columns:20px 1fr auto; margin:0; padding:11px; }
+.ble-lab-vector b,.ble-lab-vector small { color:var(--lab-muted); font-size:9px; }
+.ble-lab-vector strong { font-variant-numeric:tabular-nums; text-align:right; }
+.ble-lab>footer { color:var(--lab-muted); font-size:10px; line-height:1.6; max-width:80ch; padding-top:28px; }
+@media (max-width:800px) {
+  .ble-lab-intro,.ble-lab-vectors { grid-template-columns:1fr; }
+  .ble-lab-metrics { grid-template-columns:repeat(2,1fr); }
+  .ble-lab-intro h2 { font-size:clamp(42px,14vw,72px); }
+  .ble-lab-controls p { margin-left:0; width:100%; }
+}
