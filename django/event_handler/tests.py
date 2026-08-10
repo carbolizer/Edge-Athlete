@@ -26,7 +26,9 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from django.db.migrations.executor import MigrationExecutor
 from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from rest_framework.permissions import AllowAny
 from rest_framework.test import APIClient, APITestCase
+from basestation_config.urls import urlpatterns as base_urlpatterns
 
 from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Exercise,
                      RackCheckIn, DailyReport, Node, TrainingGroup, TrainingProgram,
@@ -39,6 +41,8 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
+from .permissions import IsActiveStaff
+from .urls import urlpatterns as event_handler_urlpatterns
 from .management.commands.simulate_node import (MODE_ALWAYS, MODE_CHECKIN, MODE_LIFTING,
                                                  rack_activity, rack_for_node)
 from .realtime.mqtt_ingester.parser import parse_pulse_payload
@@ -1976,7 +1980,9 @@ class AthleteNotesTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="notescoach", password="pw")
+        self.coach = User.objects.create_user(
+            username="notescoach", password="pw", is_staff=True,
+        )
         self.client.force_authenticate(user=self.coach)
         self.athlete = Athlete.objects.create(name="Jordan Lee")
 
@@ -2165,7 +2171,7 @@ class RoomStateEndpointTests(APITestCase):
 
     def test_details_adds_ids_and_roster_for_a_coach(self):
         session, athlete, _ = self._room()
-        coach = User.objects.create_user(username="coach", password="pw")
+        coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=coach)
 
         res = self.client.get("/api/room-state/?details=true")
@@ -2192,7 +2198,7 @@ class SessionCompletionTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
@@ -2282,7 +2288,7 @@ class ReportsEndpointTests(APITestCase):
     """GET /api/reports/ — one family, athlete view is a filter (canon R6)."""
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
@@ -2348,7 +2354,7 @@ class ReferenceMaxWriteTests(APITestCase):
     """POST /api/reference-maxes/ — the prescription lever."""
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.a1 = Athlete.objects.create(name="A One")
@@ -2391,7 +2397,7 @@ class PlanResolutionTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.session.athletes.add(self.athlete)
@@ -2599,7 +2605,7 @@ class PlanningEndpointTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
@@ -2744,7 +2750,7 @@ class TemplateEditingTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
@@ -2924,8 +2930,8 @@ class BlockCatalogLensTests(APITestCase):
     """
 
     def setUp(self):
-        self.sarah = User.objects.create_user(username="sarah", password="pw")
-        self.mike = User.objects.create_user(username="mike", password="pw")
+        self.sarah = User.objects.create_user(username="sarah", password="pw", is_staff=True)
+        self.mike = User.objects.create_user(username="mike", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.sarah)
         self.hers = TrainingBlock.objects.create(name="Alpha Fall", coach=self.sarah)
         self.his = TrainingBlock.objects.create(name="Beta Winter", coach=self.mike)
@@ -2990,7 +2996,7 @@ class BlockCategoryTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.offseason = BlockCategory.objects.create(name="Off-season")
         self.football = BlockCategory.objects.create(name="Football")
@@ -3107,9 +3113,9 @@ class TrainingGroupStaffTests(APITestCase):
     """
 
     def setUp(self):
-        self.sarah = User.objects.create_user(username="sarah", password="pw")
-        self.mike = User.objects.create_user(username="mike", password="pw")
-        self.dana = User.objects.create_user(username="dana", password="pw")
+        self.sarah = User.objects.create_user(username="sarah", password="pw", is_staff=True)
+        self.mike = User.objects.create_user(username="mike", password="pw", is_staff=True)
+        self.dana = User.objects.create_user(username="dana", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.sarah)
         self.group = TrainingGroup.objects.create(name="Varsity")
         TrainingGroupCoach.objects.create(
@@ -3371,7 +3377,7 @@ class OneOpenSessionTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         # A session needs a non-empty roster — the API rejects a day with nobody
         # in it, which is correct and worth knowing when reading these payloads.
@@ -3557,7 +3563,7 @@ class ProgramPromotionTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.group = TrainingGroup.objects.create(name="Varsity")
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -3698,7 +3704,7 @@ class ProgramPromotionTests(APITestCase):
         self.assertEqual(self._promote(program, name="   ").data["name"], "One-off")
 
     def test_the_promoting_coach_owns_the_new_block(self):
-        other = User.objects.create_user(username="other", password="pw")
+        other = User.objects.create_user(username="other", password="pw", is_staff=True)
         self.client.force_authenticate(user=other)
         program = self._program()
         self.assertEqual(self._promote(program).data["coach"], other.id)
@@ -3746,7 +3752,7 @@ class ScheduleGenerationTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.group = TrainingGroup.objects.create(name="Varsity")
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -3935,7 +3941,7 @@ class ScheduleRouteTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.group = TrainingGroup.objects.create(name="Varsity")
         self.jordan = Athlete.objects.create(name="Jordan Lee")
@@ -4171,7 +4177,7 @@ class CadenceValidationTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
 
     def _post(self, **fields):
@@ -4214,7 +4220,7 @@ class UnstartedSessionTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.athlete = Athlete.objects.create(name="Jordan Lee")
 
@@ -4301,7 +4307,7 @@ class AthleteAnalyticsTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.athlete = Athlete.objects.create(name="Jordan Lee")
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
@@ -4524,7 +4530,7 @@ class CsvImportTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
@@ -4863,7 +4869,7 @@ class AthleteAssignmentTests(APITestCase):
     """
 
     def setUp(self):
-        self.coach = User.objects.create_user(username="coach", password="pw")
+        self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.athlete = Athlete.objects.create(name="Jordan Lee")
@@ -5896,6 +5902,286 @@ class PublicCoachRegistrationDisabledTests(APITestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertFalse(User.objects.filter(username="unapproved").exists())
+
+
+class ApiAuthorizationFenceTests(APITestCase):
+    ACTIVE_STAFF_ROUTES = {
+        "analytics_athlete", "analytics_session", "athlete_detail", "athlete_exercise_override",
+        "athlete_program", "ble_scans", "ble_verifications", "block_categories",
+        "change_wifi_password", "gateway_diagnostics", "import_commit", "import_preview",
+        "node_acquisition_kind", "rack_assign", "rack_ble_selection", "rack_node_assignment",
+        "racks_unassigned", "reference_maxes", "report_detail", "report_pdf", "reports",
+        "scheduled_session_create_session", "scheduled_session_detail", "scheduled_sessions",
+        "session_detail", "session_participation", "session_start", "sessions", "system_status",
+        "training_block_detail", "training_block_exercise_detail", "training_block_exercise_order",
+        "training_block_workout_detail", "training_block_workout_order", "training_block_workouts",
+        "training_blocks", "training_group_athletes", "training_group_coaches", "training_groups",
+        "training_program_promote", "training_programs",
+    }
+    PRIVATE_AP_ROUTES = {
+        "athlete_progress", "exercises_list", "nodes_list", "prescriptions", "rack_checkin",
+        "rack_checkins", "rack_controller_acquire", "rack_controller_heartbeat",
+        "rack_controller_release", "rack_nfc_tap", "rack_racknumber", "rack_register",
+        "rack_sensor_health", "rack_state", "session_status", "sessions_active", "set_complete",
+        "set_create",
+    }
+    MIXED_ROUTES = {"athletes", "room_state"}
+    SPECIAL_ROUTES = {"gateway_events", "health"}
+    ROUTE_METHODS = {
+        "health": {"GET"},
+        "system_status": {"GET"},
+        "change_wifi_password": {"POST"},
+        "gateway_events": {"POST"},
+        "gateway_diagnostics": {"GET"},
+        "rack_register": {"POST"},
+        "rack_racknumber": {"GET"},
+        "racks_unassigned": {"GET"},
+        "rack_node_assignment": {"PUT"},
+        "ble_scans": {"POST"},
+        "ble_verifications": {"POST"},
+        "rack_ble_selection": {"PUT"},
+        "rack_sensor_health": {"GET"},
+        "rack_state": {"GET", "PATCH"},
+        "rack_controller_acquire": {"POST"},
+        "rack_controller_heartbeat": {"POST"},
+        "rack_controller_release": {"POST"},
+        "rack_checkin": {"POST"},
+        "rack_checkins": {"GET"},
+        "rack_nfc_tap": {"POST"},
+        "nodes_list": {"GET"},
+        "node_acquisition_kind": {"PUT"},
+        "room_state": {"GET"},
+        "athletes": {"GET", "POST"},
+        "athlete_detail": {"GET", "PATCH"},
+        "exercises_list": {"GET"},
+        "prescriptions": {"GET", "POST"},
+        "sessions": {"POST"},
+        "sessions_active": {"GET"},
+        "athlete_progress": {"GET"},
+        "session_status": {"GET"},
+        "session_detail": {"PATCH"},
+        "training_groups": {"GET", "POST"},
+        "training_group_athletes": {"GET", "POST", "DELETE"},
+        "training_group_coaches": {"GET", "POST", "PATCH", "DELETE"},
+        "training_blocks": {"GET", "POST"},
+        "training_block_detail": {"GET", "PATCH"},
+        "training_block_workouts": {"GET", "POST"},
+        "block_categories": {"GET", "POST"},
+        "training_block_workout_order": {"PUT"},
+        "training_block_workout_detail": {"PATCH", "DELETE"},
+        "training_block_exercise_order": {"PUT"},
+        "training_block_exercise_detail": {"PATCH", "DELETE"},
+        "training_programs": {"GET", "POST"},
+        "training_program_promote": {"POST"},
+        "import_preview": {"POST"},
+        "import_commit": {"POST"},
+        "session_participation": {"GET", "POST", "DELETE"},
+        "session_start": {"POST"},
+        "scheduled_sessions": {"GET"},
+        "scheduled_session_detail": {"GET", "PATCH"},
+        "scheduled_session_create_session": {"POST"},
+        "athlete_program": {"GET", "PUT", "DELETE"},
+        "athlete_exercise_override": {"GET", "PUT", "DELETE"},
+        "reports": {"GET"},
+        "report_detail": {"GET"},
+        "report_pdf": {"GET"},
+        "reference_maxes": {"POST"},
+        "set_create": {"POST"},
+        "set_complete": {"POST"},
+        "analytics_session": {"GET"},
+        "analytics_athlete": {"GET"},
+        "rack_assign": {"PATCH"},
+    }
+
+    def test_every_event_handler_route_has_an_authorization_classification(self):
+        callbacks = {pattern.name: pattern.callback for pattern in event_handler_urlpatterns}
+        classified = (
+            self.ACTIVE_STAFF_ROUTES
+            | self.PRIVATE_AP_ROUTES
+            | self.MIXED_ROUTES
+            | self.SPECIAL_ROUTES
+        )
+
+        self.assertEqual(set(callbacks), classified)
+        self.assertEqual(set(self.ROUTE_METHODS), classified)
+        for route_name, callback in callbacks.items():
+            methods = {method.upper() for method in callback.cls.http_method_names}
+            methods.discard("OPTIONS")
+            self.assertEqual(methods, self.ROUTE_METHODS[route_name], route_name)
+        for route_name in self.ACTIVE_STAFF_ROUTES:
+            self.assertEqual(callbacks[route_name].cls.permission_classes, [IsActiveStaff])
+        for route_name in self.PRIVATE_AP_ROUTES | self.MIXED_ROUTES | self.SPECIAL_ROUTES:
+            self.assertEqual(callbacks[route_name].cls.permission_classes, [AllowAny])
+
+    def test_top_level_auth_routes_are_post_only_and_registration_is_absent(self):
+        auth_callbacks = {
+            pattern.name: pattern.callback
+            for pattern in base_urlpatterns
+            if getattr(pattern, "name", None)
+        }
+
+        self.assertEqual(set(auth_callbacks), {"token_obtain_pair", "token_refresh"})
+        for callback in auth_callbacks.values():
+            methods = {
+                method.upper()
+                for method in callback.view_class.http_method_names
+                if method != "options" and hasattr(callback.view_class, method)
+            }
+            self.assertEqual(methods, {"POST"})
+
+    def test_athlete_write_requires_active_staff_without_closing_roster_read(self):
+        nonstaff = User.objects.create_user(username="fence-nonstaff", password="pw")
+        inactive_staff = User.objects.create_user(
+            username="fence-inactive", password="pw", is_active=False, is_staff=True,
+        )
+        staff = User.objects.create_user(
+            username="fence-staff", password="pw", is_active=True, is_staff=True,
+        )
+
+        self.assertEqual(self.client.get("/api/athletes/").status_code, 200)
+        anonymous = self.client.post("/api/athletes/", {"name": "Anonymous"}, format="json")
+        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(anonymous.data["code"], "not_authenticated")
+
+        for user in (nonstaff, inactive_staff):
+            self.client.force_authenticate(user)
+            denied = self.client.post("/api/athletes/", {"name": user.username}, format="json")
+            self.assertEqual(denied.status_code, 403)
+            self.assertEqual(denied.data["code"], "active_staff_required")
+
+        self.client.force_authenticate(staff)
+        self.assertEqual(
+            self.client.post("/api/athletes/", {"name": "Staff athlete"}, format="json").status_code,
+            201,
+        )
+        self.assertEqual(Athlete.objects.count(), 1)
+
+    def test_detailed_room_state_requires_active_staff_without_closing_wall_view(self):
+        nonstaff = User.objects.create_user(username="room-nonstaff", password="pw")
+        inactive_staff = User.objects.create_user(
+            username="room-inactive", password="pw", is_active=False, is_staff=True,
+        )
+        staff = User.objects.create_user(
+            username="room-staff", password="pw", is_active=True, is_staff=True,
+        )
+
+        self.assertEqual(self.client.get("/api/room-state/").status_code, 200)
+        anonymous = self.client.get("/api/room-state/?details=true")
+        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(anonymous.data["code"], "not_authenticated")
+
+        for user in (nonstaff, inactive_staff):
+            self.client.force_authenticate(user)
+            denied = self.client.get("/api/room-state/?details=true")
+            self.assertEqual(denied.status_code, 403)
+            self.assertEqual(denied.data["code"], "active_staff_required")
+
+        self.client.force_authenticate(staff)
+        self.assertEqual(self.client.get("/api/room-state/?details=true").status_code, 200)
+
+    def test_former_authentication_only_route_enforces_staff_at_runtime(self):
+        nonstaff = User.objects.create_user(username="status-nonstaff", password="pw")
+        inactive_staff = User.objects.create_user(
+            username="status-inactive", password="pw", is_active=False, is_staff=True,
+        )
+        staff = User.objects.create_user(
+            username="status-staff", password="pw", is_active=True, is_staff=True,
+        )
+
+        self.assertEqual(self.client.get("/api/system/status/").status_code, 401)
+        for user in (nonstaff, inactive_staff):
+            self.client.force_authenticate(user)
+            self.assertEqual(self.client.get("/api/system/status/").status_code, 403)
+        self.client.force_authenticate(staff)
+        self.assertEqual(self.client.get("/api/system/status/").status_code, 200)
+
+    @override_settings(SIMPLE_JWT={
+        "ALGORITHM": "HS256",
+        "SIGNING_KEY": "test-only-jwt-signing-key-with-at-least-32-bytes",
+    })
+    def test_login_and_refresh_still_issue_tokens_to_active_nonstaff_users(self):
+        User.objects.create_user(username="future-coach", password="future-coach-password")
+
+        login = self.client.post(
+            "/api/auth/login/",
+            {"username": "future-coach", "password": "future-coach-password"},
+            format="json",
+        )
+
+        self.assertEqual(login.status_code, 200)
+        self.assertIn("access", login.data)
+        refresh = self.client.post(
+            "/api/auth/refresh/", {"refresh": login.data["refresh"]}, format="json",
+        )
+        self.assertEqual(refresh.status_code, 200)
+        self.assertIn("access", refresh.data)
+
+    @override_settings(SIMPLE_JWT={
+        "ALGORITHM": "HS256",
+        "SIGNING_KEY": "test-only-jwt-signing-key-with-at-least-32-bytes",
+    })
+    def test_inactive_users_cannot_use_login_or_previously_issued_tokens(self):
+        inactive = User.objects.create_user(
+            username="inactive-token-user", password="inactive-password", is_active=False,
+        )
+        denied_login = self.client.post(
+            "/api/auth/login/",
+            {"username": inactive.username, "password": "inactive-password"},
+            format="json",
+        )
+        self.assertEqual(denied_login.status_code, 401)
+
+        inactive.is_active = True
+        inactive.save(update_fields=["is_active"])
+        issued = self.client.post(
+            "/api/auth/login/",
+            {"username": inactive.username, "password": "inactive-password"},
+            format="json",
+        )
+        self.assertEqual(issued.status_code, 200)
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {issued.data['access']}")
+        self.assertEqual(self.client.get("/api/system/status/").status_code, 401)
+
+        self.client.credentials()
+        refreshed = self.client.post(
+            "/api/auth/refresh/", {"refresh": issued.data["refresh"]}, format="json",
+        )
+        self.assertEqual(refreshed.status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refreshed.data['access']}")
+        self.assertEqual(self.client.get("/api/system/status/").status_code, 401)
+
+
+class EnsureDemoCoachCommandTests(APITestCase):
+    def test_existing_demo_user_is_promoted_to_active_staff(self):
+        coach = User.objects.create_user(
+            username="coach", password="old-password", is_active=False, is_staff=False,
+        )
+
+        output = io.StringIO()
+        call_command("ensure_demo_coach", stdout=output)
+
+        coach.refresh_from_db()
+        self.assertTrue(coach.is_active)
+        self.assertTrue(coach.is_staff)
+        self.assertTrue(coach.check_password("coachpass"))
+        self.assertNotIn("coachpass", output.getvalue())
+
+    @override_settings(VPS_DEPLOYMENT=True)
+    def test_vps_deployment_refuses_without_mutating_existing_user(self):
+        coach = User.objects.create_user(
+            username="coach", password="original-password", is_active=False, is_staff=False,
+        )
+
+        with self.assertRaisesMessage(CommandError, "disabled for VPS deployments"):
+            call_command("ensure_demo_coach", stdout=io.StringIO())
+
+        coach.refresh_from_db()
+        self.assertFalse(coach.is_active)
+        self.assertFalse(coach.is_staff)
+        self.assertTrue(coach.check_password("original-password"))
 
 
 class OrganizationTenancyMigrationTests(TransactionTestCase):

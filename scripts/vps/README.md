@@ -93,6 +93,15 @@ their operator procedure is implemented and validated.
 Run the configuration check before every deployment:
 
 ```bash
+python3 scripts/vps/check_api_allowlist.py
+python3 -m unittest scripts/vps/test_check_api_allowlist.py
+```
+
+This check fails if `nginx/vps.conf.template` adds, removes, or widens an API
+location without updating the reviewed allowlist. The unit test proves that
+replacing the `/api/` denial with `proxy_pass` fails validation.
+
+```bash
 docker compose --env-file .env.vps -f docker-compose.vps.yml config --quiet
 docker compose --env-file .env.vps -f docker-compose.vps.yml build
 docker compose --env-file .env.vps -f docker-compose.vps.yml up -d

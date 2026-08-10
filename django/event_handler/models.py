@@ -483,12 +483,9 @@ class TrainingGroupCoach(models.Model):
     single FK can only ever name one of them. That FK is what this replaced; its
     value was carried over as the head coach of each group it named.
 
-    ⚠️ Being listed here is currently a STATEMENT, not a permission. Nothing in
-    the API asks this table whether a write is allowed — `IsCoach` still means
-    "is authenticated", same as before. The canon calls this filter-not-fence,
-    and it is deliberate: recording who runs what is useful on its own, and a
-    real boundary can be added on top later without undoing any of this. Do not
-    read a row here as authorization until something actually enforces it."""
+    Being listed here is currently descriptive, not authorization. Unscoped
+    endpoints require active staff, but they do not consult this table. Do not
+    treat a row here as team-scoped permission until that enforcement is added."""
     HEAD = "head"
     ASSISTANT = "assistant"
     ROLE_CHOICES = [(HEAD, "Head coach"), (ASSISTANT, "Assistant coach")]

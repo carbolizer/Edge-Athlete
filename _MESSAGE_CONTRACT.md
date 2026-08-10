@@ -775,12 +775,9 @@ never what someone meant to make.
 both the add and the role-change path, so "make Mike the head" is a single call
 and can never leave two heads behind.
 
-> ⚠️ **This list is a statement, not a permission.** Nothing consults it when
-> deciding whether a write is allowed — `IsCoach` still means "is authenticated",
-> exactly as before. That is the canon's filter-not-fence decision. Recording who
-> runs what is useful on its own, and enforcement can be layered on later without
-> undoing any of this. A test asserts the current non-enforcement on purpose, so
-> that adding a boundary is a deliberate change rather than a broken build.
+> **This list is not yet team authorization.** The endpoint requires active staff,
+> but does not consult group-coach links when deciding who may write. Tenant-aware
+> team enforcement is deferred; do not treat this response as a permission grant.
 
 ### `POST /api/training-groups/{id}/athletes/` — set a TrainingGroup's members (coach)
 
@@ -845,9 +842,9 @@ body region or a grade level depending on what it hangs off.
 
 > ⚠️ **`?coach=` is a lens, not a fence.** Blocks are global so a good one gets
 > reused; the filter exists so nobody scrolls a department-sized catalog to find
-> their own work. It grants nothing and forbids nothing — any authenticated coach
-> can still read and edit any block. If a real permission boundary is ever wanted,
-> it is additive on top of this and the filter does not have to be undone first.
+> their own work. It grants nothing and forbids nothing: active staff can still
+> read and edit any block. Team-scoped authorization will be additive on top of
+> this filter.
 
 ### `GET|POST /api/training-blocks/{id}/workouts/` — one day inside a template (coach)
 

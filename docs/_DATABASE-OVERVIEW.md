@@ -161,10 +161,9 @@ It carries no dates and no workouts — it is "who trains together", not a sched
 Real weight rooms put several people on one group: a head coach plus assistants. This is
 the table that says so, with a `role` on each row.
 
-> ⚠️ **Being listed here is a statement, not a permission.** Nothing in the API asks this
-> table whether a write is allowed — any logged-in coach can still do anything. That is a
-> deliberate choice ("filter, not fence"), so **don't read a row here as authorization**
-> until something actually enforces it. See SPEC §9.
+> **Being listed here is not yet team authorization.** Unscoped endpoints require active
+> staff, but they do not consult this table. Do not read a row here as authorization until
+> tenant-aware team enforcement is implemented.
 
 ### `Tag` — labels for grouping movements
 Simple labels hung on exercises — "lower body", "push" — so movements can be filtered.

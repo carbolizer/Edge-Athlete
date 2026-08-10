@@ -8,15 +8,15 @@ stays.
 
 ```
 event_handler/
-├── models.py          The 24 tables, with the reasoning in comments. The source of truth
+├── models.py          Database tables, with the reasoning in comments. The source of truth
 ├── views.py           HTTP only — auth, status codes, shapes. Calls services/ to think
 ├── serializers.py     Model ↔ JSON, plus the validation that protects the data
-├── urls.py            ~50 routes, grouped and commented
-├── permissions.py     IsCoach. ⚠️ It means "is authenticated" — see below
+├── urls.py            API routes, grouped and commented
+├── permissions.py     Shared active-staff authorization predicate and DRF permission
 ├── admin.py           Django admin registration
 ├── dev_views.py       Demo-only endpoints behind the dev panel. Not for production
-├── tests.py           280 tests
-├── migrations/        0001 → 0019. Six are data migrations — see the RUNBOOK
+├── tests.py           Backend unit, API, security, and migration tests
+├── migrations/        Numbered schema and data migrations — see the playbook
 ├── services/          The thinking: derived reads, planning, reports, the math
 ├── realtime/          MQTT in and out — pulses in, room invalidations out
 └── management/        Commands you run by hand: seeding, the node simulator
@@ -39,7 +39,7 @@ it probably belongs in `services/`.
 
 | | |
 |---|---|
-| **`IsCoach` means "is authenticated"** | Not "is a coach of *this* group". Coach assignment filters views; it enforces nothing. Deliberate — SPEC §9 |
+| **Staff fence is not team scope** | `IsActiveStaff` blocks non-staff from unscoped APIs. `TrainingGroupCoach` is not an authorization boundary yet. See `docs/_API_AUTHORIZATION_MATRIX.md`. |
 | **The container bakes the source** | No volume mount. `makemigrations` writes *inside* the container — copy it back or lose it. [`docs/_MIGRATION_PLAYBOOK.md`](../../docs/_MIGRATION_PLAYBOOK.md) |
 | **Derived, not stored** | There is no room-state table and no cached target weight. That is a rule, not an omission — `services/_README.md` |
 | **`Set.is_coach_adjustment`** | A coach-written row that looks exactly like a completed set. Every new query over `Set` must decide whether to include it — SPEC §6.5 |

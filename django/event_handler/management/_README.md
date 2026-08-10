@@ -55,8 +55,10 @@ from real lifting.
 docker compose exec django python manage.py ensure_demo_coach
 ```
 
-Idempotent — creates `coach` / `coachpass` only if it is missing. Runs on boot, so
-you rarely need it by hand.
+Idempotent — creates or repairs the private-profile `coach` account, resets its
+demo password, and ensures it is active staff. Runs on boot, so you rarely need it
+by hand. The command refuses to run when `VPS_DEPLOYMENT=True`; the VPS profile
+does not run it.
 
 ## The two you don't run
 

@@ -139,17 +139,16 @@ About fifty routes, grouped:
 
 ### A note on access
 
-`IsCoach` currently means **"is authenticated"** — not "is a coach of *this*
-group". Coach assignment is recorded and used to *filter* views, and it is not
-enforced as a permission. That is a deliberate choice for a single-gym offline
-box, written up in `_SPEC.md` §9 and Phase 16. Don't mistake it for an oversight,
-and don't assume a group-coach row protects anything.
+Unscoped coach endpoints require an authenticated, active staff account through
+`IsActiveStaff`. `TrainingGroupCoach` still does not enforce team scope; it records
+who runs a group until tenant-aware authorization replaces the staff-only fence.
+See [`docs/_API_AUTHORIZATION_MATRIX.md`](docs/_API_AUTHORIZATION_MATRIX.md).
 
 ---
 
 ## The database
 
-24 tables. The shape, in one line:
+The schema shape, in one line:
 
 ```
 TrainingBlock (template) → TrainingProgram (deployed, dated) → TrainingGroup (who) → TrainingSession (the day) → Set → Rep

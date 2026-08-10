@@ -84,7 +84,7 @@ Short version, verified against the repo rather than from memory:
 | 13 Real ESP32 firmware v1 | ⛔ **not in this repo** — no `firmware/` directory exists |
 | 14 Coach tablet | ✅ built — this is what the merge landed |
 | 15 Fatigue scaffold | ⛔ not built — still a stub, deliberately |
-| 16 Security hardening | ⚠️ **partial** — `IsCoach` still means "is authenticated". See D-filter-not-fence in §9 |
+| 16 Security hardening | ⚠️ **partial** — unscoped coach APIs require active staff; tenant scoping and MQTT authentication remain open |
 | 17 Firmware hardening & mounts | ⛔ not built |
 | 18 Full integration test & demo prep | ⛔ not done |
 
@@ -1061,7 +1061,7 @@ Edge-Athlete/
 │       ├── serializers.py
 │       ├── views.py
 │       ├── urls.py
-│       ├── permissions.py        # IsCoach (JWT) vs open
+│       ├── permissions.py        # IsActiveStaff (JWT) vs open
 │       ├── ml/
 │       │   ├── inference.py       # fatigue scaffold — real signature, stub return
 │       │   └── analyze_session.py # insights scaffold — real signature, stub return (Phase 5)
@@ -1222,8 +1222,8 @@ The two things that could not be lost, and did not:
 
 ### What the merge deliberately did not do
 
-- **No permission boundary.** `IsCoach` still means "is authenticated" — a choice,
-  not an oversight. See Phase 16.
+- **No team permission boundary at merge time.** This historical decision was
+  superseded by the active-staff fence; tenant-aware team scope remains pending.
 - **No group-staff UI.** The API takes several coaches per group; adding an
   assistant needs Django admin.
 - **No overnight auto-close policy.** A day left open has no defined behaviour;
@@ -1518,8 +1518,8 @@ timestamp, velocity_color) and a SetCompleteSerializer with:
   reps = RepInputSerializer(many=True)
 
 ## permissions.py
-IsCoach covers legacy authenticated coach endpoints. IsActiveStaff requires an
-authenticated, active staff user and gates rack screen/sensor assignment.
+IsActiveStaff requires an authenticated, active staff user and gates every
+unscoped coach endpoint plus rack screen/sensor assignment.
 
 ## views.py + urls.py — endpoints
 Open (AllowAny):
@@ -1530,7 +1530,7 @@ Open (AllowAny):
   GET   /api/prescriptions/?athlete={id}
   POST  /api/sets/                    create a Set (session, athlete, node, exercise, set_number, weight_lbs, started_at=now)
   POST  /api/sets/{id}/complete/      *** batch write, see below ***
-Coach-only (IsCoach):
+Coach-only (IsActiveStaff):
   GET   /api/racks/unassigned/        list RackScreen rows where rack_number is null
   POST  /api/athletes/  PATCH /api/athletes/{id}/
   POST  /api/prescriptions/
@@ -2578,7 +2578,7 @@ trigger points — do not merge them into one function or one call site.
 
 ---
 
-## Phase 16 — Security Hardening · Owner: whole team · ⛔ NOT BUILT
+## Phase 16 — Security Hardening · Owner: whole team · ⚠️ PARTIAL
 
 > ⚠️ **Rewritten 2026-07-30.** The original prompt said "verify JWT covers all
 > coach-only endpoints (should already be true)". That is still true and is no
@@ -2588,17 +2588,17 @@ trigger points — do not merge them into one function or one call site.
 
 ### What the merge decided, and why it matters here
 
-**Authentication is enforced. Authorization is not, on purpose.** `IsCoach` means
-"is a logged-in user" and nothing more. Any authenticated coach can read and edit
-any block, any group, and any program. This is the **filter-not-fence** decision
+**Historical merge behavior:** authentication was enforced without staff or team
+authorization. Any authenticated coach could read and edit any block, group, or
+program. This was the **filter-not-fence** decision
 (§9, P11): `?coach=me` is a lens so nobody scrolls a department-sized catalog, not
 a wall. It was chosen because a real boundary costs object-level checks on every
 write endpoint plus a who-can-do-what test matrix, and because the scenario it
 would guard is not reachable — there is no block DELETE and no way for one coach
 to destroy another's work.
 
-There are tests that assert the **non**-enforcement, so adding a boundary is a
-deliberate change rather than a mystery failure.
+The active-staff fence now blocks non-staff users from these unscoped routes.
+Organization and team object scoping remains pending.
 
 ### The actual work
 

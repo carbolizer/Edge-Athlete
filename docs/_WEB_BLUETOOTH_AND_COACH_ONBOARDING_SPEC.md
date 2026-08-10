@@ -22,7 +22,7 @@ without seeing another coach's data.
 - Keep the BLE experiment local to the browser and separate from production rack
   assignment, workouts, storage, and cloud APIs.
 - Define public registration around enforceable tenant ownership rather than the
-  current global `IsCoach` permission.
+  transitional active-staff fence.
 - Preserve staff access and the existing local/Pi deployment during migration.
 
 ## Non-Goals

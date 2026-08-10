@@ -53,7 +53,7 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
 
 # Coaches are Django users; there is no separate coach table. See _SPEC.md.
 User = get_user_model()
-from .permissions import IsActiveStaff, IsCoach
+from .permissions import IsActiveStaff, active_staff_user
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
@@ -315,10 +315,12 @@ def _save_receipt(request, runtime, command_id, response_body, response_status):
         response_body=response_body,
     )
 
-def _require_coach(request):
-    """Small helper for endpoints that are open to read but coach-only to write:
-    returns True if the caller is a logged-in coach."""
-    return bool(request.user and request.user.is_authenticated)
+def _active_staff_denial(request):
+    if not request.user or not request.user.is_authenticated:
+        return Response({"code": "not_authenticated", "detail": "staff login required"}, status=401)
+    if not active_staff_user(request.user):
+        return Response({"code": "active_staff_required", "detail": "active staff required"}, status=403)
+    return None
 
 
 # ─────────────────────────── tablet: racks ───────────────────────────
@@ -348,7 +350,7 @@ def rack_racknumber(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def racks_unassigned(request):
     """Coach-only: list every tablet still waiting for a rack (rack_number empty)."""
     waiting = RackScreen.objects.filter(rack_number__isnull=True)
@@ -1260,15 +1262,16 @@ def athletes_view(request):
     """GET: list all lifters (open). POST: add a lifter (coach only)."""
     if request.method == "GET":
         return Response(AthleteSerializer(Athlete.objects.all(), many=True).data)
-    if not _require_coach(request):
-        return Response({"detail": "coach login required"}, status=401)
+    denial = _active_staff_denial(request)
+    if denial is not None:
+        return denial
     form = AthleteSerializer(data=request.data)
     form.is_valid(raise_exception=True)
     return Response(AthleteSerializer(form.save()).data, status=201)
 
 
 @api_view(["GET", "PATCH"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def athlete_detail(request, athlete_id):
     """Coach-only: read or update one lifter.
 
@@ -1352,7 +1355,7 @@ def exercises_list(request):
 # ─────────────────────────── sessions ───────────────────────────
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def sessions_view(request):
     """Coach-only: start a training session.
 
@@ -1396,7 +1399,7 @@ def sessions_view(request):
 
 
 @api_view(["PATCH"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def session_detail(request, session_id):
     """Coach-only: update a session. A PATCH with no ended_at means "end it now".
 
@@ -2035,7 +2038,7 @@ def _personal_records(finished_set):
 # ─────────────────────────── analytics (coach) ───────────────────────────
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def analytics_session(request, session_id):
     """Coach-only: a quick summary of one session — how many sets and reps total,
     and each athlete's average velocity."""
@@ -2065,7 +2068,7 @@ def analytics_session(request, session_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def analytics_athlete(request, athlete_id):
     """Coach-only: everything the athlete and history tabs need (P13).
 
@@ -2121,8 +2124,10 @@ def room_state(request):
     # data, so asking for them requires actually being a coach. Refusing here
     # rather than silently downgrading means a coach UI with an expired token
     # gets a clear 401 instead of mysteriously missing fields.
-    if include_details and not (request.user and request.user.is_authenticated):
-        return Response({"error": "coach login required for ?details=true"}, status=401)
+    if include_details:
+        denial = _active_staff_denial(request)
+        if denial is not None:
+            return denial
 
     response = Response(room_state_snapshot(include_details=include_details))
     # Never cache: a stale room picture is worse than a slow one, and this is
@@ -2135,7 +2140,7 @@ def room_state(request):
 # ─────────────────────────── reports (immutable history) ───────────────────────────
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def reports_view(request):
     """Coach-only: browse finished training days, newest first.
 
@@ -2154,7 +2159,7 @@ def reports_view(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def report_detail_view(request, report_id):
     """Coach-only: one finished day in full.
 
@@ -2181,7 +2186,7 @@ def report_detail_view(request, report_id):
 # ─────────────────────────── reference maxes ───────────────────────────
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def reference_maxes_view(request):
     """Coach-only: record what athletes can currently lift.
 
@@ -2236,7 +2241,7 @@ def reference_maxes_view(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def report_pdf_view(request, report_id):
     """Coach-only: the same finished day, as a printable PDF.
 
@@ -2277,7 +2282,7 @@ def report_pdf_view(request, report_id):
 # Bending the URLs to the existing client is deliberate — canon §3.3.
 
 @api_view(["GET", "POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_groups_view(request):
     """Coach-only: list or create TrainingGroups.
 
@@ -2304,7 +2309,7 @@ def training_groups_view(request):
 
 
 @api_view(["GET", "POST", "PATCH", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_group_coaches_view(request, group_id):
     """Coach-only: who runs this TrainingGroup.
 
@@ -2317,11 +2322,9 @@ def training_group_coaches_view(request, group_id):
       PATCH  -> change a role:  { "coach": 4, "role": "head" }
       DELETE -> remove someone: { "coach": 4 }
 
-    ⚠️ Being on this list is a STATEMENT, not a permission. Nothing here is
-    consulted when deciding whether a write is allowed — `IsCoach` still means
-    "is authenticated". That is the canon's filter-not-fence decision, and it is
-    deliberate: recording who runs what is useful on its own, and enforcement can
-    be added later on top of this without undoing any of it.
+    Being on this list is descriptive, not authorization. This unscoped endpoint
+    requires active staff but does not consult team roles. Team-scoped enforcement
+    will use these links in a later slice.
     """
     group = TrainingGroup.objects.filter(id=group_id).first()
     if group is None:
@@ -2377,7 +2380,7 @@ def training_group_coaches_view(request, group_id):
 
 
 @api_view(["GET", "POST", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_group_athletes_view(request, group_id):
     """Coach-only: who is in this TrainingGroup.
 
@@ -2407,7 +2410,7 @@ def training_group_athletes_view(request, group_id):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_blocks_view(request):
     """Coach-only: the reusable TEMPLATES a coach designs once and redeploys.
 
@@ -2465,7 +2468,7 @@ def training_blocks_view(request):
 
 
 @api_view(["GET", "PATCH"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_block_detail(request, block_id):
     """Coach-only: read or amend one block's own fields.
 
@@ -2497,7 +2500,7 @@ def training_block_detail(request, block_id):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def block_categories_view(request):
     """Coach-only: the catalog's label vocabulary — "Off-season", "Football".
 
@@ -2516,7 +2519,7 @@ def block_categories_view(request):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_block_workouts_view(request, block_id):
     """Coach-only: the individual days inside a template, and their movements.
 
@@ -2586,7 +2589,7 @@ def _block_workout(block_id, workout_id):
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_block_workout_detail(request, block_id, workout_id):
     """Coach-only: rename or remove one day in a template.
 
@@ -2614,7 +2617,7 @@ def training_block_workout_detail(request, block_id, workout_id):
 
 
 @api_view(["PUT"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_block_workout_order(request, block_id):
     """Coach-only: set the order of the days in a template.
 
@@ -2644,7 +2647,7 @@ def training_block_workout_order(request, block_id):
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_block_exercise_detail(request, block_id, workout_id, exercise_id):
     """Coach-only: change or remove one prescribed movement in a template day."""
     workout = _block_workout(block_id, workout_id)
@@ -2682,7 +2685,7 @@ def training_block_exercise_detail(request, block_id, workout_id, exercise_id):
 
 
 @api_view(["PUT"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_block_exercise_order(request, block_id, workout_id):
     """Coach-only: set the order of the movements inside one template day."""
     workout = _block_workout(block_id, workout_id)
@@ -2704,7 +2707,7 @@ def training_block_exercise_order(request, block_id, workout_id):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_programs_view(request):
     """Coach-only: a template DEPLOYED for a TrainingGroup, starting on a date.
 
@@ -2771,7 +2774,7 @@ def training_programs_view(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def training_program_promote(request, program_id):
     """Coach-only: turn this program into a new reusable TrainingBlock.
 
@@ -2809,7 +2812,7 @@ def training_program_promote(request, program_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def scheduled_sessions_view(request):
     """Coach-only: the calendar — planned training slots.
 
@@ -2860,7 +2863,7 @@ def scheduled_sessions_view(request):
 
 
 @api_view(["GET", "PATCH"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def scheduled_session_detail(request, slot_id):
     """Coach-only: read a slot, or MOVE it to another date.
 
@@ -2901,7 +2904,7 @@ def scheduled_session_detail(request, slot_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def scheduled_session_create_session(request, slot_id):
     """Coach-only: turn a planned slot into a real training session.
 
@@ -2949,7 +2952,7 @@ def scheduled_session_create_session(request, slot_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def session_start(request, session_id):
     """Coach-only: start a session that was created ahead of time.
 
@@ -2989,7 +2992,7 @@ def session_start(request, session_id):
 
 
 @api_view(["GET", "POST", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def session_participation_view(request, session_id):
     """Coach-only: which TrainingGroups are training in this session, and what they're doing.
 
@@ -3041,7 +3044,7 @@ def session_participation_view(request, session_id):
 
 
 @api_view(["GET", "PUT", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def athlete_exercise_override_view(request, athlete_id, exercise_id):
     """Coach-only: an exception for one athlete on one prescribed movement.
 
@@ -3178,7 +3181,7 @@ def _import_response(sheet_type, payload, errors, skipped, *, created=None):
 
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 @parser_classes([MultiPartParser, FormParser])
 def import_preview(request):
     """Check an uploaded spreadsheet and write NOTHING.
@@ -3203,7 +3206,7 @@ def import_preview(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 @parser_classes([MultiPartParser, FormParser])
 def import_commit(request):
     """Re-check an uploaded spreadsheet and, if it is clean, save it in one step.
@@ -3233,7 +3236,7 @@ def import_commit(request):
 
 
 @api_view(["GET", "PUT", "DELETE"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def athlete_program_view(request, athlete_id):
     """What this athlete is training, and which TrainingGroup decides it.
 

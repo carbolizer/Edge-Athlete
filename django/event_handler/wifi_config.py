@@ -37,7 +37,7 @@ import os
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from .permissions import IsCoach
+from .permissions import IsActiveStaff
 
 # WPA2-PSK accepts 8..63 printable ASCII characters. Anything outside that the AP
 # would reject at apply time, so it is caught here where the coach can see why.
@@ -53,7 +53,7 @@ def spool_path():
 
 
 @api_view(["POST"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def change_wifi_password(request):
     """Queue a Wi-Fi password change for the host agent to apply.
 

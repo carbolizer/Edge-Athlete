@@ -26,7 +26,7 @@ from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from .permissions import IsCoach
+from .permissions import IsActiveStaff
 
 # The exact strings the repo ships with. Kept here, next to the check, so there
 # is one obvious place to update if a default ever changes in .env.example or the
@@ -41,7 +41,7 @@ DEFAULT_SECRET_KEYS = {
 
 
 @api_view(["GET"])
-@permission_classes([IsCoach])
+@permission_classes([IsActiveStaff])
 def system_status(request):
     """Coach-only. What still needs changing before this box faces a real gym.
 

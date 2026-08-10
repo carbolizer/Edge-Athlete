@@ -7,10 +7,11 @@
 
 ## Context
 
-SimpleJWT currently authenticates any active user, `IsCoach` checks only that the
-user is authenticated, and most athlete, training, session, report, analytics, and
-rack data has no tenant owner. Publicly creating users against those APIs would
-allow one coach to read or mutate another coach's data.
+SimpleJWT authenticates active users. Before the active-staff fence, coach routes
+checked only authentication, while athlete, training, session, report, analytics,
+and rack data lacked tenant scope. Those unscoped routes now require active staff;
+public registration remains disabled until object queries enforce organization and
+team boundaries.
 
 `HostedGym` cannot serve as the account tenant without a migration. It currently
 represents the diagnostics gateway's physical deployment, and startup/ingestion
@@ -88,7 +89,8 @@ localStorage JWT handling must be replaced before public registration is enabled
 1. Inventory every URL/method as tenant-scoped, active-staff-only, private-AP-only,
    or public authentication.
 2. Default every authenticated but unscoped endpoint to `IsActiveStaff`, including
-   reads and writes. Keep private-AP open routes out of public ingress.
+   reads and writes. Keep private-AP open routes out of public ingress. The
+   active-staff fence and route matrix implement this step.
 3. Add organization and owner-membership schema with the one-active-membership
    invariant. Migration `0023` implements this schema foundation.
 4. Add nullable organization ownership to `Athlete`, `TrainingGroup`,
@@ -136,6 +138,18 @@ is forbidden because it would discard tenant boundaries.
 - `python manage.py test event_handler`: 435 tests passed.
 - `POST /api/auth/register/` remains absent. Public Nginx permits only
   `/api/auth/login/` and `/api/auth/refresh/` under the authentication prefix.
+
+## Authorization Fence Evidence
+
+- `python manage.py test event_handler.tests.ApiAuthorizationFenceTests event_handler.tests.EnsureDemoCoachCommandTests event_handler.tests.PublicCoachRegistrationDisabledTests`: 10 tests passed.
+- `python manage.py test event_handler`: 444 tests passed.
+- `python manage.py check`: no issues.
+- `python manage.py makemigrations --check --dry-run`: no changes detected.
+- [`_API_AUTHORIZATION_MATRIX.md`](_API_AUTHORIZATION_MATRIX.md) classifies every
+  event-handler route and records public VPS exposure.
+- `python3 scripts/vps/check_api_allowlist.py`: passed.
+- `python3 -m unittest scripts/vps/test_check_api_allowlist.py`: 2 tests passed,
+  including rejection of a proxied `/api/` fallback.
 
 ## Authorization Test Matrix
 

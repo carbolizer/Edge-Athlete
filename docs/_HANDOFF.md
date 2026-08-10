@@ -101,7 +101,7 @@ constant in the repo into one file makes things harder to find, not easier. Keep
 
 | | |
 |---|---|
-| **`IsCoach` means "is authenticated"** | Not "is a coach of *this* group". Coach assignment filters views; it enforces nothing. Deliberate — SPEC §9, Phase 16 |
+| **Staff fence is not team scope** | Unscoped coach APIs require active staff. `TrainingGroupCoach` still records roles without enforcing team authorization. |
 | **Mosquitto is `allow_anonymous true`** | On both listeners. Anything on the gym network can publish fake rep data. The biggest real security hole, bigger than the authorization question |
 | **`edgeathlete/coach/state` is dead at both ends** | `publish_coach_state()` is defined and never called; nothing subscribes. `MESSAGE_CONTRACT` documents it as real. Wire it for Phase 15 fatigue alerts or delete it — don't debug a message that was never sent |
 | **`default_weight_lbs` is a v1-report field only** | Reports read it for schema-version-1 snapshots. Nothing writes it any more. It is *not* a live plan field — the live plan stores `target_percent` |
