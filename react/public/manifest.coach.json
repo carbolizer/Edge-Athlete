@@ -1,9 +1,11 @@
 {
   "name": "Edge Athlete — Coach",
+  "_comment_id": "See manifest.rack.json for why `id` exists. start_url is /coach so launching the installed app lands on the coach screen directly instead of bouncing through the role picker.",
+  "id": "/app/coach",
   "short_name": "EA Coach",
   "description": "Coach admin tablet for Edge Athlete.",
   "display": "standalone",
-  "start_url": "/",
+  "start_url": "/coach",
   "scope": "/",
   "orientation": "portrait",
   "background_color": "#070b0e",

@@ -1,9 +1,11 @@
 {
   "name": "Edge Athlete — Dashboard",
+  "_comment_id": "See manifest.rack.json for why `id` exists. start_url is /dashboard so the wall display comes straight up on launch.",
+  "id": "/app/dashboard",
   "short_name": "EA Wall",
   "description": "Team wall display for live session standings.",
   "display": "fullscreen",
-  "start_url": "/",
+  "start_url": "/dashboard",
   "scope": "/",
   "orientation": "landscape",
   "background_color": "#070b0e",

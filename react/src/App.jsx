@@ -29,7 +29,7 @@ import WifiChangeOverlay from './WifiChangeOverlay.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
 import { navigate, usePathname } from './router.js'
-import { applyRoleIdentity, getDeviceId } from './device.js'
+import { applyRoleIdentity, getDeviceId, roleFromPath } from './device.js'
 import { Centered } from './ui.jsx'
 import { T } from './theme.js'
 
@@ -255,6 +255,15 @@ function route(pathname) {
 
 export default function App() {
   const pathname = usePathname()
+  // Keep the install identity (manifest, iOS icon, app title) matching the route
+  // on EVERY navigation, including the first paint after a cold boot. Without
+  // this the tags only ever got set when a device changed role, so a rebooted
+  // wall display still advertised itself as the rack app. Falls back to the
+  // stored role for '/' and other pathless-role routes.
+  useEffect(() => {
+    const r = roleFromPath(pathname) || localStorage.getItem('device_role')
+    if (r) applyRoleIdentity(r)
+  }, [pathname])
   // A rack device keeps the remote-command listener mounted across every route
   // (it stays put while the screen behind it changes), so `enter_setup` works
   // whether the tablet is live, waiting, or mid-session.

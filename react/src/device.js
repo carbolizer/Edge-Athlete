@@ -44,6 +44,28 @@ export function applyRoleIdentity(role) {
   appleTitle.content = r.title
 }
 
+// Which role a URL belongs to, or null if the path does not name one.
+//
+// WHY THIS EXISTS. applyRoleIdentity used to be called only at the moments a
+// device CHANGED role — the picker, rack setup, the coach tablet mounting. None
+// of those happen on a cold boot, so a wall display that rebooted straight into
+// /dashboard kept index.html's default rack manifest and would have installed
+// itself as "EA Rack". App.jsx now calls this on every navigation instead, which
+// also matches what that file already says about itself: the URL is the source
+// of truth for what is on screen, so it should decide the install identity too.
+//
+// Returns null rather than guessing, so the caller can fall back to the stored
+// role for paths like '/' that belong to no role in particular.
+// Matches on whole path SEGMENTS, not a bare prefix: '/rack' and '/rack/setup'
+// are rack screens, '/rackets' is not. A plain startsWith would claim it was.
+export function roleFromPath(pathname) {
+  const first = String(pathname || '').split('/')[1]
+  if (first === 'dashboard') return 'dashboard'
+  if (first === 'coach') return 'coach'
+  if (first === 'rack') return 'rack'
+  return null
+}
+
 // This device's stable id — generated once and kept forever, so the screen never
 // re-registers across reloads/reboots.
 export function getDeviceId() {
