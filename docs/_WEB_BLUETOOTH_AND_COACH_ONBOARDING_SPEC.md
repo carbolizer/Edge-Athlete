@@ -129,3 +129,9 @@ without seeing another coach's data.
 - `git diff --check`: passed.
 - Physical WT901, dedicated DNS/certificate, live headers, browser storage/network,
   and portrait/landscape evidence remain pending.
+- Dedicated origin deployment observed on 2026-08-10: BLE root `200`, unknown/API
+  path `404`, app-origin lab path `404`, TLS 1.3 certificate verified, BLE CSP and
+  Permissions-Policy present, and main-origin Bluetooth denied.
+- Available desktop browser and Linux laptop both reported no Web Bluetooth API.
+  No chooser/GATT test ran. Browser-only acquisition remains unqualified pending a
+  supported Chromium/OS combination with a Bluetooth radio.
