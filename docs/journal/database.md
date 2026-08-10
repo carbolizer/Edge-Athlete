@@ -58,12 +58,17 @@ An ESP32 + sensor unit on a rack. Identified by node_id; a coach links it to a p
 | `rack_number` | whole number | optional |
 | `mount_type` | text | max 10, choices: `MOUNT_CHOICES`, default `MOUNT_BAR` |
 | `firmware_version` | text | optional, max 50 |
+| `acquisition_kind` | text | max 16, choices: `ACQUISITION_CHOICES`, default `ACQUISITION_MQTT` |
 | `battery_level` | whole number | optional |
 | `signal_strength` | whole number | optional |
 | `last_seen` | date + time | optional |
 | `is_active` | true/false | default `True` |
 | `is_simulated` | true/false | default `False` |
 | `allowed_exercises` | many-to-many → | → `Exercise`, reverse: `allowed_on_nodes` |
+
+**Table rules**
+
+- `constraints = [models.CheckConstraint(condition=models.Q(rack_number__isnull=True) | models.Q(node_id__regex='^[A-Za-z0-9_-]{1,64}$'), name='assigned_node_id_is_mqtt_safe'), models.UniqueConstraint(fields=['rack_number'], condition=models.Q(rack_number__isnull=False), name='node_one_per_assigned_rack')]`
 <!-- schema:Node:end -->
 
 **Why it exists.**  <!-- your summary -->
@@ -111,6 +116,71 @@ A record that an athlete signed in ("checked in") at a rack during a session. AD
 - `ordering = ['-checked_in_at']`
 - `indexes = [models.Index(fields=['session', 'athlete', '-checked_in_at'], name='checkin_session_athlete_idx')]`
 <!-- schema:RackCheckIn:end -->
+
+**Why it exists.** <!-- your summary -->
+
+**Decisions.** <!-- what was chosen here, and what was rejected -->
+
+:::::
+
+### `RackRuntime`
+
+The server-owned controller lease and transient presentation state for one rack. Completed training history remains in Set and Rep; no raw sensor data lives here.
+
+:::::{dropdown} Schema and decisions
+
+<!-- schema:RackRuntime:start -->
+| Column | Type | Notes |
+|---|---|---|
+| `rack_number` | whole number | **unique** |
+| `controller_screen` | link → | → `RackScreen`, on delete: `SET_NULL`, optional, reverse: `controlled_runtimes` |
+| `client_instance_id` | text | max 255 |
+| `controller_token_digest` | text | max 64 |
+| `controller_epoch` | PositiveBigIntegerField | default `0` |
+| `lease_expires_at` | date + time | optional |
+| `state_version` | PositiveBigIntegerField | default `0` |
+| `phase` | text | max 24, choices: `PHASE_CHOICES`, default `PHASE_IDLE` |
+| `selected_athlete` | link → | → `Athlete`, on delete: `SET_NULL`, optional, reverse: `selected_at_runtimes` |
+| `selected_exercise` | link → | → `Exercise`, on delete: `SET_NULL`, optional, reverse: `selected_at_runtimes` |
+| `current_set` | link → | → `Set`, on delete: `SET_NULL`, optional, reverse: `runtime_states` |
+| `rep_count` | whole number ≥ 0 | default `0` |
+| `latest_mean_velocity` | decimal | optional |
+| `latest_peak_velocity` | decimal | optional |
+| `latest_color` | text | max 16 |
+| `phase_started_at` | date + time | optional |
+| `updated_at` | date + time | set on save |
+<!-- schema:RackRuntime:end -->
+
+**Why it exists.** <!-- your summary -->
+
+**Decisions.** <!-- what was chosen here, and what was rejected -->
+
+:::::
+
+### `RackCommandReceipt`
+
+A durable accepted controller-command result, preventing retry duplication.
+
+:::::{dropdown} Schema and decisions
+
+<!-- schema:RackCommandReceipt:start -->
+| Column | Type | Notes |
+|---|---|---|
+| `runtime` | link → | → `RackRuntime`, on delete: `CASCADE`, reverse: `command_receipts` |
+| `command_id` | uuid | — |
+| `controller_epoch` | PositiveBigIntegerField | — |
+| `controller_device_id` | text | max 255 |
+| `client_instance_id` | text | max 255 |
+| `controller_token_digest` | text | max 64 |
+| `response_status` | PositiveSmallIntegerField | — |
+| `response_body` | JSON | — |
+| `created_at` | date + time | set on create |
+
+**Table rules**
+
+- `indexes = [models.Index(fields=['runtime', 'created_at'], name='rack_receipt_runtime_time_idx')]`
+- `constraints = [models.UniqueConstraint(fields=['runtime', 'command_id'], name='rack_command_once_per_runtime')]`
+<!-- schema:RackCommandReceipt:end -->
 
 **Why it exists.** <!-- your summary -->
 
@@ -778,6 +848,8 @@ A durable record that "something changed" — written the instant it happens; a 
 **Decisions.** <!-- what was chosen here, and what was rejected -->
 
 :::::
+
+
 
 <!-- SCHEMA SECTION END -->
 

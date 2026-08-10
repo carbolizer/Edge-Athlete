@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } from "./dashboardView.js";
+import { coachRackView, measuredInsights, rackMetrics, wallDisplayState, wallMovementView } from "./dashboardView.js";
 
 describe("wall snapshot availability", () => {
   const populated = {
@@ -112,6 +112,7 @@ describe("coach rack observation", () => {
       movementName: "Bench Press",
       progressLabel: "Set 2 · 5 reps",
       latestResult: signedInRack.latest_set,
+      metrics: { isLive: false, reps: 5, mean: 0.75, peak: 0.9 },
     });
   });
 
@@ -124,6 +125,7 @@ describe("coach rack observation", () => {
       movementName: "Waiting for check-in",
       progressLabel: "No active progress",
       latestResult: null,
+      metrics: { isLive: false, reps: 0, mean: undefined, peak: undefined },
     });
     expect(coachRackView(undefined).athleteName).toBe("No athlete signed in");
   });
@@ -139,5 +141,22 @@ describe("coach rack observation", () => {
   it("marks a false set instead of hiding it", () => {
     const view = coachRackView({ ...signedInRack, latest_set: { ...signedInRack.latest_set, is_false_set: true } });
     expect(view.progressLabel).toBe("Set 2 (false set) · 5 reps");
+  });
+
+  it("prefers active runtime metrics without replacing the saved set", () => {
+    const rack = {
+      ...signedInRack,
+      live: {
+        rep_count: 3,
+        latest_mean_velocity: 0.71,
+        latest_peak_velocity: 0.93,
+        latest_color: "green",
+      },
+    };
+    expect(rackMetrics(rack)).toEqual({
+      isLive: true, reps: 3, mean: 0.71, peak: 0.93,
+    });
+    expect(coachRackView(rack).progressLabel).toBe("Set 2 · 3 reps");
+    expect(coachRackView(rack).latestResult).toBe(signedInRack.latest_set);
   });
 });

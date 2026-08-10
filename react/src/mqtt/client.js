@@ -43,7 +43,7 @@ export function subscribeNodeReps(nodeId, onRep) {
   return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
 }
 
-// Subscribe to Django's broadcasts for this rack (set_complete, node_reassigned,
+// Subscribe to Django's broadcasts for this rack (set_complete,
 // athlete_checkin). `onState` gets each parsed message. Returns an unsubscribe fn.
 export function subscribeRackState(rackNumber, onState) {
   const c = getClient()

@@ -90,20 +90,40 @@ export function measuredInsights(workoutSet) {
 export function coachRackView(rack) {
   const athlete = rack?.athlete;
   const latest = rack?.latest_set;
+  const metrics = rackMetrics(rack);
   if (!athlete) {
     return {
       athleteName: "No athlete signed in",
       movementName: "Waiting for check-in",
       progressLabel: "No active progress",
       latestResult: null,
+      metrics,
     };
   }
   return {
     athleteName: athlete.name,
     movementName: latest?.exercise || "No movement yet",
     progressLabel: latest
-      ? `Set ${latest.set_number}${latest.is_false_set ? " (false set)" : ""} · ${latest.reps_completed ?? 0} reps`
+      ? `Set ${latest.set_number}${latest.is_false_set ? " (false set)" : ""} · ${metrics.reps} reps`
       : "Signed in, nothing lifted yet",
     latestResult: latest,
+    metrics,
+  };
+}
+
+export function rackMetrics(rack) {
+  if (rack?.live) {
+    return {
+      isLive: true,
+      reps: rack.live.rep_count ?? 0,
+      mean: rack.live.latest_mean_velocity,
+      peak: rack.live.latest_peak_velocity,
+    };
+  }
+  return {
+    isLive: false,
+    reps: rack?.latest_set?.reps_completed ?? 0,
+    mean: rack?.latest_set?.avg_velocity,
+    peak: rack?.latest_set?.peak_velocity,
   };
 }

@@ -16,7 +16,7 @@ event_handler/
 ├── admin.py           Django admin registration
 ├── dev_views.py       Demo-only endpoints behind the dev panel. Not for production
 ├── tests.py           280 tests
-├── migrations/        0001 → 0017. Four are data migrations — see the RUNBOOK
+├── migrations/        0001 → 0019. Six are data migrations — see the RUNBOOK
 ├── services/          The thinking: derived reads, planning, reports, the math
 ├── realtime/          MQTT in and out — pulses in, room invalidations out
 └── management/        Commands you run by hand: seeding, the node simulator

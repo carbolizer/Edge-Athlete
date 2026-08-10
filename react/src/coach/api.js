@@ -14,7 +14,7 @@ export function setCoachToken(token) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
-export async function coachLogin(username, password) {
+export async function coachLogin(username, password, { persist = true } = {}) {
   const res = await fetch('/api/auth/login/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -29,7 +29,7 @@ export async function coachLogin(username, password) {
     const detail = data.detail || data.error || `HTTP ${res.status}`
     throw new Error(typeof detail === 'string' ? detail : 'login failed')
   }
-  setCoachToken(data.access)
+  if (persist) setCoachToken(data.access)
   return data.access
 }
 
@@ -47,7 +47,11 @@ export async function coachFetch(path, { token, method = 'GET', body } = {}) {
   try { data = text ? JSON.parse(text) : null } catch { data = text }
   if (!res.ok) {
     const detail = (data && (data.error || data.detail)) || `HTTP ${res.status}`
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    const error = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    error.status = res.status
+    error.code = data && data.code
+    error.data = data
+    throw error
   }
   return data
 }

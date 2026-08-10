@@ -53,7 +53,7 @@ const REFERENCE = [
     { m: 'POST/PATCH', p: '/api/athletes/ · /api/athletes/{id}/', a: 'coach', w: 'Add or edit a lifter.' },
     { m: 'POST', p: '/api/programs/', a: 'coach', w: 'Create a training plan for a lifter.' },
     { m: 'POST/PATCH', p: '/api/sessions/ · /api/sessions/{id}/', a: 'coach', w: 'Start a session; a PATCH with no end time ends it now.' },
-    { m: 'PATCH', p: '/api/nodes/{node_id}/', a: 'coach', w: 'Move a sensor to a different rack.' },
+    { m: 'PUT', p: '/api/racks/node-assignment/', a: 'coach', w: 'Select a registered sensor beside its physical rack.' },
     { m: 'GET', p: '/api/racks/unassigned/', a: 'coach', w: 'See which tablets are still waiting for a rack.' },
     { m: 'PATCH', p: '/api/racks/{device_id}/', a: 'coach', w: 'Assign a rack number to a tablet.' },
   ]},

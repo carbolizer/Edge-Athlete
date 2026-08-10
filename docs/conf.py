@@ -69,6 +69,13 @@ exclude_patterns = [
     "_HANDOFF.md",
     "_PATCH_NOTES.md",
     "_NAMING_CHANGES.md",
+    # Braydon's design docs for the BLE rack agent, merged 2026-08-07. Excluded for
+    # now so the build stays green; they are worth folding into the journal (the
+    # ADR in particular explains why the agent owns the radio instead of the
+    # browser), which is a follow-up, not a discard.
+    "_ADR_RACK_BLE_LIVE_WORKFLOW.md",
+    "_RACK_BLE_LIVE_WORKFLOW_SPEC.md",
+    "_LIVE_ROOM_INVALIDATIONS_SPEC.md",
 ]
 
 # ── how it looks ────────────────────────────────────────────────────────────

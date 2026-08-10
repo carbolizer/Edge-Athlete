@@ -54,11 +54,20 @@ class Node(models.Model):
         (MOUNT_WAIST, 'Waist'),
         (MOUNT_WRIST, 'Wrist'),
     ]
+    ACQUISITION_MQTT = "mqtt"
+    ACQUISITION_WT901_BLE = "wt901_ble"
+    ACQUISITION_CHOICES = [
+        (ACQUISITION_MQTT, "MQTT"),
+        (ACQUISITION_WT901_BLE, "WT901 BLE"),
+    ]
 
     node_id = models.CharField(max_length=255, unique=True)
     rack_number = models.IntegerField(null=True, blank=True)
     mount_type = models.CharField(max_length=10, choices=MOUNT_CHOICES, default=MOUNT_BAR)
     firmware_version = models.CharField(max_length=50, null=True, blank=True)
+    acquisition_kind = models.CharField(
+        max_length=16, choices=ACQUISITION_CHOICES, default=ACQUISITION_MQTT,
+    )
     battery_level = models.IntegerField(null=True, blank=True)
     signal_strength = models.IntegerField(null=True, blank=True)
     last_seen = models.DateTimeField(null=True, blank=True)
@@ -69,6 +78,19 @@ class Node(models.Model):
     # costs nothing for a normal rack. Filtered into athlete_progress, never enforced
     # by rejecting a set — see the merge canon D9 for why.
     allowed_exercises = models.ManyToManyField('Exercise', related_name='allowed_on_nodes', blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(rack_number__isnull=True) | models.Q(node_id__regex=r'^[A-Za-z0-9_-]{1,64}$'),
+                name='assigned_node_id_is_mqtt_safe',
+            ),
+            models.UniqueConstraint(
+                fields=['rack_number'],
+                condition=models.Q(rack_number__isnull=False),
+                name='node_one_per_assigned_rack',
+            ),
+        ]
 
     def __str__(self):
         rack = self.rack_number if self.rack_number is not None else "unassigned"
@@ -86,6 +108,81 @@ class RackScreen(models.Model):
     def __str__(self):
         rack = self.rack_number if self.rack_number is not None else "awaiting assignment"
         return f"RackScreen {self.device_id} (rack {rack})"
+
+
+class RackRuntime(models.Model):
+    """The server-owned controller lease and transient presentation state for one rack.
+    Completed training history remains in Set and Rep; no raw sensor data lives here."""
+    PHASE_IDLE = "idle"
+    PHASE_COUNTDOWN = "countdown"
+    PHASE_ACTIVE = "active"
+    PHASE_SUMMARY = "summary"
+    PHASE_REST = "rest"
+    PHASE_RECOVERY_REQUIRED = "recovery_required"
+    PHASE_CHOICES = [
+        (PHASE_IDLE, "Idle"),
+        (PHASE_COUNTDOWN, "Countdown"),
+        (PHASE_ACTIVE, "Active"),
+        (PHASE_SUMMARY, "Summary"),
+        (PHASE_REST, "Rest"),
+        (PHASE_RECOVERY_REQUIRED, "Recovery required"),
+    ]
+
+    rack_number = models.IntegerField(unique=True)
+    controller_screen = models.ForeignKey(
+        RackScreen, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="controlled_runtimes",
+    )
+    client_instance_id = models.CharField(max_length=255, blank=True)
+    controller_token_digest = models.CharField(max_length=64, blank=True)
+    controller_epoch = models.PositiveBigIntegerField(default=0)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    state_version = models.PositiveBigIntegerField(default=0)
+    phase = models.CharField(max_length=24, choices=PHASE_CHOICES, default=PHASE_IDLE)
+    selected_athlete = models.ForeignKey(
+        "Athlete", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="selected_at_runtimes",
+    )
+    selected_exercise = models.ForeignKey(
+        "Exercise", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="selected_at_runtimes",
+    )
+    current_set = models.ForeignKey(
+        "Set", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="runtime_states",
+    )
+    rep_count = models.PositiveIntegerField(default=0)
+    latest_mean_velocity = models.FloatField(null=True, blank=True)
+    latest_peak_velocity = models.FloatField(null=True, blank=True)
+    latest_color = models.CharField(max_length=16, blank=True)
+    phase_started_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Rack {self.rack_number} runtime ({self.phase}, v{self.state_version})"
+
+
+class RackCommandReceipt(models.Model):
+    """A durable accepted controller-command result, preventing retry duplication."""
+    runtime = models.ForeignKey(RackRuntime, on_delete=models.CASCADE, related_name="command_receipts")
+    command_id = models.UUIDField()
+    controller_epoch = models.PositiveBigIntegerField()
+    controller_device_id = models.CharField(max_length=255)
+    client_instance_id = models.CharField(max_length=255)
+    controller_token_digest = models.CharField(max_length=64)
+    response_status = models.PositiveSmallIntegerField()
+    response_body = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["runtime", "created_at"], name="rack_receipt_runtime_time_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["runtime", "command_id"], name="rack_command_once_per_runtime",
+            ),
+        ]
 
 
 class Athlete(models.Model):

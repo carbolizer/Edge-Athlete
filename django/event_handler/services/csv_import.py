@@ -383,7 +383,7 @@ def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
         tag = tag.strip() if isinstance(tag, str) and tag.strip() else None
         if tag is not None and tag in taken_tags:
             errors.append(validation_error(row_number, "nfc_tag_id", "nfc_tag_taken",
-                                           f"NFC tag '{tag}' is already used by another athlete."))
+                                           "NFC tag is already used by another athlete."))
             continue
         if tag is not None:
             taken_tags.add(tag)

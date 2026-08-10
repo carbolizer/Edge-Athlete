@@ -19,7 +19,11 @@ import { Component, useEffect, useState } from 'react'
 import ConnectionTest from './ConnectionTest.jsx'
 import RackScreen from './rack/RackScreen.jsx'
 import RackSetup from './rack/RackSetup.jsx'
+import RackNodeSetup from './rack/RackNodeSetup.jsx'
+import RackObserver from './rack/RackObserver.jsx'
+import { useRackController } from './rack/controller.js'
 import CoachTablet from './coach/CoachTablet.jsx'
+import { setCoachToken } from './coach/api.js'
 import Dashboard from './Dashboard.jsx'
 import WifiChangeOverlay from './WifiChangeOverlay.jsx'
 import { getActiveSession } from './api/client.js'
@@ -109,6 +113,7 @@ function Picker() {
     localStorage.setItem('device_role', role)
     applyRoleIdentity(role)
     if (role === 'rack') {
+      setCoachToken(null)
       const n = localStorage.getItem('rack_number')
       navigate(n != null ? `/rack/${n}` : '/rack/setup')
     } else if (role === 'coach') {
@@ -157,24 +162,45 @@ function Home() {
 // into localStorage so a cold reboot at "/" redirects straight back here, then
 // fire the ONE active-session fetch and hand off to the live screen.
 function RackLive({ rackNumber }) {
+  const [node, setNode] = useState(null)
+  const [setupResolved, setSetupResolved] = useState(false)
+  const [canClaimControl, setCanClaimControl] = useState(false)
   const [session, setSession] = useState(null)
   const [sessionError, setSessionError] = useState(false)
+  const deviceId = getDeviceId()
+  const controller = useRackController(rackNumber, deviceId, setupResolved, canClaimControl)
 
   useEffect(() => {
     getDeviceId()
+    setCoachToken(null)
     localStorage.setItem('device_role', 'rack')
     localStorage.setItem('rack_number', String(rackNumber))
     applyRoleIdentity('rack')
   }, [rackNumber])
 
   useEffect(() => {
+    if (!node || controller.mode !== 'controller') return
     getActiveSession().then(setSession).catch(() => setSessionError(true))
-  }, [])
+  }, [node, controller.mode])
+
+  if (!setupResolved) {
+    return <RackNodeSetup rackNumber={rackNumber}
+      onReady={(readyNode) => { setNode(readyNode); setCanClaimControl(true); setSetupResolved(true) }}
+      onObserve={(assignedNode) => { setNode(assignedNode); setCanClaimControl(false); setSetupResolved(true) }} />
+  }
+
+  if (controller.mode === 'observer') {
+    return <RackObserver snapshot={controller.snapshot} reason={controller.reason} />
+  }
+
+  if (controller.mode === 'checking') {
+    return <Centered><div style={{ fontSize: 16, color: T.muted }}>Checking rack controller…</div></Centered>
+  }
 
   if (session == null && !sessionError) {
     return <Centered><div style={{ fontSize: 16, color: T.muted }}>Loading session…</div></Centered>
   }
-  return <RackScreen rackNumber={rackNumber} session={session} />
+  return <RackScreen rackNumber={rackNumber} session={session} node={node} controller={controller} />
 }
 
 // ─────────────────────────── remote command listener ───────────────────────────
@@ -217,7 +243,7 @@ function route(pathname) {
     const rest = pathname.slice('/rack/'.length)
     const n = Number(rest)
     return rest !== '' && Number.isInteger(n) && n > 0
-      ? <RackLive rackNumber={n} />
+      ? <RackLive key={n} rackNumber={n} />
       : <Redirect to="/" />
   }
 

@@ -4,12 +4,12 @@ Small folder, narrow job. **This is not the coach admin console** — that lives
 `src/` proper (`Dashboard.jsx`, `WorkoutCatalog.jsx`, `ScheduleWorkspace.jsx`,
 `ReportsWorkspace.jsx`, and friends).
 
-What is in here is the **setup** screen: log in, then wire tablets and sensors to
-rack numbers.
+What is in here is the **setup** screen: log in, then wire tablets to rack numbers.
+Sensor selection happens beside the physical rack before athlete check-in.
 
 ```
 coach/
-├── CoachTablet.jsx   Route /coach/setup — login gate, then assign screens + nodes to racks
+├── CoachTablet.jsx   Route /coach/setup — login gate, then assign screens to racks
 ├── CoachTablet.css   Its styles
 ├── api.js            JWT helpers: login, token storage, authorised fetch
 └── DevPanel.jsx      ⚠️ Temporary demo tooling — see below
@@ -17,10 +17,9 @@ coach/
 
 ## Why rack assignment is a screen at all
 
-A sensor (`Node`) and a tablet (`RackScreen`) are **separate identities with no
-link between them**. The only thing making them "Rack 3" is that a coach said so,
-independently, for each. This screen is where that happens — and it is why a rack
-that shows no data is usually an assignment problem, not a hardware one.
+A sensor (`Node`) and a tablet (`RackScreen`) are **separate identities**. This
+screen assigns the tablet. The rack-local setup gate assigns its sensor so the
+coach can verify the selection beside the hardware.
 
 ## `api.js` is the auth boundary
 

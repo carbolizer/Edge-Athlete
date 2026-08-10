@@ -35,7 +35,7 @@ import TrainingDayPanel from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import ScheduleWorkspace from "./ScheduleWorkspace.jsx";
 import { sameOriginPath } from "./workoutCatalog.js";
-import { coachRackView, measuredInsights, wallDisplayState, wallMovementView } from "./dashboardView.js";
+import { coachRackView, measuredInsights, rackMetrics, wallDisplayState, wallMovementView } from "./dashboardView.js";
 import { roleIconSrc } from "./roleIcon.js";
 
 function velocity(value) {
@@ -100,6 +100,7 @@ function StatePanel({ title, body, action, actionLabel = "Retry" }) {
 
 function WallRackTile({ rack }) {
   const workoutSet = rack.latest_set;
+  const metrics = rackMetrics(rack);
   return (
     <article className={`wall-rack-tile ${rack.status_color}`}>
       <header>
@@ -116,12 +117,12 @@ function WallRackTile({ rack }) {
             <p>{workoutSet.exercise} · Set {workoutSet.set_number}</p>
           </div>
           <div className="wall-rack-result">
-            <strong>{velocity(workoutSet.avg_velocity)}</strong>
-            <span>m/s average</span>
+            <strong>{velocity(metrics.mean)}</strong>
+            <span>{metrics.isLive ? "m/s latest mean" : "m/s average"}</span>
           </div>
           <footer>
-            <span>{workoutSet.reps_completed} reps</span>
-            <span>{velocity(workoutSet.peak_velocity)} peak</span>
+            <span>{metrics.reps} reps</span>
+            <span>{velocity(metrics.peak)} {metrics.isLive ? "latest peak" : "peak"}</span>
           </footer>
         </>
       ) : (
@@ -193,11 +194,18 @@ function WallView({ monitor }) {
         <button className="coach-logout" onClick={changeDeviceRole}>Change device role</button>
       </header>
 
-      <section className={`wall-movement-board ${movement.waiting ? "waiting" : ""}`}>
-        <header><span>Current room movement</span><h2>{movement.name}</h2><p>{movement.detail}</p></header>
-        {movement.waiting
-          ? <div className="wall-movement-wait"><b>READY</b><span>Signed-in athlete progress chooses the movement automatically.</span></div>
-          : <div className="wall-movement-grid"><WallLeaderboard rows={movement.rows} movementName={movement.name} /><WallInsights insights={roomState.insights} /></div>}
+      <section className="wall-content">
+        <div className="wall-rack-grid">
+          {roomState.racks.map((rack) => <WallRackTile rack={rack} key={rack.rack_number} />)}
+        </div>
+        <aside className="wall-rail">
+          <section className="wall-board-card">
+            <div className="wall-card-title"><span>Current room movement</span><b>{movement.waiting ? "Ready" : "Live"}</b></div>
+            <h2>{movement.name}</h2><p className="monitor-empty">{movement.detail}</p>
+          </section>
+          {!movement.waiting && <WallLeaderboard rows={movement.rows} movementName={movement.name} />}
+          <WallInsights insights={roomState.insights} />
+        </aside>
       </section>
 
       {(roomState.truncated.racks || roomState.truncated.leaderboard) && (
@@ -243,7 +251,7 @@ function CoachRackButton({ rack, selected, onSelect }) {
     <button className={`coach-rack-row ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={onSelect}>
       <i className={rack.status_color} />
       <span><b>Rack {rack.rack_number}</b><small>{view.athleteName} · {view.movementName}</small></span>
-      <strong>{velocity(view.latestResult?.avg_velocity)}</strong>
+      <strong>{velocity(view.metrics.mean)}</strong>
     </button>
   );
 }
@@ -433,7 +441,7 @@ function RackSelectionControls({ rack }) {
       <div><span>Load</span><strong>{latest?.weight_lbs != null ? `${latest.weight_lbs} lbs` : "--"}</strong></div>
       <div><span>Progress</span><strong>{view.progressLabel}</strong></div>
       <div><span>Rack state</span><strong>{rack.status || "--"}</strong></div>
-      <div><span>Latest result</span><strong>{view.latestResult ? `${velocity(view.latestResult.avg_velocity)} m/s · ${view.latestResult.reps_completed} reps` : "No persisted result"}</strong></div>
+       <div><span>{view.metrics.isLive ? "Live result" : "Latest result"}</span><strong>{view.latestResult ? `${velocity(view.metrics.mean)} m/s · ${view.metrics.reps} reps` : "No persisted result"}</strong></div>
       {/* One node per rack, and the server decides whether it has gone quiet. */}
       <div><span>Hardware</span><strong className={rack.node?.is_stale ? "coach-observation-conflict" : ""}>{!rack.node ? "No node assigned" : rack.node.is_stale ? "Node pulse overdue" : rack.node.node_id}</strong></div>
     </div>
@@ -487,8 +495,8 @@ function CoachView({ monitor, accessToken, onLogout }) {
   }
   if(!roomState&&requestState==="loading")return <main className="monitor coach-monitor"><StatePanel title="Loading coach workspace" body="Reconciling saved room state." /></main>;
   if(!roomState)return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body={lastError||"The base station could not be reached."} action={refresh} /></main>;
-  const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set||null;
-  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?<StatePanel title="No racks assigned" body="Assign room hardware before monitoring sets."/>:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?<StatePanel title={`Rack ${selectedRack.rack_number} is ready`} body="No completed set saved for this rack."/>:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}</>}</div></section>;
+  const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set||null,liveMetrics=rackMetrics(selectedRack);
+  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?<StatePanel title="No racks assigned" body="Assign room hardware before monitoring sets."/>:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?<StatePanel title={`Rack ${selectedRack.rack_number} is ready`} body="No completed set saved for this rack."/>:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(liveMetrics.mean)}</strong><span>{liveMetrics.isLive?"m/s latest mean":"m/s average"}</span></div><dl><div><dt>{liveMetrics.isLive?"Latest peak":"Peak"}</dt><dd>{velocity(liveMetrics.peak)} m/s</dd></div><div><dt>Reps</dt><dd>{liveMetrics.reps}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}</>}</div></section>;
   return <main className="monitor coach-monitor"><header className="coach-topbar">
     <div className="monitor-brand"><img src="/icon-coach-192.png" alt="" width="38" height="38" /><span>Edge Athlete</span></div>
     <div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div>

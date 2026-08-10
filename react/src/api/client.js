@@ -5,12 +5,36 @@
 // only ever makes a handful of REST calls (register itself, ask its rack number,
 // and ONE active-session fetch at startup) — everything live comes over MQTT.
 
+import { controllerHeaders } from '../rack/controllerIdentity.js'
+
 const API = '/api'
+
+export class ApiError extends Error {
+  constructor(message, status, body) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = body?.code
+    this.detail = body?.detail
+    this.snapshot = body?.snapshot
+  }
+}
 
 async function jsonFetch(path, opts) {
   const res = await fetch(API + path, opts)
-  if (!res.ok) throw new Error(`${(opts && opts.method) || 'GET'} ${path} → HTTP ${res.status}`)
-  return res.status === 204 ? null : res.json()
+  const body = res.status === 204 ? null : await res.json().catch(() => null)
+  if (!res.ok) {
+    throw new ApiError(body?.detail || `${(opts && opts.method) || 'GET'} ${path} → HTTP ${res.status}`, res.status, body)
+  }
+  return body
+}
+
+function controlledJson(method, body, capability) {
+  return {
+    method,
+    headers: { 'Content-Type': 'application/json', ...controllerHeaders(capability) },
+    body: JSON.stringify(body),
+  }
 }
 
 // A tablet announces itself so a coach can assign it a rack. Idempotent on the
@@ -52,12 +76,14 @@ export function getAthleteProgress(athleteId) {
 // Record that an athlete signed in at this rack (their "check-in"). This makes the
 // rack the athlete's current one for the session (newest-wins) — what a hand tap,
 // or a future NFC tap, triggers.
-export function checkInAthlete(rackNumber, athleteId) {
+export function checkInAthlete(rackNumber, athleteId, command, capability) {
   return jsonFetch(`/racks/${rackNumber}/checkin/`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ athlete: athleteId }),
+    ...controlledJson('POST', { athlete: athleteId, ...command }, capability),
   })
+}
+
+export function consumeNfcTap(rackNumber, capability) {
+  return jsonFetch(`/racks/${rackNumber}/nfc-tap/`, controlledJson('POST', {}, capability))
 }
 
 // This rack's HOT LIST: the athletes it currently "owns" (checked in here, not
@@ -75,21 +101,46 @@ export function getSessionStatus() {
 // Create a Set when a set STARTS (Phase 11 Step 3). Body: { session, athlete,
 // exercise, set_number, weight_lbs, is_makeup, node? }. The server returns the Set
 // including its id, which we keep to complete it at set end (Step 4).
-export function createSet(body) {
-  return jsonFetch('/sets/', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+export function createSet(body, command, capability) {
+  const controlled = body.node != null
+  return jsonFetch('/sets/', controlled
+    ? controlledJson('POST', { ...body, ...command }, capability)
+    : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 }
 
 // Complete a Set at set end — the ONE batch write of a set's reps + totals (Phase 11
 // Step 4). Body: { reps_completed, avg_velocity, peak_velocity, is_false_set, reps }.
 // A false set sends an empty reps array. This is the only path that writes Rep rows.
-export function completeSet(setId, body) {
-  return jsonFetch(`/sets/${setId}/complete/`, {
+export function completeSet(setId, body, command, capability) {
+  return jsonFetch(`/sets/${setId}/complete/`, controlledJson('POST', { ...body, ...command }, capability))
+}
+
+export function getRackState(rackNumber) {
+  return jsonFetch(`/racks/${rackNumber}/state/`)
+}
+
+export function acquireRackController(rackNumber, identity) {
+  return jsonFetch(`/racks/${rackNumber}/controller/acquire/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(identity),
   })
+}
+
+export function heartbeatRackController(rackNumber, capability) {
+  return jsonFetch(
+    `/racks/${rackNumber}/controller/heartbeat/`,
+    controlledJson('POST', {}, capability),
+  )
+}
+
+export function releaseRackController(rackNumber, command, capability) {
+  return jsonFetch(
+    `/racks/${rackNumber}/controller/release/`,
+    controlledJson('POST', command, capability),
+  )
+}
+
+export function patchRackState(rackNumber, command, capability) {
+  return jsonFetch(`/racks/${rackNumber}/state/`, controlledJson('PATCH', command, capability))
 }

@@ -49,7 +49,10 @@ document is otherwise unchanged from v1.
   "timestamp": "2026-07-07T07:23:55Z"
 }
 ```
-- **Published by:** the node firmware (Phase 13) and Derrilon's `simulate_node`.
+- **Published by:** the node firmware (Phase 13), Derrilon's `simulate_node`, and
+  the central WT901 Agent when provisional rep publishing is explicitly enabled
+  for demo/qualification. WT901 raw IMU frames and BLE addresses never appear in
+  this payload.
 - **Consumed by:** the rack tablet, subscribed to *its own linked node's* rep topic.
 - **Not here:** `velocity_color`. The tablet computes that (see Derived values).
 
@@ -80,9 +83,6 @@ the type.
 // a set was completed
 { "type": "set_complete", "set_id": 12, "athlete": {"id":4,"name":"Jordan Lee"},
   "reps_completed": 5, "avg_velocity": 0.70, "peak_velocity": 0.91, "is_false_set": false }
-
-// a different sensor was linked to this rack
-{ "type": "node_reassigned", "node_id": "rack_1" }
 
 // an athlete checked in at this rack
 { "type": "athlete_checkin", "athlete": {"id":4,"name":"Jordan Lee"}, "rack_number": 3 }
@@ -208,6 +208,8 @@ Body: `{ "athlete": 4 }`. Writes an append-only `RackCheckIn`, making THIS rack 
 { "session_id": 1, "athlete": { "id": 4, "name": "Jordan Lee" }, "rack_number": 3 }
 ```
 - No active session → `400`. Unknown athlete, or athlete not on the session roster → `404`.
+- No active physical sensor assigned to that rack → `409` with
+  `{ "code": "rack_sensor_required", "detail": "..." }`; no check-in is written.
 - Called when an athlete taps in on the rack's check-in screen (Phase 11 Step 2). This is the ONE thing that "moves" an athlete to a rack; a later NFC tap would shortcut into the same call.
 
 ### `GET /api/racks/{rack_number}/checkins/` — the rack's hot list (open)
@@ -217,6 +219,25 @@ The athletes this rack currently "owns" — those whose NEWEST `RackCheckIn` thi
 ```
 - **Derived** from `RackCheckIn` (newest-wins per athlete); session-scoped; nothing new stored. Polled (~5s) alongside the roster while the check-in screen is up.
 - No active session → `{ "session_id": null, "rack_number": 3, "athletes": [] }`.
+
+### `POST /api/racks/{rack_number}/nfc-tap/` — consume a local wristband tap
+
+The controlling rack browser polls with the four controller headers and exact body
+`{}` only while its check-in list is visible. Responses contain no tag ID:
+
+```json5
+{ "status": "none" }
+{ "status": "recognized", "athlete": { "athlete_id": 4, "name": "Jordan Lee" } }
+{ "status": "unknown" }
+{ "status": "unavailable" }
+```
+
+- Django validates the rack controller before consuming from the private host NFC
+  Agent, then resolves the tag against the active session roster.
+- Unknown and off-roster tags are intentionally indistinguishable.
+- The browser passes a recognized athlete into the existing fenced check-in call;
+  this endpoint does not create a `RackCheckIn` itself.
+- Raw tag IDs never enter browser responses, URLs, MQTT, or normal logs.
 
 ### `POST /api/sets/` — start a set (create) (open)
 Called when a set STARTS (Phase 11 Step 3). The server returns the created `Set` incl. its `id`, kept for the complete POST at set end.
@@ -228,11 +249,140 @@ Called when a set STARTS (Phase 11 Step 3). The server returns the created `Set`
   "set_number": 3,       // = next_set_number from the athlete's progress — NOT a client counter
   "weight_lbs": 230.0,   // the ACTUAL load (last_weight_lbs / target, or a numpad edit) — NOT the prescription
   "is_makeup": true,     // = the athlete's has_data (already has a set this session)
-  "node": 2              // OPTIONAL: the Node's INTEGER pk (not node_id) — links the set to its sensor
+  "node": 2,             // OPTIONAL: the Node's INTEGER pk (not node_id) — links the set to its sensor
+  "rack_number": 3       // REQUIRED when node is present; rejects stale assignment
 }
 ```
 - `weight_lbs` and `is_makeup` are set HERE (at create), not at complete.
 - `node` may be omitted (nullable) — the set still saves, but then the `set_complete`/`athlete_checkin` broadcasts (which need `node.rack_number`) don't fire.
+- A sensor-backed start with no `rack_number` returns `400`; a node no longer
+  assigned to that rack returns `409 node_assignment_changed` and creates no set.
+
+### `PUT /api/racks/node-assignment/` — select a legacy MQTT sensor (active staff)
+Exact body: `{ "device_id": "...", "node_id": "rack_3" }`. The screen must
+already have a rack number. Node IDs use `[A-Za-z0-9_-]{1,64}`. Returns `200`:
+```json5
+{ "rack_number": 3, "node": { "id": 2, "node_id": "rack_3",
+  "rack_number": 3, "acquisition_kind": "mqtt" /* status fields */ } }
+```
+- Inactive/simulated nodes, implicit transfers, open sets, and concurrent changes
+  return stable `409` conflicts without changing the mapping.
+- `acquisition_kind` is provisioning-owned: `mqtt` or `wt901_ble`, with `mqtt` as
+  the default. Migration `0021` performs a one-time backfill for firmware beginning
+  `wt901ble-`; runtime pulse metadata never changes the kind.
+- This endpoint rejects unassigned `wt901_ble` nodes as
+  `409 wt901_verification_required`. WT901 selection must use the staff-authorized
+  scan, verification, and `PUT /api/racks/{rack_number}/ble-selection/` flow.
+  MQTT nodes retain the active, non-simulated usability rule.
+- Replacement at the same rack atomically unassigns the prior node. One non-null
+  node mapping per rack is also enforced by the database.
+
+### `PUT /api/nodes/{node_id}/acquisition-kind/` — provision node transport (active staff)
+
+Exact body: `{ "acquisition_kind": "mqtt" }` or
+`{ "acquisition_kind": "wt901_ble" }`. Extra fields return
+`400 invalid_acquisition_request`; another value returns
+`400 invalid_acquisition_kind`. An open set returns
+`409 node_acquisition_has_open_set`. A changed value creates one
+`MonitoringEvent` with reason `node_acquisition_changed`; retrying the current
+value is idempotent and creates no second event. This narrow route does not restore
+the retired generic node PATCH.
+
+### Rack controller capability and mirrored state
+
+The browser generates `controller_token` as exactly 32 random bytes encoded as
+canonical unpadded base64url (43 characters). Django stores only its SHA-256
+digest. A claim is an exact body with no extra fields:
+
+```json5
+// POST /api/racks/3/controller/acquire/
+{ "device_id": "rack-screen-id", "client_instance_id": "tab-scoped-id",
+  "controller_token": "43-character-canonical-base64url-token" }
+```
+
+The registered screen must be assigned to rack 3 and rack 3 must have an active,
+non-simulated node. The 20-second lease is measured against `server_time`.
+The same holder and token may retry idempotently. Another holder receives
+`409 rack_controller_busy`. After expiry, a quiet rack advances to the next
+`controller_epoch`; an open set can only be reclaimed by the same screen,
+instance, and token and otherwise returns `409 rack_recovery_required`.
+
+All later controller calls send these headers:
+
+```text
+X-Rack-Device-ID: rack-screen-id
+X-Client-Instance-ID: tab-scoped-id
+X-Controller-Token: 43-character-canonical-base64url-token
+X-Controller-Epoch: 7
+```
+
+`POST .../controller/heartbeat/` has an empty JSON body and extends the lease;
+it creates no `MonitoringEvent`. `POST .../controller/release/` takes exactly
+`{ "expected_state_version": 12, "command_id": "uuid" }` and refuses release
+during an open set. Accepted release retries return the original response.
+
+`GET /api/racks/{rack_number}/state/` is open for observer reconciliation.
+Its snapshot contains rack number, controller-active flag, epoch, lease expiry,
+state version, phase and phase start, selected athlete/exercise, current set id,
+rep count, latest mean/peak/color, update time, and server time. It never contains
+the token, digest, screen identity, or client instance identity.
+
+`PATCH` on the same URL requires the four headers plus `command_id` and
+`expected_state_version`. It accepts a validated subset of `phase`,
+`selected_athlete`, `selected_exercise`, `rep_count`, `latest_mean_velocity`,
+`latest_peak_velocity`, and `latest_color`. Phases are `idle`, `countdown`,
+`active`, `summary`, `rest`, and `recovery_required`; invalid transitions are
+rejected. Accepted commands increment `state_version` and are durably idempotent.
+Commands that normalize to the current snapshot return `409 rack_state_unchanged`
+without changing the version or creating an event or receipt.
+Only privacy-safe room invalidations cross MQTT; observers refetch this snapshot.
+
+Stable conflicts include `rack_controller_busy`, `rack_controller_required`,
+`rack_controller_stale`, `rack_state_changed`, `duplicate_checkin`,
+`open_set_exists`, and `rack_recovery_required`. A conflict that depends on current
+state returns its latest `state_version` and snapshot without the controller token.
+
+### Central WT901 discovery and health
+
+Active staff use `POST /api/ble/scans/`, `POST /api/ble/verifications/`, and
+`PUT /api/racks/{rack_number}/ble-selection/`. Scan responses contain only an
+advertised label and random, short-lived `device_handle`. Verification returns a
+short-lived token and bounded derived movement. Selection returns the assigned
+logical node and advertised label; no browser request or response contains a BLE
+address.
+
+Rack browsers read `GET /api/racks/{rack_number}/sensor-health/` with the stable
+screen identity in `X-Rack-Device-ID`. Query parameters return `400`; a screen not
+assigned to that rack returns `403`. Nginx access logs therefore contain no screen ID.
+
+```json5
+{
+  "node_id": "wt901_<random>",
+  "label": "WT901BLE68",
+  "state": "reconnecting|live|stale",
+  "movement_g": 0.184,
+  "sample_age_ms": 42
+}
+```
+
+Internally, Django calls the Agent's fixed HTTP/JSON API through a private Unix
+socket. Successful live health reads update server freshness. MQTT pulses are
+rejected for WT901 nodes, so forgeable payload metadata cannot establish trusted
+BLE health. No BLE address or raw frame appears in HTTP, MQTT, or normal logs.
+
+Controller-fenced check-in, sensor-backed set start, and controlled set completion
+also require the four headers plus UUID `command_id` and integer
+`expected_state_version` in their existing bodies. Their successful response shapes
+do not change. A repeated semantic check-in returns `duplicate_checkin`; a second
+open set for either the rack or athlete returns `open_set_exists`. Node-less sets,
+including coach adjustment rows, keep their prior behavior.
+
+Accepted receipt-backed commands are limited to 10 per rack in a rolling second;
+the next new command returns `429 rack_command_rate_limited` with
+`retry_after_seconds: 1`. Retrying an existing `command_id` is checked before the
+limit and returns its stored result. Receipts remain retryable for one hour and
+older rows are pruned opportunistically when a new command arrives. The same
+`command_id` after one hour is expired before lookup and cannot return its old result.
 
 ### `POST /api/sets/{id}/complete/` — the batch set-complete body
 ```json5

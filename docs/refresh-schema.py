@@ -57,7 +57,7 @@ SECTION_END = "<!-- SCHEMA SECTION END -->"
 CLUSTERS = [
     ("The room",
      "The physical things in the gym, and the screens standing at them.",
-     ["Node", "RackScreen", "RackCheckIn"]),
+     ["Node", "RackScreen", "RackCheckIn", "RackRuntime", "RackCommandReceipt"]),
     ("People",
      "Who lifts, who coaches, and who trains together.",
      ["Athlete", "TrainingGroup", "TrainingGroupCoach"]),

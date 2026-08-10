@@ -40,10 +40,14 @@ def parse_pulse_payload(raw_payload: bytes) -> dict[str, Any]:
     battery_level = data.get("battery_level")
     signal_strength = data.get("signal_strength")
     firmware_version = data.get("firmware_version")
-    if not isinstance(battery_level, int) or not 0 <= battery_level <= 100:
-        raise ValueError("battery_level must be an integer from 0 to 100")
-    if not isinstance(signal_strength, int) or not -120 <= signal_strength <= 0:
-        raise ValueError("signal_strength must be an integer from -120 to 0")
+    if battery_level is not None and (
+        not isinstance(battery_level, int) or isinstance(battery_level, bool) or not 0 <= battery_level <= 100
+    ):
+        raise ValueError("battery_level must be null or an integer from 0 to 100")
+    if signal_strength is not None and (
+        not isinstance(signal_strength, int) or isinstance(signal_strength, bool) or not -120 <= signal_strength <= 0
+    ):
+        raise ValueError("signal_strength must be null or an integer from -120 to 0")
     if not isinstance(firmware_version, str) or not 1 <= len(firmware_version) <= 50 or not firmware_version.isprintable():
         raise ValueError("firmware_version must be 1 to 50 printable characters")
 

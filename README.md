@@ -66,9 +66,9 @@ docker compose exec django python manage.py seed_active_session --reset
    and prescribed weights are meant to follow it down. That is the design, not a
    bug. [`docs/_HANDOFF.md`](docs/_HANDOFF.md) §1 explains why, and what the tempting
    wrong fix breaks.
-2. **The rack experience is frozen.** `react/src/rack/`, `react/src/db/repBuffer.js`
-   and `react/src/device.js` are a fixed contract — they ship and they work. Don't
-   edit them; build alongside.
+2. **The rack experience is contract-sensitive.** Preserve its state machine and
+   buffering behavior unless an accepted feature spec explicitly changes them.
+   The rack BLE workflow documents the current sensor-setup exception.
 
 ### Changing the training math
 
