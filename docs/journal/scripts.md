@@ -234,6 +234,55 @@ the very first update on a machine still uses the long form.
 
 ---
 
+## Decision: a rack screen installs with one command too
+
+**What forced it.** The base station had a one-command install. A rack screen did not:
+you installed git, cloned the repository, changed directory, and ran a script with the
+right argument. Four chances to get it wrong — on the device there are the most of.
+
+**What we chose.** The same shape as the base station's installer, so the two are
+learned once rather than twice. One command, and running it again is how you update.
+
+**It takes no role argument, on purpose.** A rack screen is a rack screen. This is the
+path you run on a dozen identical devices, and an argument on that path is a way to end
+up with a wall display bolted to a squat rack. The other roles are deliberate, one-off
+acts, and go through the provisioner directly.
+
+**What it cost.** A rack screen clones the whole repository to get two shell scripts.
+That is not free, but it means one update mechanism instead of two, and it keeps the
+screens on exactly the code the base station is running.
+
+---
+
+## Decision: the base station defaults to the wall display, and carries every screen
+
+**What forced it.** The base station is the one machine that is always powered, has a
+monitor within reach, and can reach the app at `localhost`. Wanting a wall display on
+it is the common case. Wanting to open a *rack* screen on it — to answer "is this
+broken, or is that tablet broken?" — is the debugging case, and it used to mean walking
+to a rack.
+
+**What we chose.** It boots into the wall display, and carries a clickable launcher for
+every role. Opening the coach console or a rack screen for a minute is a double-click,
+not a reprovision.
+
+**Why this machine specifically.** `localhost` is a trusted origin, so every role opens
+here with the offline cache, the app install, and Bluetooth all working — with no
+browser flags and no certificate. None of that is true of a screen reaching the base
+station over the network, so the debugging copy is strictly better behaved than the
+thing it is standing in for. Worth remembering when a bug reproduces on a rack but not
+on the base station: those are not the same browser conditions.
+
+**What it cost, and the rule that saved it.** The installer runs again on every update,
+so writing the boot setting each time would silently undo a deliberate change —
+somebody who pointed the machine at the coach screen for a week would find it back on
+the wall display after the next update, for no visible reason. It is written only if
+absent. That is the same rule the container log settings already follow, and it is
+worth applying to anything an update touches: **set it if it is missing, never correct
+it if it is present.**
+
+---
+
 ## The thing everybody hits once
 
 **Changing the Wi-Fi password disconnects every device in the gym**, immediately —
@@ -267,6 +316,8 @@ fixes, and guessing wrong wastes a day.
 | `scripts/basestation/aliases.sh` | **New.** `ea-update`, `ea-seed`, `ea-sim` — linked into shell startup | commands in the repo |
 | `scripts/basestation/basestation-kiosk.sh` | **New.** Runs a screen on the base station itself, via `localhost` | the base station as its own screen |
 | `scripts/basestation/update-via-hotspot.sh` | Updates a box with no wired internet, by borrowing a phone | — |
+| `scripts/rack-screen/rack-bootstrap.sh` | **New.** One command to install **or** update a rack screen | a rack screen installs with one command |
+| `scripts/rack-screen/rack-kiosk-setup.sh` | Provisions a screen; run directly only for a coach tablet | a rack screen installs with one command |
 | `scripts/netmon.sh` | The three-pane radio diagnostic described below | — |
 
 :::{admonition} The pattern underneath most of these

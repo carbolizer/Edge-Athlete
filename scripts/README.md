@@ -30,11 +30,17 @@ is not one-shot: it pulls the latest code and re-provisions.
 - **`aliases.sh`** — the short commands (`ea-update`, `ea-seed`, `ea-sim`).
   `setup.sh` symlinks it into `/etc/profile.d/`, so an update refreshes the
   commands along with everything else. Run `ea-help` on the box for the list.
-- **`basestation-kiosk.sh`** — runs the app **on the base station itself**, for a
-  wall display off its own HDMI (`sudo basestation-kiosk.sh autostart dashboard`)
-  or to demo all three screens on one machine (`basestation-kiosk.sh open coach`).
-  It points at `localhost`, not `basestation`, and that word does real work — see
-  "Secure contexts" below.
+- **`basestation-kiosk.sh`** — runs the app **on the base station itself**. `setup.sh`
+  already installs a clickable launcher for all three roles plus a wall-display
+  autostart, so reach for this only to change the boot default
+  (`sudo basestation-kiosk.sh autostart coach`) or to open a role from a shell
+  (`basestation-kiosk.sh open coach`). Everything here points at `localhost`, not
+  `basestation`, and that word does real work — see "Secure contexts" below.
+
+> The base station **boots into the wall display** and carries a launcher for every
+> role, so opening a rack screen to compare against a real one is a double-click.
+> The autostart is written only if absent, so an update never undoes a deliberate
+> change to it.
 
 ### Secure contexts, or why `localhost` and `basestation` are not the same
 
@@ -151,10 +157,21 @@ why. The failure is shouted about in the log instead.
 A Pi + touchscreen that **joins** the base station's Wi-Fi and boots straight
 into full-screen Chromium. Runs **no** server.
 
-- **`rack-kiosk-setup.sh`** — run ONCE:
-  `sudo scripts/rack-screen/rack-kiosk-setup.sh [role]`. Installs Chromium, joins
-  the Wi-Fi as a client, turns on desktop autologin, and installs the kiosk
-  launcher into `/etc/xdg/autostart` so it fires for **whoever** logs in.
+- **`rack-bootstrap.sh`** — the whole install, in one command. Same shape as the
+  base station's `bootstrap.sh`, and re-running it is how you update a screen:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/main/scripts/rack-screen/rack-bootstrap.sh | sudo bash
+  ```
+
+  It takes **no role argument** — a rack screen is a rack screen. This is the path
+  you run on a dozen identical devices, and an argument there is how a wall display
+  ends up bolted to a squat rack.
+- **`rack-kiosk-setup.sh`** — what the bootstrap hands off to. Installs Chromium,
+  joins the Wi-Fi as a client, turns on desktop autologin, and installs the kiosk
+  launcher into `/etc/xdg/autostart` so it fires for **whoever** logs in. Run it
+  directly only for a **coach tablet** (`sudo … rack-kiosk-setup.sh coach`), which
+  gets a tappable icon instead of an autostart entry.
 - **`kiosk.sh`** — the launcher: waits for the base station, disables screen
   blanking, runs Chromium `--kiosk`, and relaunches it if it exits. Takes a
   **role**, not a URL — `kiosk.sh rack`, `kiosk.sh coach`, `kiosk.sh dashboard` —

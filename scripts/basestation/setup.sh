@@ -331,6 +331,61 @@ echo "[11] installing the shell shortcuts..."
 # the script it claims to wrap.
 ln -sfn "$PROJECT_DIR/scripts/basestation/aliases.sh" /etc/profile.d/edge-athlete.sh
 
+echo "[11b] installing the screen launchers..."
+# The base station defaults to being the WALL DISPLAY, and carries a clickable
+# launcher for every role so any screen can be opened for debugging without
+# reprovisioning anything.
+#
+# WHY ALL THREE, ON THE SERVER. This is the one machine that is always powered, has
+# a monitor within reach, and can reach the app at `localhost` — which browsers treat
+# as a trusted origin, so every role opens here with the offline cache, install, and
+# Bluetooth all working, with no flags and no certificate. That makes it the natural
+# place to answer "is this the rack screen or the server?" without walking to a rack.
+#
+# WHY THE AUTOSTART IS NOT OVERWRITTEN ON RE-RUN. setup.sh runs again on every
+# update. Clobbering the autostart each time would silently undo a deliberate change
+# — someone who pointed this machine at the coach screen for a week would find it
+# back on the wall display after any update, for no visible reason. Same rule as
+# /etc/docker/daemon.json above: write it if absent, otherwise leave it alone.
+KIOSK_SH="$PROJECT_DIR/scripts/rack-screen/kiosk.sh"
+chmod +x "$KIOSK_SH" "$PROJECT_DIR/scripts/basestation/basestation-kiosk.sh"
+
+mkdir -p /var/lib/edge-athlete/kiosk && chmod 1777 /var/lib/edge-athlete/kiosk
+mkdir -p /usr/share/applications /etc/xdg/autostart
+
+# One clickable launcher per role. The wall display and rack open full-screen; the
+# coach opens windowed, because a coach needs the browser menu (it is where "install
+# this app" lives) and needs to be able to close the thing.
+for role in dashboard rack coach; do
+    case "$role" in
+        coach) mode=windowed; label="Coach" ;;
+        rack)  mode=kiosk;    label="Rack Screen" ;;
+        *)     mode=kiosk;    label="Wall Display" ;;
+    esac
+    cat > "/usr/share/applications/edgeathlete-$role.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Edge Athlete — $label
+Comment=Open the $role screen on this machine (localhost)
+Exec=$KIOSK_SH $role localhost $mode
+Terminal=false
+Categories=Utility;
+EOF
+done
+
+if [ -f /etc/xdg/autostart/edgeathlete-kiosk.desktop ]; then
+    echo "    autostart already set, left alone"
+else
+    cat > /etc/xdg/autostart/edgeathlete-kiosk.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=Edge Athlete Kiosk (dashboard)
+Exec=$KIOSK_SH dashboard localhost
+X-GNOME-Autostart-enabled=true
+EOF
+    echo "    defaults to the wall display on boot"
+fi
+
 echo "[12] building the stack (this takes a while the first time)..."
 docker compose build
 

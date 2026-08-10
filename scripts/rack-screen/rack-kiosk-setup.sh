@@ -7,6 +7,10 @@ set -e
 #
 #   role   rack | coach | dashboard      (default: rack)
 #
+# You normally do NOT run this by hand. rack-bootstrap.sh is the one command that
+# provisions a rack screen from nothing, and it calls this with `rack`. Run it
+# directly only for a coach tablet, or to re-provision.
+#
 # A screen is the OPPOSITE of the base station. The base station (setup.sh) turns
 # its machine into the WiFi ACCESS POINT and runs the server. A screen is a CLIENT:
 # it JOINS the "EdgeAthlete" network and boots straight into full-screen Chromium.
@@ -42,6 +46,64 @@ KIOSK_HOST="${KIOSK_HOST:-basestation}"    # `localhost` if this IS the base sta
 KIOSK_ROOT="/var/lib/edge-athlete/kiosk"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+AUTOSTART_FILE=/etc/xdg/autostart/edgeathlete-kiosk.desktop
+COACH_ICON=/usr/share/applications/edgeathlete-coach.desktop
+
+# ── installing the launcher ─────────────────────────────────────────────────────
+#
+# A COACH TABLET IS NOT A KIOSK, and gets a different treatment.
+# A rack screen and a wall display are unattended: they should boot straight into a
+# locked full-screen browser and never be closed. A coach logs in, navigates, and
+# legitimately puts the tablet down — auto-launching a menu-less full-screen window
+# at every login would be a trap, not a feature.
+#
+# So a coach gets a tappable ICON instead of an autostart entry, opening a normal
+# window. It still carries the trusted origin and the on-disk profile, which is what
+# lets the app be installed and keep an offline copy. Once the coach installs it from
+# the browser menu, Chromium writes its OWN launcher and runs the app standalone —
+# full-screen, own icon, no browser chrome — so this icon is a one-time door.
+#
+# EACH BRANCH DELETES THE OTHER'S ARTIFACT, and that is load-bearing on a RE-RUN.
+# Provision a box as `rack`, later re-run it as `coach`, and without the deletes it
+# would keep the old autostart entry alongside the new coach icon — a device acting
+# as two roles at once, with a full-screen kiosk seizing the screen at every login
+# on a tablet that is supposed to be hand-held.
+install_launcher() {
+    chmod +x "$SCRIPT_DIR/kiosk.sh"
+
+    if [ "$ROLE" = "coach" ]; then
+        echo "    installing the coach launcher icon..."
+        rm -f "$AUTOSTART_FILE"
+        mkdir -p "$(dirname "$COACH_ICON")"
+        cat > "$COACH_ICON" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Edge Athlete — Coach
+Comment=Open the coach console. Use the browser menu to install it as an app.
+Exec=$SCRIPT_DIR/kiosk.sh coach $KIOSK_HOST windowed
+Terminal=false
+Categories=Utility;
+EOF
+        echo "    tap 'Edge Athlete — Coach' in the app list, then install it from the"
+        echo "    browser's ⋮ menu to get a proper full-screen app icon."
+    else
+        echo "    installing the kiosk launcher to run at login..."
+        rm -f "$COACH_ICON"
+        # /etc/xdg/autostart is the SYSTEM-WIDE version of ~/.config/autostart: every
+        # desktop session reads it, whoever is logged in. That is the whole point.
+        # mkdir because a minimal desktop image may not have created it yet, and a bare
+        # redirect into a missing directory fails at the last step.
+        mkdir -p "$(dirname "$AUTOSTART_FILE")"
+        cat > "$AUTOSTART_FILE" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Edge Athlete Kiosk ($ROLE)
+Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST
+X-GNOME-Autostart-enabled=true
+EOF
+    fi
+}
+
 echo "[1] installing Chromium + kiosk helpers..."
 apt update
 # Package name differs by image: chromium-browser (older) vs chromium (newer).
@@ -71,48 +133,8 @@ echo "[4] making the browser profile directory..."
 mkdir -p "$KIOSK_ROOT"
 chmod 1777 "$KIOSK_ROOT"
 
-chmod +x "$SCRIPT_DIR/kiosk.sh"
-
-# A COACH TABLET IS NOT A KIOSK, and gets a different treatment.
-# A rack screen and a wall display are unattended: they should boot straight into a
-# locked full-screen browser and never be closed. A coach logs in, navigates, and
-# legitimately puts the tablet down — auto-launching a menu-less full-screen window
-# at every login would be a trap, not a feature.
-#
-# So a coach gets a tappable ICON instead of an autostart entry, opening a normal
-# window. It still carries the trusted origin and the on-disk profile, which is what
-# lets the app be installed and keep an offline copy. Once the coach installs it from
-# the browser menu, Chromium writes its OWN launcher and runs the app standalone —
-# full-screen, own icon, no browser chrome — so this icon is a one-time door.
-if [ "$ROLE" = "coach" ]; then
-    echo "[5] installing the coach launcher icon..."
-    mkdir -p /usr/share/applications
-    cat > /usr/share/applications/edgeathlete-coach.desktop <<EOF
-[Desktop Entry]
-Type=Application
-Name=Edge Athlete — Coach
-Comment=Open the coach console. Use the browser menu to install it as an app.
-Exec=$SCRIPT_DIR/kiosk.sh coach $KIOSK_HOST windowed
-Terminal=false
-Categories=Utility;
-EOF
-    echo "    tap 'Edge Athlete — Coach' in the app list, then install it from the"
-    echo "    browser's ⋮ menu to get a proper full-screen app icon."
-else
-    echo "[5] installing the kiosk launcher to run at login..."
-    # /etc/xdg/autostart is the SYSTEM-WIDE version of ~/.config/autostart: every
-    # desktop session reads it, whoever is logged in. That is the whole point.
-    # mkdir because a minimal desktop image may not have created it yet, and a bare
-    # redirect into a missing directory fails the whole script at the last step.
-    mkdir -p /etc/xdg/autostart
-    cat > /etc/xdg/autostart/edgeathlete-kiosk.desktop <<EOF
-[Desktop Entry]
-Type=Application
-Name=Edge Athlete Kiosk ($ROLE)
-Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST
-X-GNOME-Autostart-enabled=true
-EOF
-fi
+echo "[5] installing the launcher..."
+install_launcher
 
 echo "[6] keeping the screen awake..."
 # The xset calls inside kiosk.sh only work under X11. Under Wayland (Raspberry Pi
