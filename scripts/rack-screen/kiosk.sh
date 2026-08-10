@@ -67,6 +67,22 @@ ROLE="${1:-rack}"
 HOST="${2:-basestation}"
 MODE="${3:-kiosk}"          # kiosk | windowed
 
+# Keep a log, but only when nobody is watching.
+#
+# Launched from autostart there is no terminal, so everything this script says —
+# "waiting for basestation", the snap warning, the relaunch notices — went nowhere.
+# That is exactly the situation where you need it: a screen that came up blank, and
+# a person standing in front of it with no idea what it tried to do.
+#
+# Run by hand, output stays on the terminal, because redirecting it into a file you
+# then have to go and read would be obnoxious. `-t 1` is the test for "is stdout a
+# terminal", which is precisely the difference between those two cases.
+EDGE_KIOSK_LOG="${EDGE_KIOSK_LOG:-/tmp/edgeathlete-kiosk.log}"
+if [ ! -t 1 ]; then
+    exec >>"$EDGE_KIOSK_LOG" 2>&1
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') launcher starting ==="
+fi
+
 # ── WHY THERE IS A WINDOWED MODE, AND WHO IT IS FOR ─────────────────────────────
 # The coach tablet. Everything above about trusting the origin and keeping a real
 # profile applies to it just as much — a coach needs the offline cache for the notes

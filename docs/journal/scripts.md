@@ -283,6 +283,34 @@ it if it is present.**
 
 ---
 
+## Decision: the same command on two devices, from two separate files
+
+**What forced it.** A screen and the base station both want a short "update this
+device" command. But they are not the same operation: the base station rebuilds a
+server stack and reconfigures a Wi-Fi access point; a screen installs a browser and a
+launcher. Running the base station's version on a rack tablet would install a server
+it has no use for **and** stand up a second access point competing with the real one
+for the air the gym runs on.
+
+**What we chose.** Each device type gets its own file of short commands, and
+`ea-update` means the same *thing* on both — update this device — while resolving to
+the right installer for each. One verb to teach, two implementations.
+
+**Why not one shared file with a check for which device it is.** Because the wrong
+branch of that check is a silent disaster, and two separate files are just two
+separate files. The failure mode of getting it wrong is not "the command errors" — it
+is a rack tablet quietly becoming a competing access point. Each file names the
+machine it belongs to in its first three lines.
+
+**A smaller thing that came with it.** The launcher now writes what it says to a log
+file, but **only when it was started automatically**. Run by hand it still prints to
+the terminal. Launched at boot there is no terminal, so everything it reported — what
+it was waiting for, why the browser profile fell back — went nowhere, which is exactly
+the situation where somebody is standing in front of a blank screen wanting to know
+what it tried to do.
+
+---
+
 ## The thing everybody hits once
 
 **Changing the Wi-Fi password disconnects every device in the gym**, immediately —
@@ -318,6 +346,7 @@ fixes, and guessing wrong wastes a day.
 | `scripts/basestation/update-via-hotspot.sh` | Updates a box with no wired internet, by borrowing a phone | — |
 | `scripts/rack-screen/rack-bootstrap.sh` | **New.** One command to install **or** update a rack screen | a rack screen installs with one command |
 | `scripts/rack-screen/rack-kiosk-setup.sh` | Provisions a screen; run directly only for a coach tablet | a rack screen installs with one command |
+| `scripts/rack-screen/aliases.sh` | **New.** The screen's short commands. A *separate file* from the base station's, on purpose | one verb, two devices |
 | `scripts/netmon.sh` | The three-pane radio diagnostic described below | — |
 
 :::{admonition} The pattern underneath most of these

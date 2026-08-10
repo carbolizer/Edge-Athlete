@@ -172,6 +172,15 @@ into full-screen Chromium. Runs **no** server.
   launcher into `/etc/xdg/autostart` so it fires for **whoever** logs in. Run it
   directly only for a **coach tablet** (`sudo … rack-kiosk-setup.sh coach`), which
   gets a tappable icon instead of an autostart entry.
+- **`aliases.sh`** — `ea-update`, `ea-restart`, `ea-kiosk-log`. Symlinked into
+  `/etc/profile.d`, same as the base station's.
+
+> ⚠️ **There are two `aliases.sh` files and they are not interchangeable.** Both
+> define `ea-update`, meaning "update this device" — but a screen's resolves to
+> `rack-bootstrap.sh` (a browser and a launcher, seconds) and the base station's to
+> `bootstrap.sh` (Docker, the server stack, the access point, minutes). Sourcing the
+> base station's on a rack tablet would install a server it has no use for **and**
+> stand up a second Wi-Fi access point competing with the real one.
 - **`kiosk.sh`** — the launcher: waits for the base station, disables screen
   blanking, runs Chromium `--kiosk`, and relaunches it if it exits. Takes a
   **role**, not a URL — `kiosk.sh rack`, `kiosk.sh coach`, `kiosk.sh dashboard` —

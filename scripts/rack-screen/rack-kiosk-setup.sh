@@ -136,6 +136,18 @@ chmod 1777 "$KIOSK_ROOT"
 echo "[5] installing the launcher..."
 install_launcher
 
+echo "[5b] installing the shell shortcuts..."
+# A SYMLINK into the repo, so `ea-update` refreshes the commands along with
+# everything else. A copy would keep wrapping the old behaviour of a script that had
+# since changed, with nothing to indicate the drift.
+#
+# ⚠️ THIS IS THE SCREEN'S aliases.sh, NOT THE BASE STATION'S. They both define
+# `ea-update` and they point at different bootstraps — see the header of either file.
+# Symlinking the wrong one here would give a rack tablet a command that installs
+# Docker and stands up a competing WiFi access point.
+mkdir -p /etc/profile.d
+ln -sfn "$SCRIPT_DIR/aliases.sh" /etc/profile.d/edge-athlete.sh
+
 echo "[6] keeping the screen awake..."
 # The xset calls inside kiosk.sh only work under X11. Under Wayland (Raspberry Pi
 # OS Bookworm defaults to labwc) they are silent no-ops and the screen blanks
