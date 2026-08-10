@@ -28,6 +28,20 @@ Internet-connected laptop + Bluetooth VBT device
 
 Everything else should be hosted centrally.
 
+### Network Decision
+
+The cloud product does not require or manage a dedicated Edge Athlete Wi-Fi access
+point. Coaches, Rack browsers, and Dashboard browsers use the customer's ordinary
+internet connection and local network. No daily workflow may depend on a Raspberry
+Pi, private SSID, local Django server, local MQTT broker, or Edge Athlete network
+configuration.
+
+The existing Pi/private-AP deployment remains a selectable compatibility profile
+while browser BLE and cloud Rack behavior are qualified. It is not the target
+customer architecture. If Web Bluetooth is unavailable on required hardware, the
+fallback must be a narrowly scoped local sensor bridge; it must not require Edge
+Athlete to operate the customer's network.
+
 ## 2. Intended User Experience
 
 A coach should be able to visit the Edge Athlete website and:

@@ -214,6 +214,12 @@ remain separate gateway concepts.
 > belongs to, and the user should never have to manually filter out another team's
 > information.
 
+Rack and Dashboard browsers use ordinary customer internet/Wi-Fi. The hosted
+product does not provision or depend on an Edge Athlete access point, Raspberry
+Pi, local application server, or local MQTT broker. Browser-to-sensor BLE remains
+local to the Rack device. The current Pi/private-AP profile is migration fallback,
+not a cloud deployment prerequisite.
+
 ## Instruction for Coding Agents
 
 Treat Rack and Dashboard registration as a first-class architecture concept.

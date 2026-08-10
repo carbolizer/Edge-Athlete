@@ -24,6 +24,8 @@ without seeing another coach's data.
 - Define public registration around enforceable tenant ownership rather than the
   transitional active-staff fence.
 - Preserve staff access and the existing local/Pi deployment during migration.
+- Do not require an Edge Athlete-managed access point in the hosted product;
+  browsers use ordinary customer internet/Wi-Fi.
 
 ## Non-Goals
 
