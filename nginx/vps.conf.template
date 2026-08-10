@@ -1,0 +1,146 @@
+limit_req_zone $binary_remote_addr zone=gateway_ingest:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=staff_auth:10m rate=5r/m;
+access_log off;
+error_log /dev/stderr crit;
+
+upstream vps_django {
+    server vps-django:8000;
+}
+
+upstream vps_react {
+    server vps-react:80;
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 80;
+    server_name ${VPS_DOMAIN};
+
+    # Never redirect a request that may carry a credential or event body.
+    if ($request_method !~ ^(GET|HEAD)$) {
+        return 405;
+    }
+
+    return 308 https://${VPS_DOMAIN}$request_uri;
+}
+
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${VPS_DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${VPS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${VPS_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Permissions-Policy "camera=(), geolocation=(), microphone=()" always;
+
+    location = /api/gateway/v1/events/ {
+        client_max_body_size 256k;
+        limit_req zone=gateway_ingest burst=20 nodelay;
+        limit_req_status 429;
+
+        if ($args) {
+            return 400;
+        }
+
+        # Gateway logs must not retain addresses, credentials, IDs, or payloads.
+        proxy_pass http://vps_django;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 65s;
+    }
+
+    location = /api/health/ {
+        proxy_pass http://vps_django;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+    }
+
+    location = /api/gateways/diagnostics/ {
+        proxy_pass http://vps_django;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+    }
+
+    location ~ ^/api/auth/(login|refresh)/$ {
+        limit_req zone=staff_auth burst=5 nodelay;
+        limit_req_status 429;
+        client_max_body_size 16k;
+
+        proxy_pass http://vps_django;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-For "";
+    }
+
+    location /api/ {
+        return 404;
+    }
+
+    location ^~ /admin/ {
+        return 404;
+    }
+
+    location ^~ /static/admin/ {
+        return 404;
+    }
+
+    location ^~ /static/rest_framework/ {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://vps_react;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}

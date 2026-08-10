@@ -1,0 +1,110 @@
+name: edgeathlete-vps
+
+services:
+  vps-postgres:
+    image: postgres:15
+    container_name: edgeathlete-vps-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.vps}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.vps}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.vps}
+    volumes:
+      - vps_postgres_data:/var/lib/postgresql/data
+    networks:
+      vps_database:
+        aliases:
+          # Current Django settings use the fixed hostname "postgres".
+          - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  vps-django:
+    build: ./django
+    container_name: edgeathlete-vps-django
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env.vps}
+      DEBUG: "False"
+      VPS_DOMAIN: ${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS in .env.vps}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?set CSRF_TRUSTED_ORIGINS in .env.vps}
+      SECURE_SSL_REDIRECT: "True"
+      SESSION_COOKIE_SECURE: "True"
+      CSRF_COOKIE_SECURE: "True"
+      USE_X_FORWARDED_HOST: "True"
+      VPS_DEPLOYMENT: "True"
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.vps}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.vps}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.vps}
+    command:
+      - sh
+      - -c
+      - >-
+        python manage.py migrate &&
+        python manage.py check_vps_deployment &&
+        exec gunicorn basestation_config.wsgi:application
+        --bind 0.0.0.0:8000
+        --workers 3
+        --timeout 60
+        --graceful-timeout 30
+        --error-logfile -
+    networks:
+      - vps_database
+      - vps_django_proxy
+    restart: unless-stopped
+    depends_on:
+      vps-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; request=urllib.request.Request('http://localhost:8000/api/health/', headers={'Host':'${VPS_DOMAIN}','X-Forwarded-Host':'${VPS_DOMAIN}','X-Forwarded-Proto':'https'}); sys.exit(0 if urllib.request.urlopen(request).status == 200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
+  vps-react:
+    build: ./react
+    container_name: edgeathlete-vps-react
+    networks:
+      - vps_react_proxy
+    restart: unless-stopped
+
+  vps-nginx:
+    image: nginx:alpine
+    container_name: edgeathlete-vps-nginx
+    environment:
+      VPS_DOMAIN: ${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}
+      NGINX_ENVSUBST_FILTER: ^VPS_DOMAIN$$
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/vps.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${VPS_CERTBOT_DIR:?set VPS_CERTBOT_DIR in .env.vps}:/etc/letsencrypt:ro
+    networks:
+      - vps_django_proxy
+      - vps_react_proxy
+    restart: unless-stopped
+    depends_on:
+      vps-django:
+        condition: service_healthy
+      vps-react:
+        condition: service_started
+
+volumes:
+  vps_postgres_data:
+    name: edgeathlete_vps_postgres_data
+
+networks:
+  vps_database:
+    name: edgeathlete_vps_database
+    internal: true
+  vps_django_proxy:
+    name: edgeathlete_vps_django_proxy
+    internal: true
+  vps_react_proxy:
+    name: edgeathlete_vps_react_proxy
+    internal: true

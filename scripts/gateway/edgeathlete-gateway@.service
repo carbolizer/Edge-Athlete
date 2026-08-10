@@ -1,0 +1,35 @@
+[Unit]
+Description=Edge Athlete diagnostics gateway (%i)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=edgeathlete-gateway
+Group=edgeathlete-gateway
+EnvironmentFile=/etc/edgeathlete-gateway/%i.conf
+LoadCredential=gateway-credential:/etc/edgeathlete-gateway/%i.credential
+StateDirectory=edgeathlete-gateway
+StateDirectoryMode=0700
+RuntimeDirectory=edgeathlete-gateway
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/edgeathlete/scripts/gateway/gym_gateway.py --socket ${GATEWAY_SOCKET} --rack ${GATEWAY_RACK} --node ${GATEWAY_NODE} --revision ${GATEWAY_REVISION} --url ${GATEWAY_URL} --credential ${CREDENTIALS_DIRECTORY}/gateway-credential --queue /var/lib/edgeathlete-gateway/queue.sqlite3 --poll ${GATEWAY_POLL_SECONDS}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

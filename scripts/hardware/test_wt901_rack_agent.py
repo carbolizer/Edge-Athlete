@@ -176,6 +176,80 @@ class AgentContractTests(unittest.TestCase):
         self.assertGreaterEqual(reps[0]["duration_ms"], 600)
         self.assertTrue(reps[0]["timestamp"].endswith("Z"))
 
+    def test_provisional_rep_detector_integrates_confirmed_onset(self):
+        acceleration = (
+            [0.0] * 50 + [0.20] * 8 + [-0.20] * 8 + [0.0] * 8
+            + [-0.20] * 8 + [0.20] * 8 + [0.0] * 20
+        )
+
+        self.assertEqual(len(self.detector_reps(acceleration)), 1)
+
+    def test_provisional_rep_detector_selects_axis_from_confirmed_onset(self):
+        detector = agent.ProvisionalRepDetector()
+        still = self.detector_sample()
+        for _ in range(20):
+            detector.update(0.0, still)
+        onset = [
+            agent.ImuSample((0.20, 0.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            agent.ImuSample((0.20, 0.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            agent.ImuSample((0.20, 0.0, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            agent.ImuSample((0.0, 0.25, 1.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        ]
+
+        for sample in onset:
+            detector.activity_score(0.0, sample)
+            detector.update(0.0, sample, activity_score=0.20)
+
+        self.assertEqual(detector._axis, (1.0, 0.0, 0.0))
+
+    def test_provisional_rep_detector_integrates_raw_not_filtered_acceleration(self):
+        detector = agent.ProvisionalRepDetector()
+        still = self.detector_sample()
+        moving = self.detector_sample(0.20)
+        for _ in range(20):
+            detector.update(0.0, still)
+
+        for _ in range(agent.REP_ONSET_SAMPLES):
+            detector.activity_score(0.0, moving)
+            detector.update(0.0, moving, activity_score=0.20)
+
+        expected_velocity = (
+            0.20 * 9.80665 * agent.SAMPLE_INTERVAL_SECONDS * agent.REP_ONSET_SAMPLES
+        )
+        self.assertAlmostEqual(detector._velocity, expected_velocity, places=6)
+
+    def test_provisional_rep_detector_does_not_accept_settling_bias(self):
+        detector = agent.ProvisionalRepDetector()
+        samples = [0.0] * 50 + [0.20] * 10 + [-0.20] * 10
+        reps = [
+            detector.update(0.0, self.detector_sample(value))
+            for value in samples
+        ]
+        reps.extend(
+            detector.update(
+                0.0,
+                self.detector_sample(-0.20),
+                activity_score=0.0,
+            )
+            for _ in range(agent.REP_SETTLE_SAMPLES)
+        )
+
+        self.assertTrue(all(rep is None for rep in reps))
+        self.assertEqual(detector.diagnostics()["rejected_cycles"], 1)
+
+    def test_provisional_rep_detector_refractory_waits_for_low_activity(self):
+        detector = agent.ProvisionalRepDetector()
+        detector._reset_cycle(refractory=True)
+        moving = self.detector_sample(0.20)
+        still = self.detector_sample()
+
+        for _ in range(20):
+            detector.update(0.0, moving, activity_score=0.20)
+        self.assertEqual(detector.diagnostics()["state"], "refractory")
+
+        detector.update(0.0, still, activity_score=0.0)
+        self.assertEqual(detector.diagnostics()["state"], "idle")
+
     def test_provisional_rep_detector_counts_consecutive_reps_without_full_settle(self):
         cycle = [0.20] * 10 + [-0.20] * 10 + [0.0] * 8 + [-0.20] * 10 + [0.20] * 10
         acceleration = [0.0] * 50 + cycle + [0.0] * 8 + cycle + [0.0] * 20

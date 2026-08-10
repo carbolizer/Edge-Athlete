@@ -31,6 +31,9 @@ urlpatterns = [
     # Only writes intent; a host agent applies it (see wifi_config.py).
     path('system/wifi-password/', wifi_config.change_wifi_password, name='change_wifi_password'),
 
+    path('gateway/v1/events/', views.gateway_events, name='gateway_events'),
+    path('gateways/diagnostics/', views.gateway_diagnostics, name='gateway_diagnostics'),
+
     # tablet: racks
     path('racks/register/', views.rack_register, name='rack_register'),
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),

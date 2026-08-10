@@ -308,6 +308,11 @@ Failure behavior:
 - MQTT outages do not affect central BLE health. The Agent reconnects each sensor independently.
   Opt-in accepted WT901 reps publish only while the broker is reachable;
   Agent-side replay is not implemented.
+- A configured rack tablet keeps its active rep collector mounted while showing
+  `/coach` or `/dashboard`. The original rack tab keeps buffering after its
+  controller lease expires in the background and reclaims that lease when visible.
+  Closing, fully suspending, or disconnecting that browser can still lose messages
+  because accepted-event replay is not implemented.
 - `403 origin_not_allowed` means the browser origin must be added explicitly to
   `--allowed-origins`; do not solve it by binding the Agent off-loopback.
 
@@ -317,7 +322,9 @@ supervised system service. WT901 rep detection is provisional until it passes th
 separate later slice.
 
 The current detector uses the 50 Hz acceleration, gyro, and orientation frame.
-The configured `0x61` WT901 payload has no altitude channel. A rep must complete a
+Filtered acceleration gates movement, while gravity-compensated raw acceleration,
+including the four confirmed onset samples, drives velocity and displacement. The
+configured `0x61` WT901 payload has no altitude channel. A rep must complete a
 translation away from and back near its calibrated starting position. A completed
 return does not require a long pause between consecutive reps; stillness after an
 incomplete return rejects the movement. Pickup, wiggle, and rotation-only motion

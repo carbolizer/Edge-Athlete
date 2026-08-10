@@ -63,6 +63,7 @@ class Node(models.Model):
 
     node_id = models.CharField(max_length=255, unique=True)
     rack_number = models.IntegerField(null=True, blank=True)
+    assignment_revision = models.PositiveBigIntegerField(default=1)
     mount_type = models.CharField(max_length=10, choices=MOUNT_CHOICES, default=MOUNT_BAR)
     firmware_version = models.CharField(max_length=50, null=True, blank=True)
     acquisition_kind = models.CharField(
@@ -160,6 +161,165 @@ class RackRuntime(models.Model):
 
     def __str__(self):
         return f"Rack {self.rack_number} runtime ({self.phase}, v{self.state_version})"
+
+
+class HostedGym(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    slug = models.SlugField(max_length=64, unique=True)
+    display_name = models.CharField(max_length=120)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class EdgeGateway(models.Model):
+    QUEUE_UNKNOWN = "unknown"
+    QUEUE_HEALTHY = "healthy"
+    QUEUE_UNHEALTHY = "unhealthy"
+    QUEUE_FULL = "full"
+    QUEUE_CORRUPT = "corrupt"
+    QUEUE_READ_ONLY = "read_only"
+    QUEUE_STATE_CHOICES = [
+        (QUEUE_UNKNOWN, "Unknown"),
+        (QUEUE_HEALTHY, "Healthy"),
+        (QUEUE_UNHEALTHY, "Unhealthy"),
+        (QUEUE_FULL, "Full"),
+        (QUEUE_CORRUPT, "Corrupt"),
+        (QUEUE_READ_ONLY, "Read only"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    gym = models.ForeignKey(HostedGym, on_delete=models.PROTECT, related_name="gateways")
+    label = models.CharField(max_length=120)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    current_boot = models.ForeignKey(
+        "GatewayBoot", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="current_for_gateways",
+    )
+    last_contact_at = models.DateTimeField(null=True, blank=True)
+    last_event_at = models.DateTimeField(null=True, blank=True)
+    queue_state = models.CharField(
+        max_length=16, choices=QUEUE_STATE_CHOICES, default=QUEUE_UNKNOWN,
+    )
+    queue_depth = models.PositiveIntegerField(null=True, blank=True)
+    oldest_queued_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(queue_depth__isnull=True) | models.Q(queue_depth__lte=50000),
+                name="gateway_queue_depth_bounded",
+            ),
+        ]
+
+
+class GatewayCredential(models.Model):
+    gateway = models.ForeignKey(EdgeGateway, on_delete=models.CASCADE, related_name="credentials")
+    version = models.PositiveIntegerField()
+    secret_digest = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    not_before = models.DateTimeField()
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="sponsored_gateway_credentials",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["gateway", "version"], name="gateway_credential_version_unique",
+            ),
+        ]
+
+
+class GatewayNodeGrant(models.Model):
+    gateway = models.ForeignKey(EdgeGateway, on_delete=models.PROTECT, related_name="node_grants")
+    node = models.OneToOneField(Node, on_delete=models.PROTECT, related_name="gateway_grant")
+    assignment_revision = models.PositiveBigIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+
+class GatewayBoot(models.Model):
+    gateway = models.ForeignKey(EdgeGateway, on_delete=models.CASCADE, related_name="boots")
+    boot_id = models.UUIDField()
+    server_epoch = models.PositiveBigIntegerField()
+    acknowledged_through = models.PositiveBigIntegerField(default=0)
+    first_received_at = models.DateTimeField(auto_now_add=True)
+    last_received_at = models.DateTimeField(auto_now=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["gateway", "boot_id"], name="gateway_boot_id_unique"),
+            models.UniqueConstraint(fields=["gateway", "server_epoch"], name="gateway_boot_epoch_unique"),
+        ]
+
+
+class GatewayEventReceipt(models.Model):
+    EVENT_SENSOR_HEALTH = "sensor_health"
+    RESULT_ACCEPTED = "accepted"
+    RESULT_REJECTED = "rejected"
+    RESULT_CHOICES = [
+        (RESULT_ACCEPTED, "Accepted"),
+        (RESULT_REJECTED, "Rejected"),
+    ]
+
+    gateway = models.ForeignKey(EdgeGateway, on_delete=models.CASCADE, related_name="event_receipts")
+    boot = models.ForeignKey(GatewayBoot, on_delete=models.CASCADE, related_name="event_receipts")
+    event_id = models.UUIDField()
+    sequence = models.PositiveBigIntegerField()
+    event_type = models.CharField(
+        max_length=24, choices=[(EVENT_SENSOR_HEALTH, "Sensor health")],
+        default=EVENT_SENSOR_HEALTH,
+    )
+    result = models.CharField(max_length=16, choices=RESULT_CHOICES)
+    result_code = models.CharField(max_length=48)
+    occurred_at = models.DateTimeField()
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["gateway", "event_id"], name="gateway_event_id_unique"),
+            models.UniqueConstraint(fields=["boot", "sequence"], name="gateway_boot_sequence_unique"),
+        ]
+
+
+class GatewayNodeHealth(models.Model):
+    SENSOR_STARTING = "starting"
+    SENSOR_LIVE = "live"
+    SENSOR_STALE = "stale"
+    SENSOR_RECONNECTING = "reconnecting"
+    SENSOR_STATE_CHOICES = [
+        (SENSOR_STARTING, "Starting"),
+        (SENSOR_LIVE, "Live"),
+        (SENSOR_STALE, "Stale"),
+        (SENSOR_RECONNECTING, "Reconnecting"),
+    ]
+
+    grant = models.OneToOneField(GatewayNodeGrant, on_delete=models.CASCADE, related_name="health")
+    sensor_state = models.CharField(max_length=16, choices=SENSOR_STATE_CHOICES)
+    sample_age_ms = models.PositiveIntegerField(null=True, blank=True)
+    agent_schema_version = models.PositiveSmallIntegerField()
+    gateway_occurred_at = models.DateTimeField()
+    server_received_at = models.DateTimeField()
+    boot = models.ForeignKey(GatewayBoot, on_delete=models.CASCADE, related_name="node_health_rows")
+    sequence = models.PositiveBigIntegerField()
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(sample_age_ms__isnull=True) | models.Q(sample_age_ms__lte=600000),
+                name="gateway_sample_age_bounded",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(agent_schema_version__gte=1),
+                name="gateway_agent_schema_positive",
+            ),
+        ]
 
 
 class RackCommandReceipt(models.Model):

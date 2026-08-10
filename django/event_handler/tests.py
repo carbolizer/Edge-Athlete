@@ -8,19 +8,24 @@
 import json
 import base64
 import hashlib
+import io
 import os
+import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from unittest.mock import patch
 
+from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command, CommandError
 from django.db import IntegrityError, close_old_connections, connection, connections, models, transaction
 from django.db.models import ProtectedError
 from django.utils import timezone
 from django.contrib.auth.models import User
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient, APITestCase
 
 from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Exercise,
@@ -28,7 +33,9 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
                      TrainingBlockExercise, BlockCategory, TrainingGroupCoach,
-                     MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt)
+                     MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt,
+                     HostedGym, EdgeGateway, GatewayCredential, GatewayNodeGrant,
+                     GatewayBoot, GatewayEventReceipt, GatewayNodeHealth)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
@@ -3270,7 +3277,7 @@ class TrainingGroupCoachMigrationTests(TransactionTestCase):
     def tearDown(self):
         # Leave the database at the latest migration, or every test that runs
         # after this class sees a half-migrated schema.
-        self._migrate([("event_handler", "0021_node_acquisition_and_receipt_index")])
+        self._migrate([("event_handler", "0022_vps_gateway_health_foundation")])
 
 
 class NodeAssignmentMigrationTests(TransactionTestCase):
@@ -3324,7 +3331,7 @@ class NodeAssignmentMigrationTests(TransactionTestCase):
         self.assertIsNone(RolledBackNode.objects.get(node_id="duplicate-b").rack_number)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0021_node_acquisition_and_receipt_index")])
+        self._migrate([("event_handler", "0022_vps_gateway_health_foundation")])
 
 
 class NodeAcquisitionMigrationTests(TransactionTestCase):
@@ -3350,7 +3357,7 @@ class NodeAcquisitionMigrationTests(TransactionTestCase):
         self.assertEqual(NewNode.objects.get(node_id="mqtt").acquisition_kind, "mqtt")
 
     def tearDown(self):
-        self._migrate(self.migrate_to)
+        self._migrate([("event_handler", "0022_vps_gateway_health_foundation")])
 
 
 class OneOpenSessionTests(APITestCase):
@@ -5125,6 +5132,28 @@ class HealthEndpointTests(APITestCase):
         self.assertEqual(res.data["status"], "ok")
         self.assertEqual(res.data["database"], "ok")
 
+    @patch("event_handler.health.connection.cursor", side_effect=RuntimeError("private-db-host"))
+    def test_database_failure_returns_no_internal_exception_text(self, _cursor):
+        res = self.client.get("/api/health/")
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(res.data, {"status": "unhealthy", "database": "unreachable"})
+        self.assertNotIn("private-db-host", json.dumps(res.data))
+
+    @override_settings(
+        ALLOWED_HOSTS=["edge.example.com"],
+        SECURE_SSL_REDIRECT=True,
+        USE_X_FORWARDED_HOST=True,
+        SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
+    )
+    def test_vps_internal_healthcheck_uses_trusted_proxy_headers(self):
+        res = self.client.get(
+            "/api/health/",
+            HTTP_HOST="edge.example.com",
+            HTTP_X_FORWARDED_HOST="edge.example.com",
+            HTTP_X_FORWARDED_PROTO="https",
+        )
+        self.assertEqual(res.status_code, 200)
+
 
 class SystemStatusTests(APITestCase):
     """The coach-only "still on shipped defaults?" check that drives the admin
@@ -5318,3 +5347,541 @@ class WifiPasswordChangeTests(APITestCase):
         with patch("event_handler.realtime.broadcast.publisher._publish") as pub:
             self._post(new_password="a-good-gym-password", coach_password="s3cret-coach-pw")
         pub.assert_not_called()
+
+
+class GatewayHealthIngestionTests(APITestCase):
+    def setUp(self):
+        from .services.gateway_ingest import issue_gateway_credential
+
+        self.staff = User.objects.create_user(
+            username="gateway-sponsor", password="pw", is_staff=True, is_active=True,
+        )
+        self.gym = HostedGym.objects.create(slug="hosted-gym", display_name="Hosted Gym")
+        self.gateway = EdgeGateway.objects.create(gym=self.gym, label="Gym gateway")
+        _credential, self.bearer = issue_gateway_credential(self.gateway, self.staff)
+        self.node = Node.objects.create(node_id="wt901_gateway_node", rack_number=1)
+        self.grant = GatewayNodeGrant.objects.create(
+            gateway=self.gateway,
+            node=self.node,
+            assignment_revision=self.node.assignment_revision,
+        )
+        self.boot_id = uuid.uuid4()
+
+    def _event(self, sequence=1, **overrides):
+        event = {
+            "schema_version": 1,
+            "event_id": str(uuid.uuid4()),
+            "event_type": "sensor_health",
+            "rack_number": 1,
+            "logical_node_id": self.node.node_id,
+            "assignment_revision": self.node.assignment_revision,
+            "sequence": sequence,
+            "occurred_at": timezone.now().isoformat().replace("+00:00", "Z"),
+            "payload": {
+                "agent_schema_version": 1,
+                "sensor_state": "live",
+                "sample_age_ms": 25,
+            },
+        }
+        event.update(overrides)
+        return event
+
+    def _body(self, events=None, **overrides):
+        now = timezone.now().isoformat().replace("+00:00", "Z")
+        body = {
+            "schema_version": 1,
+            "gateway_id": str(self.gateway.id),
+            "gateway_boot_id": str(self.boot_id),
+            "gateway_status": {
+                "queue_state": "healthy",
+                "queue_depth": 1,
+                "oldest_queued_at": now,
+                "gateway_version": "1.0.0",
+            },
+            "events": events if events is not None else [self._event()],
+        }
+        body.update(overrides)
+        return body
+
+    def _post(self, body=None, bearer=None):
+        return self.client.post(
+            "/api/gateway/v1/events/",
+            body if body is not None else self._body(),
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {bearer or self.bearer}",
+            HTTP_X_REQUEST_ID=str(uuid.uuid4()),
+        )
+
+    def test_valid_health_records_one_receipt_and_changes_no_workout_domain(self):
+        before = {
+            "sets": Set.objects.count(),
+            "reps": Rep.objects.count(),
+            "runtimes": RackRuntime.objects.count(),
+        }
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["result"], "accepted")
+        self.assertEqual(response.data["acknowledged_through"], 1)
+        self.assertEqual(GatewayEventReceipt.objects.count(), 1)
+        health = GatewayNodeHealth.objects.get()
+        self.assertEqual(health.sensor_state, "live")
+        self.assertEqual(health.sequence, 1)
+        self.assertEqual(MonitoringEvent.objects.get().reason, "gateway_health_changed")
+        self.assertEqual(before, {
+            "sets": Set.objects.count(),
+            "reps": Rep.objects.count(),
+            "runtimes": RackRuntime.objects.count(),
+        })
+
+    def test_duplicate_returns_original_code_without_another_write(self):
+        body = self._body()
+        self.assertEqual(self._post(body).status_code, 200)
+        received_at = GatewayNodeHealth.objects.get().server_received_at
+        MonitoringEvent.objects.all().delete()
+
+        response = self._post(body)
+
+        self.assertEqual(response.data["results"][0], {
+            "event_id": body["events"][0]["event_id"],
+            "sequence": 1,
+            "result": "duplicate",
+            "code": "health_recorded",
+        })
+        self.assertEqual(response.data["acknowledged_through"], 1)
+        self.assertEqual(GatewayEventReceipt.objects.count(), 1)
+        self.assertEqual(GatewayNodeHealth.objects.get().server_received_at, received_at)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_missing_wrong_and_revoked_credentials_share_generic_failure(self):
+        missing = self.client.post("/api/gateway/v1/events/", self._body(), format="json")
+        wrong = self._post(bearer=self.bearer[:-1] + ("A" if self.bearer[-1] != "A" else "B"))
+        credential = GatewayCredential.objects.get()
+        credential.revoked_at = timezone.now()
+        credential.save(update_fields=["revoked_at"])
+        revoked = self._post()
+
+        for response in (missing, wrong, revoked):
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.data["code"], "gateway_auth_invalid")
+        self.assertEqual(GatewayEventReceipt.objects.count(), 0)
+        self.assertEqual(GatewayNodeHealth.objects.count(), 0)
+
+    def test_gateway_identity_is_fenced_by_authenticated_credential(self):
+        body = self._body(gateway_id=str(uuid.uuid4()))
+
+        response = self._post(body)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["code"], "gateway_identity_mismatch")
+        self.assertEqual(GatewayNodeHealth.objects.count(), 0)
+
+    def test_missing_or_revoked_grant_is_terminal_without_health(self):
+        self.grant.delete()
+        missing = self._post()
+        self.assertEqual(missing.data["results"][0]["code"], "gateway_node_not_granted")
+
+        self.boot_id = uuid.uuid4()
+        self.grant = GatewayNodeGrant.objects.create(
+            gateway=self.gateway, node=self.node,
+            assignment_revision=self.node.assignment_revision, revoked_at=timezone.now(),
+        )
+        revoked = self._post()
+        self.assertEqual(revoked.data["results"][0]["code"], "gateway_node_not_granted")
+        self.assertEqual(GatewayNodeHealth.objects.count(), 0)
+
+    def test_assignment_revision_fences_stale_grant_and_event(self):
+        self.node.assignment_revision += 1
+        self.node.save(update_fields=["assignment_revision"])
+        response = self._post()
+        self.assertEqual(response.data["results"][0]["code"], "stale_assignment_revision")
+        self.assertEqual(GatewayNodeHealth.objects.count(), 0)
+
+    def test_sequence_gap_does_not_advance_contiguous_acknowledgement(self):
+        self.assertEqual(self._post().data["acknowledged_through"], 1)
+        body = self._body(events=[self._event(sequence=3), self._event(sequence=4)])
+
+        response = self._post(body)
+
+        self.assertEqual(response.data["acknowledged_through"], 1)
+        self.assertEqual([item["code"] for item in response.data["results"]], [
+            "sequence_gap", "blocked_by_sequence_gap",
+        ])
+        self.assertEqual(GatewayEventReceipt.objects.count(), 1)
+
+    def test_new_boot_requires_sequence_one_and_old_boot_is_fenced(self):
+        self.assertEqual(self._post().status_code, 200)
+        old_boot = self.boot_id
+        self.boot_id = uuid.uuid4()
+        conflict = self._post(self._body(events=[self._event(sequence=2)]))
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.data["code"], "gateway_boot_conflict")
+
+        self.assertEqual(self._post().data["results"][0]["result"], "accepted")
+        self.boot_id = old_boot
+        stale = self._post(self._body(events=[self._event(sequence=2)]))
+        self.assertEqual(stale.data["results"][0]["code"], "stale_gateway_boot")
+        self.gateway.refresh_from_db()
+        self.assertEqual(GatewayNodeHealth.objects.get().boot_id, self.gateway.current_boot_id)
+
+    def test_event_id_conflict_is_terminal_and_does_not_repeat_health(self):
+        first = self._body()
+        event_id = first["events"][0]["event_id"]
+        self.assertEqual(self._post(first).status_code, 200)
+        second = self._body(events=[self._event(sequence=2, event_id=event_id)])
+
+        response = self._post(second)
+
+        self.assertEqual(response.data["results"][0]["code"], "event_identity_conflict")
+        self.assertEqual(response.data["acknowledged_through"], 2)
+        self.assertEqual(GatewayEventReceipt.objects.count(), 1)
+
+    def test_unknown_event_fields_are_terminal_but_outer_fields_reject_batch(self):
+        event = self._event(extra="forbidden")
+        terminal = self._post(self._body(events=[event]))
+        self.assertEqual(terminal.status_code, 200)
+        self.assertEqual(terminal.data["results"][0]["code"], "invalid_event_schema")
+        self.assertEqual(terminal.data["acknowledged_through"], 1)
+
+        self.boot_id = uuid.uuid4()
+        outer = self._body(extra="forbidden")
+        rejected = self._post(outer)
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.data["code"], "invalid_batch")
+        self.assertEqual(GatewayBoot.objects.count(), 1)
+
+    def test_timestamp_and_health_bounds_are_terminal(self):
+        future = (timezone.now() + timedelta(minutes=6)).isoformat().replace("+00:00", "Z")
+        response = self._post(self._body(events=[self._event(occurred_at=future)]))
+        self.assertEqual(response.data["results"][0]["code"], "event_in_future")
+
+        self.boot_id = uuid.uuid4()
+        event = self._event()
+        event["payload"]["sample_age_ms"] = 600001
+        response = self._post(self._body(events=[event]))
+        self.assertEqual(response.data["results"][0]["code"], "invalid_health_value")
+        self.assertEqual(GatewayNodeHealth.objects.count(), 0)
+
+        self.boot_id = uuid.uuid4()
+        body = self._body()
+        body["gateway_status"]["oldest_queued_at"] = (
+            timezone.now() - timedelta(days=8)
+        ).isoformat().replace("+00:00", "Z")
+        response = self._post(body)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "invalid_batch")
+
+    @patch("event_handler.views.gateway_ingest.authenticate_gateway", side_effect=IntegrityError)
+    def test_authentication_database_failure_is_stable_and_retryable(self, _authenticate):
+        response = self._post()
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data["code"], "gateway_ingest_unavailable")
+
+    def test_batch_count_and_encoded_body_are_bounded(self):
+        events = [self._event(sequence=index + 1) for index in range(101)]
+        count = self._post(self._body(events=events))
+        self.assertEqual(count.status_code, 400)
+        self.assertEqual(count.data["code"], "invalid_batch")
+
+        oversized = json.dumps({"padding": "x" * (256 * 1024)}).encode()
+        encoded = self.client.generic(
+            "POST", "/api/gateway/v1/events/", oversized,
+            content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {self.bearer}",
+        )
+        self.assertEqual(encoded.status_code, 413)
+        self.assertEqual(encoded.data["code"], "batch_too_large")
+
+    def test_node_assignment_paths_increment_revision_only_on_mapping_change(self):
+        self.client.force_authenticate(self.staff)
+        screen = RackScreen.objects.create(device_id="gateway-rack-screen", rack_number=2)
+        candidate = Node.objects.create(node_id="gateway_assignment_candidate")
+        initial_revision = candidate.assignment_revision
+
+        changed = self.client.put("/api/racks/node-assignment/", {
+            "device_id": screen.device_id, "node_id": candidate.node_id,
+        }, format="json")
+        unchanged = self.client.put("/api/racks/node-assignment/", {
+            "device_id": screen.device_id, "node_id": candidate.node_id,
+        }, format="json")
+
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(unchanged.status_code, 200)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.assignment_revision, initial_revision + 1)
+
+    @patch("event_handler.views.ble_agent.bind")
+    def test_ble_selection_increments_replaced_and_selected_revisions(self, bind):
+        self.client.force_authenticate(self.staff)
+        RackScreen.objects.create(device_id="gateway-ble-screen", rack_number=3)
+        replaced = Node.objects.create(
+            node_id="gateway-old-ble", rack_number=3,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+        bind.return_value = {
+            "node_id": "gateway-new-ble",
+            "label": "WT901BLE",
+            "binding_token": "binding-secret",
+        }
+
+        response = self.client.put("/api/racks/3/ble-selection/", {
+            "device_id": "gateway-ble-screen", "verification_token": "verification-secret",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        replaced.refresh_from_db()
+        selected = Node.objects.get(node_id="gateway-new-ble")
+        self.assertEqual(replaced.assignment_revision, 2)
+        self.assertEqual(selected.assignment_revision, 2)
+
+
+class GatewayDiagnosticsTests(APITestCase):
+    def setUp(self):
+        from .services.gateway_ingest import issue_gateway_credential
+
+        self.staff = User.objects.create_user(
+            username="diagnostics-staff", password="pw", is_staff=True, is_active=True,
+        )
+        gym = HostedGym.objects.create(slug="diagnostic-gym", display_name="Diagnostic Gym")
+        self.gateway = EdgeGateway.objects.create(gym=gym, label="Private-safe label")
+        _credential, self.bearer = issue_gateway_credential(self.gateway, self.staff)
+
+    def test_diagnostics_requires_active_staff_and_rejects_gateway_bearer(self):
+        anonymous = self.client.get("/api/gateways/diagnostics/")
+        ordinary = User.objects.create_user(username="ordinary-diagnostic", password="pw")
+        self.client.force_authenticate(ordinary)
+        nonstaff = self.client.get("/api/gateways/diagnostics/")
+        inactive_staff = User.objects.create_user(
+            username="inactive-diagnostic", password="pw", is_staff=True, is_active=False,
+        )
+        self.client.force_authenticate(inactive_staff)
+        inactive = self.client.get("/api/gateways/diagnostics/")
+        self.client.force_authenticate(user=None)
+        gateway = self.client.get(
+            "/api/gateways/diagnostics/", HTTP_AUTHORIZATION=f"Bearer {self.bearer}",
+        )
+
+        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(nonstaff.status_code, 403)
+        self.assertEqual(inactive.status_code, 403)
+        self.assertEqual(gateway.status_code, 401)
+
+    def test_staff_snapshot_is_privacy_safe(self):
+        self.client.force_authenticate(self.staff)
+        response = self.client.get("/api/gateways/diagnostics/")
+        encoded = json.dumps(response.data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["gateway"]["label"], "Private-safe label")
+        for forbidden in (str(self.gateway.id), self.bearer, "secret_digest", "node_id", "event_id"):
+            self.assertNotIn(forbidden, encoded)
+
+
+class ProvisionEdgeGatewayCommandTests(APITestCase):
+    def test_provisioning_requires_staff_and_prints_one_unstored_secret_once(self):
+        staff = User.objects.create_user(
+            username="provision-staff", password="pw", is_staff=True, is_active=True,
+        )
+        output = io.StringIO()
+
+        call_command(
+            "provision_edge_gateway", gym="one-gym", label="Gateway one",
+            staff=staff.username, stdout=output,
+        )
+
+        bearer = output.getvalue().strip()
+        gateway = EdgeGateway.objects.get()
+        credential = GatewayCredential.objects.get()
+        self.assertRegex(bearer, rf"^egw1\.{gateway.id}\.1\.[A-Za-z0-9_-]{{43}}$")
+        self.assertNotIn(bearer.rsplit(".", 1)[1], credential.secret_digest)
+        self.assertEqual(credential.created_by, staff)
+        with self.assertRaises(CommandError):
+            call_command(
+                "provision_edge_gateway", gym="one-gym", label="Gateway two",
+                staff=staff.username,
+            )
+
+    def test_provisioning_rejects_nonstaff_sponsor_without_rows(self):
+        user = User.objects.create_user(username="provision-user", password="pw")
+        with self.assertRaises(CommandError):
+            call_command(
+                "provision_edge_gateway", gym="one-gym", label="Gateway one",
+                staff=user.username,
+            )
+        self.assertEqual(HostedGym.objects.count(), 0)
+        self.assertEqual(EdgeGateway.objects.count(), 0)
+
+
+class VpsSettingsTests(SimpleTestCase):
+    def _settings_import(self, **overrides):
+        environment = os.environ.copy()
+        for name in (
+            "VPS_DEPLOYMENT", "VPS_DOMAIN", "SECRET_KEY", "DEBUG", "ALLOWED_HOSTS",
+            "CSRF_TRUSTED_ORIGINS", "SECURE_SSL_REDIRECT", "SESSION_COOKIE_SECURE",
+            "CSRF_COOKIE_SECURE", "USE_X_FORWARDED_HOST", "POSTGRES_DB",
+            "POSTGRES_USER", "POSTGRES_PASSWORD",
+        ):
+            environment.pop(name, None)
+        environment.update(overrides)
+        return subprocess.run(
+            [sys.executable, "-c", (
+                "import basestation_config.settings as s; "
+                "print(s.SECURE_PROXY_SSL_HEADER, s.ALLOWED_HOSTS, "
+                "s.CSRF_TRUSTED_ORIGINS, s.CORS_ALLOWED_ORIGINS)"
+            )],
+            cwd=str(settings.BASE_DIR), env=environment,
+            capture_output=True, text=True, check=False,
+        )
+
+    def _valid_vps_environment(self):
+        return {
+            "VPS_DEPLOYMENT": "True",
+            "VPS_DOMAIN": "edge.example.com",
+            "SECRET_KEY": "vps-only-secret-key-" + "x" * 48,
+            "DEBUG": "False",
+            "ALLOWED_HOSTS": "edge.example.com",
+            "CSRF_TRUSTED_ORIGINS": "https://edge.example.com",
+            "SECURE_SSL_REDIRECT": "True",
+            "SESSION_COOKIE_SECURE": "True",
+            "CSRF_COOKIE_SECURE": "True",
+            "USE_X_FORWARDED_HOST": "True",
+            "POSTGRES_DB": "edgeathlete_vps",
+            "POSTGRES_USER": "edgeathlete_vps_user",
+            "POSTGRES_PASSWORD": "unique-vps-database-password",
+        }
+
+    def test_local_settings_do_not_require_vps_values(self):
+        result = self._settings_import(DEBUG="True")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("None ['localhost'] []", result.stdout)
+        self.assertIn("http://localhost:5173", result.stdout)
+
+    def test_valid_vps_settings_enable_https_proxy_boundary(self):
+        environment = self._valid_vps_environment()
+        result = self._settings_import(**environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("('HTTP_X_FORWARDED_PROTO', 'https')", result.stdout)
+        self.assertIn("['edge.example.com']", result.stdout)
+        self.assertIn("['https://edge.example.com']", result.stdout)
+        self.assertTrue(result.stdout.strip().endswith("[]"))
+
+        environment["DJANGO_SETTINGS_MODULE"] = "basestation_config.settings"
+        publisher = subprocess.run(
+            [sys.executable, "-c", (
+                "import django; django.setup(); "
+                "from event_handler.realtime.broadcast.publisher import _client; print(_client)"
+            )],
+            cwd=str(settings.BASE_DIR), env=environment,
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(publisher.returncode, 0, publisher.stderr)
+        self.assertEqual(publisher.stdout.strip(), "None")
+
+    def test_vps_settings_reject_placeholder_and_development_defaults(self):
+        placeholder = self._valid_vps_environment()
+        placeholder["SECRET_KEY"] = "<generate-a-secret>"
+        result = self._settings_import(**placeholder)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("non-placeholder values for: SECRET_KEY", result.stderr)
+
+        development = self._valid_vps_environment()
+        development["POSTGRES_PASSWORD"] = "supersafepw"
+        result = self._settings_import(**development)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("development defaults for: POSTGRES_PASSWORD", result.stderr)
+
+    def test_vps_settings_reject_disabled_transport_protection(self):
+        environment = self._valid_vps_environment()
+        environment["SESSION_COOKIE_SECURE"] = "False"
+        result = self._settings_import(**environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires True for: SESSION_COOKIE_SECURE", result.stderr)
+
+    def test_vps_settings_reject_malformed_domain_and_weak_secrets(self):
+        malformed = self._valid_vps_environment()
+        malformed["VPS_DOMAIN"] = malformed["ALLOWED_HOSTS"] = "bad_name.example.com"
+        malformed["CSRF_TRUSTED_ORIGINS"] = "https://bad_name.example.com"
+        result = self._settings_import(**malformed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lowercase DNS hostname", result.stderr)
+
+        weak = self._valid_vps_environment()
+        weak["SECRET_KEY"] = "x" * 64
+        result = self._settings_import(**weak)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sufficient variety", result.stderr)
+
+
+@override_settings(VPS_DEPLOYMENT=True)
+class VpsDeploymentPreflightTests(APITestCase):
+    def test_preflight_requires_one_gym_and_one_active_gateway(self):
+        with self.assertRaisesMessage(CommandError, "exactly one hosted gym"):
+            call_command("check_vps_deployment")
+
+        gym = HostedGym.objects.create(slug="one-gym", display_name="One gym")
+        with self.assertRaisesMessage(CommandError, "exactly one active edge gateway"):
+            call_command("check_vps_deployment")
+
+        EdgeGateway.objects.create(gym=gym, label="Gateway one")
+        output = io.StringIO()
+        call_command("check_vps_deployment", stdout=output)
+        self.assertIn("preflight passed", output.getvalue())
+
+    def test_preflight_rejects_demo_password_for_any_active_staff_account(self):
+        gym = HostedGym.objects.create(slug="one-gym", display_name="One gym")
+        EdgeGateway.objects.create(gym=gym, label="Gateway one")
+        User.objects.create_user(
+            username="alternate-staff", password="coachpass", is_active=True, is_staff=True,
+        )
+
+        with self.assertRaisesMessage(CommandError, "cannot use the demo password"):
+            call_command("check_vps_deployment")
+
+
+class GatewayFoundationMigrationTests(TransactionTestCase):
+    migrate_from = [("event_handler", "0021_node_acquisition_and_receipt_index")]
+    migrate_to = [("event_handler", "0022_vps_gateway_health_foundation")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_forward_reverse_and_forward_preserve_training_and_node_mapping(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldNode = old_apps.get_model("event_handler", "Node")
+        OldSession = old_apps.get_model("event_handler", "TrainingSession")
+        OldAthlete = old_apps.get_model("event_handler", "Athlete")
+        OldExercise = old_apps.get_model("event_handler", "Exercise")
+        OldSet = old_apps.get_model("event_handler", "Set")
+        OldRep = old_apps.get_model("event_handler", "Rep")
+        node = OldNode.objects.create(node_id="migration-gateway-node", rack_number=7)
+        session = OldSession.objects.create(label="Migration session", started_at=timezone.now())
+        athlete = OldAthlete.objects.create(name="Migration athlete")
+        exercise = OldExercise.objects.create(name="Migration exercise")
+        workout_set = OldSet.objects.create(
+            session=session, athlete=athlete, node=node, exercise=exercise, set_number=1,
+        )
+        OldRep.objects.create(
+            set=workout_set, rep_number=1, timestamp=timezone.now(), mean_velocity=0.7,
+            peak_velocity=0.9, duration_ms=600, velocity_color="green",
+        )
+
+        new_apps = self._migrate(self.migrate_to)
+        NewNode = new_apps.get_model("event_handler", "Node")
+        self.assertEqual(NewNode.objects.get(pk=node.pk).rack_number, 7)
+        self.assertEqual(NewNode.objects.get(pk=node.pk).assignment_revision, 1)
+        self.assertEqual(new_apps.get_model("event_handler", "Set").objects.count(), 1)
+        self.assertEqual(new_apps.get_model("event_handler", "Rep").objects.count(), 1)
+
+        rolled_back_apps = self._migrate(self.migrate_from)
+        self.assertEqual(
+            rolled_back_apps.get_model("event_handler", "Node").objects.get(pk=node.pk).rack_number,
+            7,
+        )
+        self.assertEqual(rolled_back_apps.get_model("event_handler", "Set").objects.count(), 1)
+        self.assertEqual(rolled_back_apps.get_model("event_handler", "Rep").objects.count(), 1)
+
+    def tearDown(self):
+        self._migrate(self.migrate_to)

@@ -33,11 +33,7 @@ def health(request):
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
             cursor.fetchone()
-    except Exception as exc:
-        # The reason is returned rather than logged and swallowed: when this
-        # trips, the person reading it is looking at `docker ps` output at an
-        # unsociable hour and every extra guess costs them.
-        return Response({"status": "unhealthy", "database": "unreachable",
-                         "detail": str(exc)}, status=503)
+    except Exception:
+        return Response({"status": "unhealthy", "database": "unreachable"}, status=503)
 
     return Response({"status": "ok", "database": "ok"})

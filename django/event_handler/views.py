@@ -36,10 +36,10 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.utils.dateparse import parse_date
-from django.db import IntegrityError, models, transaction
+from django.db import DatabaseError, IntegrityError, models, transaction
 from django.http import HttpResponse
 from django.utils import timezone
-from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -76,6 +76,7 @@ from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 from .services.tuning import RESTING_WINDOW
 from .services.node_health import node_is_usable
 from .services import ble_agent, nfc_agent
+from .services import gateway_ingest
 
 CONTROLLER_LEASE = timedelta(seconds=20)
 CONTROLLER_COMMANDS_PER_SECOND = 10
@@ -86,6 +87,63 @@ CONTROLLER_HEADERS = {
     "controller_token": "X-Controller-Token",
     "controller_epoch": "X-Controller-Epoch",
 }
+
+
+def _gateway_error(code, detail, status):
+    return Response({"code": code, "detail": detail}, status=status)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def gateway_events(request):
+    if request.content_type != "application/json":
+        return _gateway_error("invalid_batch", "Content-Type must be application/json", 400)
+    try:
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        return _gateway_error("invalid_batch", "Content-Length is invalid", 400)
+    if content_length > gateway_ingest.MAX_BODY_BYTES:
+        return _gateway_error("batch_too_large", "gateway batch exceeds 256 KiB", 413)
+
+    supplied_request_id = request.headers.get("X-Request-ID", "")
+    try:
+        request_id = str(uuid.UUID(supplied_request_id))
+    except (ValueError, AttributeError):
+        request_id = str(uuid.uuid4())
+    try:
+        credential = gateway_ingest.authenticate_gateway(
+            request.headers.get("Authorization"), request_id,
+        )
+    except DatabaseError:
+        return _gateway_error(
+            "gateway_ingest_unavailable", "gateway ingestion is unavailable", 503,
+        )
+    if credential is None:
+        return _gateway_error("gateway_auth_invalid", "gateway authentication failed", 401)
+
+    try:
+        envelope = gateway_ingest.parse_request_body(request.body)
+        results, acknowledged_through = gateway_ingest.ingest_batch(credential, envelope)
+    except gateway_ingest.InvalidGatewayRequest as exc:
+        return _gateway_error(exc.code, exc.detail, exc.status)
+    except DatabaseError:
+        return _gateway_error(
+            "gateway_ingest_unavailable", "gateway ingestion is unavailable", 503,
+        )
+    return Response({
+        "schema_version": 1,
+        "gateway_boot_id": str(envelope["boot_id"]),
+        "results": results,
+        "acknowledged_through": acknowledged_through,
+        "server_time": timezone.now().isoformat(),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsActiveStaff])
+def gateway_diagnostics(request):
+    return Response(gateway_ingest.diagnostics_snapshot())
 
 
 def _canonical_controller_token(value):
@@ -406,9 +464,11 @@ def _assign_node_to_rack(device_id, node_id):
 
     if replaced is not None:
         replaced.rack_number = None
-        replaced.save(update_fields=["rack_number"])
+        replaced.assignment_revision += 1
+        replaced.save(update_fields=["rack_number", "assignment_revision"])
     selected.rack_number = screen.rack_number
-    selected.save(update_fields=["rack_number"])
+    selected.assignment_revision += 1
+    selected.save(update_fields=["rack_number", "assignment_revision"])
     MonitoringEvent.objects.create(reason="node_assignment_changed")
 
     return Response({"rack_number": screen.rack_number, "node": NodeSerializer(selected).data})
@@ -632,9 +692,11 @@ def _apply_ble_binding(rack_number, device_id, node_id, expected_node_id):
         return Response({"rack_number": rack_number, "node": NodeSerializer(selected).data})
     if replaced is not None:
         replaced.rack_number = None
-        replaced.save(update_fields=["rack_number"])
+        replaced.assignment_revision += 1
+        replaced.save(update_fields=["rack_number", "assignment_revision"])
     selected.rack_number = rack_number
-    selected.save(update_fields=["rack_number"])
+    selected.assignment_revision += 1
+    selected.save(update_fields=["rack_number", "assignment_revision"])
     MonitoringEvent.objects.create(reason="node_assignment_changed")
     return Response({"rack_number": rack_number, "node": NodeSerializer(selected).data})
 

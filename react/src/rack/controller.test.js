@@ -6,6 +6,8 @@ import {
   getTabControllerIdentity,
   isControllerLoss,
   shouldAcceptSnapshot,
+  shouldRetryControllerClaim,
+  canCollectRackReps,
 } from './controller.js'
 
 function memoryStorage() {
@@ -70,5 +72,29 @@ describe('rack controller identity', () => {
     expect(shouldAcceptSnapshot(current, {
       state_version: 9, server_time: '2026-08-05T20:00:01Z',
     })).toBe(true)
+  })
+
+  it('retries the original controller claim for an expired open set', () => {
+    expect(shouldRetryControllerClaim('observer', true, {
+      controller_active: false,
+      current_set: 37,
+    })).toBe(true)
+    expect(shouldRetryControllerClaim('observer', true, {
+      controller_active: true,
+      current_set: 37,
+    })).toBe(false)
+    expect(shouldRetryControllerClaim('observer', false, {
+      controller_active: false,
+      current_set: 37,
+    })).toBe(false)
+  })
+
+  it('lets only the original open-set controller keep collecting after lease expiry', () => {
+    const openSet = { current_set: 37 }
+    expect(canCollectRackReps('controller', null, openSet)).toBe(true)
+    expect(canCollectRackReps('observer', 37, openSet)).toBe(true)
+    expect(canCollectRackReps('observer', 36, openSet)).toBe(false)
+    expect(canCollectRackReps('observer', 37, { current_set: 38 })).toBe(false)
+    expect(canCollectRackReps('observer', 37, { current_set: null })).toBe(false)
   })
 })

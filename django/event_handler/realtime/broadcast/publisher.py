@@ -31,6 +31,7 @@ import json
 import os
 
 import paho.mqtt.client as mqtt
+from django.conf import settings
 from django.utils import timezone
 
 from event_handler.models import MonitoringEvent
@@ -40,15 +41,19 @@ DASHBOARD_TOPIC = "edgeathlete/dashboard/state"
 MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
-# One client, created once when this module is first imported, and reused for
-# every broadcast for the lifetime of the process — not reconnecting per-request.
-_client = mqtt.Client()
-_client.connect(MQTT_HOST, MQTT_PORT, 60)
-_client.loop_start()
+# The diagnostics-only VPS profile has no MQTT service or browser push contract.
+# Local/Pi deployments retain the existing process-wide publisher.
+_client = None
+if not settings.VPS_DEPLOYMENT:
+    _client = mqtt.Client()
+    _client.connect(MQTT_HOST, MQTT_PORT, 60)
+    _client.loop_start()
 
 
 def _publish(topic: str, payload: dict) -> None:
     """Fire-and-forget publish: log failures, never raise into the caller."""
+    if _client is None:
+        return
     try:
         _client.publish(topic, json.dumps(payload), qos=1)
     except Exception as error:

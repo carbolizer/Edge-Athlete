@@ -156,10 +156,12 @@ class ProvisionalRepDetector:
         self._refractory = refractory_seconds
         self._state = "idle"
         self._onset_samples = 0
+        self._onset_linear = []
         self._settle_samples = 0
         self._refractory_samples = 0
         self._last_angles = None
         self._baseline_acceleration = None
+        self._raw_linear = (0.0, 0.0, 0.0)
         self._filtered_linear = (0.0, 0.0, 0.0)
         self._noise_floor = 0.0
         self._axis = None
@@ -177,50 +179,46 @@ class ProvisionalRepDetector:
         if movement_g is None or sample is None:
             return None
         score = self.activity_score(movement_g, sample) if activity_score is None else activity_score
-        linear = self._filtered_linear
+        linear = self._raw_linear
         start_threshold = self._dynamic_start_threshold()
         end_threshold = self._dynamic_end_threshold()
         if self._state == "refractory":
             self._refractory_samples -= 1
-            if self._refractory_samples <= 0:
+            if self._refractory_samples <= 0 and score <= end_threshold:
                 self._state = "idle"
             return None
 
         if self._state == "idle":
             if score >= start_threshold:
                 self._onset_samples += 1
+                self._onset_linear.append(linear)
             else:
                 self._onset_samples = 0
+                self._onset_linear.clear()
                 self._adapt_baseline(sample)
                 self._noise_floor = self._noise_floor * 0.98 + score * 0.02
             if self._onset_samples < REP_ONSET_SAMPLES:
                 return None
-            self._start_cycle(linear)
+            self._start_cycle()
             return None
 
         self._sample_count += 1
-        if score <= end_threshold:
+        moving = score > end_threshold
+        if not moving:
             self._settle_samples += 1
-            self._velocity = 0.0
         else:
             self._settle_samples = 0
-            projected_acceleration = sum(
-                component * axis for component, axis in zip(linear, self._axis)
-            ) * 9.80665
-            self._velocity += projected_acceleration * SAMPLE_INTERVAL_SECONDS
-            self._displacement += self._velocity * SAMPLE_INTERVAL_SECONDS
-            self._peak_velocity = max(self._peak_velocity, abs(self._velocity))
-            self._velocity_total += abs(self._velocity)
-            self._velocity_samples += 1
+        self._integrate(linear)
         excursion = abs(self._displacement)
         self._peak_excursion = max(self._peak_excursion, excursion)
         return_tolerance = max(0.015, self._peak_excursion * 0.40)
-        if self._peak_excursion >= REP_MIN_EXCURSION_METERS and excursion <= return_tolerance:
+        if moving and self._peak_excursion >= REP_MIN_EXCURSION_METERS and excursion <= return_tolerance:
             self._returned = True
 
         duration = self._sample_count * SAMPLE_INTERVAL_SECONDS
         if (
             duration >= self._min_duration
+            and moving
             and self._returned
             and self._peak_excursion >= REP_MIN_EXCURSION_METERS
         ):
@@ -262,12 +260,15 @@ class ProvisionalRepDetector:
             max(self._end_threshold, self._noise_floor * 1.75),
         )
 
-    def _start_cycle(self, linear):
-        dominant = max(range(3), key=lambda index: abs(linear[index]))
-        direction = 1.0 if linear[dominant] >= 0 else -1.0
+    def _start_cycle(self):
+        onset_direction = tuple(
+            sum(sample[index] for sample in self._onset_linear)
+            for index in range(3)
+        )
+        dominant = max(range(3), key=lambda index: abs(onset_direction[index]))
+        direction = 1.0 if onset_direction[dominant] >= 0 else -1.0
         self._axis = tuple(direction if index == dominant else 0.0 for index in range(3))
         self._state = "active"
-        self._onset_samples = 0
         self._settle_samples = 0
         self._sample_count = 0
         self._velocity = 0.0
@@ -277,11 +278,27 @@ class ProvisionalRepDetector:
         self._velocity_total = 0.0
         self._velocity_samples = 0
         self._returned = False
+        for onset_sample in self._onset_linear:
+            self._sample_count += 1
+            self._integrate(onset_sample)
+        self._onset_samples = 0
+        self._onset_linear.clear()
+
+    def _integrate(self, linear):
+        projected_acceleration = sum(
+            component * axis for component, axis in zip(linear, self._axis)
+        ) * 9.80665
+        self._velocity += projected_acceleration * SAMPLE_INTERVAL_SECONDS
+        self._displacement += self._velocity * SAMPLE_INTERVAL_SECONDS
+        self._peak_velocity = max(self._peak_velocity, abs(self._velocity))
+        self._velocity_total += abs(self._velocity)
+        self._velocity_samples += 1
 
     def _reset_cycle(self, refractory=False):
         self._state = "refractory" if refractory else "idle"
         self._refractory_samples = math.ceil(self._refractory / SAMPLE_INTERVAL_SECONDS) if refractory else 0
         self._onset_samples = 0
+        self._onset_linear.clear()
         self._settle_samples = 0
         self._axis = None
 
@@ -293,6 +310,7 @@ class ProvisionalRepDetector:
             current - baseline
             for current, baseline in zip(acceleration, self._baseline_acceleration)
         )
+        self._raw_linear = raw
         self._filtered_linear = tuple(
             previous * 0.65 + current * 0.35
             for previous, current in zip(self._filtered_linear, raw)

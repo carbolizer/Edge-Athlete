@@ -33,6 +33,7 @@ import { controllerCommand } from './controller.js'
 import { T } from '../theme.js'
 import { useRackAgentStatus } from './rackAgent.js'
 import { handleNfcPollResult } from './nfc.js'
+import { useRackCollectorLock } from './collectorLock.js'
 
 const REST_SECONDS = 120 // default rest between sets (real behaviour lands in Step 5)
 
@@ -247,6 +248,32 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   const [nfcStatus, setNfcStatus] = useState('')
   const finishingRef = useRef(false)             // guards EXACTLY ONE complete POST per set
   const repQueueRef = useRef(Promise.resolve())
+  const deferredRepsRef = useRef([])
+  const collectorLease = useRackCollectorLock(
+    rackNumber,
+    controller.canControl || controller.canCollect,
+  )
+  const [collectorVerified, setCollectorVerified] = useState(false)
+  const collectorLockHeld = collectorLease.held
+  const canOperate = controller.canControl && collectorVerified && collectorLease.ownsLease()
+  const updateState = useCallback((fields) => {
+    if (!controller.canControl || !collectorLease.ownsLease()) {
+      return Promise.reject(new Error('This tab does not own the rack collector'))
+    }
+    return controller.updateState(fields)
+  }, [controller.canControl, controller.updateState, collectorLease.ownsLease])
+  const runMutation = useCallback((operation) => {
+    if (!controller.canControl || !collectorLease.ownsLease()) {
+      return Promise.reject(new Error('This tab does not own the rack collector'))
+    }
+    return controller.runMutation(operation)
+  }, [controller.canControl, controller.runMutation, collectorLease.ownsLease])
+  const runControlled = useCallback((operation) => {
+    if (!controller.canControl || !collectorLease.ownsLease()) {
+      return Promise.reject(new Error('This tab does not own the rack collector'))
+    }
+    return controller.runControlled(operation)
+  }, [controller.canControl, controller.runControlled, collectorLease.ownsLease])
 
   useEffect(() => {
     const snapshot = controller.snapshot
@@ -272,6 +299,24 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
     }
   }, [controller.snapshot, roster])
 
+  useEffect(() => {
+    if (!collectorLockHeld) {
+      setCollectorVerified(false)
+      return
+    }
+    let cancelled = false
+    controller.reconcile().then((snapshot) => {
+      if (cancelled) return
+      setCollectorVerified(
+        phase !== 'active'
+        || (setId != null && snapshot?.current_set === setId)
+      )
+    }).catch(() => {
+      if (!cancelled) setCollectorVerified(false)
+    })
+    return () => { cancelled = true }
+  }, [collectorLockHeld, phase, setId, controller.reconcile])
+
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
   useEffect(() => {
@@ -291,10 +336,10 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   }, [selectedAthlete])
 
   useEffect(() => {
-    if (phase !== 'idle' || selectedExerciseId == null || !controller.canControl) return
+    if (phase !== 'idle' || selectedExerciseId == null || !canOperate) return
     if (controller.snapshot?.selected_exercise?.id === selectedExerciseId) return
-    controller.updateState({ selected_exercise: selectedExerciseId }).catch(() => {})
-  }, [phase, selectedExerciseId, controller.canControl, controller.snapshot, controller.updateState])
+    updateState({ selected_exercise: selectedExerciseId }).catch(() => {})
+  }, [phase, selectedExerciseId, canOperate, controller.snapshot, updateState])
 
   // Tapping a name IS the check-in: record it (this rack now owns the athlete),
   // then open their day view. Called from the check-in screen AND the rest screen
@@ -302,18 +347,18 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   // calls this same path.
   const selectAthlete = useCallback(async (a) => {
     try {
-      await controller.runMutation((capability, version) => checkInAthlete(
+      await runMutation((capability, version) => checkInAthlete(
         rackNumber,
         a.athlete_id,
         controllerCommand({}, version),
         capability,
       ))
-      if (phase !== 'idle') await controller.updateState({ phase: 'idle' })
+      if (phase !== 'idle') await updateState({ phase: 'idle' })
       return true
     } catch {
       return false
     }
-  }, [controller.runMutation, controller.updateState, phase, rackNumber])
+  }, [runMutation, updateState, phase, rackNumber])
 
   // Freshness-only refresh of the roster, hot list, and live statuses: picks up a
   // coach adding/removing a session athlete, someone checking in elsewhere, and each
@@ -333,7 +378,7 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   // screen (where the next lifter can tap in).
   const showCheckInList = (phase === 'idle' && !selectedAthlete) || phase === 'rest'
   useEffect(() => {
-    if (!showCheckInList || !controller.canControl) {
+    if (!showCheckInList || !canOperate) {
       setNfcStatus('')
       return
     }
@@ -342,7 +387,7 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
     async function poll() {
       let delay = 500
       try {
-        const result = await controller.runControlled((capability) => consumeNfcTap(rackNumber, capability))
+        const result = await runControlled((capability) => consumeNfcTap(rackNumber, capability))
         if (cancelled) return
         const outcome = await handleNfcPollResult(result, selectAthlete)
         if (cancelled) return
@@ -362,7 +407,7 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [showCheckInList, controller.canControl, controller.runControlled, rackNumber, selectAthlete])
+  }, [showCheckInList, canOperate, runControlled, rackNumber, selectAthlete])
   useEffect(() => {
     if (!showCheckInList) return
     refreshCheckIn()
@@ -391,7 +436,19 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   // carry over, reset the live readout, flip to active (reps start streaming), then
   // create the Set row and keep its id for the complete POST in Step 4.
   async function beginActiveSet() {
-    await clearBuffer()
+    if (!controller.canControl || !collectorVerified || !collectorLease.ownsLease()) {
+      setSetStartError('Another tab owns this rack. Return to the original rack tab.')
+      if (controller.canControl && collectorLease.ownsLease()) updateState({ phase: 'idle' }).catch(() => {})
+      return
+    }
+    try {
+      await clearBuffer()
+      if (!collectorLease.ownsLease()) return
+    } catch {
+      setSetStartError('The local rep buffer could not be cleared. Reload the rack tab and try again.')
+      updateState({ phase: 'idle' }).catch(() => {})
+      return
+    }
     setRepCount(0); setLastVelocity(null); setLastColor('green'); setBuffered(0); setSetId(null)
     setSetStartError('')
     const body = {
@@ -405,13 +462,13 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
     }
     if (node?.id != null) body.node = node.id
     try {
-      const createdSet = await controller.runMutation((capability, version) => (
+      const createdSet = await runMutation((capability, version) => (
         createSet(body, controllerCommand({}, version), capability)
       ))
       setSetId(createdSet.id)
     } catch {
       setSetStartError('The set could not start. Confirm the rack sensor assignment and try again.')
-      if (controller.canControl) controller.updateState({ phase: 'idle' }).catch(() => {})
+      if (canOperate) updateState({ phase: 'idle' }).catch(() => {})
     }
   }
 
@@ -421,9 +478,17 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   // returns to idle. The ref guard makes double-taps impossible — exactly one POST.
   async function finishSet(isFalseSet) {
     if (finishingRef.current || setId == null) return
+    if (!controller.canControl || !collectorVerified || !collectorLease.ownsLease()) {
+      setSetStartError('This tab does not own the active rep collector. Return to the original rack tab.')
+      return
+    }
     finishingRef.current = true
+    let completed = false
     try {
+      await repQueueRef.current
+      if (!collectorLease.ownsLease()) return
       const rows = isFalseSet ? [] : await getBufferedReps()
+      if (!collectorLease.ownsLease()) return
       const reps = rows.map((r, i) => ({
         rep_number: i + 1,                       // authoritative 1..N, not the node's number
         mean_velocity: r.mean_velocity,
@@ -434,11 +499,15 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
       }))
       const avg = reps.length ? reps.reduce((s, x) => s + x.mean_velocity, 0) / reps.length : null
       const peak = reps.length ? Math.max(...reps.map((x) => x.peak_velocity)) : null
-      await controller.runMutation((capability, version) => completeSet(setId, {
+      await runMutation((capability, version) => completeSet(setId, {
           reps_completed: reps.length, avg_velocity: avg, peak_velocity: peak,
           is_false_set: isFalseSet, reps,
         }, controllerCommand({}, version), capability))
+      completed = true
+      if (!collectorLease.ownsLease()) return
       await clearBuffer()                        // only AFTER a successful POST
+      if (!collectorLease.ownsLease()) return
+      deferredRepsRef.current = []
       setBuffered(0)
       setSummary({ reps: reps.length, avg, peak })
       // refresh the day view so the just-finished set shows in the progress bars,
@@ -457,6 +526,20 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
       // POST failed — leave the buffer intact so the set can be retried (no defined
       // retry/backoff yet; it's a Known Open Item).
     } finally {
+      if (!completed) {
+        const deferred = deferredRepsRef.current
+        deferredRepsRef.current = []
+        finishingRef.current = false
+        for (const rep of deferred) {
+          repQueueRef.current = repQueueRef.current.then(() => {
+            if (!collectorLease.ownsLease()) return
+            return addRep(rep)
+          }).catch(() => {
+            setSetStartError('The local rep buffer is unavailable. Stop this set and reload the rack tab.')
+          })
+        }
+        return
+      }
       finishingRef.current = false
     }
   }
@@ -465,25 +548,62 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
   // set: reps arriving in idle/countdown/rest are never captured. Each rep is
   // written to the durable buffer FIRST, then updates the live readout.
   useEffect(() => {
-    if (phase !== 'active' || !node || !controller.canControl || !agent.ready) return
+    if (phase !== 'active' || !node || !collectorVerified || !collectorLockHeld || !agent.ready) return
     const onRep = (rep) => {
+      if (!collectorLease.ownsLease()) return
+      if (finishingRef.current) {
+        deferredRepsRef.current.push(rep)
+        return
+      }
       repQueueRef.current = repQueueRef.current.then(async () => {
-        await addRep(rep)
+        if (!collectorLease.ownsLease()) return
+        try {
+          await addRep(rep)
+        } catch {
+          setSetStartError('The local rep buffer is unavailable. Stop this set and reload the rack tab.')
+          return
+        }
         const rows = await getBufferedReps()
         const color = velocityColor(rep.mean_velocity, zoneMin)
-        await controller.updateState({
-          phase: 'active',
-          rep_count: rows.length,
-          latest_mean_velocity: rep.mean_velocity,
-          latest_peak_velocity: rep.peak_velocity,
-          latest_color: color,
-        })
+        if (canOperate) {
+          await updateState({
+            phase: 'active',
+            rep_count: rows.length,
+            latest_mean_velocity: rep.mean_velocity,
+            latest_peak_velocity: rep.peak_velocity,
+            latest_color: color,
+          }).catch(() => { /* the durable row survives a lost controller lease */ })
+        }
         setBuffered(rows.length)
-      }).catch(() => {})
+      }).catch(() => {
+        setSetStartError('The local rep buffer could not be read. Stop this set and reload the rack tab.')
+      })
     }
     const unsub = subscribeNodeReps(node.node_id, onRep)
     return () => unsub()
-  }, [phase, node, zoneMin, controller.canControl, controller.updateState, agent.ready])
+  }, [phase, node, zoneMin, collectorVerified, collectorLockHeld, collectorLease.ownsLease, canOperate, updateState, agent.ready])
+
+  useEffect(() => {
+    if (phase !== 'active' || !canOperate) return
+    let cancelled = false
+    repQueueRef.current.then(async () => {
+      if (!collectorLease.ownsLease()) return
+      const rows = await getBufferedReps()
+      if (!collectorLease.ownsLease()) return
+      const currentCount = controller.snapshot?.rep_count ?? 0
+      if (cancelled || rows.length <= currentCount) return
+      const latest = rows[rows.length - 1]
+      await updateState({
+        phase: 'active',
+        rep_count: rows.length,
+        latest_mean_velocity: latest.mean_velocity,
+        latest_peak_velocity: latest.peak_velocity,
+        latest_color: velocityColor(latest.mean_velocity, zoneMin),
+      })
+      if (!cancelled) setBuffered(rows.length)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [phase, zoneMin, canOperate, controller.snapshot?.rep_count, updateState])
 
   const badge = PHASE_BADGE[phase]
 
@@ -550,25 +670,31 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
           statusMap={statusMap}
           selectedAthlete={selectedAthlete}
           onSelectAthlete={selectAthlete}
-          onClearAthlete={() => controller.updateState({
+          onClearAthlete={() => updateState({
             selected_athlete: null,
             selected_exercise: null,
           }).catch(() => {})}
           progress={progress}
           progressLoading={progressLoading}
           selectedExerciseId={selectedExerciseId}
-          onSelectMovement={(exerciseId) => controller.updateState({ selected_exercise: exerciseId }).catch(() => {})}
+          onSelectMovement={(exerciseId) => updateState({ selected_exercise: exerciseId }).catch(() => {})}
           effectiveLoad={effectiveLoad}
           onEditWeight={() => setEditingWeight(true)}
-          onStart={() => controller.updateState({
-            phase: 'countdown',
-            selected_athlete: selectedAthlete?.athlete_id,
-            selected_exercise: selectedExerciseId,
-            rep_count: 0,
-            latest_mean_velocity: null,
-            latest_peak_velocity: null,
-            latest_color: null,
-          }).catch(() => {})}
+          onStart={() => {
+            if (!controller.canControl || !collectorVerified || !collectorLease.ownsLease()) {
+              setSetStartError('Another tab owns this rack. Return to the original rack tab.')
+              return
+            }
+            updateState({
+              phase: 'countdown',
+              selected_athlete: selectedAthlete?.athlete_id,
+              selected_exercise: selectedExerciseId,
+              rep_count: 0,
+              latest_mean_velocity: null,
+              latest_peak_velocity: null,
+              latest_color: null,
+            }).catch(() => {})
+          }}
         />
       )}
       {phase === 'countdown' && <CountdownPhase onDone={beginActiveSet} />}
@@ -585,10 +711,10 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
         />
       )}
       {phase === 'summary' && <SummaryPhase summary={summary}
-        onRest={() => controller.updateState({ phase: 'rest' }).catch(() => {})} />}
+        onRest={() => updateState({ phase: 'rest' }).catch(() => {})} />}
       {phase === 'rest' && (
         <RestPhase
-          onDone={() => controller.updateState({ phase: 'idle' }).catch(() => {})}
+          onDone={() => updateState({ phase: 'idle' }).catch(() => {})}
           movementName={selectedMovement?.name}
           nextSetNumber={selectedMovement?.next_set_number}
           roster={roster}

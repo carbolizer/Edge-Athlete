@@ -1,0 +1,6 @@
+GATEWAY_SOCKET=/run/edgeathlete/ble-agent.sock
+GATEWAY_RACK=1
+GATEWAY_NODE=wt901_0123456789abcdef01234567
+GATEWAY_REVISION=1
+GATEWAY_URL=https://edge.example.com/api/gateway/v1/events/
+GATEWAY_POLL_SECONDS=10

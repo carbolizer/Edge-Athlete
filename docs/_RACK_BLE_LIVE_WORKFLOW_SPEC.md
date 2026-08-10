@@ -129,6 +129,12 @@ and set-completion mutations do not create those durable invalidations.
   adapter failure, scan timeout, and verification loss produce explicit retryable states.
 - [ ] AC30: Agent restart restores private bindings, but readiness for eight
   simultaneous rack streams remains unaccepted until tested on the target adapter.
+- [x] AC31: Given the original controller tab has an active set, when another
+  browser tab is foreground, then every Agent-accepted rep continues into that
+  tab's IndexedDB-backed rack count without duplicate collectors.
+- [ ] AC32: Given the controller lease expires while its active-set tab is hidden,
+  when that exact tab becomes visible, then it reclaims the set, synchronizes all
+  buffered reps once, and a different or cloned tab cannot mutate or complete it.
 
 ## UX / API / device behavior
 
@@ -147,8 +153,9 @@ and set-completion mutations do not create those durable invalidations.
   incomplete return traces are rejected. Altitude is unavailable in the current
   WT901 `0x61` payload.
 - The detector learns a bounded idle-noise floor and raises its onset/settle
-  thresholds when rack vibration exceeds the static defaults. Integration freezes
-  during verified stillness so filter decay cannot fabricate a return to origin.
+  thresholds when rack vibration exceeds the static defaults. Raw acceleration
+  continues through brief below-threshold samples, but only active movement can
+  establish a completed return.
 - Active rep count and latest mean/peak velocity are mirrored through `RackRuntime`
   into a separate room-state `live` block. Coach and wall views render that block
   without treating it as a persisted set result or leaderboard input.
@@ -313,6 +320,18 @@ Not verified or not complete:
 - Interactive staff takeover, transferable queue recovery, detector accuracy/noise
   qualification, hosted credentials/TLS/MQTT ACLs, and AC24 event fencing.
 - Eight simultaneous WT901 notification streams on the target Bluetooth adapter.
+
+Hidden-tab validation on 2026-08-07:
+
+- Frontend: 20 files and 162 tests passed; production build passed with the existing
+  bundle-size warning. WT901 Agent: 49 tests passed. `git diff --check` passed.
+- The deployed rack tab was left hidden with the coach tab foreground. Agent
+  `accepted_reps` increased from 53 to 70 while `RackRuntime.rep_count` increased
+  from 9 to 26: an exact `+17/+17` with no skipped event. The controller remained
+  active during this observed interval.
+- The user could not visually confirm the final `26` on the rack screen. Lease-expiry
+  recovery, cloned-tab contention, completion-boundary timing, and portrait/landscape
+  rendering remain manual evidence gaps under AC32 and the broader AC18.
 
 Central discovery evidence on 2026-08-05:
 

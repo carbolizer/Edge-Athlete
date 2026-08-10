@@ -22,6 +22,7 @@ import RackSetup from './rack/RackSetup.jsx'
 import RackNodeSetup from './rack/RackNodeSetup.jsx'
 import RackObserver from './rack/RackObserver.jsx'
 import { useRackController } from './rack/controller.js'
+import { persistentRackHost, shouldClearCoachToken } from './rack/persistentRack.js'
 import CoachTablet from './coach/CoachTablet.jsx'
 import { setCoachToken } from './coach/api.js'
 import Dashboard from './Dashboard.jsx'
@@ -189,7 +190,7 @@ function RackLive({ rackNumber }) {
       onObserve={(assignedNode) => { setNode(assignedNode); setCanClaimControl(false); setSetupResolved(true) }} />
   }
 
-  if (controller.mode === 'observer') {
+  if (controller.mode === 'observer' && !controller.canCollect) {
     return <RackObserver snapshot={controller.snapshot} reason={controller.reason} />
   }
 
@@ -260,19 +261,33 @@ export default function App() {
   // whether the tablet is live, waiting, or mid-session.
   const role = localStorage.getItem('device_role')
   const isRack = role === 'rack'
+  const rackHost = persistentRackHost(pathname, role, localStorage.getItem('rack_number'))
+  useEffect(() => {
+    if (shouldClearCoachToken(pathname, role)) setCoachToken(null)
+  }, [pathname, role])
   // The wall display and rack tablets are the "bystander" screens: they never
   // type the new Wi-Fi password and drop offline when it changes, so they get an
   // overlay showing it. The coach tablet initiates the change and has its own
   // copy-the-password flow, so it does not need this.
   const isBystanderScreen = role === 'rack' || role === 'dashboard'
   return (
-    // Keyed by pathname so navigating away from a broken screen clears the
-    // error — otherwise one bad route would hold the whole app hostage until a
-    // manual reload.
-    <ErrorBoundary key={pathname}>
-      {route(pathname)}
+    <>
+      {rackHost && (
+        <ErrorBoundary key={`rack-${rackHost.rackNumber}`}>
+          <div hidden={!rackHost.visible}>
+            <RackLive rackNumber={rackHost.rackNumber} />
+          </div>
+        </ErrorBoundary>
+      )}
+      {!rackHost?.visible && (
+        // Keyed by pathname so navigating away from a broken auxiliary screen
+        // clears its error without unmounting the active rack collector.
+        <ErrorBoundary key={pathname}>
+          {route(pathname)}
+        </ErrorBoundary>
+      )}
       {isRack && <RackCommandListener />}
       {isBystanderScreen && <WifiChangeOverlay />}
-    </ErrorBoundary>
+    </>
   )
 }

@@ -18,16 +18,30 @@ Works with:
   - monitoring-publisher container — drains the MonitoringEvent outbox to MQTT
 
 For more information on this file, see
-https://docs.djangoproject.com/en/5.1/topics/settings/
+https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
-https://docs.djangoproject.com/en/5.1/ref/settings/
+https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
 from datetime import timedelta
 import os
+import re
 
 from django.core.exceptions import ImproperlyConfigured
+
+
+def _environment_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    if value not in {"True", "False"}:
+        raise ImproperlyConfigured(f"{name} must be exactly True or False")
+    return value == "True"
+
+
+def _environment_list(name):
+    return [value.strip() for value in os.environ.get(name, "").split(",") if value.strip()]
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # BASE_DIR points to the /django folder — the root of the Django project
@@ -35,8 +49,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # .env sets DEBUG=True for development, DEBUG=False for production
-# The '== True' converts the string from .env into an actual boolean
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+# Boolean environment values are parsed strictly to prevent production typos.
+DEBUG = _environment_bool("DEBUG")
+VPS_DEPLOYMENT = _environment_bool("VPS_DEPLOYMENT")
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Read from .env — never hardcode this value.
@@ -62,7 +77,91 @@ if not SECRET_KEY:
 
 # Hosts that Django will respond to — read from .env as a comma separated list
 # Example: ALLOWED_HOSTS=localhost,127.0.0.1
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost').split(',')
+ALLOWED_HOSTS = _environment_list("ALLOWED_HOSTS") or ["localhost"]
+
+CSRF_TRUSTED_ORIGINS = _environment_list("CSRF_TRUSTED_ORIGINS")
+SECURE_SSL_REDIRECT = _environment_bool("SECURE_SSL_REDIRECT")
+SESSION_COOKIE_SECURE = _environment_bool("SESSION_COOKIE_SECURE")
+CSRF_COOKIE_SECURE = _environment_bool("CSRF_COOKIE_SECURE")
+USE_X_FORWARDED_HOST = _environment_bool("USE_X_FORWARDED_HOST")
+SECURE_PROXY_SSL_HEADER = None
+
+if VPS_DEPLOYMENT:
+    required_values = {
+        "VPS_DOMAIN": os.environ.get("VPS_DOMAIN", ""),
+        "SECRET_KEY": SECRET_KEY,
+        "POSTGRES_DB": os.environ.get("POSTGRES_DB", ""),
+        "POSTGRES_USER": os.environ.get("POSTGRES_USER", ""),
+        "POSTGRES_PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+    }
+    missing_or_placeholder = [
+        name for name, value in required_values.items()
+        if not value or "<" in value or ">" in value
+    ]
+    if missing_or_placeholder:
+        raise ImproperlyConfigured(
+            "VPS deployment requires non-placeholder values for: "
+            + ", ".join(missing_or_placeholder)
+        )
+
+    development_defaults = {
+        "SECRET_KEY": "django-insecure-edgeathlete-dev-key-replace-for-prod",
+        "POSTGRES_DB": "edgeathlete",
+        "POSTGRES_USER": "edgeathlete_user",
+        "POSTGRES_PASSWORD": "supersafepw",
+    }
+    unsafe_defaults = [
+        name for name, value in development_defaults.items()
+        if required_values[name] == value
+    ]
+    if unsafe_defaults:
+        raise ImproperlyConfigured(
+            "VPS deployment cannot use repository development defaults for: "
+            + ", ".join(unsafe_defaults)
+        )
+    if len(SECRET_KEY) < 50 or len(set(SECRET_KEY)) < 5:
+        raise ImproperlyConfigured(
+            "VPS SECRET_KEY must contain at least 50 characters with sufficient variety"
+        )
+    database_password = required_values["POSTGRES_PASSWORD"]
+    if len(database_password) < 16 or len(set(database_password)) < 5:
+        raise ImproperlyConfigured(
+            "VPS POSTGRES_PASSWORD must contain at least 16 characters with sufficient variety"
+        )
+    if DEBUG:
+        raise ImproperlyConfigured("DEBUG must be False for VPS deployment")
+
+    vps_domain = required_values["VPS_DOMAIN"].lower()
+    domain_labels = vps_domain.split(".")
+    if (
+        vps_domain != required_values["VPS_DOMAIN"]
+        or len(vps_domain) > 253
+        or len(domain_labels) < 2
+        or any(
+            len(label) > 63 or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) is None
+            for label in domain_labels
+        )
+    ):
+        raise ImproperlyConfigured("VPS_DOMAIN must be a lowercase DNS hostname")
+    if ALLOWED_HOSTS != [vps_domain]:
+        raise ImproperlyConfigured("ALLOWED_HOSTS must contain only VPS_DOMAIN")
+    if CSRF_TRUSTED_ORIGINS != [f"https://{vps_domain}"]:
+        raise ImproperlyConfigured(
+            "CSRF_TRUSTED_ORIGINS must contain only the HTTPS VPS origin"
+        )
+
+    required_security_flags = {
+        "SECURE_SSL_REDIRECT": SECURE_SSL_REDIRECT,
+        "SESSION_COOKIE_SECURE": SESSION_COOKIE_SECURE,
+        "CSRF_COOKIE_SECURE": CSRF_COOKIE_SECURE,
+        "USE_X_FORWARDED_HOST": USE_X_FORWARDED_HOST,
+    }
+    disabled_flags = [name for name, enabled in required_security_flags.items() if not enabled]
+    if disabled_flags:
+        raise ImproperlyConfigured(
+            "VPS deployment requires True for: " + ", ".join(disabled_flags)
+        )
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Application definition
 # Every Django app and third party package must be listed here
@@ -125,7 +224,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'basestation_config.wsgi.application'
 
 # Database configuration
-# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
+# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 # Uses PostgreSQL instead of SQLite — required for production and Docker
 # HOST is 'postgres' because that is the compose service name on the Docker network
 # All credentials come from .env — never hardcoded here
@@ -167,14 +266,14 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Internationalization
-# https://docs.djangoproject.com/en/5.1/topics/i18n/
+# https://docs.djangoproject.com/en/5.2/topics/i18n/
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.1/howto/static-files/
+# https://docs.djangoproject.com/en/5.2/howto/static-files/
 #
 # ⚠️ THIS IS NOT THE REACT APP. The front end is built by its own container and
 # served by Nginx; nothing here touches it. These are the stylesheets for the
@@ -212,8 +311,8 @@ STORAGES = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS - allows React (port 5173) to make API calls to Django (port 8000)
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost", 
+CORS_ALLOWED_ORIGINS = [] if VPS_DEPLOYMENT else [
+    "http://localhost",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]

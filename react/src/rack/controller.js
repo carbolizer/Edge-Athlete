@@ -30,6 +30,16 @@ function leaseDuration(response) {
     : 0
 }
 
+export function shouldRetryControllerClaim(mode, canClaim, snapshot) {
+  return mode === 'observer' && canClaim && !!snapshot && !snapshot.controller_active
+}
+
+export function canCollectRackReps(mode, ownedSetId, snapshot) {
+  return mode === 'controller' || (
+    ownedSetId != null && ownedSetId === snapshot?.current_set
+  )
+}
+
 export function useRackController(rackNumber, deviceId, enabled, canClaim = true) {
   const identityRef = useRef(null)
   const capabilityRef = useRef(null)
@@ -37,6 +47,7 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
   const leaseTimerRef = useRef(null)
   const leaseDeadlineRef = useRef(0)
   const mountedRef = useRef(false)
+  const ownedSetRef = useRef(null)
   const [mode, setMode] = useState('checking')
   const [snapshot, setSnapshot] = useState(null)
   const [reason, setReason] = useState('')
@@ -147,6 +158,7 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
           controllerEpoch: response.controller_epoch,
         }
         consumeSnapshot(response.snapshot)
+        ownedSetRef.current = response.snapshot?.current_set ?? null
         setMode('controller')
         setReason('')
         armLeaseDeadline(response)
@@ -176,6 +188,11 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
 
   useEffect(() => {
     if (mode !== 'controller') return
+    ownedSetRef.current = snapshot?.current_set ?? null
+  }, [mode, snapshot?.current_set])
+
+  useEffect(() => {
+    if (mode !== 'controller') return
     const heartbeat = async () => {
       const capability = capabilityRef.current
       if (!capability) return
@@ -198,22 +215,29 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
   }, [mode, reconcile])
 
   useEffect(() => {
-    if (
-      mode !== 'observer'
-      || !canClaim
-      || !snapshot
-      || snapshot.controller_active
-      || snapshot.current_set != null
-    ) return
+    if (!shouldRetryControllerClaim(mode, canClaim, snapshot)) return
     const retry = setTimeout(() => setClaimAttempt((attempt) => attempt + 1), 2000)
     return () => clearTimeout(retry)
-  }, [mode, canClaim, snapshot?.controller_active, snapshot?.current_set])
+  }, [mode, canClaim, snapshot?.controller_active])
+
+  useEffect(() => {
+    const resume = () => {
+      if (document.visibilityState !== 'visible') return
+      reconcile()
+      if (mode === 'observer' && canClaim) {
+        setClaimAttempt((attempt) => attempt + 1)
+      }
+    }
+    document.addEventListener('visibilitychange', resume)
+    return () => document.removeEventListener('visibilitychange', resume)
+  }, [mode, canClaim, reconcile])
 
   return {
     mode,
     reason,
     snapshot,
     canControl: mode === 'controller',
+    canCollect: canCollectRackReps(mode, ownedSetRef.current, snapshot),
     runMutation,
     runControlled,
     updateState,
