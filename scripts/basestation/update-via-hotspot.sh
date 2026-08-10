@@ -110,9 +110,18 @@ EDGE_BRANCH="$BRANCH" bash /tmp/ea-bootstrap.sh
 rc=$?
 [ "$rc" -eq 0 ] && log "bootstrap finished cleanly" || log "!! bootstrap exited $rc — the AP still comes back"
 
-# ── 4. hand back to the boot service ────────────────────────────────────────
-# The trap restores the AP; this brings the refreshed stack up with it.
-log "starting the stack..."
-systemctl restart edgeathlete.service || log "!! service restart failed — check: journalctl -u edgeathlete"
+# ── 4. reboot ───────────────────────────────────────────────────────────────
+# A reboot is the cleanest finish AND a second safety net: the boot service runs
+# startup.sh, which raises the access point and starts the stack from scratch. So even
+# if the trap above somehow failed, coming back up fixes it.
+#
+# The trap stays armed deliberately — it restores the AP as this script exits, so the
+# gym network is back even in the seconds before the machine actually goes down, and
+# still back if the reboot never happens.
+log "update finished (exit $rc) — rebooting in 5 seconds"
+log "rejoin the gym Wi-Fi in ~2 minutes, then: ssh edgeathlete@basestation 'tail -40 /tmp/ea-update.log'"
+sync
+sleep 5
+systemctl reboot || reboot || log "!! reboot failed — run 'sudo reboot' by hand"
 
 exit "$rc"
