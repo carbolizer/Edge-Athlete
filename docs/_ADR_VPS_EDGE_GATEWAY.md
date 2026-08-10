@@ -460,9 +460,11 @@ gateway credentials receive `403` or `401` and no diagnostic body.
 service, network, project, and volume names so `docker compose up` remains the local
 profile. PostgreSQL has no `ports` entry and joins only an internal backend network.
 Django and React have no host-published ports. Nginx alone publishes `80` and `443`;
-SSH remains a host operation outside Compose. The VPS profile includes neither
-Mosquitto, `mqtt-listener`, `monitoring-publisher`, simulator, seed, host Agent
-sockets, `/run/edgeathlete`, nor the local PostgreSQL volume.
+it joins a dedicated routable network for those bindings and separate internal
+networks for each upstream. SSH remains a host operation outside Compose. The VPS
+profile includes neither Mosquitto, `mqtt-listener`, `monitoring-publisher`,
+simulator, seed, host Agent sockets, `/run/edgeathlete`, nor the local PostgreSQL
+volume.
 
 Nginx terminates TLS 1.2/1.3 with an operator-provisioned publicly trusted
 certificate mounted read-only. Port 80 redirects safe browser `GET`/`HEAD` requests

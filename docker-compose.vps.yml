@@ -85,6 +85,7 @@ services:
       - ./nginx/vps.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ${VPS_CERTBOT_DIR:?set VPS_CERTBOT_DIR in .env.vps}:/etc/letsencrypt:ro
     networks:
+      - vps_public
       - vps_django_proxy
       - vps_react_proxy
     restart: unless-stopped
@@ -99,6 +100,8 @@ volumes:
     name: edgeathlete_vps_postgres_data
 
 networks:
+  vps_public:
+    name: edgeathlete_vps_public
   vps_database:
     name: edgeathlete_vps_database
     internal: true
