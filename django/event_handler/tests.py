@@ -3277,7 +3277,7 @@ class TrainingGroupCoachMigrationTests(TransactionTestCase):
     def tearDown(self):
         # Leave the database at the latest migration, or every test that runs
         # after this class sees a half-migrated schema.
-        self._migrate([("event_handler", "0022_vps_gateway_health_foundation")])
+        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
 
 
 class NodeAssignmentMigrationTests(TransactionTestCase):
@@ -3331,7 +3331,7 @@ class NodeAssignmentMigrationTests(TransactionTestCase):
         self.assertIsNone(RolledBackNode.objects.get(node_id="duplicate-b").rack_number)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0022_vps_gateway_health_foundation")])
+        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
 
 
 class NodeAcquisitionMigrationTests(TransactionTestCase):
@@ -3357,7 +3357,7 @@ class NodeAcquisitionMigrationTests(TransactionTestCase):
         self.assertEqual(NewNode.objects.get(node_id="mqtt").acquisition_kind, "mqtt")
 
     def tearDown(self):
-        self._migrate([("event_handler", "0022_vps_gateway_health_foundation")])
+        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
 
 
 class OneOpenSessionTests(APITestCase):
@@ -5882,6 +5882,167 @@ class GatewayFoundationMigrationTests(TransactionTestCase):
         )
         self.assertEqual(rolled_back_apps.get_model("event_handler", "Set").objects.count(), 1)
         self.assertEqual(rolled_back_apps.get_model("event_handler", "Rep").objects.count(), 1)
+
+    def tearDown(self):
+        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
+
+
+class PublicCoachRegistrationDisabledTests(APITestCase):
+    def test_public_coach_registration_route_does_not_exist(self):
+        response = self.client.post(
+            "/api/auth/register/",
+            {"username": "unapproved", "password": "not-created"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(User.objects.filter(username="unapproved").exists())
+
+
+class OrganizationTenancyMigrationTests(TransactionTestCase):
+    migrate_from = [("event_handler", "0022_vps_gateway_health_foundation")]
+    migrate_to = [("event_handler", "0023_organization_tenancy_foundation")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_backfill_and_reverse_preserve_training_graph(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldUser = old_apps.get_model("auth", "User")
+        OldAthlete = old_apps.get_model("event_handler", "Athlete")
+        OldGroup = old_apps.get_model("event_handler", "TrainingGroup")
+        OldGroupCoach = old_apps.get_model("event_handler", "TrainingGroupCoach")
+        OldBlock = old_apps.get_model("event_handler", "TrainingBlock")
+        OldSession = old_apps.get_model("event_handler", "TrainingSession")
+        OldReport = old_apps.get_model("event_handler", "DailyReport")
+        OldNode = old_apps.get_model("event_handler", "Node")
+        OldExercise = old_apps.get_model("event_handler", "Exercise")
+        OldSet = old_apps.get_model("event_handler", "Set")
+        OldRep = old_apps.get_model("event_handler", "Rep")
+
+        staff = OldUser.objects.create(username="legacy-owner", is_active=True, is_staff=True)
+        inactive_staff = OldUser.objects.create(
+            username="legacy-inactive-staff", is_active=False, is_staff=True,
+        )
+        ordinary = OldUser.objects.create(
+            username="legacy-nonstaff", is_active=True, is_staff=False,
+        )
+        athlete = OldAthlete.objects.create(name="Legacy athlete")
+        group = OldGroup.objects.create(name="Legacy team")
+        athlete.training_groups.add(group)
+        OldGroupCoach.objects.create(training_group=group, coach=staff, role="head")
+        OldGroupCoach.objects.create(training_group=group, coach=ordinary, role="assistant")
+        block = OldBlock.objects.create(coach=staff, name="Legacy block")
+        session = OldSession.objects.create(label="Legacy session", started_at=timezone.now())
+        session.athletes.add(athlete)
+        report = OldReport.objects.create(session=session, snapshot={"athletes": []})
+        node = OldNode.objects.create(node_id="legacy-tenant-node", rack_number=8)
+        exercise = OldExercise.objects.create(name="Legacy tenancy exercise")
+        workout_set = OldSet.objects.create(
+            session=session, athlete=athlete, node=node, exercise=exercise, set_number=1,
+        )
+        rep = OldRep.objects.create(
+            set=workout_set, rep_number=1, timestamp=timezone.now(), mean_velocity=0.6,
+            peak_velocity=0.8, duration_ms=700, velocity_color="green",
+        )
+
+        new_apps = self._migrate(self.migrate_to)
+        Organization = new_apps.get_model("event_handler", "Organization")
+        Membership = new_apps.get_model("event_handler", "OrganizationMembership")
+        organization = Organization.objects.get(
+            pk=uuid.UUID("4ac9f970-4084-4f7f-9cb8-c586c995ed62"),
+        )
+        self.assertEqual(organization.display_name, "Legacy Edge Athlete")
+        for model_name, row_id in (
+            ("Athlete", athlete.pk),
+            ("TrainingGroup", group.pk),
+            ("TrainingBlock", block.pk),
+            ("TrainingSession", session.pk),
+            ("DailyReport", report.pk),
+        ):
+            row = new_apps.get_model("event_handler", model_name).objects.get(pk=row_id)
+            self.assertEqual(row.organization_id, organization.pk)
+
+        membership = Membership.objects.get(user_id=staff.pk)
+        self.assertEqual(membership.organization_id, organization.pk)
+        self.assertEqual(membership.role, "owner")
+        self.assertFalse(Membership.objects.filter(user_id=ordinary.pk).exists())
+        self.assertFalse(Membership.objects.filter(user_id=inactive_staff.pk).exists())
+        self.assertTrue(
+            new_apps.get_model("event_handler", "Athlete").objects.get(pk=athlete.pk)
+            .training_groups.filter(pk=group.pk).exists()
+        )
+        self.assertTrue(
+            new_apps.get_model("event_handler", "TrainingGroupCoach").objects.filter(
+                training_group_id=group.pk, coach_id=staff.pk, role="head",
+            ).exists()
+        )
+        self.assertTrue(
+            new_apps.get_model("event_handler", "TrainingGroupCoach").objects.filter(
+                training_group_id=group.pk, coach_id=ordinary.pk, role="assistant",
+            ).exists()
+        )
+        self.assertTrue(
+            new_apps.get_model("event_handler", "TrainingSession").objects.get(pk=session.pk)
+            .athletes.filter(pk=athlete.pk).exists()
+        )
+        migrated_set = new_apps.get_model("event_handler", "Set").objects.get(pk=workout_set.pk)
+        self.assertEqual(migrated_set.session_id, session.pk)
+        self.assertEqual(migrated_set.athlete_id, athlete.pk)
+        migrated_rep = new_apps.get_model("event_handler", "Rep").objects.get(pk=rep.pk)
+        self.assertEqual(migrated_rep.set_id, workout_set.pk)
+        self.assertEqual(migrated_rep.rep_number, 1)
+
+        other_organization = Organization.objects.create(display_name="Other organization")
+        inactive_membership = Membership.objects.create(
+            organization=other_organization, user_id=staff.pk, role="owner", is_active=False,
+        )
+        self.assertFalse(inactive_membership.is_active)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Membership.objects.create(
+                organization=other_organization, user_id=staff.pk, role="owner", is_active=True,
+            )
+
+        rolled_back_apps = self._migrate(self.migrate_from)
+        self.assertEqual(rolled_back_apps.get_model("event_handler", "Athlete").objects.count(), 1)
+        self.assertTrue(
+            rolled_back_apps.get_model("event_handler", "Athlete").objects.get(pk=athlete.pk)
+            .training_groups.filter(pk=group.pk).exists()
+        )
+        self.assertTrue(
+            rolled_back_apps.get_model("event_handler", "TrainingGroupCoach").objects.filter(
+                training_group_id=group.pk, coach_id=staff.pk, role="head",
+            ).exists()
+        )
+        self.assertTrue(
+            rolled_back_apps.get_model("event_handler", "TrainingGroupCoach").objects.filter(
+                training_group_id=group.pk, coach_id=ordinary.pk, role="assistant",
+            ).exists()
+        )
+        self.assertTrue(
+            rolled_back_apps.get_model("event_handler", "TrainingSession").objects.get(pk=session.pk)
+            .athletes.filter(pk=athlete.pk).exists()
+        )
+        rolled_back_block = rolled_back_apps.get_model(
+            "event_handler", "TrainingBlock",
+        ).objects.get(pk=block.pk)
+        self.assertEqual(rolled_back_block.name, "Legacy block")
+        rolled_back_report = rolled_back_apps.get_model(
+            "event_handler", "DailyReport",
+        ).objects.get(pk=report.pk)
+        self.assertEqual(rolled_back_report.session_id, session.pk)
+        rolled_back_set = rolled_back_apps.get_model(
+            "event_handler", "Set",
+        ).objects.get(pk=workout_set.pk)
+        self.assertEqual(rolled_back_set.athlete_id, athlete.pk)
+        rolled_back_rep = rolled_back_apps.get_model(
+            "event_handler", "Rep",
+        ).objects.get(pk=migrated_rep.pk)
+        self.assertEqual(rolled_back_rep.set_id, workout_set.pk)
+        self.assertEqual(rolled_back_rep.mean_velocity, 0.6)
 
     def tearDown(self):
         self._migrate(self.migrate_to)

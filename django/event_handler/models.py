@@ -163,6 +163,43 @@ class RackRuntime(models.Model):
         return f"Rack {self.rack_number} runtime ({self.phase}, v{self.state_version})"
 
 
+class Organization(models.Model):
+    """Account boundary introduced before tenant authorization is enabled."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    display_name = models.CharField(max_length=120)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.display_name
+
+
+class OrganizationMembership(models.Model):
+    OWNER = "owner"
+    ROLE_CHOICES = [(OWNER, "Owner")]
+
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, related_name="memberships",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="organization_memberships",
+    )
+    role = models.CharField(max_length=16, choices=ROLE_CHOICES, default=OWNER)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "user"], name="organization_user_membership_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["user"], condition=models.Q(is_active=True),
+                name="one_active_organization_per_user",
+            ),
+        ]
+
+
 class HostedGym(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     slug = models.SlugField(max_length=64, unique=True)
@@ -347,6 +384,10 @@ class RackCommandReceipt(models.Model):
 
 class Athlete(models.Model):
     """A lifter. Optionally carries an NFC tag id for tap-to-identify at a rack."""
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="athletes",
+    )
     name = models.CharField(max_length=255)
     nfc_tag_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -413,6 +454,10 @@ class TrainingGroup(models.Model):
     ⚠️ The staff who run a group live in TrainingGroupCoach, not in a field here.
     This used to be a single `coach` FK, which could not say what a real weight
     room does every day: "Sarah and Mike both run Varsity"."""
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="training_groups",
+    )
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -504,6 +549,10 @@ class TrainingBlock(models.Model):
     Carries a duration/cadence so a future calendar-generator feature can
     auto-place sessions from it later. That generator isn't built yet — this
     just keeps the door open without inventing more structure than needed today."""
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="training_blocks",
+    )
     coach = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='training_blocks')
     name = models.CharField(max_length=255)
     # Several, not one — a block sits on more than one axis at a time. See
@@ -749,6 +798,10 @@ class TrainingSession(models.Model):
     ⚠️ Never order sessions by `-started_at` without excluding nulls: Postgres
     sorts NULLs FIRST descending, so an unstarted future session would come back
     as the newest thing in the room."""
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="training_sessions",
+    )
     label = models.CharField(max_length=255)
     # Not auto_now_add — see above. Creating a session no longer starts it.
     started_at = models.DateTimeField(null=True, blank=True)
@@ -947,6 +1000,10 @@ class DailyReport(models.Model):
     on the live tables it came from. `schema_version` lets an older stored
     snapshot still be read correctly after the shape evolves.
     """
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="daily_reports",
+    )
     session = models.OneToOneField(TrainingSession, on_delete=models.PROTECT, related_name='daily_report')
     schema_version = models.PositiveIntegerField(default=1)
     generated_at = models.DateTimeField(auto_now_add=True)

@@ -22,15 +22,17 @@ which carries the full reasoning in comments. This is the readable version.
 
 ## The 30-second big picture
 
-There are four worlds in this system, and the tables split along them:
+There are five worlds in this system, and the tables split along them:
 
-1. **The equipment on the gym floor** — the sensors on the bars and the tablets at each rack.
-2. **The people** — the athletes, the groups they train in, and the coaches who run them.
-3. **The plan** — the reusable templates, the deployed instances, and the calendar.
-4. **The training that actually happened** — sessions, sets, reps, and the frozen report.
+1. **The account boundary** — the organization and its owner accounts.
+2. **The equipment on the gym floor** — the sensors on the bars and the tablets at each rack.
+3. **The people** — the athletes, the groups they train in, and the coaches who run them.
+4. **The plan** — the reusable templates, the deployed instances, and the calendar.
+5. **The training that actually happened** — sessions, sets, reps, and the frozen report.
 
-Everything connects back to two anchors: an **athlete** (who) and an **exercise** (what
-movement).
+Training records connect to an **organization** account boundary, an **athlete**
+(who), and an **exercise** (what movement). Organization ownership is nullable
+during migration and does not yet enforce API authorization.
 
 ---
 
@@ -53,6 +55,12 @@ and can't find it, that's the design working.
 
 ```mermaid
 erDiagram
+    ORGANIZATION ||--o{ ORGANIZATION_MEMBERSHIP : "has owners"
+    ORGANIZATION ||--o{ ATHLETE : "owns"
+    ORGANIZATION ||--o{ TRAINING_GROUP : "owns"
+    ORGANIZATION ||--o{ TRAINING_BLOCK : "owns"
+    ORGANIZATION ||--o{ TRAINING_SESSION : "owns"
+    ORGANIZATION ||--o{ DAILY_REPORT : "owns"
     TRAINING_BLOCK ||--o{ TRAINING_PROGRAM : "is deployed as"
     TRAINING_GROUP ||--o{ TRAINING_PROGRAM : "trains"
     ATHLETE }o--o{ TRAINING_GROUP : "belongs to"
@@ -78,6 +86,22 @@ Plain-English version: **a block** is a template; deploying it makes **a program
 **a group** of **athletes**; a program has **days**, each with **prescription rows**;
 running a day creates **a session**, which holds the **sets** athletes actually did, each
 made of **reps**; when the day ends it is frozen into **a daily report**.
+
+---
+
+## World 0 — The account boundary
+
+### `Organization` — one account boundary
+An organization groups teams and training records that will share one authorization
+boundary. Migration `0023` assigns existing records to a fixed `Legacy Edge Athlete`
+organization. New ownership fields remain nullable until every API creation path
+derives the organization from an authenticated membership.
+
+### `OrganizationMembership` — an organization owner
+This table links an active user to one organization. The foundation supports only
+the `owner` role and permits at most one active membership per user. Migration
+`0023` grants legacy owner membership to existing active staff accounts; inactive
+staff and non-staff accounts remain unmapped.
 
 ---
 
@@ -349,6 +373,6 @@ confusion:
 
 ---
 
-*The 24 tables above are the current model. If it changes, the source of truth is
+*The tables above describe the current model. If it changes, the source of truth is
 [`django/event_handler/models.py`](../django/event_handler/models.py) — keep this overview
 in step with it.*

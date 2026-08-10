@@ -1,7 +1,7 @@
 # ADR: Public Coach Registration Requires Organization Tenancy
 
 - Date: 2026-08-10
-- Status: Accepted design direction; implementation pending
+- Status: Accepted; additive ownership foundation implemented in migration `0023`
 - Related spec: `docs/_WEB_BLUETOOTH_AND_COACH_ONBOARDING_SPEC.md`
 - Related endpoint vision: `docs/_RACK_DASHBOARD_TEAM_REGISTRATION.md`
 
@@ -38,11 +38,13 @@ membership resolution returns `403`; request code does not choose an arbitrary
 membership. Membership role and organization never come from registration or
 domain-object request bodies.
 
-Add organization ownership to domain roots incrementally. Start with `Athlete`,
-`TrainingGroup`, and group coaching roles, then programming, sessions/sets,
-reports/analytics, and finally Rack/Dashboard endpoints. Derive organization scope
-from the authenticated membership and group scope from an enforced group role.
-Return `404` for another organization or unauthorized group's object IDs.
+Migration `0023` adds nullable ownership to the five current aggregate roots:
+`Athlete`, `TrainingGroup`, `TrainingBlock`, `TrainingSession`, and `DailyReport`.
+Authorization moves incrementally: teams and athletes first, then programming,
+sessions/sets, reports/analytics, and finally Rack/Dashboard endpoints. Derive
+organization scope from the authenticated membership and group scope from an
+enforced group role. Return `404` for another organization or unauthorized group's
+object IDs.
 
 Self-registered coaches are active but not staff. Until an endpoint is tenant-
 scoped, require `IsActiveStaff`. This includes Wi-Fi, BLE enrollment, rack
@@ -87,10 +89,14 @@ localStorage JWT handling must be replaced before public registration is enabled
    or public authentication.
 2. Default every authenticated but unscoped endpoint to `IsActiveStaff`, including
    reads and writes. Keep private-AP open routes out of public ingress.
-3. Add organization and membership schema with the one-active-membership invariant.
-4. Add nullable organization ownership to `Athlete` and `TrainingGroup`; create a
-   legacy organization and explicit staff memberships; backfill athletes, groups,
-   and `TrainingGroupCoach` links; verify counts; then make ownership non-null.
+3. Add organization and owner-membership schema with the one-active-membership
+   invariant. Migration `0023` implements this schema foundation.
+4. Add nullable organization ownership to `Athlete`, `TrainingGroup`,
+   `TrainingBlock`, `TrainingSession`, and `DailyReport`. Migration `0023`
+   backfills these existing roots together so later slices do not repeat table
+   locks and legacy-row classification. Ownership stays nullable until all create
+   paths derive it from authenticated membership. Cross-root organization
+   consistency is not enforced or trusted in this transitional state.
 5. Tenant-scope team and athlete list, create, detail, update, memberships,
    associations, reports, and analytics needed by the limited onboarding surface.
 6. Replace browser-persisted JWT handling with the access/refresh contract above.
@@ -105,16 +111,31 @@ localStorage JWT handling must be replaced before public registration is enabled
 ## Migration and Rollback
 
 The migration first adds nullable ownership and does not delete or reassign domain
-rows. It creates one operator-named legacy organization, records pre/post athlete
-and TrainingGroup counts, and assigns only explicitly selected staff memberships.
-Existing `TrainingGroupCoach` rows are mapped through those memberships without
-changing athlete/group M2M rows. Ambiguous users are reported for operator mapping
-rather than granted access.
+rows. It creates the deterministic `Legacy Edge Athlete` organization and verifies
+each ownership update count. Every active staff account receives a legacy owner
+membership because active staff already have global prototype administration;
+inactive staff and non-staff users receive none. This grant applies only to the
+closed pre-registration user set. Existing `TrainingGroupCoach`, athlete/group,
+and session/athlete links remain unchanged.
 
 Rollback is allowed before public registration by removing the new foreign key and
 organization tables after exporting membership mappings. After public registration
 creates tenant-owned data, rollback requires a reviewed data export or migration;
 dropping ownership columns would merge tenants and is forbidden.
+
+Migration `0023` uses a no-op data reverse because reversing its schema drops the
+new ownership columns and organization tables. Before registration, operators must
+export membership mappings before rollback. After registration, reversing `0023`
+is forbidden because it would discard tenant boundaries.
+
+## Foundation Evidence
+
+- `python manage.py makemigrations --check --dry-run`: no changes detected.
+- `python manage.py check`: no issues.
+- `python manage.py test event_handler.tests.TrainingGroupCoachMigrationTests event_handler.tests.NodeAssignmentMigrationTests event_handler.tests.NodeAcquisitionMigrationTests event_handler.tests.GatewayFoundationMigrationTests event_handler.tests.PublicCoachRegistrationDisabledTests event_handler.tests.OrganizationTenancyMigrationTests`: 9 tests passed against PostgreSQL.
+- `python manage.py test event_handler`: 435 tests passed.
+- `POST /api/auth/register/` remains absent. Public Nginx permits only
+  `/api/auth/login/` and `/api/auth/refresh/` under the authentication prefix.
 
 ## Authorization Test Matrix
 

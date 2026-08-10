@@ -26,7 +26,7 @@ open items in those documents are not accepted product behavior.
 
 | File | What it is |
 |---|---|
-| [`_DATABASE-OVERVIEW.md`](_DATABASE-OVERVIEW.md) | A plain-English tour of all 24 tables — no engineering background needed |
+| [`_DATABASE-OVERVIEW.md`](_DATABASE-OVERVIEW.md) | A plain-English tour of the database tables — no engineering background needed |
 | [`../django/event_handler/_README.md`](../django/event_handler/_README.md) | The backend, folder by folder. Every subfolder has its own `_README.md` too |
 | [`../django/event_handler/services/tuning.py`](../django/event_handler/services/tuning.py) | **The training math.** Every tunable number in one file — the 1RM formula's divisor, the trusted rep window, bar rounding, the resting window. The formulas themselves are beside it in `lifting_math.py` |
 | [`_MIGRATION_PLAYBOOK.md`](_MIGRATION_PLAYBOOK.md) | How to change the schema safely. **Read before touching `models.py`** — the container bakes its source, and that has already cost us a migration |
