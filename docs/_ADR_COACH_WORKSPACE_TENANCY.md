@@ -3,6 +3,7 @@
 - Date: 2026-08-10
 - Status: Accepted design direction; implementation pending
 - Related spec: `docs/_WEB_BLUETOOTH_AND_COACH_ONBOARDING_SPEC.md`
+- Related endpoint vision: `docs/_RACK_DASHBOARD_TEAM_REGISTRATION.md`
 
 ## Context
 
@@ -23,6 +24,13 @@ registration creates one organization and one owner membership. Physical
 `HostedGym` rows may belong to an organization in a later gateway migration, but
 the two concepts remain separate in the onboarding slice.
 
+Use the existing `TrainingGroup` as the Team model. Add organization ownership to
+it rather than creating a parallel `Team` table. Retain
+`Athlete.training_groups` as many-to-many because athletes may train with several
+groups. Evolve `TrainingGroupCoach` from a descriptive link into the enforced
+coach/team authorization relationship. One coach may manage several groups and
+several coaches may manage one group; never assume `Coach == Team`.
+
 The first slice permits exactly one active membership per user. A database
 constraint enforces that invariant without depending on fields in the user table.
 Missing, inactive, or ambiguous
@@ -31,9 +39,10 @@ membership. Membership role and organization never come from registration or
 domain-object request bodies.
 
 Add organization ownership to domain roots incrementally. Start with `Athlete`,
-then groups/programming, sessions/sets, reports/analytics, and finally racks and
-devices. Derive scope from the authenticated membership. Return `404` for another
-organization's object IDs.
+`TrainingGroup`, and group coaching roles, then programming, sessions/sets,
+reports/analytics, and finally Rack/Dashboard endpoints. Derive organization scope
+from the authenticated membership and group scope from an enforced group role.
+Return `404` for another organization or unauthorized group's object IDs.
 
 Self-registered coaches are active but not staff. Until an endpoint is tenant-
 scoped, require `IsActiveStaff`. This includes Wi-Fi, BLE enrollment, rack
@@ -57,6 +66,12 @@ localStorage JWT handling must be replaced before public registration is enabled
 - `Organization`: UUID primary key, bounded display name, created timestamp.
 - `OrganizationMembership`: organization, user, `owner` role, active flag, and
   created timestamp.
+- `TrainingGroup`: existing Team model with non-null organization ownership and a
+  name unique within that organization.
+- `TrainingGroupCoach`: links an organization membership to a TrainingGroup with
+  head/assistant role and becomes an authorization boundary.
+- `Athlete`: organization-owned while retaining the existing many-to-many
+  TrainingGroup membership.
 - One active membership per user in the first slice.
 - At least one active owner must remain for every active organization. Membership
   changes lock the organization row and enforce this in the only supported service;
@@ -73,10 +88,11 @@ localStorage JWT handling must be replaced before public registration is enabled
 2. Default every authenticated but unscoped endpoint to `IsActiveStaff`, including
    reads and writes. Keep private-AP open routes out of public ingress.
 3. Add organization and membership schema with the one-active-membership invariant.
-4. Add nullable `Athlete.organization`; create a legacy organization and explicit
-   staff memberships; backfill athletes; verify counts; then make it non-null.
-5. Tenant-scope athlete list, create, detail, update, associations, reports, and
-   analytics needed by the limited onboarding surface.
+4. Add nullable organization ownership to `Athlete` and `TrainingGroup`; create a
+   legacy organization and explicit staff memberships; backfill athletes, groups,
+   and `TrainingGroupCoach` links; verify counts; then make ownership non-null.
+5. Tenant-scope team and athlete list, create, detail, update, memberships,
+   associations, reports, and analytics needed by the limited onboarding surface.
 6. Replace browser-persisted JWT handling with the access/refresh contract above.
 7. Add transactional `POST /api/auth/register/`, authenticated `GET /api/auth/me/`,
    refresh, and logout with throttling and CSRF tests.
@@ -90,8 +106,10 @@ localStorage JWT handling must be replaced before public registration is enabled
 
 The migration first adds nullable ownership and does not delete or reassign domain
 rows. It creates one operator-named legacy organization, records pre/post athlete
-counts, and assigns only explicitly selected staff memberships. Ambiguous users are
-reported for operator mapping rather than granted access.
+and TrainingGroup counts, and assigns only explicitly selected staff memberships.
+Existing `TrainingGroupCoach` rows are mapped through those memberships without
+changing athlete/group M2M rows. Ambiguous users are reported for operator mapping
+rather than granted access.
 
 Rollback is allowed before public registration by removing the new foreign key and
 organization tables after exporting membership mappings. After public registration
