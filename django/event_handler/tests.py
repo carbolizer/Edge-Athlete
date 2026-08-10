@@ -5168,9 +5168,8 @@ class SystemStatusTests(APITestCase):
         the whole gym network."""
         self.assertEqual(self.client.get("/api/system/status/").status_code, 401)
 
+    @override_settings(SECRET_KEY="django-insecure-edgeathlete-dev-key-replace-for-prod")
     def test_flags_the_committed_secret_key_as_default(self):
-        # The APITestCase runs on the repo's own settings, whose SECRET_KEY is
-        # one of the shipped defaults — so this is the real "unconfigured" case.
         self.client.force_authenticate(self.coach)
         res = self.client.get("/api/system/status/")
         self.assertEqual(res.status_code, 200)
