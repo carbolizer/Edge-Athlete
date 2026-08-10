@@ -63,7 +63,19 @@ if [ -d "$PROJECT_DIR/.git" ]; then
     # update into a merge conflict on a machine with no one to resolve it.
     echo "    already installed, updating..."
     git -C "$PROJECT_DIR" remote set-url origin "$REPO_URL"
-    git -C "$PROJECT_DIR" fetch --depth 1 origin "$EDGE_BRANCH"
+
+    # The refspec is spelled out on purpose, and it is load-bearing when the branch
+    # CHANGES. The first install clones with `--branch X --depth 1`, which implies
+    # --single-branch and leaves the remote configured to map only that one branch:
+    #
+    #     fetch = +refs/heads/X:refs/remotes/origin/X
+    #
+    # So a later `git fetch origin main` downloads main into FETCH_HEAD and never
+    # creates refs/remotes/origin/main — and the checkout below then dies with
+    # "'origin/main' is not a commit". Naming the destination ref forces it into
+    # existence, so switching branches works the same as staying on one.
+    git -C "$PROJECT_DIR" fetch --depth 1 origin \
+        "+refs/heads/$EDGE_BRANCH:refs/remotes/origin/$EDGE_BRANCH"
     # `checkout -f`, and the -f is load-bearing. Plain `checkout -B` REFUSES when
     # a tracked file has been edited locally — so on a base station where anyone
     # once poked docker-compose.yml, the update aborted and the box silently sat
