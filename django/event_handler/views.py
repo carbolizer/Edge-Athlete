@@ -49,14 +49,16 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
                      TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram,
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, BlockCategory, TrainingGroupCoach,
-                     ScheduledSession, MonitoringEvent, RackRuntime, RackCommandReceipt)
+                     ScheduledSession, MonitoringEvent, RackRuntime, RackCommandReceipt,
+                     OrganizationMembership)
 
 # Coaches are Django users; there is no separate coach table. See _SPEC.md.
 User = get_user_model()
-from .permissions import IsActiveStaff, active_staff_user
+from .permissions import HasActiveOrganization, IsActiveStaff, active_staff_user
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
+                          AthleteAssociationSerializer, CoachAssociationSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
                           TrainingBlockExerciseSerializer, TrainingProgramSerializer,
                           BlockCategorySerializer, TrainingGroupCoachSerializer,
@@ -321,6 +323,20 @@ def _active_staff_denial(request):
     if not active_staff_user(request.user):
         return Response({"code": "active_staff_required", "detail": "active staff required"}, status=403)
     return None
+
+
+def _organization_input_denial(request):
+    if "organization" not in request.data and "organization_id" not in request.data:
+        return None
+    return Response({
+        "code": "organization_not_accepted",
+        "detail": "organization is derived from the active membership",
+    }, status=400)
+
+
+def _is_nfc_tag_conflict(error):
+    diagnostic = getattr(getattr(error, "__cause__", None), "diag", None)
+    return getattr(diagnostic, "constraint_name", None) == "organization_nfc_tag_unique"
 
 
 # ─────────────────────────── tablet: racks ───────────────────────────
@@ -1201,8 +1217,8 @@ def rack_nfc_tap(request, rack_number):
         response = Response({"status": "none"})
         response["Cache-Control"] = "no-store"
         return response
-    athlete = Athlete.objects.filter(nfc_tag_id=tap["tag_id"]).first()
-    if athlete is None or not session.athletes.filter(id=athlete.id).exists():
+    athlete = session.athletes.filter(nfc_tag_id=tap["tag_id"]).first()
+    if athlete is None:
         body = {"status": "unknown"}
     else:
         body = {"status": "recognized", "athlete": {"athlete_id": athlete.id, "name": athlete.name}}
@@ -1257,21 +1273,29 @@ def node_acquisition_kind(request, node_id):
 # ─────────────────────────── athletes ───────────────────────────
 
 @api_view(["GET", "POST"])
-@permission_classes([AllowAny])
+@permission_classes([HasActiveOrganization])
 def athletes_view(request):
-    """GET: list all lifters (open). POST: add a lifter (coach only)."""
+    """List or create lifters in the caller's organization."""
     if request.method == "GET":
-        return Response(AthleteSerializer(Athlete.objects.all(), many=True).data)
-    denial = _active_staff_denial(request)
+        athletes = Athlete.objects.filter(organization=request.organization).order_by("name", "id")
+        return Response(AthleteSerializer(athletes, many=True).data)
+    denial = _organization_input_denial(request)
     if denial is not None:
         return denial
-    form = AthleteSerializer(data=request.data)
+    form = AthleteSerializer(data=request.data, context={"organization": request.organization})
     form.is_valid(raise_exception=True)
-    return Response(AthleteSerializer(form.save()).data, status=201)
+    try:
+        with transaction.atomic():
+            athlete = form.save(organization=request.organization)
+    except IntegrityError as error:
+        if not _is_nfc_tag_conflict(error):
+            raise
+        return Response({"nfc_tag_id": ["this NFC tag is already assigned"]}, status=400)
+    return Response(AthleteSerializer(athlete).data, status=201)
 
 
 @api_view(["GET", "PATCH"])
-@permission_classes([IsActiveStaff])
+@permission_classes([HasActiveOrganization])
 def athlete_detail(request, athlete_id):
     """Coach-only: read or update one lifter.
 
@@ -1281,16 +1305,31 @@ def athlete_detail(request, athlete_id):
     endpoint that could be written but not read forced the coach screen to pull
     the entire roster just to see one athlete's note.
     """
-    athlete = Athlete.objects.filter(id=athlete_id).first()
+    athlete = Athlete.objects.filter(
+        id=athlete_id, organization=request.organization,
+    ).first()
     if athlete is None:
         return Response({"error": "athlete not found"}, status=404)
 
     if request.method == "GET":
         return Response(AthleteSerializer(athlete).data)
 
-    form = AthleteSerializer(athlete, data=request.data, partial=True)
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    form = AthleteSerializer(
+        athlete, data=request.data, partial=True,
+        context={"organization": request.organization},
+    )
     form.is_valid(raise_exception=True)
-    return Response(AthleteSerializer(form.save()).data)
+    try:
+        with transaction.atomic():
+            athlete = form.save()
+    except IntegrityError as error:
+        if not _is_nfc_tag_conflict(error):
+            raise
+        return Response({"nfc_tag_id": ["this NFC tag is already assigned"]}, status=400)
+    return Response(AthleteSerializer(athlete).data)
 
 
 # ─────────────────────────── programs (training plans) ───────────────────────────
@@ -2282,7 +2321,7 @@ def report_pdf_view(request, report_id):
 # Bending the URLs to the existing client is deliberate — canon §3.3.
 
 @api_view(["GET", "POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([HasActiveOrganization])
 def training_groups_view(request):
     """Coach-only: list or create TrainingGroups.
 
@@ -2296,20 +2335,43 @@ def training_groups_view(request):
     """
     if request.method == "GET":
         return Response(TrainingGroupSerializer(
-            TrainingGroup.objects.prefetch_related("coach_links__coach").order_by("name"),
-            many=True).data)
+            TrainingGroup.objects.filter(organization=request.organization)
+            .prefetch_related("coach_links__coach").order_by("name", "id"),
+            many=True, context={"organization": request.organization}).data)
 
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
     form = TrainingGroupSerializer(data=request.data)
     form.is_valid(raise_exception=True)
-    with transaction.atomic():
-        group = form.save()
-        TrainingGroupCoach.objects.create(
-            training_group=group, coach=request.user, role=TrainingGroupCoach.HEAD)
-    return Response(TrainingGroupSerializer(group).data, status=201)
+    if TrainingGroup.objects.filter(
+        organization=request.organization, name=form.validated_data["name"],
+    ).exists():
+        return Response({"name": ["a team with this name already exists"]}, status=400)
+    try:
+        with transaction.atomic():
+            group = form.save(organization=request.organization)
+            TrainingGroupCoach.objects.create(
+                training_group=group, coach=request.user, role=TrainingGroupCoach.HEAD)
+    except IntegrityError as error:
+        diagnostic = getattr(getattr(error, "__cause__", None), "diag", None)
+        if getattr(diagnostic, "constraint_name", None) != "organization_training_group_name_unique":
+            raise
+        return Response({"name": ["a team with this name already exists"]}, status=400)
+    return Response(TrainingGroupSerializer(
+        group, context={"organization": request.organization},
+    ).data, status=201)
+
+
+def _scoped_group_coach_links(group, organization):
+    return group.coach_links.filter(
+        coach__organization_memberships__organization=organization,
+        coach__organization_memberships__is_active=True,
+    ).select_related("coach").order_by("role", "coach__username")
 
 
 @api_view(["GET", "POST", "PATCH", "DELETE"])
-@permission_classes([IsActiveStaff])
+@permission_classes([HasActiveOrganization])
 def training_group_coaches_view(request, group_id):
     """Coach-only: who runs this TrainingGroup.
 
@@ -2322,38 +2384,43 @@ def training_group_coaches_view(request, group_id):
       PATCH  -> change a role:  { "coach": 4, "role": "head" }
       DELETE -> remove someone: { "coach": 4 }
 
-    Being on this list is descriptive, not authorization. This unscoped endpoint
-    requires active staff but does not consult team roles. Team-scoped enforcement
-    will use these links in a later slice.
+    Organization owners manage this list. Finer head/assistant authorization is
+    deferred; cross-organization coach identities return 404.
     """
-    group = TrainingGroup.objects.filter(id=group_id).first()
+    group = TrainingGroup.objects.filter(
+        id=group_id, organization=request.organization,
+    ).first()
     if group is None:
         return Response({"error": "training group not found"}, status=404)
 
     if request.method == "GET":
         return Response(TrainingGroupCoachSerializer(
-            group.coach_links.select_related("coach").order_by("role", "coach__username"),
+            _scoped_group_coach_links(group, request.organization),
             many=True).data)
 
-    coach_id = request.data.get("coach")
-    if not User.objects.filter(id=coach_id).exists():
-        return Response({"error": "coach not found"}, status=400)
-
-    if request.method == "DELETE":
-        removed, _ = group.coach_links.filter(coach_id=coach_id).delete()
-        if not removed:
-            return Response({"error": "that coach does not run this group"}, status=404)
-        # A group with no staff is allowed rather than blocked: the sequence
-        # "swap the head coach" is easier to get right if removing the old one
-        # first is legal. It shows as head_coach: null until someone is added.
-        return Response(TrainingGroupCoachSerializer(
-            group.coach_links.select_related("coach"), many=True).data)
-
-    role = request.data.get("role") or TrainingGroupCoach.ASSISTANT
-    if role not in dict(TrainingGroupCoach.ROLE_CHOICES):
-        return Response({"error": "role must be 'head' or 'assistant'"}, status=400)
-
+    payload = CoachAssociationSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    coach_id = payload.validated_data["coach"]
+    role = payload.validated_data["role"]
     with transaction.atomic():
+        group = TrainingGroup.objects.select_for_update().filter(
+            id=group_id, organization=request.organization,
+        ).first()
+        membership = OrganizationMembership.objects.select_for_update().filter(
+            organization=request.organization, user_id=coach_id, is_active=True,
+        ).first()
+        if group is None:
+            return Response({"error": "training group not found"}, status=404)
+        if membership is None:
+            return Response({"error": "coach not found"}, status=404)
+
+        if request.method == "DELETE":
+            removed, _ = group.coach_links.filter(coach_id=coach_id).delete()
+            if not removed:
+                return Response({"error": "that coach does not run this group"}, status=404)
+            links = list(_scoped_group_coach_links(group, request.organization))
+            return Response(TrainingGroupCoachSerializer(links, many=True).data)
+
         if role == TrainingGroupCoach.HEAD:
             # Only one head at a time. Demoting the incumbent rather than
             # refusing means "make Mike the head" is one call, which is how a
@@ -2374,13 +2441,15 @@ def training_group_coaches_view(request, group_id):
             TrainingGroupCoach.objects.update_or_create(
                 training_group=group, coach_id=coach_id, defaults={"role": role})
 
-    return Response(TrainingGroupCoachSerializer(
-        group.coach_links.select_related("coach").order_by("role", "coach__username"),
-        many=True).data, status=200 if request.method == "PATCH" else 201)
+        links = list(_scoped_group_coach_links(group, request.organization))
+    return Response(
+        TrainingGroupCoachSerializer(links, many=True).data,
+        status=200 if request.method == "PATCH" else 201,
+    )
 
 
 @api_view(["GET", "POST", "DELETE"])
-@permission_classes([IsActiveStaff])
+@permission_classes([HasActiveOrganization])
 def training_group_athletes_view(request, group_id):
     """Coach-only: who is in this TrainingGroup.
 
@@ -2388,25 +2457,32 @@ def training_group_athletes_view(request, group_id):
     current-state only — taking someone out never rewrites what they already
     trained, because history lives on the sets they actually did.
     """
-    group = TrainingGroup.objects.filter(id=group_id).first()
+    group = TrainingGroup.objects.filter(
+        id=group_id, organization=request.organization,
+    ).first()
     if group is None:
         return Response({"error": "training group not found"}, status=404)
 
     if request.method == "GET":
-        return Response(AthleteSerializer(group.athletes.order_by("name"), many=True).data)
+        athletes = group.athletes.filter(organization=request.organization).order_by("name", "id")
+        return Response(AthleteSerializer(athletes, many=True).data)
 
-    ids = request.data.get("athletes")
-    if not isinstance(ids, list) or not ids:
-        return Response({"error": "athletes must be a non-empty list of ids"}, status=400)
-    athletes = Athlete.objects.filter(id__in=ids)
-    if athletes.count() != len(set(ids)):
-        return Response({"error": "one or more athletes not found"}, status=404)
+    payload = AthleteAssociationSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    ids = payload.validated_data["athletes"]
+    with transaction.atomic():
+        athletes = list(Athlete.objects.filter(
+            id__in=ids, organization=request.organization,
+        ).select_for_update())
+        if len(athletes) != len(set(ids)):
+            return Response({"error": "one or more athletes not found"}, status=404)
 
-    if request.method == "POST":
-        group.athletes.add(*athletes)
-    else:
-        group.athletes.remove(*athletes)
-    return Response(AthleteSerializer(group.athletes.order_by("name"), many=True).data)
+        if request.method == "POST":
+            group.athletes.add(*athletes)
+        else:
+            group.athletes.remove(*athletes)
+    current = group.athletes.filter(organization=request.organization).order_by("name", "id")
+    return Response(AthleteSerializer(current, many=True).data)
 
 
 @api_view(["GET", "POST"])

@@ -81,6 +81,18 @@ class AthleteSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
         extra_kwargs = {"nfc_tag_id": {"write_only": True}}
 
+    def validate_nfc_tag_id(self, value):
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        organization = self.context.get("organization")
+        matches = Athlete.objects.filter(organization=organization, nfc_tag_id=value)
+        if self.instance is not None:
+            matches = matches.exclude(pk=self.instance.pk)
+        if matches.exists():
+            raise serializers.ValidationError("this NFC tag is already assigned")
+        return value
+
 
 class TrainingSessionSerializer(serializers.ModelSerializer):
     """One training session.
@@ -178,8 +190,8 @@ class TrainingGroupSerializer(serializers.ModelSerializer):
     ⚠️ `coaches` is a LIST because several staff run one group — this replaced a
     single `coach` field in P11. `head_coach` is the one who answers for it, for
     screens that need a single name; it can be null if nobody holds that role."""
-    athlete_count = serializers.IntegerField(source="athletes.count", read_only=True)
-    coaches = TrainingGroupCoachSerializer(source="coach_links", many=True, read_only=True)
+    athlete_count = serializers.SerializerMethodField()
+    coaches = serializers.SerializerMethodField()
     head_coach = serializers.SerializerMethodField()
 
     class Meta:
@@ -188,8 +200,60 @@ class TrainingGroupSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "coaches", "head_coach", "created_at"]
 
     def get_head_coach(self, group):
-        coach = group.head_coach
+        organization = self.context.get("organization")
+        links = group.coach_links.filter(role=TrainingGroupCoach.HEAD).select_related("coach")
+        if organization is not None:
+            links = links.filter(
+                coach__organization_memberships__organization=organization,
+                coach__organization_memberships__is_active=True,
+            )
+        link = links.first()
+        coach = link.coach if link else None
         return {"id": coach.id, "name": coach.username} if coach else None
+
+    def get_coaches(self, group):
+        links = group.coach_links.select_related("coach").order_by("role", "coach__username")
+        organization = self.context.get("organization")
+        if organization is not None:
+            links = links.filter(
+                coach__organization_memberships__organization=organization,
+                coach__organization_memberships__is_active=True,
+            )
+        return TrainingGroupCoachSerializer(links, many=True).data
+
+    def get_athlete_count(self, group):
+        organization = self.context.get("organization")
+        athletes = group.athletes.all()
+        if organization is not None:
+            athletes = athletes.filter(organization=organization)
+        return athletes.count()
+
+
+class StrictPositiveIntegerField(serializers.IntegerField):
+    def to_internal_value(self, data):
+        if isinstance(data, bool):
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
+class AthleteAssociationSerializer(serializers.Serializer):
+    athletes = serializers.ListField(
+        child=StrictPositiveIntegerField(min_value=1), allow_empty=False, max_length=500,
+    )
+
+    def validate_athletes(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("duplicate athlete ids are not allowed")
+        return value
+
+
+class CoachAssociationSerializer(serializers.Serializer):
+    coach = StrictPositiveIntegerField(min_value=1)
+    role = serializers.ChoiceField(
+        choices=TrainingGroupCoach.ROLE_CHOICES,
+        required=False,
+        default=TrainingGroupCoach.ASSISTANT,
+    )
 
 
 class BlockCategorySerializer(serializers.ModelSerializer):

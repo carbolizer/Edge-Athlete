@@ -101,6 +101,8 @@ localStorage JWT handling must be replaced before public registration is enabled
    consistency is not enforced or trusted in this transitional state.
 5. Tenant-scope team and athlete list, create, detail, update, memberships,
    associations, reports, and analytics needed by the limited onboarding surface.
+   Athlete and TrainingGroup roots and associations are now organization-scoped;
+   reports and analytics remain active-staff-only pending their own slices.
 6. Replace browser-persisted JWT handling with the access/refresh contract above.
 7. Add transactional `POST /api/auth/register/`, authenticated `GET /api/auth/me/`,
    refresh, and logout with throttling and CSRF tests.
@@ -130,6 +132,42 @@ new ownership columns and organization tables. Before registration, operators mu
 export membership mappings before rollback. After registration, reversing `0023`
 is forbidden because it would discard tenant boundaries.
 
+Migration `0024` changes NFC uniqueness from global to organization-local. Its
+schema can reverse only while no NFC tag value is reused across organizations.
+After such reuse, rollback requires reconciling duplicate values before restoring
+the former global unique constraint.
+
+Before reversing `0024`, detect reused values with:
+
+```sql
+SELECT nfc_tag_id, COUNT(*)
+FROM event_handler_athlete
+WHERE nfc_tag_id IS NOT NULL
+GROUP BY nfc_tag_id
+HAVING COUNT(*) > 1;
+```
+
+Every returned value must be cleared or reassigned until the query returns no rows.
+
+Before applying `0024`, both queries must return no rows:
+
+```sql
+SELECT organization_id, name, COUNT(*)
+FROM event_handler_traininggroup
+GROUP BY organization_id, name
+HAVING COUNT(*) > 1;
+
+SELECT training_group_id, COUNT(*)
+FROM event_handler_traininggroupcoach
+WHERE role = 'head'
+GROUP BY training_group_id
+HAVING COUNT(*) > 1;
+```
+
+Rename duplicate teams inside their organization and demote extra heads to
+`assistant` before migration. Migration `0024` repeats these checks and aborts
+before adding constraints if either conflict remains.
+
 ## Foundation Evidence
 
 - `python manage.py makemigrations --check --dry-run`: no changes detected.
@@ -150,6 +188,21 @@ is forbidden because it would discard tenant boundaries.
 - `python3 scripts/vps/check_api_allowlist.py`: passed.
 - `python3 -m unittest scripts/vps/test_check_api_allowlist.py`: 2 tests passed,
   including rejection of a proxied `/api/` fallback.
+
+## Athlete And Team Scope Evidence
+
+- `python manage.py test event_handler.tests.OrganizationScopedAthleteGroupTests event_handler.tests.ApiAuthorizationFenceTests event_handler.tests.EnsureDemoCoachCommandTests event_handler.tests.TrainingGroupStaffTests event_handler.tests.AthleteNotesTests`: 36 tests passed.
+- `python manage.py test event_handler`: 459 tests passed.
+- `python manage.py check`: no issues.
+- `python manage.py makemigrations --check --dry-run`: no changes detected.
+- Cross-tenant athlete, group, association, and coach IDs return `404` and create
+  no writes. Organization IDs are not accepted in Athlete or TrainingGroup input.
+- `npm test -- --run`: 169 tests passed.
+- `npm run build`: passed; the existing main-bundle size warning remains.
+- Headless Chrome rendered `/connection-test` at `1440x1000` and `390x844`.
+  The open-endpoint card omitted `/api/athletes/`; the rendered DOM placed both
+  athlete references under the `organization` badge and the authenticated checks.
+  Backend tenant tests supplied the authenticated response evidence.
 
 ## Authorization Test Matrix
 

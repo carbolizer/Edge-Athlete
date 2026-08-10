@@ -16,8 +16,6 @@ import mqtt from 'mqtt'
 const OPEN_GETS = [
   { key: 'nodes', path: '/api/nodes/',
     what: 'List every sensor node and its latest status — battery, signal, and which rack it is on.' },
-  { key: 'athletes', path: '/api/athletes/',
-    what: 'List every lifter in the system.' },
   { key: 'programs', path: '/api/prescriptions/?athlete=2',
     what: "Get one athlete's training plan — the targets plus the speed zone the tablet uses to color reps green / yellow / red." },
   { key: 'racknumber', path: '/api/racks/racknumber/?device_id=coach_test_dev',
@@ -26,6 +24,8 @@ const OPEN_GETS = [
 
 // ── coach-only reads (need a login token) ──
 const COACH_GETS = [
+  { key: 'athletes', path: '/api/athletes/',
+    what: 'List lifters in the active organization.' },
   { key: 'aSession', path: '/api/analytics/session/2/',
     what: "Session summary — total sets, total reps, and each athlete's average bar speed." },
   { key: 'aAthlete', path: '/api/analytics/athlete/2/',
@@ -46,11 +46,11 @@ const REFERENCE = [
   ]},
   { group: 'Reads', items: [
     { m: 'GET', p: '/api/nodes/', a: 'open', w: 'List all sensor nodes.' },
-    { m: 'GET', p: '/api/athletes/', a: 'open', w: 'List all lifters.' },
     { m: 'GET', p: '/api/prescriptions/?athlete={id}', a: 'open', w: "An athlete's training plans (targets + speed zone)." },
   ]},
   { group: 'Coach — manage', items: [
-    { m: 'POST/PATCH', p: '/api/athletes/ · /api/athletes/{id}/', a: 'coach', w: 'Add or edit a lifter.' },
+    { m: 'GET', p: '/api/athletes/', a: 'organization', w: 'List lifters in the active organization.' },
+    { m: 'POST/PATCH', p: '/api/athletes/ · /api/athletes/{id}/', a: 'organization', w: 'Add or edit a lifter.' },
     { m: 'POST', p: '/api/programs/', a: 'coach', w: 'Create a training plan for a lifter.' },
     { m: 'POST/PATCH', p: '/api/sessions/ · /api/sessions/{id}/', a: 'coach', w: 'Start a session; a PATCH with no end time ends it now.' },
     { m: 'PUT', p: '/api/racks/node-assignment/', a: 'coach', w: 'Select a registered sensor beside its physical rack.' },
@@ -283,7 +283,7 @@ function ConnectionTest() {
               {section.items.map((it, i) => (
                 <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline',
                   padding: '7px 0', borderTop: i ? '1px solid ' + C.line : 'none', flexWrap: 'wrap' }}>
-                  <Pill color={it.a === 'coach' ? C.warn : C.good}>{it.a === 'coach' ? 'coach' : 'open'}</Pill>
+                  <Pill color={it.a === 'open' ? C.good : C.warn}>{it.a}</Pill>
                   <code style={{ fontFamily: C.mono, fontSize: 12.5, color: C.ink, minWidth: 240 }}>
                     <span style={{ color: C.ink3 }}>{it.m}</span> {it.p}</code>
                   <span style={{ color: C.ink2, fontSize: 13, flex: 1, minWidth: 200 }}>{it.w}</span>

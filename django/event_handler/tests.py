@@ -15,7 +15,7 @@ import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -37,11 +37,12 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      TrainingBlockExercise, BlockCategory, TrainingGroupCoach,
                      MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt,
                      HostedGym, EdgeGateway, GatewayCredential, GatewayNodeGrant,
-                     GatewayBoot, GatewayEventReceipt, GatewayNodeHealth)
+                     GatewayBoot, GatewayEventReceipt, GatewayNodeHealth,
+                     Organization, OrganizationMembership)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
-from .permissions import IsActiveStaff
+from .permissions import HasActiveOrganization, IsActiveStaff, active_organization_for_user
 from .urls import urlpatterns as event_handler_urlpatterns
 from .management.commands.simulate_node import (MODE_ALWAYS, MODE_CHECKIN, MODE_LIFTING,
                                                  rack_activity, rack_for_node)
@@ -698,6 +699,22 @@ class RackControllerEndpointTests(APITestCase):
         )
         self.assertEqual(off_roster.data, {"status": "unknown"})
         self.assertEqual(unknown.data, {"status": "unknown"})
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_resolves_duplicate_tag_inside_active_roster(self, consume):
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        Athlete.objects.create(name="Other tenant", nfc_tag_id="shared-tag")
+        roster_athlete = Athlete.objects.create(name="Roster athlete", nfc_tag_id="shared-tag")
+        session.athletes.add(roster_athlete)
+        acquired = self._acquire()
+        consume.return_value = {"schema_version": 1, "status": "tap", "tag_id": "shared-tag"}
+
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {}, format="json", headers=self._headers(acquired),
+        )
+
+        self.assertEqual(response.data["status"], "recognized")
+        self.assertEqual(response.data["athlete"]["athlete_id"], roster_athlete.id)
 
     @patch("event_handler.views.nfc_agent.consume")
     def test_nfc_tap_requires_controller_before_consuming(self, consume):
@@ -1983,8 +2000,14 @@ class AthleteNotesTests(APITestCase):
         self.coach = User.objects.create_user(
             username="notescoach", password="pw", is_staff=True,
         )
+        self.organization = Organization.objects.create(display_name="Notes organization")
+        OrganizationMembership.objects.create(
+            organization=self.organization, user=self.coach,
+        )
         self.client.force_authenticate(user=self.coach)
-        self.athlete = Athlete.objects.create(name="Jordan Lee")
+        self.athlete = Athlete.objects.create(
+            organization=self.organization, name="Jordan Lee",
+        )
 
     def test_a_note_can_be_written_and_read_back(self):
         res = self.client.patch(f"/api/athletes/{self.athlete.id}/",
@@ -2606,6 +2629,10 @@ class PlanningEndpointTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Planning organization")
+        OrganizationMembership.objects.create(
+            organization=self.organization, user=self.coach,
+        )
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
@@ -2622,8 +2649,8 @@ class PlanningEndpointTests(APITestCase):
         return block
 
     def test_a_group_is_a_subset_of_athletes_not_everyone(self):
-        alice = Athlete.objects.create(name="Alice")
-        Athlete.objects.create(name="Not in the group")
+        alice = Athlete.objects.create(organization=self.organization, name="Alice")
+        Athlete.objects.create(organization=self.organization, name="Not in the group")
         group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
         res = self.client.post(f"/api/training-groups/{group['id']}/athletes/",
@@ -2660,7 +2687,7 @@ class PlanningEndpointTests(APITestCase):
 
     def test_scheduling_a_group_gives_its_athletes_their_own_weights(self):
         """End to end: template -> TrainingGroup -> today's session -> a real number."""
-        athlete = Athlete.objects.create(name="Jordan Lee")
+        athlete = Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         AthleteReferenceMax.objects.create(athlete=athlete, exercise=self.squat,
                                            reference_weight_lbs=315, rep_basis=1)
         session = TrainingSession.objects.create(label="Thursday", started_at=timezone.now())
@@ -2705,7 +2732,7 @@ class PlanningEndpointTests(APITestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_override_endpoint_round_trips_and_clears(self):
-        athlete = Athlete.objects.create(name="Jordan Lee")
+        athlete = Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         block = self._template_with_a_day()
         group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
@@ -2722,7 +2749,7 @@ class PlanningEndpointTests(APITestCase):
         self.assertIsNone(self.client.get(url).data["target_percent"])
 
     def test_an_override_that_sets_nothing_is_rejected(self):
-        athlete = Athlete.objects.create(name="Jordan Lee")
+        athlete = Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         block = self._template_with_a_day()
         group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
@@ -3116,8 +3143,13 @@ class TrainingGroupStaffTests(APITestCase):
         self.sarah = User.objects.create_user(username="sarah", password="pw", is_staff=True)
         self.mike = User.objects.create_user(username="mike", password="pw", is_staff=True)
         self.dana = User.objects.create_user(username="dana", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Group staff organization")
+        for coach in (self.sarah, self.mike, self.dana):
+            OrganizationMembership.objects.create(organization=self.organization, user=coach)
         self.client.force_authenticate(user=self.sarah)
-        self.group = TrainingGroup.objects.create(name="Varsity")
+        self.group = TrainingGroup.objects.create(
+            organization=self.organization, name="Varsity",
+        )
         TrainingGroupCoach.objects.create(
             training_group=self.group, coach=self.sarah, role=TrainingGroupCoach.HEAD)
 
@@ -3178,7 +3210,7 @@ class TrainingGroupStaffTests(APITestCase):
 
     def test_an_unknown_coach_is_refused(self):
         res = self.client.post(self._url(), {"coach": 99999}, format="json")
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 404)
 
     def test_a_bad_role_is_refused(self):
         res = self.client.post(self._url(), {"coach": self.mike.id, "role": "boss"},
@@ -3283,7 +3315,7 @@ class TrainingGroupCoachMigrationTests(TransactionTestCase):
     def tearDown(self):
         # Leave the database at the latest migration, or every test that runs
         # after this class sees a half-migrated schema.
-        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
+        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
 
 
 class NodeAssignmentMigrationTests(TransactionTestCase):
@@ -3337,7 +3369,7 @@ class NodeAssignmentMigrationTests(TransactionTestCase):
         self.assertIsNone(RolledBackNode.objects.get(node_id="duplicate-b").rack_number)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
+        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
 
 
 class NodeAcquisitionMigrationTests(TransactionTestCase):
@@ -3363,7 +3395,7 @@ class NodeAcquisitionMigrationTests(TransactionTestCase):
         self.assertEqual(NewNode.objects.get(node_id="mqtt").acquisition_kind, "mqtt")
 
     def tearDown(self):
-        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
+        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
 
 
 class OneOpenSessionTests(APITestCase):
@@ -5889,7 +5921,7 @@ class GatewayFoundationMigrationTests(TransactionTestCase):
         self.assertEqual(rolled_back_apps.get_model("event_handler", "Rep").objects.count(), 1)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0023_organization_tenancy_foundation")])
+        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
 
 
 class PublicCoachRegistrationDisabledTests(APITestCase):
@@ -5906,8 +5938,8 @@ class PublicCoachRegistrationDisabledTests(APITestCase):
 
 class ApiAuthorizationFenceTests(APITestCase):
     ACTIVE_STAFF_ROUTES = {
-        "analytics_athlete", "analytics_session", "athlete_detail", "athlete_exercise_override",
-        "athlete_program", "ble_scans", "ble_verifications", "block_categories",
+        "analytics_athlete", "analytics_session", "athlete_exercise_override", "athlete_program",
+        "ble_scans", "ble_verifications", "block_categories",
         "change_wifi_password", "gateway_diagnostics", "import_commit", "import_preview",
         "node_acquisition_kind", "rack_assign", "rack_ble_selection", "rack_node_assignment",
         "racks_unassigned", "reference_maxes", "report_detail", "report_pdf", "reports",
@@ -5915,8 +5947,7 @@ class ApiAuthorizationFenceTests(APITestCase):
         "session_detail", "session_participation", "session_start", "sessions", "system_status",
         "training_block_detail", "training_block_exercise_detail", "training_block_exercise_order",
         "training_block_workout_detail", "training_block_workout_order", "training_block_workouts",
-        "training_blocks", "training_group_athletes", "training_group_coaches", "training_groups",
-        "training_program_promote", "training_programs",
+        "training_blocks", "training_program_promote", "training_programs",
     }
     PRIVATE_AP_ROUTES = {
         "athlete_progress", "exercises_list", "nodes_list", "prescriptions", "rack_checkin",
@@ -5925,7 +5956,11 @@ class ApiAuthorizationFenceTests(APITestCase):
         "rack_sensor_health", "rack_state", "session_status", "sessions_active", "set_complete",
         "set_create",
     }
-    MIXED_ROUTES = {"athletes", "room_state"}
+    TENANT_ROUTES = {
+        "athlete_detail", "athletes", "training_group_athletes",
+        "training_group_coaches", "training_groups",
+    }
+    MIXED_ROUTES = {"room_state"}
     SPECIAL_ROUTES = {"gateway_events", "health"}
     ROUTE_METHODS = {
         "health": {"GET"},
@@ -5998,6 +6033,7 @@ class ApiAuthorizationFenceTests(APITestCase):
         classified = (
             self.ACTIVE_STAFF_ROUTES
             | self.PRIVATE_AP_ROUTES
+            | self.TENANT_ROUTES
             | self.MIXED_ROUTES
             | self.SPECIAL_ROUTES
         )
@@ -6010,6 +6046,8 @@ class ApiAuthorizationFenceTests(APITestCase):
             self.assertEqual(methods, self.ROUTE_METHODS[route_name], route_name)
         for route_name in self.ACTIVE_STAFF_ROUTES:
             self.assertEqual(callbacks[route_name].cls.permission_classes, [IsActiveStaff])
+        for route_name in self.TENANT_ROUTES:
+            self.assertEqual(callbacks[route_name].cls.permission_classes, [HasActiveOrganization])
         for route_name in self.PRIVATE_AP_ROUTES | self.MIXED_ROUTES | self.SPECIAL_ROUTES:
             self.assertEqual(callbacks[route_name].cls.permission_classes, [AllowAny])
 
@@ -6029,32 +6067,33 @@ class ApiAuthorizationFenceTests(APITestCase):
             }
             self.assertEqual(methods, {"POST"})
 
-    def test_athlete_write_requires_active_staff_without_closing_roster_read(self):
+    def test_athlete_routes_require_one_active_organization_membership(self):
+        organization = Organization.objects.create(display_name="Fence organization")
         nonstaff = User.objects.create_user(username="fence-nonstaff", password="pw")
         inactive_staff = User.objects.create_user(
             username="fence-inactive", password="pw", is_active=False, is_staff=True,
         )
-        staff = User.objects.create_user(
+        unmapped_staff = User.objects.create_user(
             username="fence-staff", password="pw", is_active=True, is_staff=True,
         )
 
-        self.assertEqual(self.client.get("/api/athletes/").status_code, 200)
+        self.assertEqual(self.client.get("/api/athletes/").status_code, 401)
         anonymous = self.client.post("/api/athletes/", {"name": "Anonymous"}, format="json")
         self.assertEqual(anonymous.status_code, 401)
-        self.assertEqual(anonymous.data["code"], "not_authenticated")
 
-        for user in (nonstaff, inactive_staff):
+        for user in (nonstaff, inactive_staff, unmapped_staff):
             self.client.force_authenticate(user)
             denied = self.client.post("/api/athletes/", {"name": user.username}, format="json")
             self.assertEqual(denied.status_code, 403)
-            self.assertEqual(denied.data["code"], "active_staff_required")
 
-        self.client.force_authenticate(staff)
+        OrganizationMembership.objects.create(organization=organization, user=nonstaff)
+        self.client.force_authenticate(nonstaff)
         self.assertEqual(
             self.client.post("/api/athletes/", {"name": "Staff athlete"}, format="json").status_code,
             201,
         )
         self.assertEqual(Athlete.objects.count(), 1)
+        self.assertEqual(Athlete.objects.get().organization, organization)
 
     def test_detailed_room_state_requires_active_staff_without_closing_wall_view(self):
         nonstaff = User.objects.create_user(username="room-nonstaff", password="pw")
@@ -6155,6 +6194,12 @@ class ApiAuthorizationFenceTests(APITestCase):
 
 
 class EnsureDemoCoachCommandTests(APITestCase):
+    def setUp(self):
+        self.legacy_organization, _created = Organization.objects.get_or_create(
+            id=uuid.UUID("4ac9f970-4084-4f7f-9cb8-c586c995ed62"),
+            defaults={"display_name": "Legacy Edge Athlete"},
+        )
+
     def test_existing_demo_user_is_promoted_to_active_staff(self):
         coach = User.objects.create_user(
             username="coach", password="old-password", is_active=False, is_staff=False,
@@ -6168,6 +6213,9 @@ class EnsureDemoCoachCommandTests(APITestCase):
         self.assertTrue(coach.is_staff)
         self.assertTrue(coach.check_password("coachpass"))
         self.assertNotIn("coachpass", output.getvalue())
+        self.assertTrue(OrganizationMembership.objects.filter(
+            organization=self.legacy_organization, user=coach, is_active=True,
+        ).exists())
 
     @override_settings(VPS_DEPLOYMENT=True)
     def test_vps_deployment_refuses_without_mutating_existing_user(self):
@@ -6182,6 +6230,225 @@ class EnsureDemoCoachCommandTests(APITestCase):
         self.assertFalse(coach.is_active)
         self.assertFalse(coach.is_staff)
         self.assertTrue(coach.check_password("original-password"))
+
+
+class OrganizationScopedAthleteGroupTests(APITestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(display_name="Organization A")
+        self.other_organization = Organization.objects.create(display_name="Organization B")
+        self.owner = User.objects.create_user(username="owner-a", password="pw")
+        self.other_owner = User.objects.create_user(username="owner-b", password="pw")
+        self.colleague = User.objects.create_user(username="colleague-a", password="pw")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.owner)
+        OrganizationMembership.objects.create(
+            organization=self.other_organization, user=self.other_owner,
+        )
+        OrganizationMembership.objects.create(organization=self.organization, user=self.colleague)
+        self.athlete = Athlete.objects.create(
+            organization=self.organization, name="Athlete A",
+        )
+        self.other_athlete = Athlete.objects.create(
+            organization=self.other_organization, name="Athlete B",
+        )
+        self.group = TrainingGroup.objects.create(
+            organization=self.organization, name="Team A",
+        )
+        self.other_group = TrainingGroup.objects.create(
+            organization=self.other_organization, name="Team B",
+        )
+        self.client.force_authenticate(self.owner)
+
+    def test_lists_and_creates_only_inside_active_organization(self):
+        athletes = self.client.get("/api/athletes/")
+        groups = self.client.get("/api/training-groups/")
+        self.assertEqual([row["id"] for row in athletes.data], [self.athlete.id])
+        self.assertEqual([row["id"] for row in groups.data], [self.group.id])
+
+        created_athlete = self.client.post(
+            "/api/athletes/", {"name": "Created A"}, format="json",
+        )
+        created_group = self.client.post(
+            "/api/training-groups/", {"name": "Created Team A"}, format="json",
+        )
+        self.assertEqual(created_athlete.status_code, 201)
+        self.assertEqual(created_group.status_code, 201)
+        self.assertEqual(
+            Athlete.objects.get(pk=created_athlete.data["id"]).organization,
+            self.organization,
+        )
+        group = TrainingGroup.objects.get(pk=created_group.data["id"])
+        self.assertEqual(group.organization, self.organization)
+        self.assertTrue(group.coach_links.filter(coach=self.owner, role="head").exists())
+        self.assertNotIn("organization", created_athlete.data)
+        self.assertNotIn("organization", created_group.data)
+
+    def test_client_cannot_choose_organization(self):
+        athlete_create = self.client.post(
+            "/api/athletes/",
+            {"name": "Wrong owner", "organization": str(self.other_organization.pk)},
+            format="json",
+        )
+        athlete_patch = self.client.patch(
+            f"/api/athletes/{self.athlete.id}/",
+            {"organization_id": str(self.other_organization.pk)},
+            format="json",
+        )
+        group_create = self.client.post(
+            "/api/training-groups/",
+            {"name": "Wrong team", "organization": str(self.other_organization.pk)},
+            format="json",
+        )
+        self.assertEqual(athlete_create.status_code, 400)
+        self.assertEqual(athlete_patch.status_code, 400)
+        self.assertEqual(group_create.status_code, 400)
+        self.assertFalse(Athlete.objects.filter(name="Wrong owner").exists())
+        self.assertFalse(TrainingGroup.objects.filter(name="Wrong team").exists())
+
+    def test_cross_tenant_detail_and_patch_are_indistinguishable_from_missing(self):
+        detail_url = f"/api/athletes/{self.other_athlete.id}/"
+        self.assertEqual(self.client.get(detail_url).status_code, 404)
+        self.assertEqual(
+            self.client.patch(detail_url, {"notes": "leak"}, format="json").status_code,
+            404,
+        )
+        self.other_athlete.refresh_from_db()
+        self.assertEqual(self.other_athlete.notes, "")
+
+    def test_cross_tenant_athlete_association_is_atomic(self):
+        url = f"/api/training-groups/{self.group.id}/athletes/"
+        response = self.client.post(
+            url, {"athletes": [self.athlete.id, self.other_athlete.id]}, format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.group.athletes.count(), 0)
+        self.assertEqual(
+            self.client.post(
+                f"/api/training-groups/{self.other_group.id}/athletes/",
+                {"athletes": [self.athlete.id]}, format="json",
+            ).status_code,
+            404,
+        )
+
+    def test_coach_association_requires_same_organization_membership(self):
+        url = f"/api/training-groups/{self.group.id}/coaches/"
+        accepted = self.client.post(
+            url, {"coach": self.colleague.id, "role": "assistant"}, format="json",
+        )
+        denied = self.client.post(
+            url, {"coach": self.other_owner.id, "role": "assistant"}, format="json",
+        )
+        denied_patch = self.client.patch(
+            url, {"coach": self.other_owner.id, "role": "head"}, format="json",
+        )
+        denied_delete = self.client.delete(
+            url, {"coach": self.other_owner.id}, format="json",
+        )
+        self.assertEqual(accepted.status_code, 201)
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied_patch.status_code, 404)
+        self.assertEqual(denied_delete.status_code, 404)
+        self.assertFalse(self.group.coach_links.filter(coach=self.other_owner).exists())
+
+    def test_nested_counts_and_all_coach_responses_exclude_inconsistent_links(self):
+        stale_coach = User.objects.create_user(username="stale-coach", password="pw")
+        stale_athlete = Athlete.objects.create(
+            organization=self.other_organization, name="Stale athlete",
+        )
+        TrainingGroupCoach.objects.create(
+            training_group=self.group, coach=stale_coach, role="assistant",
+        )
+        self.group.athletes.add(self.athlete, stale_athlete)
+
+        group_row = self.client.get("/api/training-groups/").data[0]
+        self.assertEqual(group_row["athlete_count"], 1)
+        self.assertNotIn("stale-coach", json.dumps(group_row))
+
+        url = f"/api/training-groups/{self.group.id}/coaches/"
+        for method, body in (
+            (self.client.get, None),
+            (self.client.post, {"coach": self.colleague.id, "role": "assistant"}),
+            (self.client.patch, {"coach": self.colleague.id, "role": "head"}),
+            (self.client.delete, {"coach": self.colleague.id}),
+        ):
+            response = method(url, body, format="json") if body is not None else method(url)
+            self.assertNotIn("stale-coach", json.dumps(response.data))
+
+    def test_malformed_association_ids_return_400_without_writes(self):
+        athlete_url = f"/api/training-groups/{self.group.id}/athletes/"
+        coach_url = f"/api/training-groups/{self.group.id}/coaches/"
+        for value in (True, {"id": self.athlete.id}, -1):
+            response = self.client.post(
+                athlete_url, {"athletes": [value]}, format="json",
+            )
+            self.assertEqual(response.status_code, 400)
+        duplicate = self.client.post(
+            athlete_url, {"athletes": [self.athlete.id, self.athlete.id]}, format="json",
+        )
+        malformed_coach = self.client.post(
+            coach_url, {"coach": True, "role": "assistant"}, format="json",
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(malformed_coach.status_code, 400)
+        self.assertEqual(self.group.athletes.count(), 0)
+
+    def test_nfc_tag_is_unique_within_organization_not_across_tenants(self):
+        first = self.client.post(
+            "/api/athletes/", {"name": "Tagged A", "nfc_tag_id": "shared-tag"}, format="json",
+        )
+        duplicate = self.client.post(
+            "/api/athletes/", {"name": "Duplicate A", "nfc_tag_id": "shared-tag"}, format="json",
+        )
+        self.client.force_authenticate(self.other_owner)
+        other = self.client.post(
+            "/api/athletes/", {"name": "Tagged B", "nfc_tag_id": "shared-tag"}, format="json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(other.status_code, 201)
+
+    def test_blank_nfc_tags_normalize_to_null_and_group_names_are_local_unique(self):
+        first_blank = self.client.post(
+            "/api/athletes/", {"name": "Blank A", "nfc_tag_id": ""}, format="json",
+        )
+        second_blank = self.client.post(
+            "/api/athletes/", {"name": "Blank B", "nfc_tag_id": "   "}, format="json",
+        )
+        duplicate_group = self.client.post(
+            "/api/training-groups/", {"name": self.group.name}, format="json",
+        )
+        self.client.force_authenticate(self.other_owner)
+        other_group = self.client.post(
+            "/api/training-groups/", {"name": self.group.name}, format="json",
+        )
+        self.assertEqual(first_blank.status_code, 201)
+        self.assertEqual(second_blank.status_code, 201)
+        self.assertEqual(duplicate_group.status_code, 400)
+        self.assertEqual(other_group.status_code, 201)
+        self.assertEqual(
+            Athlete.objects.filter(name__in=["Blank A", "Blank B"], nfc_tag_id=None).count(),
+            2,
+        )
+
+    def test_user_without_active_membership_receives_403(self):
+        unmapped = User.objects.create_user(username="unmapped", password="pw", is_staff=True)
+        self.client.force_authenticate(unmapped)
+        self.assertEqual(self.client.get("/api/athletes/").status_code, 403)
+        self.assertEqual(self.client.get("/api/training-groups/").status_code, 403)
+
+        OrganizationMembership.objects.create(
+            organization=self.organization, user=unmapped, is_active=False,
+        )
+        self.assertEqual(self.client.get("/api/athletes/").status_code, 403)
+
+    def test_ambiguous_membership_resolution_fails_closed(self):
+        first = Mock(organization=self.organization)
+        second = Mock(organization=self.other_organization)
+        manager = MagicMock()
+        manager.filter.return_value.select_related.return_value.order_by.return_value.__getitem__.return_value = [
+            first, second,
+        ]
+        with patch("event_handler.models.OrganizationMembership.objects", manager):
+            self.assertIsNone(active_organization_for_user(self.owner))
 
 
 class OrganizationTenancyMigrationTests(TransactionTestCase):
@@ -6328,6 +6595,79 @@ class OrganizationTenancyMigrationTests(TransactionTestCase):
         ).objects.get(pk=migrated_rep.pk)
         self.assertEqual(rolled_back_rep.set_id, workout_set.pk)
         self.assertEqual(rolled_back_rep.mean_velocity, 0.6)
+
+    def tearDown(self):
+        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
+
+
+class OrganizationLocalNfcMigrationTests(TransactionTestCase):
+    migrate_from = [("event_handler", "0023_organization_tenancy_foundation")]
+    migrate_to = [("event_handler", "0024_organization_local_nfc_tag")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_forward_allows_cross_organization_reuse_and_clean_reverse(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldOrganization = old_apps.get_model("event_handler", "Organization")
+        OldAthlete = old_apps.get_model("event_handler", "Athlete")
+        first_org = OldOrganization.objects.create(display_name="NFC migration A")
+        second_org = OldOrganization.objects.create(display_name="NFC migration B")
+        OldAthlete.objects.create(
+            organization=first_org, name="Tagged A", nfc_tag_id="migration-shared-tag",
+        )
+
+        new_apps = self._migrate(self.migrate_to)
+        NewAthlete = new_apps.get_model("event_handler", "Athlete")
+        duplicate = NewAthlete.objects.create(
+            organization_id=second_org.pk, name="Tagged B", nfc_tag_id="migration-shared-tag",
+        )
+        self.assertEqual(NewAthlete.objects.filter(nfc_tag_id="migration-shared-tag").count(), 2)
+
+        duplicate.delete()
+        rolled_back_apps = self._migrate(self.migrate_from)
+        self.assertEqual(
+            rolled_back_apps.get_model("event_handler", "Athlete").objects.get(
+                nfc_tag_id="migration-shared-tag",
+            ).name,
+            "Tagged A",
+        )
+
+    def test_forward_rejects_duplicate_team_names(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldOrganization = old_apps.get_model("event_handler", "Organization")
+        OldGroup = old_apps.get_model("event_handler", "TrainingGroup")
+        organization = OldOrganization.objects.create(display_name="Duplicate team org")
+        OldGroup.objects.create(organization=organization, name="Varsity")
+        duplicate = OldGroup.objects.create(organization=organization, name="Varsity")
+
+        with self.assertRaisesMessage(RuntimeError, "tenant constraints require"):
+            self._migrate(self.migrate_to)
+
+        duplicate.delete()
+        self._migrate(self.migrate_to)
+
+    def test_forward_rejects_multiple_head_coaches(self):
+        old_apps = self._migrate(self.migrate_from)
+        OldOrganization = old_apps.get_model("event_handler", "Organization")
+        OldGroup = old_apps.get_model("event_handler", "TrainingGroup")
+        OldGroupCoach = old_apps.get_model("event_handler", "TrainingGroupCoach")
+        OldUser = old_apps.get_model("auth", "User")
+        organization = OldOrganization.objects.create(display_name="Duplicate head org")
+        group = OldGroup.objects.create(organization=organization, name="Varsity")
+        first = OldUser.objects.create(username="migration-head-one")
+        second = OldUser.objects.create(username="migration-head-two")
+        OldGroupCoach.objects.create(training_group=group, coach=first, role="head")
+        duplicate = OldGroupCoach.objects.create(training_group=group, coach=second, role="head")
+
+        with self.assertRaisesMessage(RuntimeError, "tenant constraints require"):
+            self._migrate(self.migrate_to)
+
+        duplicate.delete()
+        self._migrate(self.migrate_to)
 
     def tearDown(self):
         self._migrate(self.migrate_to)

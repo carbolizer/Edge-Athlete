@@ -384,7 +384,7 @@ Node       — node_id (CharField, unique), rack_number (Int, nullable),
 RackScreen — device_id (CharField, unique, client-generated at first setup),
              rack_number (Int, nullable — null means "awaiting coach
              assignment"), last_seen (DateTime, auto)
-Athlete    — name, nfc_tag_id (unique, nullable), created_at (auto), notes (Text, blank)
+Athlete    — organization, name, nfc_tag_id (organization-local unique, nullable), created_at (auto), notes (Text, blank)
 Program    — athlete (FK→Athlete), exercise (FK→Exercise), target_sets (Int), target_reps (Int),
              target_weight_lbs (Float), velocity_zone_min (Float), velocity_zone_max (Float)
 TrainingSession    — label, started_at (NULLABLE since merge P14), ended_at (nullable),
@@ -1351,7 +1351,7 @@ RackScreen (the physical screen device's own identity, separate from Node):
 
 Athlete:
   name        CharField(max_length=255)
-  nfc_tag_id  CharField(max_length=255, unique=True, null=True, blank=True)
+  nfc_tag_id  CharField(max_length=255, null=True, blank=True), unique with organization
   created_at  DateTimeField(auto_now_add=True)
   notes       TextField(blank=True, default="")
 

@@ -389,7 +389,7 @@ class Athlete(models.Model):
         related_name="athletes",
     )
     name = models.CharField(max_length=255)
-    nfc_tag_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    nfc_tag_id = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
     is_simulated = models.BooleanField(default=False)
@@ -401,6 +401,15 @@ class Athlete(models.Model):
     # a group never rewrites history, because past Sessions/Sets stay attached to
     # whatever they were actually created under.
     training_groups = models.ManyToManyField('TrainingGroup', related_name='athletes', blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "nfc_tag_id"],
+                condition=models.Q(nfc_tag_id__isnull=False),
+                name="organization_nfc_tag_unique",
+            ),
+        ]
 
     def __str__(self):
         return self.name
@@ -461,6 +470,13 @@ class TrainingGroup(models.Model):
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "name"], name="organization_training_group_name_unique",
+            ),
+        ]
+
     @property
     def head_coach(self):
         """The one coach who answers for the group, or None.
@@ -483,9 +499,8 @@ class TrainingGroupCoach(models.Model):
     single FK can only ever name one of them. That FK is what this replaced; its
     value was carried over as the head coach of each group it named.
 
-    Being listed here is currently descriptive, not authorization. Unscoped
-    endpoints require active staff, but they do not consult this table. Do not
-    treat a row here as team-scoped permission until that enforcement is added."""
+    Organization owners manage these links through organization-scoped APIs.
+    The row records a team role; finer role-based authorization is deferred."""
     HEAD = "head"
     ASSISTANT = "assistant"
     ROLE_CHOICES = [(HEAD, "Head coach"), (ASSISTANT, "Assistant coach")]
@@ -505,6 +520,10 @@ class TrainingGroupCoach(models.Model):
             # twice would silently double them in every staff list.
             models.UniqueConstraint(fields=["training_group", "coach"],
                                     name="one_row_per_coach_per_group"),
+            models.UniqueConstraint(
+                fields=["training_group"], condition=models.Q(role="head"),
+                name="one_head_per_training_group",
+            ),
         ]
 
     def __str__(self):

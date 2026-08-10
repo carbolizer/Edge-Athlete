@@ -31,8 +31,9 @@ There are five worlds in this system, and the tables split along them:
 5. **The training that actually happened** — sessions, sets, reps, and the frozen report.
 
 Training records connect to an **organization** account boundary, an **athlete**
-(who), and an **exercise** (what movement). Organization ownership is nullable
-during migration and does not yet enforce API authorization.
+(who), and an **exercise** (what movement). Athlete and TrainingGroup management
+APIs enforce organization ownership; later training/report routes remain fenced
+until their tenant slices are complete.
 
 ---
 
@@ -139,8 +140,9 @@ instead of the update vanishing.
 ## World 2 — The people
 
 ### `Athlete` — a lifter
-One person who trains: their name, optional notes, an optional NFC tag id (tap-to-identify
-at a rack), and the groups they currently train with.
+One person who trains: their name, optional notes, an optional NFC tag id
+(tap-to-identify at a rack), and the groups they currently train with. NFC tag IDs
+are unique inside one organization, not across unrelated customers.
 
 An athlete can be in **several groups at once** — a football player might also sit in a
 speed group, and each group runs its own plan. Which plan applies on a given day is
@@ -161,9 +163,8 @@ It carries no dates and no workouts — it is "who trains together", not a sched
 Real weight rooms put several people on one group: a head coach plus assistants. This is
 the table that says so, with a `role` on each row.
 
-> **Being listed here is not yet team authorization.** Unscoped endpoints require active
-> staff, but they do not consult this table. Do not read a row here as authorization until
-> tenant-aware team enforcement is implemented.
+> Organization owners manage this list through organization-scoped APIs. The head and
+> assistant roles are recorded but do not yet grant different API capabilities.
 
 ### `Tag` — labels for grouping movements
 Simple labels hung on exercises — "lower body", "push" — so movements can be filtered.

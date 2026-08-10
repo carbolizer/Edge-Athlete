@@ -1,7 +1,7 @@
 # API Authorization Matrix
 
 - Date: 2026-08-10
-- Status: Active-staff fence implemented; tenant scoping and registration remain disabled
+- Status: Athlete/TrainingGroup tenant scope implemented; registration remains disabled
 - Source of truth: `django/event_handler/urls.py`, view decorators, and `nginx/vps.conf.template`
 
 ## Boundaries
@@ -46,12 +46,8 @@ authenticated non-staff user, and reach domain validation for active staff.
 | `/api/racks/<rack_number>/ble-selection/` | PUT | `404` |
 | `/api/nodes/<node_id>/acquisition-kind/` | PUT | `404` |
 | `/api/racks/<device_id>/` | PATCH | `404` |
-| `/api/athletes/<athlete_id>/` | GET, PATCH | `404` |
 | `/api/sessions/` | POST | `404` |
 | `/api/sessions/<session_id>/` | PATCH | `404` |
-| `/api/training-groups/` | GET, POST | `404` |
-| `/api/training-groups/<group_id>/athletes/` | GET, POST, DELETE | `404` |
-| `/api/training-groups/<group_id>/coaches/` | GET, POST, PATCH, DELETE | `404` |
 | `/api/training-blocks/` | GET, POST | `404` |
 | `/api/training-blocks/<block_id>/` | GET, PATCH | `404` |
 | `/api/training-blocks/<block_id>/workouts/` | GET, POST | `404` |
@@ -78,12 +74,28 @@ authenticated non-staff user, and reach domain validation for active staff.
 | `/api/analytics/session/<session_id>/` | GET | `404` |
 | `/api/analytics/athlete/<athlete_id>/` | GET | `404` |
 
+## Organization-Scoped Routes
+
+These routes require exactly one active organization membership. Anonymous or
+invalid authentication returns `401`; zero or multiple active memberships return
+`403`. Lists, roots, and related IDs resolve only inside that organization, and a
+cross-tenant ID returns `404`.
+
+| Route | Methods | VPS ingress |
+|---|---|---|
+| `/api/athletes/` | GET, POST | `404` |
+| `/api/athletes/<athlete_id>/` | GET, PATCH | `404` |
+| `/api/training-groups/` | GET, POST | `404` |
+| `/api/training-groups/<group_id>/athletes/` | GET, POST, DELETE | `404` |
+| `/api/training-groups/<group_id>/coaches/` | GET, POST, PATCH, DELETE | `404` |
+
+Organization comes only from the authenticated membership and is absent from
+request/response fields. NFC tag IDs are unique within one organization.
+
 ## Mixed Routes
 
 | Route | Methods | Backend behavior | VPS ingress |
 |---|---|---|---|
-| `/api/athletes/` | GET | `AllowAny`; private-AP roster read | `404` |
-| `/api/athletes/` | POST | `401` anonymous/inactive JWT, `403` active non-staff or force-auth inactive, active staff allowed | `404` |
 | `/api/room-state/` | GET | `AllowAny`; wall snapshot without IDs or roster | `404` |
 | `/api/room-state/?details=true` | GET | `401` anonymous/inactive JWT, `403` active non-staff or force-auth inactive, active staff allowed | `404` |
 
