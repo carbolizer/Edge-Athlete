@@ -54,7 +54,7 @@ Clean Linux machine to a running base station. Run the same command again later 
 ### 1. Install — one command
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/SprintBranch/scripts/basestation/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/main/scripts/basestation/bootstrap.sh | sudo bash
 ```
 
 Installs git + Docker + NetworkManager, clones the repo to
@@ -141,7 +141,7 @@ One command on a fresh machine. It installs Docker, pulls the code, writes the
 boot service, and builds the stack:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/SprintBranch/scripts/basestation/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/main/scripts/basestation/bootstrap.sh | sudo bash
 ```
 
 Run the **same command again** to update a base station later — it is not

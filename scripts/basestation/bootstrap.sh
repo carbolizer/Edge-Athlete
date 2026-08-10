@@ -5,7 +5,7 @@
 # repo down to a fixed location, and hands off to setup.sh, which installs
 # Docker and the boot service.
 #
-#   curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/SprintBranch/scripts/basestation/bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/main/scripts/basestation/bootstrap.sh | sudo bash
 #
 # Run it AGAIN any time you want to update the base station — it pulls the
 # latest code and re-runs setup. Nothing here is one-shot.
@@ -18,21 +18,27 @@
 # existed. /srv belongs to the machine, not to a person, so nothing below cares
 # who is at the keyboard.
 #
-# Override either of these if you need to:
-#   EDGE_HOME=/opt/edge-athlete  EDGE_BRANCH=main  curl ... | sudo bash
+# Override either of these if you need to. ⚠️ The assignments go AFTER `sudo`, not
+# before `curl` — sudo scrubs the environment, so anything set before the pipe never
+# reaches this script and you would silently install the default branch:
+#   curl ... | sudo EDGE_HOME=/opt/edge-athlete EDGE_BRANCH=SprintBranch bash
 
 set -euo pipefail
 
 REPO_URL="${EDGE_REPO_URL:-https://github.com/carbolizer/Edge-Athlete.git}"
 EDGE_HOME="${EDGE_HOME:-/srv/edge-athlete}"
 
-# ⚠️ PINNED TO SprintBranch ON PURPOSE — do not "fix" this to the default branch.
-# GitHub's default for this repo is `main`, and main is a whole generation
-# behind: different models (Session/Program instead of TrainingSession/
-# TrainingProgram), no monitoring-publisher, no seed or simulator services. A
-# base station built from main would come up looking fine and be running last
-# season's app.
-EDGE_BRANCH="${EDGE_BRANCH:-SprintBranch}"
+# Installs from `main`, which is now the branch everything is built from.
+#
+# This used to be pinned to SprintBranch, with a warning that main was "a whole
+# generation behind" — different models, no monitoring publisher, no seed or
+# simulator services. That was true when it was written and is no longer: SprintBranch
+# has been fully merged into main and is now zero commits ahead of it. The old pin
+# would have installed an older tree while claiming to protect you from one.
+#
+# The lesson worth keeping: a branch pin is a claim about the world that rots. If you
+# pin this again, say WHEN and WHY, so the next person can tell whether it still holds.
+EDGE_BRANCH="${EDGE_BRANCH:-main}"
 
 PROJECT_DIR="$EDGE_HOME/Edge-Athlete"
 

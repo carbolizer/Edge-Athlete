@@ -27,11 +27,11 @@ check() {
 }
 
 # ── a fake origin holding the real working tree ─────────────────────────────
-echo "=== building a local remote on branch SprintBranch ==="
+echo "=== building a local remote on branch main ==="
 mkdir -p /tmp/src && cp -r /src/scripts /tmp/src/ \
   && cp /src/docker-compose.yml /src/.env.example /tmp/src/
 cd /tmp/src
-git init -q && git checkout -qb SprintBranch && git add -A && git commit -qm "base"
+git init -q && git checkout -qb main && git add -A && git commit -qm "base"
 git clone -q --bare /tmp/src /tmp/origin.git
 # /tmp/src was init'd, not cloned, so it has no `origin` to push back to. Without
 # this the "upstream moved on" step below silently does nothing and the update
@@ -53,7 +53,7 @@ check "lands at the documented path" "found the repo at /srv/edge-athlete/Edge-A
 check "keeps the repo's own name (Edge-Athlete, not edge-athlete)" "Edge-Athlete" \
       "$(ls /srv/edge-athlete)"
 check "does NOT create a lowercase twin" "1" "$(ls /srv/edge-athlete | wc -l | tr -d ' ')"
-check "checks out the pinned branch, not the default" "SprintBranch" \
+check "checks out the default branch (main)" "main" \
       "$(git -C /srv/edge-athlete/Edge-Athlete rev-parse --abbrev-ref HEAD)"
 check "hands off to setup, which provisions" "setup complete" "$out1"
 check "boot service points into the install" \
@@ -65,7 +65,7 @@ echo "=== run 2: same command again = update in place ==="
 # New commit upstream, and someone has poked a tracked file on the base station.
 cd /tmp/src && echo "# upstream change" >> docker-compose.yml \
   && git commit -qam "upstream moves on" \
-  && git push -q origin SprintBranch \
+  && git push -q origin main \
   || { echo "    [test setup] PUSH FAILED — the update test would be meaningless"; exit 1; }
 echo "LOCAL EDIT" >> /srv/edge-athlete/Edge-Athlete/docker-compose.yml
 echo "KEEP=1" >> /srv/edge-athlete/Edge-Athlete/.env

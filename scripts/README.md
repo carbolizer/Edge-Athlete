@@ -11,7 +11,7 @@ Wi-Fi. Everything else on the network reaches it at `http://basestation`.
 ### Installing one — the whole thing, one command
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/SprintBranch/scripts/basestation/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/main/scripts/basestation/bootstrap.sh | sudo bash
 ```
 
 Run the **same command again** any time you want to update the base station. It
@@ -89,11 +89,10 @@ or the "Wi-Fi password" button). How it works, and why it is built this way:
 By hand instead of the app: edit `AP_PASSWORD` in `basestation.conf` and
 `sudo systemctl restart edgeathlete.service`.
 
-> ⚠️ **The install is pinned to `SprintBranch`, deliberately.** GitHub's default
-> branch for this repo is `main`, and main is a whole generation behind —
-> different models, no monitoring publisher, no seed or simulator services. A
-> base station built from main would come up looking fine and be running last
-> season's app. Override with `EDGE_BRANCH=...` only if you mean it.
+> **Installs from `main`.** It used to be pinned to `SprintBranch` because main
+> was a generation behind; SprintBranch has since been merged into main and is
+> zero commits ahead of it, so the pin now points at the older tree. Override
+> with `EDGE_BRANCH=...` — **after** `sudo`, not before `curl`.
 
 ### Not a Raspberry Pi any more
 
