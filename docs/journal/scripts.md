@@ -143,6 +143,97 @@ installed at setup and is easy to forget when debugging.
 
 ---
 
+## Decision: the browser is installed on the machine, not in a container
+
+**What forced it.** Everything else on the base station runs in a container, so a
+browser in one looked like the consistent choice. It is not.
+
+**What we chose.** The browser is installed directly on the machine, alongside Docker
+and at the same point in setup.
+
+A container is a good fit for a *service* — something that listens on a port and has
+no opinion about the machine it is on. A browser on a kiosk is the opposite: it exists
+to draw on **this machine's physical screen** and read **this machine's keyboard**.
+Putting it in a container means handing that container access to the display system,
+the graphics hardware, and input devices — more access to the host than the entire
+rest of the stack has combined, in exchange for nothing. The consistency would have
+been cosmetic.
+
+**What it cost.** One package installed the ordinary way, and one honest exception to
+"everything is containerised" that is worth being able to explain. Setup does **not**
+fail if the browser cannot be installed: a base station with no monitor attached does
+not need one, and a headless install should not die at that step.
+
+---
+
+## Decision: the base station can be its own screen
+
+**What forced it.** The wall display was assumed to be a separate machine. But the base
+station already has a video output, and demonstrating the system meant carrying three
+tablets to show three kinds of screen.
+
+**What we chose.** The base station can run any of the screens itself — the wall
+display on its own monitor, or all three at once for a demo, each as a separate
+identity (see {doc}`rack-tablet` on why one browser profile per role is what makes
+that possible).
+
+**The detail that makes this better than it looks.** When the browser and the server
+are on the same machine, the app can be reached at `localhost` — and browsers treat
+`localhost` as trusted. Every feature that is switched off elsewhere on the gym network
+(offline caching, tag scanning, direct-to-sensor wireless, installing the app to the
+desktop) simply works here, with no certificate and no browser flags.
+
+**The trap inside that detail.** This only applies to the literal name `localhost`.
+Using the machine's own hostname does **not** work, even though it resolves to the
+same loopback address, because the browser judges the address you typed and never
+looks at where it points. Same machine, same server, different answer.
+
+**What it cost.** The base station now needs to boot to a desktop for this to fire,
+which is a heavier configuration than a server needs. It is optional — a gym running a
+separate wall display should leave it off.
+
+---
+
+## Decision: kiosk state belongs to the machine, not to a user
+
+**What forced it.** The same mistake the install path made, in a new place. The kiosk
+scripts wrote the browser's stored data into one specific user's home folder, and
+registered the auto-start entry there too. Log in as anyone else and the screen starts
+nothing.
+
+**What we chose.** Both moved to machine-owned locations: the browser profiles to a
+system state directory, the auto-start entry to the system-wide location every desktop
+session reads. The profile directory is shared in the same way `/tmp` is — anyone can
+create their own inside it, nobody can delete anyone else's — so no part of this needs
+to know or care who is logged in.
+
+**What it cost.** Nothing. This is the same cheap reliability decision as the install
+path, applied a second time. That it had to be made twice is the interesting part:
+**the fix was documented, and the pattern was still repeated in a neighbouring script.**
+Writing down a lesson does not propagate it.
+
+---
+
+## Decision: the everyday commands live in the repo, not in a dotfile
+
+**What forced it.** Three things get done on this machine over and over — update it,
+load demo data, start the fake sensor — and each is a long command that is easy to get
+subtly wrong. Typing them by hand is how a demo ends up running old code without anyone
+noticing.
+
+**What we chose.** Short named commands, defined in a file **inside the repository**
+and linked into the system's shell startup. Because it is a link rather than a copy,
+updating the base station updates the commands too.
+
+That last part is the whole point. A copied helper file rots: it keeps wrapping the
+old behaviour of a script that has since changed, and nothing indicates the drift. A
+link cannot get out of step with the thing it wraps.
+
+**What it cost.** One bootstrapping wrinkle — the commands arrive *via* an update, so
+the very first update on a machine still uses the long form.
+
+---
+
 ## The thing everybody hits once
 
 **Changing the Wi-Fi password disconnects every device in the gym**, immediately —
@@ -162,3 +253,27 @@ connected device, each device's radio health, and how saturated the Wi-Fi channe
 It exists because bandwidth numbers alone cannot distinguish **"the application is
 slow"** from **"the radio cannot push the bits."** Those have completely different
 fixes, and guessing wrong wastes a day.
+
+---
+
+## Where these decisions live in the code
+
+| File | What it does | Which decision |
+|---|---|---|
+| `scripts/basestation/bootstrap.sh` | One command to install **or** update. Not one-shot | install path, settings out of git |
+| `scripts/basestation/setup.sh` | Installs Docker, the browser, the boot service, the shell commands | browser on the machine, commands in the repo |
+| `scripts/basestation/startup.sh` | Runs on every boot: access point first, then the stack | a failed AP must not stop the app |
+| `scripts/basestation/apply-wifi.sh` | The privileged Wi-Fi agent on the host | container never reconfigures the network |
+| `scripts/basestation/aliases.sh` | **New.** `ea-update`, `ea-seed`, `ea-sim` — linked into shell startup | commands in the repo |
+| `scripts/basestation/basestation-kiosk.sh` | **New.** Runs a screen on the base station itself, via `localhost` | the base station as its own screen |
+| `scripts/basestation/update-via-hotspot.sh` | Updates a box with no wired internet, by borrowing a phone | — |
+| `scripts/netmon.sh` | The three-pane radio diagnostic described below | — |
+
+:::{admonition} The pattern underneath most of these
+:class: tip
+Nearly every decision on this page is the same one restated: **nothing may depend on
+who is logged in, and nothing the machine owns may live in the repository.** The
+install path, the settings file, the browser profiles, the auto-start entry — each was
+a separate outage waiting to happen, and each has the same shape. When you add
+something to a base station, that is the question to ask of it.
+:::

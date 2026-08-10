@@ -80,6 +80,43 @@ else
     curl -fsSL https://get.docker.com | sh
 fi
 
+echo "[3b] installing Chromium (on the host, not in a container)..."
+# WHY IT IS NOT IN A CONTAINER, since everything else here is.
+# Chromium is not a service — it is a program that has to draw on THIS machine's
+# physical screen and take input from its keyboard. Containerising it means handing
+# a container the X/Wayland socket, the GPU device nodes, and audio, which is more
+# host access than the whole rest of the stack has combined, in exchange for nothing.
+# The browser is a desktop application. It belongs on the desktop.
+#
+# WHY THE BASE STATION NEEDS ONE AT ALL. Two jobs: driving a wall display off this
+# machine's own HDMI output, and demoing all three screens on one box without three
+# tablets. Both go through scripts/basestation/basestation-kiosk.sh.
+#
+# Package name differs by image: chromium-browser on older Debian/Ubuntu, chromium
+# on newer. Try both, and do NOT fail setup if neither exists — a base station with
+# no monitor attached does not need a browser, and a headless install should not
+# die at this step. The kiosk scripts report the absence clearly if you later try
+# to use one.
+#
+# ⚠️ ON UBUNTU BOTH PACKAGE NAMES INSTALL A SNAP, and a snap cannot read the kiosk
+# profile directory under /var/lib — it is confined to home directories. kiosk.sh
+# detects this and falls back with an explanation, so nothing breaks silently, but
+# the real fix on Ubuntu is Google Chrome's .deb. Debian and Raspberry Pi OS ship a
+# normal package and are unaffected.
+if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then
+    echo "    already present, skipping"
+else
+    apt-get install -y -qq chromium 2>/dev/null \
+      || apt-get install -y -qq chromium-browser 2>/dev/null \
+      || echo "    [!] no chromium package found — the base station cannot drive a" \
+              "screen itself. Harmless if it is headless."
+fi
+
+# unclutter hides the mouse pointer on a kiosk screen; x11-xserver-utils provides
+# xset, which is how kiosk.sh stops the display blanking mid-set. Both are tiny and
+# both are useless without a screen, so they ride along with Chromium.
+apt-get install -y -qq unclutter x11-xserver-utils 2>/dev/null || true
+
 echo "[4] enabling services..."
 systemctl enable --now NetworkManager
 systemctl enable --now docker
@@ -286,7 +323,15 @@ else
     echo "    /etc/docker/daemon.json already exists, left alone"
 fi
 
-echo "[11] building the stack (this takes a while the first time)..."
+echo "[11] installing the shell shortcuts..."
+# A SYMLINK, not a copy. /etc/profile.d is sourced by every login shell, so the
+# short commands (ea-update, ea-seed, ea-sim) are there the moment you SSH in.
+# Pointing at the repo instead of copying means an update refreshes the commands
+# too — otherwise a stale copy would sit here forever, quietly out of date with
+# the script it claims to wrap.
+ln -sfn "$PROJECT_DIR/scripts/basestation/aliases.sh" /etc/profile.d/edge-athlete.sh
+
+echo "[12] building the stack (this takes a while the first time)..."
 docker compose build
 
 cat <<EOF
@@ -303,6 +348,9 @@ NEXT:
   2. reboot, or: sudo systemctl start edgeathlete.service
   3. join the "EdgeAthlete" Wi-Fi and open http://basestation
 
-Then fill it with demo data if you want one:
-  cd $PROJECT_DIR && docker compose run --rm seed
+SHORT COMMANDS (log out and back in, or: source /etc/profile.d/edge-athlete.sh)
+  ea-update    pull latest code and rebuild
+  ea-seed      fill it with demo data
+  ea-sim       start the fake rack sensor
+  ea-help      the full list
 EOF

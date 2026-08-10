@@ -27,6 +27,30 @@ is not one-shot: it pulls the latest code and re-provisions.
   hand: a systemd path-unit fires it when the coach app requests a change. It
   does the `nmcli` work as root, on the host, so the web container never needs
   network privileges. See "Changing the Wi-Fi password" below.
+- **`aliases.sh`** — the short commands (`ea-update`, `ea-seed`, `ea-sim`).
+  `setup.sh` symlinks it into `/etc/profile.d/`, so an update refreshes the
+  commands along with everything else. Run `ea-help` on the box for the list.
+- **`basestation-kiosk.sh`** — runs the app **on the base station itself**, for a
+  wall display off its own HDMI (`sudo basestation-kiosk.sh autostart dashboard`)
+  or to demo all three screens on one machine (`basestation-kiosk.sh open coach`).
+  It points at `localhost`, not `basestation`, and that word does real work — see
+  "Secure contexts" below.
+
+### Secure contexts, or why `localhost` and `basestation` are not the same
+
+Service workers, PWA install, and Web Bluetooth only run in a **secure context**:
+https or `localhost`, nothing else. `http://basestation` is not one — and it is
+still not one *on the base station*, even though the name resolves to a loopback
+address, because the browser judges the origin text and never looks at where it
+resolves. Consequences:
+
+- On the base station, use `localhost`. Everything works, no flags, no cert.
+- From a rack tablet, `localhost` isn't available, so `kiosk.sh` passes Chromium
+  `--unsafely-treat-insecure-origin-as-secure` (which is ignored unless a
+  `--user-data-dir` is also set — one more reason the per-role profile matters).
+- Real HTTPS is the wrong fix here: a self-signed cert warns on every phone, and
+  an https page refuses the plain `ws://` MQTT socket as mixed content. See
+  `react/src/polyfills.js`, which lost this same argument on purpose.
 
 ### Where things live
 
@@ -37,6 +61,9 @@ is not one-shot: it pulls the latest code and re-provisions.
 | App environment | `<install>/.env` | **no** (gitignored) |
 | Boot service | `/etc/systemd/system/edgeathlete.service` | generated |
 | First-boot flags | `/var/lib/edgeathlete/` | — |
+| Shell shortcuts | `/etc/profile.d/edge-athlete.sh` | symlink into the repo |
+| Kiosk browser profiles | `/var/lib/edge-athlete/kiosk/<user>-<role>` | **no** |
+| Kiosk autostart | `/etc/xdg/autostart/edgeathlete-kiosk.desktop` | generated |
 
 ### Three things worth knowing
 
@@ -125,11 +152,30 @@ A Pi + touchscreen that **joins** the base station's Wi-Fi and boots straight
 into full-screen Chromium. Runs **no** server.
 
 - **`rack-kiosk-setup.sh`** — run ONCE:
-  `sudo scripts/rack-screen/rack-kiosk-setup.sh`. Installs Chromium, joins the
-  Wi-Fi as a client, turns on desktop autologin, and installs the kiosk launcher.
+  `sudo scripts/rack-screen/rack-kiosk-setup.sh [role]`. Installs Chromium, joins
+  the Wi-Fi as a client, turns on desktop autologin, and installs the kiosk
+  launcher into `/etc/xdg/autostart` so it fires for **whoever** logs in.
 - **`kiosk.sh`** — the launcher: waits for the base station, disables screen
-  blanking, runs Chromium `--kiosk`, and relaunches it if it exits. Takes a URL:
-  `http://basestation/` for a rack, `http://basestation/dashboard` for the wall.
+  blanking, runs Chromium `--kiosk`, and relaunches it if it exits. Takes a
+  **role**, not a URL — `kiosk.sh rack`, `kiosk.sh coach`, `kiosk.sh dashboard` —
+  because the role decides three things that have to agree: the URL, the browser
+  profile, and which app installs.
+  A third argument picks the mode: `kiosk.sh coach basestation windowed` opens a
+  normal window instead, which is how a **coach tablet** runs. Same trusted origin
+  and same on-disk profile — so the offline copy and the app install both work —
+  but no full-screen lock (the browser menu is where "install" lives) and no
+  relaunch loop (a coach closing the window means it).
+
+Two things about it are load-bearing and easy to undo by accident:
+
+- **Each role gets its own browser profile** under `/var/lib/edge-athlete/kiosk/`.
+  The app's identity (`device_id`, `device_role`, `rack_number`) lives in
+  localStorage, which is one bucket per profile per origin — so two roles sharing
+  a profile are one device as far as the server is concerned.
+- **No `--incognito`.** It used to pass it, which discarded that same localStorage
+  on every launch (so a screen lost its rack assignment on any crash) and made
+  `repBuffer`'s IndexedDB memory-only, voiding the promise that reps survive a
+  Wi-Fi drop. A kiosk wants the opposite of incognito.
 
 > ⚠️ **`AP_SSID` / `AP_PASSWORD` in `rack-kiosk-setup.sh` must match the base
 > station's** — which now means matching `/etc/edgeathlete/basestation.conf` on
