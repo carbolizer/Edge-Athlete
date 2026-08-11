@@ -136,17 +136,23 @@ chmod 1777 "$KIOSK_ROOT"
 echo "[5] installing the launcher..."
 install_launcher
 
-echo "[5b] installing the shell shortcuts..."
-# A SYMLINK into the repo, so `ea-update` refreshes the commands along with
-# everything else. A copy would keep wrapping the old behaviour of a script that had
-# since changed, with nothing to indicate the drift.
+echo "[5b] installing the short commands..."
+# Real executables on PATH, one symlink per name. NOT sourced from /etc/profile.d,
+# which only login shells read — that version was missing from desktop terminals,
+# from `ssh host 'ea-update'`, and from any already-open session. See the header of
+# scripts/basestation/ea.sh for the full story.
 #
-# ⚠️ THIS IS THE SCREEN'S aliases.sh, NOT THE BASE STATION'S. They both define
-# `ea-update` and they point at different bootstraps — see the header of either file.
-# Symlinking the wrong one here would give a rack tablet a command that installs
-# Docker and stands up a competing WiFi access point.
-mkdir -p /etc/profile.d
-ln -sfn "$SCRIPT_DIR/aliases.sh" /etc/profile.d/edge-athlete.sh
+# ⚠️ THIS IS THE SCREEN'S ea.sh, NOT THE BASE STATION'S. They both provide
+# `ea-update` and they point at different bootstraps — see either file's header.
+# Linking the wrong one here would give a rack tablet a command that installs Docker
+# and stands up a competing WiFi access point.
+mkdir -p /usr/local/bin
+for cmd in ea ea-update ea-restart ea-kiosk-log ea-help; do
+    ln -sfn "$SCRIPT_DIR/ea.sh" "/usr/local/bin/$cmd"
+done
+chmod +x "$SCRIPT_DIR/ea.sh"
+# The old sourced version would shadow these with stale functions in login shells.
+rm -f /etc/profile.d/edge-athlete.sh
 
 echo "[6] keeping the screen awake..."
 # A screen that suspends mid-set looks identical to one that crashed, and unlike a

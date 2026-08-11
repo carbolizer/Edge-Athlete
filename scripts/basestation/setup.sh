@@ -403,13 +403,28 @@ else
     echo "    /etc/docker/daemon.json already exists, left alone"
 fi
 
-echo "[11] installing the shell shortcuts..."
-# A SYMLINK, not a copy. /etc/profile.d is sourced by every login shell, so the
-# short commands (ea-update, ea-seed, ea-sim) are there the moment you SSH in.
-# Pointing at the repo instead of copying means an update refreshes the commands
-# too — otherwise a stale copy would sit here forever, quietly out of date with
-# the script it claims to wrap.
-ln -sfn "$PROJECT_DIR/scripts/basestation/aliases.sh" /etc/profile.d/edge-athlete.sh
+echo "[11] installing the short commands..."
+# Real executables on PATH, one symlink per command name, all pointing at one file
+# that works out which name it was called as.
+#
+# These used to be shell FUNCTIONS sourced from /etc/profile.d. That directory is
+# only read by LOGIN shells, so the commands existed over plain ssh and were missing
+# from a desktop terminal, from `ssh host 'ea-update'`, from anything under sudo, and
+# from any session that was already open. The workaround was to `source` the file by
+# hand before every use — and a command you have to install into your shell each time is
+# not a command. Worse, the failure read as "the update mechanism is broken" rather
+# than "the way it reaches your shell is broken".
+#
+# Symlinks rather than copies, so `ea-update` refreshes the commands themselves.
+mkdir -p /usr/local/bin
+for cmd in ea ea-update ea-seed ea-sim ea-sim-log ea-sim-stop ea-help; do
+    ln -sfn "$PROJECT_DIR/scripts/basestation/ea.sh" "/usr/local/bin/$cmd"
+done
+chmod +x "$PROJECT_DIR/scripts/basestation/ea.sh"
+# Remove the old sourced version. Left in place it would define functions that
+# SHADOW the commands above in login shells — and stale ones, since the file it
+# points at no longer exists.
+rm -f /etc/profile.d/edge-athlete.sh
 
 echo "[11b] installing the screen launchers..."
 # The base station defaults to being the WALL DISPLAY, and carries a clickable

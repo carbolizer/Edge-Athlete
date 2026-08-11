@@ -288,6 +288,23 @@ link cannot get out of step with the thing it wraps.
 **What it cost.** One bootstrapping wrinkle — the commands arrive *via* an update, so
 the very first update on a machine still uses the long form.
 
+**And one thing we got wrong first, which is the more useful half of this entry.**
+They were originally shell *functions*, loaded from the directory a shell reads when
+you log in. That works — but only for logins. A terminal opened on the desktop, a
+one-shot command sent over ssh, anything run through `sudo`: none of those are logins,
+and in all of them the commands simply did not exist. The workaround was to load the
+file by hand before each use.
+
+That is not a small inconvenience, it is a broken design: **a command you have to
+install into your shell before every use is not a command.** And it failed in the most
+misleading possible way — "ea-update: command not found" reads as *the update mechanism
+is broken*, when the update mechanism was fine and only its delivery was.
+
+They are now ordinary programs on the system path, one file linked under each command
+name. Every shell, every login type, over ssh in one shot, under `sudo`. The thing a
+function could do that a program cannot — change the shell you typed it into — is
+something none of these ever needed.
+
 ---
 
 ## Decision: a rack screen installs with one command too
@@ -456,12 +473,12 @@ fixes, and guessing wrong wastes a day.
 | `scripts/basestation/setup.sh` | Installs Docker, the browser, the boot service, the shell commands | browser on the machine, commands in the repo |
 | `scripts/basestation/startup.sh` | Runs on every boot: access point first, then the stack | a failed AP must not stop the app |
 | `scripts/basestation/apply-wifi.sh` | The privileged Wi-Fi agent on the host | container never reconfigures the network |
-| `scripts/basestation/aliases.sh` | **New.** `ea-update`, `ea-seed`, `ea-sim` — linked into shell startup | commands in the repo |
+| `scripts/basestation/ea.sh` | **New.** `ea-update`, `ea-seed`, `ea-sim` — symlinked onto the system path | commands in the repo |
 | `scripts/basestation/basestation-kiosk.sh` | **New.** Runs a screen on the base station itself, via `localhost` | the base station as its own screen |
 | `scripts/basestation/update-via-hotspot.sh` | Updates a box with no wired internet, by borrowing a phone | — |
 | `scripts/rack-screen/rack-bootstrap.sh` | **New.** One command to install **or** update a rack screen | a rack screen installs with one command |
 | `scripts/rack-screen/rack-kiosk-setup.sh` | Provisions a screen; run directly only for a coach tablet | a rack screen installs with one command |
-| `scripts/rack-screen/aliases.sh` | **New.** The screen's short commands. A *separate file* from the base station's, on purpose | one verb, two devices |
+| `scripts/rack-screen/ea.sh` | **New.** The screen's short commands. A *separate file* from the base station's, on purpose | one verb, two devices |
 | `scripts/netmon.sh` | The three-pane radio diagnostic described below | — |
 
 :::{admonition} The pattern underneath most of these

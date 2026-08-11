@@ -27,9 +27,11 @@ is not one-shot: it pulls the latest code and re-provisions.
   hand: a systemd path-unit fires it when the coach app requests a change. It
   does the `nmcli` work as root, on the host, so the web container never needs
   network privileges. See "Changing the Wi-Fi password" below.
-- **`aliases.sh`** — the short commands (`ea-update`, `ea-seed`, `ea-sim`).
-  `setup.sh` symlinks it into `/etc/profile.d/`, so an update refreshes the
-  commands along with everything else. Run `ea-help` on the box for the list.
+- **`ea.sh`** — the short commands (`ea-update`, `ea-seed`, `ea-sim`, …). One file,
+  symlinked into `/usr/local/bin` once per command name; it reads which name it was
+  invoked as. Real executables, **not** shell functions — so they work in a desktop
+  terminal, over `ssh host 'ea-update'`, and under `sudo`, none of which read
+  `/etc/profile.d`. Run `ea-help` for the list.
 - **`basestation-kiosk.sh`** — runs the app **on the base station itself**. `setup.sh`
   already installs a clickable launcher for all three roles plus a wall-display
   autostart, so reach for this only to change the boot default
@@ -67,7 +69,7 @@ resolves. Consequences:
 | App environment | `<install>/.env` | **no** (gitignored) |
 | Boot service | `/etc/systemd/system/edgeathlete.service` | generated |
 | First-boot flags | `/var/lib/edgeathlete/` | — |
-| Shell shortcuts | `/etc/profile.d/edge-athlete.sh` | symlink into the repo |
+| Short commands | `/usr/local/bin/ea*` | symlinks into the repo |
 | Kiosk browser profiles | `/var/lib/edge-athlete/kiosk/<user>-<role>` | **no** |
 | Kiosk autostart | `/etc/xdg/autostart/edgeathlete-kiosk.desktop` | generated |
 | Kiosk login account | `edgekiosk` — no sudo, password locked | — |
@@ -184,10 +186,10 @@ into full-screen Chromium. Runs **no** server.
   launcher into `/etc/xdg/autostart` so it fires for **whoever** logs in. Run it
   directly only for a **coach tablet** (`sudo … rack-kiosk-setup.sh coach`), which
   gets a tappable icon instead of an autostart entry.
-- **`aliases.sh`** — `ea-update`, `ea-restart`, `ea-kiosk-log`. Symlinked into
-  `/etc/profile.d`, same as the base station's.
+- **`ea.sh`** — `ea-update`, `ea-restart`, `ea-kiosk-log`. Symlinked into
+  `/usr/local/bin`, same as the base station's.
 
-> ⚠️ **There are two `aliases.sh` files and they are not interchangeable.** Both
+> ⚠️ **There are two `ea.sh` files and they are not interchangeable.** Both
 > define `ea-update`, meaning "update this device" — but a screen's resolves to
 > `rack-bootstrap.sh` (a browser and a launcher, seconds) and the base station's to
 > `bootstrap.sh` (Docker, the server stack, the access point, minutes). Sourcing the
