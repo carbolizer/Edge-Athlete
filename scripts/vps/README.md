@@ -8,7 +8,7 @@ reviewed release that has passed independent QA and security review.
 
 ## Prerequisites
 
-- A Linux VPS with Docker Engine, the Compose plugin, Git, Certbot, `age`, a host
+- A Linux VPS with Docker Engine, the Compose plugin, Git, Certbot, `age`, `curl`, a host
   firewall, and an externally managed SSH service.
 - DNS `A`/`AAAA` records for `VPS_DOMAIN` and `BLE_LAB_DOMAIN` whose only
   addresses are this VPS. Remove stale records before certificate issuance.
@@ -16,6 +16,10 @@ reviewed release that has passed independent QA and security review.
   TCP 80/443 from the internet. Do not allow PostgreSQL, Django, MQTT, or Docker API
   ports.
 - A reviewed release tag checked out in a dedicated deployment directory.
+
+The deployment directory is `/opt/edgeathlete`. Certbot's root-run renewal hooks
+reject a different path, symlinks, non-root ownership, or group/world-writable
+deployment inputs.
 
 The Compose backend network gives `vps-postgres` the private alias `postgres` because
 the current settings module fixes that hostname. PostgreSQL is not published.
@@ -43,18 +47,29 @@ dig +short A "$BLE_DOMAIN"
 dig +short AAAA "$BLE_DOMAIN"
 sudo certbot certonly --standalone -d "$DOMAIN"
 sudo certbot certonly --standalone -d "$BLE_DOMAIN"
-sudo certbot renew --dry-run
 ```
 
-Certificate issuance needs port 80 free. Stop only the VPS Nginx service if renewing
-with the standalone plugin. Prefer a Certbot deploy hook that runs:
+Certificate issuance needs port 80 free. This deployment uses Certbot's standalone
+authenticator, so install the reviewed hooks that stop only VPS Nginx before a
+renewal attempt and start/test it afterward:
 
 ```bash
-docker compose --env-file .env.vps -f docker-compose.vps.yml exec -T vps-nginx nginx -s reload
+sudo install -m 755 scripts/vps/certbot_pre_renew.sh \
+  /etc/letsencrypt/renewal-hooks/pre/edgeathlete-nginx
+sudo install -m 755 scripts/vps/certbot_post_renew.sh \
+  /etc/letsencrypt/renewal-hooks/post/edgeathlete-nginx
+sudo install -d -m 755 /etc/systemd/system/certbot.service.d
+sudo install -m 644 scripts/vps/certbot.service.d.conf \
+  /etc/systemd/system/certbot.service.d/edgeathlete.conf
+sudo systemctl daemon-reload
+sudo certbot renew --dry-run --no-random-sleep-on-renew
 ```
 
-Monitor renewal failures outside the application. The Compose profile mounts the
-Certbot state directory read-only and expects
+The post hook starts only `vps-nginx`, validates its configuration, and requests the
+public health endpoint. The systemd `ExecStopPost` repeats that recovery/check after
+both successful and failed Certbot service exits. The dry-run must renew both names and
+leave `vps-nginx` running with `nginx -t` successful. Monitor failed `certbot.service`
+units outside the application. The Compose profile mounts the Certbot state directory read-only and expects
 `live/<VPS_DOMAIN>/{fullchain.pem,privkey.pem}` beneath it.
 
 ## Secrets
@@ -112,6 +127,7 @@ Run the configuration check before every deployment:
 python3 scripts/vps/check_api_allowlist.py
 python3 -m unittest scripts/vps/test_check_api_allowlist.py
 python3 -m unittest scripts/vps/test_smoke_test.py
+python3 -m unittest scripts/vps/test_certbot_hooks.py
 ```
 
 This check fails if `nginx/vps.conf.template` adds, removes, or widens an API
