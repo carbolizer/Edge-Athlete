@@ -2,7 +2,7 @@
 # Pinned to 22 LTS: Vite 8 / rolldown require Node ^20.19.0 || >=22.12.0. The old
 # floating `node:20-alpine` tag could resolve to a cached pre-20.19 Node on some
 # machines, crashing `vite build` with "node:util has no export 'styleText'".
-FROM node:22-alpine AS build
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 
 # create and copy working folder inside container
 WORKDIR /frontend_container
@@ -13,7 +13,7 @@ COPY package.json .
 COPY package-lock.json .
 
 # install react/ vite dependencies
-RUN npm install
+RUN npm ci
 
 # copy the rest of the react files in
 COPY . .
@@ -24,7 +24,7 @@ RUN npm run build
 # ------------------------------------------------------------------------------------------------------------
 
 # this part runs once docker is up to serve pages
-FROM nginx:alpine
+FROM nginx:alpine@sha256:dc48b7a872a79fb541ba5081d320b11b549231bc63ba465a7495afaa7d2ebcb8
 
 # copy finished website files from first part into nginx's default website folder
 COPY --from=build /frontend_container/dist /usr/share/nginx/html

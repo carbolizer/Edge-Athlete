@@ -1,6 +1,7 @@
 # Python packages required to run the Django application
 # Install with: pip install -r requirements.txt
-# This file is used by Docker during the image build to install dependencies
+# Regenerate requirements.lock with Python 3.11 and pip-tools after editing.
+# Docker installs the hash-locked file rather than resolving this input directly.
 
 django==5.2.17              # Current available Django 5.2 LTS patch (PyPI checked 2026-08-10)
 djangorestframework==3.15.2 # Adds tools for building JSON APIs for React
@@ -8,6 +9,6 @@ psycopg2-binary==2.9.9      # PostgreSQL database driver — required for Docker
 paho-mqtt==1.6.1            # Python Mosquitto broker library
 gunicorn==23.0.0            # the actual web server. `runserver` is a dev tool and Django says so
 whitenoise==6.8.2           # lets Django serve its own admin/DRF static files under gunicorn
-djangorestframework-simplejwt==5.3.1 # JWT token auth for the React frontend
+djangorestframework-simplejwt==5.5.1 # JWT token auth for the React frontend
 django-cors-headers==4.4.0 # Allows React (port 5173) to call Django (port 8000)
 reportlab==4.5.1           # renders the immutable DailyReport snapshot as a printable PDF

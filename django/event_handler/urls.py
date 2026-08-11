@@ -44,6 +44,8 @@ urlpatterns = [
          name='endpoint_pairing_status'),
     path('coach/v1/rack-endpoint-pairings/claim/', control_plane_views.endpoint_pairing_claim,
          name='endpoint_pairing_claim'),
+    path('coach/v1/training-groups/', control_plane_views.coach_training_groups,
+         name='coach_training_groups'),
     path('rack/v1/status/', control_plane_views.endpoint_status, name='endpoint_status'),
     path('rack/v1/helper-pairings/', control_plane_views.helper_pairing_create,
          name='helper_pairing_create'),

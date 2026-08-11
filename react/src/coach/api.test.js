@@ -31,7 +31,7 @@ describe('coach hosted Rack API', () => {
     await getCoachTrainingGroups('coach-token')
     await confirmRackHelper('coach-token', 'pairing-id')
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/training-groups/')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/coach/v1/training-groups/')
     expect(fetchMock.mock.calls[1][1].body).toBe('{"pairing_id":"pairing-id"}')
   })
 

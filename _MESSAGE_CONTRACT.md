@@ -1145,6 +1145,22 @@ ea_rack_endpoint_pairing=<opaque 43-character base64url value>; Max-Age=300; Pat
 The cookie is host-only. Pairing code and bootstrap capability are never the
 persistent endpoint credential.
 
+#### `GET /api/coach/v1/training-groups/`
+
+Requires an active-staff coach access token and exactly one active organization
+membership. Returns only TrainingGroups the coach may manage, ordered by name then
+ID. The exact `200` body is:
+
+```json
+[
+  {"id": 7, "name": "Varsity"}
+]
+```
+
+The response is `Cache-Control: no-store`. It does not include athletes, programs,
+staff, endpoint identity, or organization identity. Anonymous, inactive, non-staff,
+and organization-less users receive the normal authorization denial.
+
 #### `POST /api/coach/v1/rack-endpoint-pairings/claim/`
 
 Requires an active-staff coach access token, one active organization membership, permission to
@@ -1310,19 +1326,26 @@ Before helper claim:
 {"pairing_id":"UUID","state":"pending","confirmation_phrase":null,"expires_at":"UTC RFC 3339 timestamp"}
 ```
 
-After claim or confirmation:
+After claim or confirmation, before expiry:
 
 ```json
 {
   "pairing_id": "UUID",
-  "state": "claimed|confirmed|activated",
+  "state": "claimed|confirmed",
   "confirmation_phrase": ["word1","word2","word3","word4","word5","word6"],
   "expires_at": "UTC RFC 3339 timestamp"
 }
 ```
 
-The endpoint may read only its own current pairing. Expiry returns `410
-pairing_expired`.
+After activation and before expiry, the state remains visible but the phrase source
+material has been scrubbed:
+
+```json
+{"pairing_id":"UUID","state":"activated","confirmation_phrase":null,"expires_at":"UTC RFC 3339 timestamp"}
+```
+
+The endpoint may read only its own current pairing. All states, including activated,
+return `410 pairing_expired` at or after `expires_at`.
 
 #### `POST /api/coach/v1/rack-helper-pairings/confirm/`
 
@@ -1364,7 +1387,8 @@ Success returns `200`:
 ```
 
 Unknown, malformed, expired, wrong-bootstrap, or terminal pairing state returns the
-same `404 not_found`.
+same `404 not_found`. Activated may be read only before `expires_at`; activation is
+durable through the installation credential, not by extending bootstrap authority.
 
 #### `POST /api/rack-helper/v1/pairings/activate/`
 

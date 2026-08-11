@@ -13,6 +13,7 @@ EXPECTED_API_LOCATIONS = {
     "~ ^/api/rack/v1/(csrf|status)/$",
     "~ ^/api/rack/v1/(endpoint-pairings(?:/status)?|helper-pairings(?:/status)?|helper-launch-intents(?:/inspect)?)/$",
     "~ ^/api/coach/v1/(rack-endpoint-pairings/claim|rack-helper-pairings/confirm)/$",
+    "= /api/coach/v1/training-groups/",
     "~ ^/api/rack-helper/v1/(pairings/(claim|status|activate)|status|launch-intents/consume)/$",
     "/api/",
 }
@@ -38,6 +39,7 @@ def validation_errors(config_path):
         "~ ^/api/rack/v1/(csrf|status)/$": "GET",
         "~ ^/api/rack/v1/(endpoint-pairings(?:/status)?|helper-pairings(?:/status)?|helper-launch-intents(?:/inspect)?)/$": "POST",
         "~ ^/api/coach/v1/(rack-endpoint-pairings/claim|rack-helper-pairings/confirm)/$": "POST",
+        "= /api/coach/v1/training-groups/": "GET",
         "~ ^/api/rack-helper/v1/(pairings/(claim|status|activate)|status|launch-intents/consume)/$": "POST",
     }
     for location, method in required_method_guards.items():
@@ -56,6 +58,9 @@ def validation_errors(config_path):
     )
     if main_csp not in config:
         errors.append("VPS main application CSP is missing")
+    for header in ("X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"):
+        if f"proxy_hide_header {header};" not in config:
+            errors.append(f"VPS must suppress the upstream {header} header")
     return errors
 
 

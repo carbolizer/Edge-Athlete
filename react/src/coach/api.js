@@ -57,7 +57,7 @@ export async function coachFetch(path, { token, method = 'GET', body } = {}) {
 }
 
 export function getCoachTrainingGroups(token) {
-  return coachFetch('/api/training-groups/', { token })
+  return coachFetch('/api/coach/v1/training-groups/', { token })
 }
 
 export function claimRackEndpoint(token, body) {

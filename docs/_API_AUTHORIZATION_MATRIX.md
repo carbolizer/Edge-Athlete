@@ -46,6 +46,7 @@ method-fenced allowlist entries; similarly prefixed private-AP routes remain `40
 | `/api/rack/v1/endpoint-pairings/` | POST | CSRF + exact Origin + PostgreSQL throttle | Exact public route |
 | `/api/rack/v1/endpoint-pairings/status/` | POST | Bootstrap cookie + CSRF + exact Origin | Exact public route |
 | `/api/coach/v1/rack-endpoint-pairings/claim/` | POST | Active-staff coach token + active organization membership + TrainingGroup manage permission + exact Origin | Exact public route |
+| `/api/coach/v1/training-groups/` | GET | Active-staff coach token + exactly one active organization membership; returns manageable group IDs/names only | Exact public route |
 | `/api/rack/v1/status/` | GET | `ea_rack_endpoint` scoped to its own endpoint | Exact public route |
 | `/api/rack/v1/helper-pairings/` | POST | Endpoint cookie + CSRF + exact Origin | Exact public route |
 | `/api/rack/v1/helper-pairings/status/` | POST | Endpoint cookie + CSRF + exact Origin; own pairing only | Exact public route |

@@ -63,6 +63,19 @@ def _helper_credential(request, *, allow_pending=False, touch=False):
 
 
 @api_view(["GET"])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
+def coach_training_groups(request):
+    try:
+        control.apply_limits([
+            ("coach_training_groups_user", str(request.user.pk), 120, 60),
+            ("coach_training_groups_organization", str(request.organization.pk), 1000, 60),
+        ])
+    except control.ControlPlaneError as exc:
+        return _error(exc)
+    return _response(list(control.manageable_training_groups(request.user, request.organization)))
+
+
+@api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 def rack_csrf(request):
@@ -275,14 +288,18 @@ def endpoint_helper_pairing_status(request):
         pairing = credential.endpoint.helper_pairings.filter(pk=pairing_id).first()
         if pairing is None:
             raise control.ControlPlaneError("not_found", "Not found.", 404)
-        if pairing.expires_at <= timezone.now() and pairing.state != "activated":
+        if pairing.expires_at <= timezone.now():
             raise control.ControlPlaneError("pairing_expired", "The pairing session expired.", 410)
     except control.ControlPlaneError as exc:
         return _error(exc)
     return _response({
         "pairing_id": str(pairing.id), "state": pairing.state,
+        # The six-word phrase only exists to be compared during the claim/confirm
+        # handshake; its source material is scrubbed at activation, so a pending or
+        # activated pairing reports null rather than crashing on missing secrets.
         "confirmation_phrase": (
-            control.confirmation_phrase(pairing) if pairing.state != "pending" else None
+            control.confirmation_phrase(pairing)
+            if pairing.state in ("claimed", "confirmed") else None
         ),
         "expires_at": pairing.expires_at.isoformat(),
     })

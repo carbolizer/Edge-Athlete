@@ -1,6 +1,8 @@
 # VPS Deployment Runbook
 
-This profile hosts diagnostics only. It does not enable hosted workouts, MQTT, a
+This profile hosts gateway diagnostics and the hosted Rack control plane. The Rack
+Helper slice covers endpoint identity, pairing, launch intent, and status only; it
+does not upload BLE reps. The profile does not enable hosted workouts, MQTT, a
 simulator, hardware sockets, demo data, or a gym-host listener. Deploy only a
 reviewed release that has passed independent QA and security review.
 
@@ -8,8 +10,8 @@ reviewed release that has passed independent QA and security review.
 
 - A Linux VPS with Docker Engine, the Compose plugin, Git, Certbot, `age`, a host
   firewall, and an externally managed SSH service.
-- A DNS `A`/`AAAA` record whose only addresses are this VPS. Remove stale records
-  before certificate issuance.
+- DNS `A`/`AAAA` records for `VPS_DOMAIN` and `BLE_LAB_DOMAIN` whose only
+  addresses are this VPS. Remove stale records before certificate issuance.
 - Cloud-provider firewall rules allowing inbound TCP 22 from operator addresses and
   TCP 80/443 from the internet. Do not allow PostgreSQL, Django, MQTT, or Docker API
   ports.
@@ -22,9 +24,11 @@ VPS settings fail closed if required values are missing, contain template
 placeholders, reuse repository development defaults, or do not define the exact
 HTTPS origin and proxy/cookie protections. After migrations, startup also requires
 exactly one hosted gym, exactly one active gateway, and no active staff account
-that still accepts `coachpass`. Nginx exposes only health, gateway ingestion,
-staff authentication, and staff gateway diagnostics under `/api/`; local rack,
-athlete, workout, report, hardware, system, and admin routes return `404`.
+that still accepts `coachpass`. Nginx exposes health, gateway ingestion, staff
+authentication/diagnostics, and the exact hosted Rack, Rack Helper, endpoint-pairing,
+and minimal coach TrainingGroup routes listed in `nginx/vps.conf.template`. Its
+fallback denies every other `/api/` route; local rack, athlete, workout, report,
+hardware, system, and admin routes return `404`.
 
 ## DNS And Certificates
 
@@ -32,9 +36,13 @@ Set `DOMAIN` in the shell only for these host commands:
 
 ```bash
 export DOMAIN=vps.example.com
+export BLE_DOMAIN=ble.vps.example.com
 dig +short A "$DOMAIN"
 dig +short AAAA "$DOMAIN"
+dig +short A "$BLE_DOMAIN"
+dig +short AAAA "$BLE_DOMAIN"
 sudo certbot certonly --standalone -d "$DOMAIN"
+sudo certbot certonly --standalone -d "$BLE_DOMAIN"
 sudo certbot renew --dry-run
 ```
 
@@ -56,12 +64,14 @@ Create the ignored environment file and restrict it before entering secrets:
 ```bash
 install -m 600 .env.vps.example .env.vps
 python -c 'import secrets; print(secrets.token_urlsafe(64))'
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
 python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Use the first output for `SECRET_KEY` and the second for `POSTGRES_PASSWORD`. Replace
-all angle-bracket placeholders, set `VPS_CERTBOT_DIR=/etc/letsencrypt`, and never
-commit `.env.vps`. Confirm no placeholder remains:
+Use the outputs, in order, for `SECRET_KEY`, `RACK_CONTROL_PLANE_KEY`, and
+`POSTGRES_PASSWORD`. Replace all angle-bracket placeholders, set
+`VPS_CERTBOT_DIR=/etc/letsencrypt`, and never commit `.env.vps`. Confirm no
+placeholder remains:
 
 ```bash
 grep -n '<\|>' .env.vps
@@ -73,20 +83,26 @@ file; provision and install them according to the gateway ADR.
 ## Bootstrap
 
 The normal service will not start before its one gym and gateway exist. Initialize
-the database, create an active staff sponsor, and provision the gateway with one-off
-Compose commands:
+the database, create an active staff sponsor, provision the coach organization and
+initial TrainingGroup, and provision the gateway with one-off Compose commands:
 
 ```bash
 docker compose --env-file .env.vps -f docker-compose.vps.yml run --rm vps-django python manage.py migrate
 docker compose --env-file .env.vps -f docker-compose.vps.yml run --rm vps-django python manage.py createsuperuser
 docker compose --env-file .env.vps -f docker-compose.vps.yml run --rm vps-django \
+  python manage.py provision_organization --organization-id <new-organization-UUID> \
+  --organization <organization-name> \
+  --group <initial-training-group> --staff <staff-username>
+docker compose --env-file .env.vps -f docker-compose.vps.yml run --rm vps-django \
   python manage.py provision_edge_gateway --gym <gym-slug> --label <gateway-label> --staff <staff-username>
 ```
 
-The provisioning command prints the bearer credential once. Install it immediately
+`provision_edge_gateway` prints the bearer credential once. Install it immediately
 using the gateway systemd credential procedure; it cannot be recovered from the
 database. Node grant creation and live gateway upload remain release blocks until
-their operator procedure is implemented and validated.
+their operator procedure is implemented and validated. Those blocks apply to the
+diagnostics gateway feature, not to this hosted Rack control-plane release. Do not
+create node grants or start a gateway uploader when deploying Rack control plane only.
 
 ## Deploy
 
@@ -95,6 +111,7 @@ Run the configuration check before every deployment:
 ```bash
 python3 scripts/vps/check_api_allowlist.py
 python3 -m unittest scripts/vps/test_check_api_allowlist.py
+python3 -m unittest scripts/vps/test_smoke_test.py
 ```
 
 This check fails if `nginx/vps.conf.template` adds, removes, or widens an API
@@ -108,9 +125,12 @@ docker compose --env-file .env.vps -f docker-compose.vps.yml up -d
 docker compose --env-file .env.vps -f docker-compose.vps.yml ps
 docker compose --env-file .env.vps -f docker-compose.vps.yml exec -T vps-nginx nginx -t
 curl --fail --show-error --silent "https://${DOMAIN}/api/health/"
+python3 scripts/vps/smoke_test.py "https://${DOMAIN}"
 ```
 
-Inspect migration and startup output with
+The smoke test verifies health, the `/rack` application shell, Rack CSRF cookie
+flags, generic unauthenticated Rack status, security headers, HTTP redirect/POST
+handling, and denial of a private API and Django admin. Inspect migration and startup output with
 `docker compose --env-file .env.vps -f docker-compose.vps.yml logs vps-django`.
 The VPS command runs migrations, the deployment preflight, and Gunicorn. It never
 runs `ensure_demo_coach`.
@@ -195,6 +215,30 @@ Do not reverse a Django migration unless its reviewed rollback note permits it a
 verified backup exists. Never replay the hosted gateway queue into the local profile.
 If schema rollback is unsafe, restore the verified pre-update backup to a replacement
 database volume and preserve the failed volume for investigation.
+
+Before removing control-plane routes or reversing migrations `0025` through `0029`,
+export endpoint ownership and revocation state directly into encrypted output:
+
+```bash
+docker compose --env-file .env.vps -f docker-compose.vps.yml exec -T vps-postgres \
+  sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "COPY (SELECT endpoint.id AS endpoint_id, endpoint.organization_id, \
+      endpoint.training_group_id, endpoint.state AS endpoint_state, endpoint.revoked_at, \
+      credential.id AS credential_id, credential.state AS credential_state, \
+      credential.revoked_at AS credential_revoked_at \
+      FROM event_handler_browserendpoint AS endpoint \
+      LEFT JOIN event_handler_endpointcredential AS credential \
+      ON credential.endpoint_id = endpoint.id ORDER BY endpoint.id, credential.id) \
+      TO STDOUT WITH CSV HEADER"' \
+  | age --recipient "$BACKUP_RECIPIENT" \
+      --output "backups/control-plane-ownership-$(date -u +%Y%m%dT%H%M%SZ).csv.age"
+```
+
+Transfer the encrypted export off the VPS and decrypt-test it beside the full backup.
+It contains private tenant and endpoint identifiers: never print it, store it
+unencrypted, or attach it to a ticket. Do not reverse the schema unless the export
+contains the expected endpoint and credential row counts. Silently dropping this
+mapping is not an acceptable rollback.
 
 After update or rollback, repeat Compose validation, Nginx syntax checking, HTTPS
 health, gateway HTTP rejection, external scanning, and staff diagnostics checks.

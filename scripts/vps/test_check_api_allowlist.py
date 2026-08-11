@@ -70,6 +70,18 @@ class ApiAllowlistTests(unittest.TestCase):
             config_path.write_text(unsafe, encoding="utf-8")
             self.assertTrue(any("per-IP limiting" in error for error in CHECKER.validation_errors(config_path)))
 
+    def test_upstream_security_headers_are_suppressed(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        unsafe = config.replace("    proxy_hide_header Referrer-Policy;\n", "", 1)
+        self.assertNotEqual(unsafe, config)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "vps.conf.template"
+            config_path.write_text(unsafe, encoding="utf-8")
+            self.assertIn(
+                "VPS must suppress the upstream Referrer-Policy header",
+                CHECKER.validation_errors(config_path),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

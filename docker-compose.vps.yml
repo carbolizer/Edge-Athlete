@@ -2,7 +2,7 @@ name: edgeathlete-vps
 
 services:
   vps-postgres:
-    image: postgres:15
+    image: postgres:15@sha256:67dc02dae6e27fa8b4333df9bfdf15265b33ce04186cd7e65c0b8fe67ee37b97
     container_name: edgeathlete-vps-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.vps}
@@ -104,7 +104,7 @@ services:
         condition: service_healthy
 
   vps-nginx:
-    image: nginx:alpine
+    image: nginx:alpine@sha256:dc48b7a872a79fb541ba5081d320b11b549231bc63ba465a7495afaa7d2ebcb8
     container_name: edgeathlete-vps-nginx
     environment:
       VPS_DOMAIN: ${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}

@@ -365,6 +365,14 @@ def coach_can_manage_group(user, organization, group):
     return TrainingGroupCoach.objects.filter(training_group=group, coach=user).exists()
 
 
+def manageable_training_groups(user, organization):
+    # OrganizationMembership currently has one accepted role: owner. The
+    # permission layer has already resolved exactly one active membership.
+    return TrainingGroup.objects.filter(organization=organization).order_by(
+        "name", "id",
+    ).values("id", "name")
+
+
 @transaction.atomic
 def claim_endpoint_pairing(user, organization, pairing_code, group_id, display_name):
     now = timezone.now()

@@ -6363,6 +6363,7 @@ class ApiAuthorizationFenceTests(APITestCase):
         "training_block_workout_detail", "training_block_workout_order",
         "training_block_workouts", "training_blocks", "training_program_promote",
         "training_programs", "endpoint_pairing_claim", "helper_pairing_confirm",
+        "coach_training_groups",
     }
     MIXED_ROUTES = {"room_state"}
     SPECIAL_ROUTES = {
@@ -6382,6 +6383,7 @@ class ApiAuthorizationFenceTests(APITestCase):
         "endpoint_pairing_create": {"POST"},
         "endpoint_pairing_status": {"POST"},
         "endpoint_pairing_claim": {"POST"},
+        "coach_training_groups": {"GET"},
         "endpoint_status": {"GET"},
         "helper_pairing_create": {"POST"},
         "endpoint_helper_pairing_status": {"POST"},
@@ -6619,9 +6621,8 @@ class ApiAuthorizationFenceTests(APITestCase):
         refreshed = self.client.post(
             "/api/auth/refresh/", {"refresh": issued.data["refresh"]}, format="json",
         )
-        self.assertEqual(refreshed.status_code, 200)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refreshed.data['access']}")
-        self.assertEqual(self.client.get("/api/system/status/").status_code, 401)
+        self.assertEqual(refreshed.status_code, 401)
+        self.assertNotIn("access", refreshed.data)
 
 
 class EnsureDemoCoachCommandTests(APITestCase):
@@ -6661,6 +6662,149 @@ class EnsureDemoCoachCommandTests(APITestCase):
         self.assertFalse(coach.is_active)
         self.assertFalse(coach.is_staff)
         self.assertTrue(coach.check_password("original-password"))
+
+
+class ProvisionOrganizationCommandTests(APITestCase):
+    def setUp(self):
+        self.organization_id = uuid.uuid4()
+        self.owner = User.objects.create_user(
+            username="hosted-owner", password="strong-test-password", is_active=True, is_staff=True,
+        )
+
+    def provision(self):
+        output = io.StringIO()
+        call_command(
+            "provision_organization",
+            organization_id=str(self.organization_id),
+            organization="Hosted Strength",
+            group="Varsity",
+            staff=self.owner.username,
+            stdout=output,
+        )
+        return output.getvalue()
+
+    def test_provisions_owner_group_and_head_coach(self):
+        output = self.provision()
+        organization = Organization.objects.get(display_name="Hosted Strength")
+        group = TrainingGroup.objects.get(organization=organization, name="Varsity")
+        self.assertTrue(OrganizationMembership.objects.filter(
+            organization=organization, user=self.owner, role="owner", is_active=True,
+        ).exists())
+        self.assertTrue(TrainingGroupCoach.objects.filter(
+            training_group=group, coach=self.owner, role="head",
+        ).exists())
+        self.assertIn(str(organization.id), output)
+        self.assertIn(str(group.id), output)
+
+    def test_repeated_provisioning_is_idempotent(self):
+        self.provision()
+        self.provision()
+        self.assertEqual(Organization.objects.filter(display_name="Hosted Strength").count(), 1)
+        self.assertEqual(OrganizationMembership.objects.filter(user=self.owner).count(), 1)
+        self.assertEqual(TrainingGroup.objects.filter(name="Varsity").count(), 1)
+        self.assertEqual(TrainingGroupCoach.objects.filter(coach=self.owner).count(), 1)
+
+    def test_rejects_nonstaff_owner(self):
+        self.owner.is_staff = False
+        self.owner.save(update_fields=["is_staff"])
+        with self.assertRaisesMessage(CommandError, "staff owner must be an active staff user"):
+            self.provision()
+        self.assertFalse(Organization.objects.filter(display_name="Hosted Strength").exists())
+
+    def test_rejects_owner_with_another_active_organization(self):
+        other = Organization.objects.create(display_name="Other organization")
+        OrganizationMembership.objects.create(organization=other, user=self.owner)
+        with self.assertRaisesMessage(CommandError, "another active organization"):
+            self.provision()
+        self.assertFalse(Organization.objects.filter(display_name="Hosted Strength").exists())
+
+    def test_different_staff_cannot_take_over_existing_organization(self):
+        self.provision()
+        attacker = User.objects.create_user(
+            username="other-hosted-owner", password="strong-test-password", is_staff=True,
+        )
+        with self.assertRaisesMessage(CommandError, "not owned by the supplied staff user"):
+            call_command(
+                "provision_organization",
+                organization_id=str(self.organization_id),
+                organization="Hosted Strength",
+                group="Varsity",
+                staff=attacker.username,
+                stdout=io.StringIO(),
+            )
+        self.assertFalse(OrganizationMembership.objects.filter(user=attacker).exists())
+
+    def test_organization_uuid_disambiguates_same_display_names(self):
+        other_owner = User.objects.create_user(
+            username="same-name-owner", password="strong-test-password", is_staff=True,
+        )
+        other = Organization.objects.create(display_name="Hosted Strength")
+        OrganizationMembership.objects.create(organization=other, user=other_owner)
+
+        self.provision()
+
+        owned = OrganizationMembership.objects.get(user=self.owner).organization
+        self.assertEqual(owned.id, self.organization_id)
+        self.assertNotEqual(owned.id, other.id)
+
+    def test_existing_uuid_with_different_name_is_rejected(self):
+        Organization.objects.create(id=self.organization_id, display_name="Original name")
+        with self.assertRaisesMessage(CommandError, "different display name"):
+            self.provision()
+        self.assertFalse(OrganizationMembership.objects.filter(user=self.owner).exists())
+
+
+class ProvisionOrganizationConcurrencyTests(TransactionTestCase):
+    def setUp(self):
+        self.organization_id = uuid.uuid4()
+        self.first = User.objects.create_user(username="provision-race-one", is_staff=True)
+        self.second = User.objects.create_user(username="provision-race-two", is_staff=True)
+
+    @staticmethod
+    def _provision(username, organization_id, start):
+        close_old_connections()
+        start.wait()
+        try:
+            call_command(
+                "provision_organization",
+                organization_id=str(organization_id),
+                organization="Concurrent organization",
+                group="Varsity",
+                staff=username,
+                stdout=io.StringIO(),
+            )
+            return "created"
+        except CommandError:
+            return "denied"
+        finally:
+            close_old_connections()
+
+    def test_concurrent_repeat_by_same_owner_is_idempotent(self):
+        start = Event()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(self._provision, self.first.username, self.organization_id, start)
+                for _index in range(2)
+            ]
+            start.set()
+            self.assertEqual([future.result(timeout=10) for future in futures], ["created", "created"])
+        self.assertEqual(Organization.objects.filter(pk=self.organization_id).count(), 1)
+        self.assertEqual(OrganizationMembership.objects.filter(organization_id=self.organization_id).count(), 1)
+        self.assertEqual(TrainingGroup.objects.filter(organization_id=self.organization_id).count(), 1)
+
+    def test_concurrent_competing_owner_cannot_cross_tenant_boundary(self):
+        start = Event()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(self._provision, user.username, self.organization_id, start)
+                for user in (self.first, self.second)
+            ]
+            start.set()
+            results = [future.result(timeout=10) for future in futures]
+        self.assertEqual(sorted(results), ["created", "denied"])
+        memberships = OrganizationMembership.objects.filter(organization_id=self.organization_id)
+        self.assertEqual(memberships.count(), 1)
+        self.assertIn(memberships.get().user_id, {self.first.id, self.second.id})
 
 
 class OrganizationScopedAthleteGroupTests(APITestCase):
@@ -7518,6 +7662,46 @@ class HostedRackControlPlaneTests(APITestCase):
             "HTTP_X_CSRFTOKEN": self.csrf,
         }
 
+    def test_coach_training_groups_are_minimal_sorted_and_organization_scoped(self):
+        TrainingGroup.objects.create(organization=self.organization, name="Development")
+        other_organization = Organization.objects.create(display_name="Foreign organization")
+        TrainingGroup.objects.create(organization=other_organization, name="Foreign group")
+        self.client.force_authenticate(self.coach)
+
+        response = self.client.get("/api/coach/v1/training-groups/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, [
+            {"id": self.organization.training_groups.get(name="Development").id, "name": "Development"},
+            {"id": self.group.id, "name": "Hosted varsity"},
+        ])
+        self.assertEqual(response["Cache-Control"], "no-store")
+
+    def test_coach_training_groups_require_active_staff_and_organization(self):
+        nonstaff = User.objects.create_user(username="hosted-nonstaff", password="pw")
+        OrganizationMembership.objects.create(organization=self.organization, user=nonstaff)
+        self.client.force_authenticate(nonstaff)
+        self.assertEqual(self.client.get("/api/coach/v1/training-groups/").status_code, 403)
+        self.client.force_authenticate(User.objects.create_user(
+            username="hosted-orgless-staff", password="pw", is_staff=True,
+        ))
+        self.assertEqual(self.client.get("/api/coach/v1/training-groups/").status_code, 403)
+        inactive_member = User.objects.create_user(
+            username="hosted-inactive-member", password="pw", is_staff=True,
+        )
+        OrganizationMembership.objects.create(
+            organization=self.organization, user=inactive_member, is_active=False,
+        )
+        self.client.force_authenticate(inactive_member)
+        self.assertEqual(self.client.get("/api/coach/v1/training-groups/").status_code, 403)
+
+    def test_database_prevents_ambiguous_active_organization_scope(self):
+        other_organization = Organization.objects.create(display_name="Second active organization")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            OrganizationMembership.objects.create(
+                organization=other_organization, user=self.coach, is_active=True,
+            )
+
     def pair_endpoint(self):
         created = self.client.post(
             "/api/rack/v1/endpoint-pairings/", {}, format="json", **self.mutation_headers,
@@ -7850,6 +8034,251 @@ class HostedRackControlPlaneTests(APITestCase):
         self.assertEqual(Set.objects.count(), 0)
         self.assertEqual(Rep.objects.count(), 0)
         self.assertEqual(RackHelperLaunchIntent.objects.get(pk=launch.data["intent_id"]).state, "consumed")
+
+    def test_launch_intent_binds_to_first_helper_at_activation(self):
+        endpoint = self.pair_endpoint()
+        pairing = self.client.post(
+            "/api/rack/v1/helper-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(pairing.status_code, 201, pairing.data)
+        helper_token = f"earh1.{uuid.uuid4()}.{controller_token()}"
+        claim = self.client.post(
+            "/api/rack-helper/v1/pairings/claim/",
+            {
+                "pairing_code": pairing.data["pairing_code"],
+                "bootstrap_token": controller_token(),
+                "credential": helper_token,
+                "platform": "linux_x64",
+                "contract_version": 1,
+            }, format="json",
+        )
+        self.assertEqual(claim.status_code, 200, claim.data)
+        self.client.force_authenticate(self.coach)
+        confirmed = self.client.post(
+            "/api/coach/v1/rack-helper-pairings/confirm/",
+            {"pairing_id": pairing.data["pairing_id"]}, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        # A launch intent raised before activation has no target installation yet.
+        intent = self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(intent.status_code, 201, intent.data)
+        self.assertIsNone(
+            RackHelperLaunchIntent.objects.get(pk=intent.data["intent_id"]).target_installation_id,
+        )
+        activated = self.client.post(
+            "/api/rack-helper/v1/pairings/activate/",
+            {"pairing_id": pairing.data["pairing_id"], "activation_request_id": str(uuid.uuid4())},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(activated.status_code, 200, activated.data)
+        self.assertTrue(activated.data["launch_intent_bound"])
+        installation = RackHelperInstallation.objects.get(endpoint=endpoint)
+        self.assertEqual(
+            RackHelperLaunchIntent.objects.get(pk=intent.data["intent_id"]).target_installation_id,
+            installation.id,
+        )
+
+    def test_activation_request_id_conflict_is_rejected(self):
+        endpoint = self.pair_endpoint()
+        helper_token, _installation = self.pair_helper(endpoint)
+        pairing = RackHelperPairing.objects.get(endpoint=endpoint)
+        conflict = self.client.post(
+            "/api/rack-helper/v1/pairings/activate/",
+            {"pairing_id": str(pairing.pk), "activation_request_id": str(uuid.uuid4())},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(
+            conflict.json(),
+            {"code": "activation_request_conflict", "detail": "The activation request cannot be reused."},
+        )
+
+    def test_consume_request_id_conflict_is_rejected(self):
+        endpoint = self.pair_endpoint()
+        helper_token, _installation = self.pair_helper(endpoint)
+        self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        consume_id = str(uuid.uuid4())
+        first = self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/",
+            {"helper_boot_id": str(uuid.uuid4()), "consume_request_id": consume_id}, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(first.status_code, 200, first.data)
+        conflict = self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/",
+            {"helper_boot_id": str(uuid.uuid4()), "consume_request_id": consume_id}, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(
+            conflict.json(),
+            {"code": "consume_request_conflict", "detail": "The consume request cannot be reused."},
+        )
+
+    def test_status_request_id_conflict_is_rejected(self):
+        endpoint = self.pair_endpoint()
+        helper_token, _installation = self.pair_helper(endpoint)
+        self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        boot_id = str(uuid.uuid4())
+        self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/",
+            {"helper_boot_id": boot_id, "consume_request_id": str(uuid.uuid4())}, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        request_id = str(uuid.uuid4())
+        first = self.client.post(
+            "/api/rack-helper/v1/status/",
+            {"helper_boot_id": boot_id, "status_request_id": request_id, "status": "no_sensor"},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(first.status_code, 200, first.data)
+        conflict = self.client.post(
+            "/api/rack-helper/v1/status/",
+            {"helper_boot_id": boot_id, "status_request_id": request_id, "status": "ready"},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(
+            conflict.json(),
+            {"code": "status_request_conflict", "detail": "The status request cannot be reused."},
+        )
+
+    def test_helper_status_before_consume_requires_launch(self):
+        endpoint = self.pair_endpoint()
+        helper_token, installation = self.pair_helper(endpoint)
+        endpoint.refresh_from_db()
+        installation.refresh_from_db()
+        before = (
+            installation.last_contact_at, installation.last_status_request_id,
+            endpoint.helper_status, endpoint.helper_status_at, endpoint.helper_status_cursor,
+        )
+        denied = self.client.post(
+            "/api/rack-helper/v1/status/",
+            {"helper_boot_id": str(uuid.uuid4()), "status_request_id": str(uuid.uuid4()),
+             "status": "no_sensor"},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(denied.status_code, 409)
+        self.assertEqual(
+            denied.json(),
+            {"code": "launch_required", "detail": "Launch authorization is required."},
+        )
+        # A rejected heartbeat is a zero-write: contact time and status stay put.
+        endpoint.refresh_from_db()
+        installation.refresh_from_db()
+        self.assertEqual(
+            (installation.last_contact_at, installation.last_status_request_id,
+             endpoint.helper_status, endpoint.helper_status_at, endpoint.helper_status_cursor),
+            before,
+        )
+
+    def test_invalid_helper_status_is_rejected(self):
+        endpoint = self.pair_endpoint()
+        helper_token, _installation = self.pair_helper(endpoint)
+        # "launching" is a server-derived status, never one the helper may post.
+        response = self.client.post(
+            "/api/rack-helper/v1/status/",
+            {"helper_boot_id": str(uuid.uuid4()), "status_request_id": str(uuid.uuid4()),
+             "status": "launching"},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "invalid_status")
+
+    def test_second_helper_pairing_pending_is_rejected(self):
+        self.pair_endpoint()
+        first = self.client.post(
+            "/api/rack/v1/helper-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(first.status_code, 201, first.data)
+        second = self.client.post(
+            "/api/rack/v1/helper-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.json()["code"], "helper_pairing_pending")
+
+    def test_helper_pairing_is_rejected_once_a_helper_is_active(self):
+        endpoint = self.pair_endpoint()
+        self.pair_helper(endpoint)
+        again = self.client.post(
+            "/api/rack/v1/helper-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(again.json()["code"], "helper_already_paired")
+
+    def test_expired_endpoint_pairing_status_returns_410_and_clears_cookie(self):
+        created = self.client.post(
+            "/api/rack/v1/endpoint-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        # Shift the whole window into the past; the DB constraint pins
+        # expires_at to exactly created_at + five minutes.
+        past = timezone.now() - timedelta(minutes=10)
+        EndpointPairing.objects.update(created_at=past, expires_at=past + timedelta(minutes=5))
+        expired = self.client.post(
+            "/api/rack/v1/endpoint-pairings/status/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(expired.status_code, 410)
+        self.assertEqual(expired.json()["code"], "pairing_expired")
+        self.assertEqual(expired.cookies["ea_rack_endpoint_pairing"].value, "")
+
+    def test_activated_helper_pairing_status_expires_bootstrap_access(self):
+        endpoint = self.pair_endpoint()
+        self.pair_helper(endpoint)
+        pairing = RackHelperPairing.objects.get(endpoint=endpoint)
+        self.assertEqual(pairing.state, "activated")
+
+        helper_body = {"pairing_id": str(pairing.pk), "bootstrap_token": self._last_helper_bootstrap}
+        endpoint_body = {"pairing_id": str(pairing.pk)}
+        helper_before = self.client.post(
+            "/api/rack-helper/v1/pairings/status/", helper_body, format="json",
+        )
+        self.assertEqual(helper_before.status_code, 200, helper_before.data)
+        endpoint_before = self.client.post(
+            "/api/rack/v1/helper-pairings/status/", endpoint_body,
+            format="json", **self.mutation_headers,
+        )
+        self.assertEqual(endpoint_before.status_code, 200, endpoint_before.data)
+        self.assertEqual(endpoint_before.data["state"], "activated")
+        self.assertIsNone(endpoint_before.data["confirmation_phrase"])
+
+        with patch(
+            "event_handler.services.rack_control_plane.timezone.now",
+            return_value=pairing.expires_at,
+        ):
+            helper_at_expiry = self.client.post(
+                "/api/rack-helper/v1/pairings/status/", helper_body, format="json",
+            )
+        self.assertEqual(helper_at_expiry.status_code, 404)
+        with patch(
+            "event_handler.control_plane_views.timezone.now",
+            return_value=pairing.expires_at,
+        ):
+            endpoint_at_expiry = self.client.post(
+                "/api/rack/v1/helper-pairings/status/", endpoint_body,
+                format="json", **self.mutation_headers,
+            )
+        self.assertEqual(endpoint_at_expiry.status_code, 410)
+
+        past = timezone.now() - timedelta(minutes=10)
+        RackHelperPairing.objects.filter(pk=pairing.pk).update(
+            created_at=past, expires_at=past + timedelta(minutes=5),
+        )
+        helper_after = self.client.post(
+            "/api/rack-helper/v1/pairings/status/", helper_body, format="json",
+        )
+        self.assertEqual(helper_after.status_code, 404)
+        endpoint_after = self.client.post(
+            "/api/rack/v1/helper-pairings/status/", endpoint_body,
+            format="json", **self.mutation_headers,
+        )
+        self.assertEqual(endpoint_after.status_code, 410)
 
 
 class HostedRackConcurrencyTests(TransactionTestCase):
