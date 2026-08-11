@@ -41,6 +41,7 @@ class PackagingTests(unittest.TestCase):
         windows = (ROOT / "packaging/windows/Register-DevelopmentHandler.ps1").read_text()
         self.assertIn("NoDisplay=true", linux)
         self.assertIn("development.desktop", linux)
+        self.assertIn('update-desktop-database "$applications_dir"', linux)
         self.assertIn("HKCU:", windows)
         self.assertNotIn("HKLM:", windows)
         self.assertNotIn("MSIX", windows.upper())

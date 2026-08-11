@@ -43,5 +43,6 @@ printf '%s\n' \
   'MimeType=x-scheme-handler/edgeathlete-rack;' \
   > "$desktop_file"
 chmod 600 "$desktop_file"
+update-desktop-database "$applications_dir"
 xdg-mime default edgeathlete-rack-helper-development.desktop x-scheme-handler/edgeathlete-rack
 printf 'Registered development handler: %s\n' "$desktop_file"
