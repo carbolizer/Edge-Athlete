@@ -268,6 +268,90 @@ shows up.
 
 ---
 
+## Decision: three ways to open a screen, because "full-screen" was two ideas
+
+**What forced it.** The launcher had one full-screen setting, and it turned out to be
+answering three questions at once: does it fill the screen, can you get out of it, and
+does it reopen itself if you close it. On a rack screen in a gym you want all three
+locked down, so nobody noticed they were separate — until the base station needed a
+different combination and there wasn't one.
+
+Two failures came out of that in the same afternoon. Opening a second screen to demo it
+produced two locked full-screen windows, each seizing focus and each reopening when it
+lost — the display cycled between roles several times a second, with no error logged
+anywhere, because nothing had actually failed. And the wall display could not be closed
+to get at the desktop: it came back three seconds later, every time.
+
+**What we chose.** Three named modes, and each one says what it is:
+
+| | window | on close | for |
+|---|---|---|---|
+| locked | full-screen, **no way out** | reopens itself | a rack screen in a gym |
+| default | full-screen, ordinary window | stays closed | anything a person sits at |
+| windowed | a normal window | stays closed | when you want the toolbar up front |
+
+The middle one is the interesting addition. It *looks* identical to the locked version
+on arrival, but the window is real: hover the top edge and the toolbar comes back, and
+it closes when you close it.
+
+**What that unlocked.** The coach screen had been stuck with a genuine trade-off —
+full-screen hid the browser menu, and that menu is the only place "install this app"
+lives, so a coach screen could be full-screen or installable but not both. Separating
+"fills the screen" from "is a cage" dissolved the trade-off rather than settling it.
+
+**The lesson, and it generalises.** Two behaviours that always travel together in the
+case you built for are not necessarily one behaviour. They look like one until a second
+case shows up, and then the cost is not just adding a setting — it is that the code
+argues with itself in ways that produce no error message.
+
+---
+
+## Decision: a locked screen still needs a way out, for the person maintaining it
+
+**What forced it.** A locked full-screen browser that reopens itself has no exit by
+construction. That is the point on a rack screen — but the same property means whoever
+has to work on that machine cannot reach a menu, a terminal, or the desktop. Closing
+the browser just brings it back.
+
+**What we chose.** The relaunch loop watches for a flag file, and one command sets it
+and closes the browser in the right order. Nothing is uninstalled and nothing is
+disabled: the flag is cleared when the launcher next starts, so the following login is
+a locked screen again.
+
+The part that actually makes it usable is a **keyboard shortcut**, because the command
+alone is unreachable from inside a full-screen window — you cannot open a terminal to
+type it. A desktop shortcut is handled by the desktop rather than the browser, so it
+fires anyway.
+
+**What we deliberately did not do.** No exit button anywhere in the app. A rack screen
+in a gym must not have a "leave this app" affordance an athlete can find by accident,
+and every route out is therefore something you have to know about rather than something
+you can stumble into.
+
+**A detail that mattered more than it looks.** The flag is set *before* the browser is
+closed. The other order races the relaunch loop, which wins often enough to look
+intermittent — the worst kind of bug to inherit.
+
+---
+
+## Decision: the setting that matters most is written down, not defaulted
+
+**What forced it.** The rack screens' locked mode was correct, but only because it was
+the launcher's *default* — the entry that starts them passed no mode at all. Two
+properties the whole gym depends on, that an athlete cannot leave the screen and that a
+dead screen revives itself, were resting on an unwritten default that any later change
+to that default would have silently flipped across every rack at once.
+
+**What we chose.** Say it out loud at the call site, even though the behaviour is
+identical today. A default is a convenience for the common case; it is not a place to
+keep a decision.
+
+**What it cost.** One word, and the small embarrassment of finding it while confirming
+that the behaviour was already right. It was — for a reason that would not have
+survived the next person changing the default.
+
+---
+
 ## Decision: kiosk state belongs to the machine, not to a user
 
 **What forced it.** The same mistake the install path made, in a new place. The kiosk
@@ -497,6 +581,7 @@ fixes, and guessing wrong wastes a day.
 | `scripts/rack-screen/rack-bootstrap.sh` | **New.** One command to install **or** update a rack screen | a rack screen installs with one command |
 | `scripts/rack-screen/rack-kiosk-setup.sh` | Provisions a screen; run directly only for a coach tablet | a rack screen installs with one command |
 | `scripts/rack-screen/ea.sh` | **New.** The screen's short commands. A *separate file* from the base station's, on purpose | one verb, two devices |
+| `scripts/rack-screen/kiosk.sh` | Launches a screen. Takes a role and a **mode** — locked / full-screen / windowed | three ways to open a screen |
 | `scripts/netmon.sh` | The three-pane radio diagnostic described below | — |
 
 :::{admonition} The pattern underneath most of these

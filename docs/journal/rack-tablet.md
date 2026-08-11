@@ -182,15 +182,27 @@ menu is where "install this app" lives — so the mechanism that delivers the fi
 also have blocked the thing it was needed for. A coach also navigates, logs in, and
 legitimately puts the tablet down.
 
-**What we chose.** The same launcher, in a windowed mode: trusted origin and on-disk
-profile kept, full-screen lock and the relaunch loop dropped. A coach tablet is
-provisioned with a **tappable icon** rather than something that seizes the screen at
-every login.
+**What we chose.** The same launcher, with the *lock* removed rather than the
+full-screen. Trusted origin and on-disk profile kept; the cage and the relaunch loop
+dropped. A coach tablet is provisioned with a **tappable icon** rather than something
+that seizes the screen at every login.
+
+**The word that was doing two jobs.** "Full-screen" turned out to mean two different
+things, and conflating them is what made this look like a trade-off in the first place.
+One flavour is a *lock*: no toolbar, no window buttons, no way out, and no menu — which
+is exactly right for a rack screen an athlete must not be able to leave, and which
+hides the very menu the coach needs. The other simply *starts* full-screen while
+remaining an ordinary window: hover the top edge and the toolbar returns, and it can be
+closed or minimised like anything else.
+
+Once those were separated, the coach did not have to give up full-screen to stay
+installable. The first version of this decision made them choose, and it did not need
+to.
 
 **The part that makes this cheap.** It is a one-time door. Once the coach installs the
 app from the browser menu, the browser writes its *own* launcher — full-screen, its own
-name and icon, no browser chrome. The windowed launcher exists to get them through that
-once, not to be the daily route in.
+name and icon, no browser chrome. The launcher exists to get them through that once,
+not to be the daily route in.
 
 **What we deliberately did not do.** Nothing was built for offline *writing*. The
 offline cache keeps the app loading without a network; it does not make a coach's edits
@@ -198,7 +210,7 @@ survive being made while disconnected. That is a genuinely harder problem — it
 queue and a conflict story — and pretending a cache solves it would be the worst
 outcome, because it would look like it worked right up until it lost something.
 
-**What it cost.** A second launch mode to keep working, and one more thing that differs
+**What it cost.** More launch modes to keep straight, and one more thing that differs
 by role. The alternative was giving the coach a kiosk they could not install from, or a
 plain browser shortcut with no offline copy at all.
 
@@ -289,7 +301,7 @@ handful of app files that decide what a screen *claims to be*.
 
 | File | What changed | Which decision |
 |---|---|---|
-| `scripts/rack-screen/kiosk.sh` | Takes a **role** (`rack`/`coach`/`dashboard`) instead of a URL; private mode removed; per-role profile; marks the origin trusted; `windowed` mode for the coach | kiosk vs incognito, profile per role, trusted origin, coach is not a kiosk |
+| `scripts/rack-screen/kiosk.sh` | Takes a **role** instead of a URL; private mode removed; per-role profile; marks the origin trusted; three launch modes, only one of which is a cage | kiosk vs incognito, profile per role, trusted origin, coach is not a kiosk |
 | `scripts/rack-screen/rack-kiosk-setup.sh` | Autostart entry is system-wide; no hardcoded user; creates the shared profile directory; a coach gets a tappable icon instead of an autostart | profile per role, coach is not a kiosk |
 | `react/public/manifest.*.json` | Each declares its own identity; coach and wall get their own start addresses | three manifests, three identities |
 | `react/src/device.js` | New `roleFromPath()` — works out a screen's role from the address | three manifests, three identities |
