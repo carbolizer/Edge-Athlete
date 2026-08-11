@@ -29,8 +29,8 @@
 #   kiosk.sh rack                          a rack tablet
 #   kiosk.sh dashboard                     a wall display
 #   kiosk.sh dashboard localhost           a wall display on the base station's own HDMI
-#   kiosk.sh coach basestation windowed    a coach tablet — see WHY THERE IS A
-#                                          WINDOWED MODE below
+#   kiosk.sh coach basestation once        a coach tablet — full-screen, but the
+#                                          toolbar is one hover away
 #
 # It waits for the server to answer, stops the screen blanking, and runs Chromium,
 # RELAUNCHING it if it ever exits so a screen is never left stuck on a dead page.
@@ -82,7 +82,7 @@ set -u
 
 ROLE="${1:-rack}"
 HOST="${2:-basestation}"
-MODE="${3:-kiosk}"          # kiosk | windowed
+MODE="${3:-kiosk}"          # kiosk | once | windowed
 
 # Keep a log, but only when nobody is watching.
 #
@@ -103,18 +103,20 @@ if [ ! -t 1 ]; then
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') launcher starting ==="
 fi
 
-# ── WHY THERE IS A WINDOWED MODE, AND WHO IT IS FOR ─────────────────────────────
-# The coach tablet. Everything above about trusting the origin and keeping a real
-# profile applies to it just as much — a coach needs the offline cache for the notes
-# work that is coming, and the app cannot be INSTALLED at all without the browser
-# treating the origin as secure. But --kiosk is wrong for a coach: it locks the
-# window full-screen with no menu, and the menu is where "install this app" lives.
-# A coach also navigates, logs in, and legitimately closes the thing.
+# ── WHY ANYTHING EXCEPT `kiosk` EXISTS ──────────────────────────────────────────
+# The coach tablet forced it. Everything above about trusting the origin and keeping
+# a real profile applies to a coach just as much — they need the offline cache for
+# the notes work that is coming, and the app cannot be INSTALLED at all without the
+# browser treating the origin as secure. But --kiosk locks the window with no menu,
+# and the menu is the only place "install this app" lives. So the mode that was
+# supposed to deliver the fix also blocked the reason for it.
 #
-# So windowed mode is the same launch with three differences: no --kiosk, no
-# relaunch loop (a coach closing the window means it), and no cursor hiding.
+# `once` is the answer for every screen a PERSON uses: full-screen on arrival, but an
+# ordinary window underneath, so the menu is one hover away and closing means closing.
+# `windowed` is the same without the full-screen start, for when you want the toolbar
+# visible from the first second.
 #
-# It is a ONE-TIME door in practice. Once the app is installed from that menu, the
+# Both are a ONE-TIME door in practice. Once the app is installed from that menu, the
 # browser writes its own launcher icon and runs it standalone — no browser chrome,
 # its own name, its own icon. After that the coach taps the installed app, not this.
 case "$MODE" in

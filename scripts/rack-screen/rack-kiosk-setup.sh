@@ -101,7 +101,7 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete Kiosk ($ROLE)
-Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST
+Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk
 X-GNOME-Autostart-enabled=true
 EOF
     fi
