@@ -294,6 +294,116 @@ worked, so nothing was installed anywhere to orphan. It will not be free next ti
 
 ---
 
+## Decision: sensors can talk two different ways, and a node says which
+
+**What forced it.** The original sensors report over Wi-Fi, through the message broker.
+A second kind of sensor was added that reports over **Bluetooth** instead. The obvious
+framings were both wrong: "switch to Bluetooth" throws away working hardware, and
+"support Bluetooth as a mode" implies the whole gym is one or the other.
+
+**What we chose.** Each sensor records **its own** transport, in the database, as an
+ordinary field. Rack 1 can be on Bluetooth while rack 2 is on Wi-Fi, in the same
+session, with no setting anywhere that says which the gym is using. New sensors default
+to Wi-Fi, so nothing that existed before had to change or even know.
+
+**Why this is the important sentence in this whole page.** Bluetooth did not *replace*
+anything. Reading the code and assuming one transport won is the single easiest way to
+misunderstand this system.
+
+---
+
+## Decision: a program on the base station owns the radio, not the browser
+
+**What forced it.** The natural place to put Bluetooth is the rack screen — it is right
+there, it already shows the reps. Browsers can speak Bluetooth. It does not survive
+contact with this product.
+
+Three reasons, and the first one alone is fatal:
+
+- Browser Bluetooth needs a **secure context**, the same gate that blocks the offline
+  cache (see above). The gym is served over plain HTTP.
+- It requires **a human tap to pair, every single time**. A rack screen boots
+  unattended into a locked full-screen browser. There is nobody to tap it.
+- It only exists in Chrome-family browsers, and never on iPhone or iPad.
+
+**What we chose.** A small program running on the base station owns the radio for every
+rack: it finds sensors, connects, decodes their frames, and decides what counts as a
+rep. The rack screen never touches Bluetooth — it gets finished reps the same way it
+always did.
+
+**The consequence worth stating plainly.** That program is now a **single point of
+failure for every Bluetooth rack at once**, where before each rack failed on its own.
+That is a real cost, accepted deliberately in exchange for the three problems above,
+which have no workaround.
+
+**What it also bought.** Raw motion data never leaves the base station. Sending it to
+the server was considered and rejected: high-rate private data, a dependence on the
+network for something that works fine locally, and a much larger surface to get wrong.
+The server sees confirmed reps, never the stream they came from.
+
+---
+
+## Decision: sensors are chosen at the rack, by a coach, before anyone signs in
+
+**What forced it.** Bluetooth sensors are discovered as anonymous nearby radios. You
+cannot tell from a list which physical box is bolted to rack 3 — you have to be standing
+at rack 3, watch a sensor produce movement, and confirm *that* is the one.
+
+**What we chose.** Sensor selection happens **on the rack screen it belongs to**,
+requires a coach login, and is only available before an athlete has signed in. Selection
+shows scan-scoped handles rather than hardware addresses, so a Bluetooth identity never
+reaches the browser or the database.
+
+**What it cost, and this bit has already bitten us.** It **replaced** the old
+coach-side "assign this sensor to that rack" screen, and the endpoint behind it was
+removed. Work written against the old endpoint compiles, merges without conflict, and
+then fails at runtime — which is exactly what happened to the sensor-linking task built
+from an older branch. If you are reading old code or an old task description that
+assigns a node from the coach console, it is describing a system that no longer exists.
+
+---
+
+## Decision: reps in progress are not results
+
+**What forced it.** Live reps have to appear instantly, and a sensor on a bar that
+somebody bumped between sets produces movement that looks exactly like lifting.
+
+**What we chose.** Two different things with two different standards. Reps arriving
+*during* a set are **live activity** — shown immediately, kept only as a recoverable
+snapshot, and never counted as anything. Records, rankings and history are written only
+when a set is **completed**, from the saved set.
+
+The rule: nothing becomes a number anyone is judged on until a human ends the set.
+
+**What it cost.** Two representations of the same reps, and a real chance of confusing
+them when reading the code. The alternative was letting a knocked barbell set a personal
+record, which is the kind of bug that destroys trust in the whole system.
+
+---
+
+## Decision: tell screens that something changed, do not tell them what
+
+**What forced it.** When anything in the room changes, several screens need to catch up.
+The obvious approach is to broadcast the new state to everyone.
+
+**What we chose.** Broadcasts carry only **"something changed, here is the new revision
+number."** Each screen then asks the server for the real answer through the normal API.
+
+Two reasons, and the second is the one that generalises:
+
+- Those broadcasts are **not private**. Athlete names and numbers must not be on a
+  channel anything on the gym Wi-Fi can subscribe to. A revision number leaks nothing.
+- It keeps **one source of truth**. Pushing state means the same facts exist in two
+  places that can disagree, and reconnecting screens have to guess which is right.
+  Asking the server always converges, including after a disconnection.
+
+**What it cost.** Every change that a screen might care about has to remember to emit
+one of these notices, in the same transaction as the change itself. Miss one and a
+screen silently shows stale data — a known live bug of exactly this shape is described
+in {doc}`dashboard`.
+
+---
+
 ## Where these decisions live in the code
 
 The kiosk work above touched two areas: the scripts that launch a screen, and the
@@ -308,6 +418,10 @@ handful of app files that decide what a screen *claims to be*.
 | `react/src/App.jsx` | Applies the role's identity on **every** navigation, not only on role change | three manifests, three identities |
 | `react/src/main.jsx` | Offline-cache registration failure now logs why instead of vanishing | trusted origin |
 | `react/src/roleFromPath.test.js` | **New.** Pins the address-to-role mapping | three manifests, three identities |
+| `django/event_handler/services/ble_agent.py` | The program that owns the radio and turns frames into reps | a program on the base station owns the radio |
+| `react/src/rack/RackNodeSetup.jsx` | Choosing a sensor at the rack, coach-gated | sensors are chosen at the rack |
+| `django/event_handler/models.py` | `Node.acquisition_kind` — per-sensor transport | sensors can talk two different ways |
+| `docs/_ADR_RACK_BLE_LIVE_WORKFLOW.md` | The original decision record, in its formal form | all of the above |
 
 :::{admonition} If you only remember one thing
 :class: tip
@@ -316,4 +430,8 @@ had been live for months without anyone noticing, because **both failure modes l
 exactly like normal operation**. A screen that reinvents itself looks like a new
 screen. A cache that never installed looks like a cache that is working. When a
 feature has no visible failure state, that is the feature to go and verify by hand.
+
+The Bluetooth work has the same shape in a different place: an endpoint was replaced,
+and code written against the old one still merges cleanly and only fails when someone
+presses the button.
 :::
