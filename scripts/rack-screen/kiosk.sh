@@ -143,6 +143,26 @@ done
 xset s off      2>/dev/null || true
 xset -dpms      2>/dev/null || true
 xset s noblank  2>/dev/null || true
+
+# The xset calls above are X11-only, and modern desktops ignore them — so on
+# GNOME/Wayland the screen still blanked and then LOCKED, which on the base station
+# meant a lock screen sitting where the wall display should be, demanding a password
+# for an account whose password is deliberately locked. Unopenable by design.
+#
+# These settings are per-user and only exist inside a running session, which is why
+# they live here in the launcher rather than in the provisioning script: this is the
+# one piece of code that runs as the right user, in the right session, every time.
+#
+# idle-delay 0 means "never consider this session idle" — it is the setting that
+# actually stops the blanking; the two screensaver keys stop the lock that follows.
+if command -v gsettings >/dev/null 2>&1; then
+    gsettings set org.gnome.desktop.session idle-delay 0                     2>/dev/null || true
+    gsettings set org.gnome.desktop.screensaver lock-enabled false           2>/dev/null || true
+    gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null || true
+    # Laptops and small-form-factor desktops suspend on idle by default, which takes
+    # the whole server down, not just the screen.
+    gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type nothing 2>/dev/null || true
+fi
 # The cursor is hidden only on unattended screens. A coach is holding a pointer and
 # needs to see it.
 if [ "$MODE" = "kiosk" ]; then

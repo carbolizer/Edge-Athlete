@@ -185,6 +185,18 @@ else
     echo "    [!] NetworkManager-wait-online missing — leaving the boot gate alone"
 fi
 
+# ── neither must the machine ────────────────────────────────────────────────────
+# A base station is a server. It runs the database, the broker and the gym's Wi-Fi,
+# and every device in the room depends on it. Suspending is never the right answer
+# for it — but desktop installs enable sleep-on-idle by default, so a box that
+# looks idle (nobody typing on it) puts the whole gym offline.
+#
+# Masked rather than configured, because these are targets nothing should ever
+# reach here. Undo with: sudo systemctl unmask sleep.target suspend.target ...
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target \
+    >/dev/null 2>&1 || true
+echo "    suspend/hibernate masked (this machine is a server)"
+
 # ── the radio must not nap ──────────────────────────────────────────────────────
 # A Wi-Fi adapter that power-saves adds latency to exactly the traffic that cannot
 # afford it: live reps during a set. The obvious command is
@@ -488,6 +500,23 @@ else
         # not authenticate — still works.
         passwd -l "$KIOSK_USER" >/dev/null 2>&1 || true
         echo "    created '$KIOSK_USER' (no sudo, password locked)"
+    fi
+
+    # ⚠️ A LOCKED PASSWORD AND A LOCK SCREEN ARE A TRAP TOGETHER, and this is the
+    # fix for having shipped them together once. Locking the password is right: it
+    # means nobody can log in AS this account. But the moment anything locks the
+    # screen, that same locked password is the one being demanded — and no string on
+    # earth satisfies it. The wall display becomes an unopenable prompt, and the way
+    # out is a text console or ssh, which is not where anyone looks.
+    #
+    # Belt: the kiosk launcher turns the screen lock off inside the session.
+    # Braces: this group, which Debian and Ubuntu ship precisely for kiosk accounts —
+    # PAM lets its members through the greeter and the unlock prompt without a
+    # password. It grants nothing new, because autologin ALREADY means physical
+    # access opens this session. It only removes the dead end.
+    if getent group nopasswdlogin >/dev/null 2>&1; then
+        usermod -aG nopasswdlogin "$KIOSK_USER" || true
+        echo "    added to 'nopasswdlogin' so a lock screen can never strand it"
     fi
     # Groups a graphical session may want. Absent groups are skipped rather than
     # failing the run — they differ by distro and none of them are required.

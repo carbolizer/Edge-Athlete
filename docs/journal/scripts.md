@@ -364,6 +364,24 @@ server, which anyone walking past inherits. The question worth asking was never
 than yours, so an app installed on the wall display belongs to it. Which is arguably
 right, and confusing exactly once.
 
+**What it cost that we did not foresee — worth reading before designing anything
+similar.** A locked password and a screen lock are individually correct and together a
+trap. Locking the password means nobody can log in *as* the kiosk account, which is the
+whole point. But when the desktop dimmed and locked itself, the prompt on screen was
+asking for **that same locked password** — and no input satisfies it. The wall display
+became an unopenable password box, and the only ways out were a text console or ssh,
+which is not where anyone standing in front of a screen thinks to look.
+
+It needed two fixes, not one. The launcher now switches the screen lock off from
+*inside* the session, which is the only place those settings exist. And the account
+joins the group Linux ships for exactly this purpose, which lets it past a lock prompt
+without a password — that grants nothing new, because automatic login already means
+physical access opens this session. It only removes the dead end.
+
+The general shape is worth remembering: **two settings that are each right can combine
+into a state with no exit.** Neither looked wrong in review. It took plugging in a
+monitor and walking away.
+
 **Where it does not apply.** A base station with no browser installed — a genuinely
 headless one — is skipped rather than given an account that can never log in anywhere.
 
