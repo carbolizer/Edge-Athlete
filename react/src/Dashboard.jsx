@@ -293,8 +293,37 @@ function MeasuredInsights({ workoutSet }) {
   );
 }
 
-function CoachHardware({ rack }) {
+function CoachHardware({ rack, nodes, accessToken, onLinked }) {
   const node = rack.node;
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [linking, setLinking] = useState(false);
+  const [linkError, setLinkError] = useState("");
+
+  // A sensor can be picked here if it's unassigned, or already on THIS rack -
+  // never a sensor another rack currently owns.
+  const availableNodes = nodes.filter(n => n.rack_number === null || n.rack_number === rack.rack_number);
+
+  async function linkSelectedNode() {
+    if (!selectedNodeId) return;
+    setLinking(true);
+    setLinkError("");
+    try {
+      const response = await fetch(`/api/nodes/${selectedNodeId}/`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ rack_number: rack.rack_number }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "The sensor could not be linked.");
+      setSelectedNodeId("");
+      onLinked();
+    } catch (error) {
+      setLinkError(error.message);
+    } finally {
+      setLinking(false);
+    }
+  }
+
   return (
     <section className="coach-panel coach-hardware-panel">
       {/* One rack, one sensor node. His original screen expected a LIST of
@@ -312,7 +341,25 @@ function CoachHardware({ rack }) {
           <b>{node.battery_level ?? "--"}%</b>
         </div>
       )}
-    </section>
+
+      <div className="coach-hardware-link">
+        <label htmlFor="link-sensor-select">Link a sensor to this rack</label>
+        <div className="coach-hardware-link-row">
+          <select id="link-sensor-select" value={selectedNodeId} onChange={(event) => setSelectedNodeId(event.target.value)} disabled={linking}>
+            <option value="">Choose a sensor...</option>
+            {availableNodes.map((n) => (
+              <option value={n.node_id} key={n.node_id}>
+                {n.node_id}{n.rack_number === rack.rack_number ? " (currently here)" : ""}
+              </option>
+            ))}
+          </select>
+          <button type="button" onClick={linkSelectedNode} disabled={linking || !selectedNodeId}>
+            {linking ? "Linking..." : "Link sensor"}
+          </button>
+        </div>
+        {linkError && <p className="coach-login-error" role="alert">{linkError}</p>}
+      </div>
+      </section>
   );
 }
 
@@ -445,6 +492,10 @@ function CoachView({ monitor, accessToken, onLogout }) {
   const [selectedRackNumber,setSelectedRackNumber]=useState(null),[activeTab,setActiveTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
   useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
+  //
+  const [nodes, setNodes] = useState([]);
+  useEffect(()=>{fetch("/api/nodes/",{headers}).then(r=>r.json()).then(setNodes).catch(()=>setNodes([]));},[accessToken]);
+  //
   useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/prescriptions/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
   const dirty=note&&draft!==note.text;
@@ -488,7 +539,7 @@ function CoachView({ monitor, accessToken, onLogout }) {
   if(!roomState&&requestState==="loading")return <main className="monitor coach-monitor"><StatePanel title="Loading coach workspace" body="Reconciling saved room state." /></main>;
   if(!roomState)return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body={lastError||"The base station could not be reached."} action={refresh} /></main>;
   const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set||null;
-  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?<StatePanel title="No racks assigned" body="Assign room hardware before monitoring sets."/>:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?<StatePanel title={`Rack ${selectedRack.rack_number} is ready`} body="No completed set saved for this rack."/>:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack}/></>}</>}</div></section>;
+  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?<StatePanel title="No racks assigned" body="Assign room hardware before monitoring sets."/>:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?<StatePanel title={`Rack ${selectedRack.rack_number} is ready`} body="No completed set saved for this rack."/>:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(workoutSet.avg_velocity)}</strong><span>m/s average</span></div><dl><div><dt>Peak</dt><dd>{velocity(workoutSet.peak_velocity)} m/s</dd></div><div><dt>Reps</dt><dd>{workoutSet.reps_completed}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div><CoachHardware rack={selectedRack} nodes={nodes} accessToken={accessToken} onLinked={refresh}/></>}</>}</div></section>;
   return <main className="monitor coach-monitor"><header className="coach-topbar">
     <div className="monitor-brand"><img src="/icon-coach-192.png" alt="" width="38" height="38" /><span>Edge Athlete</span></div>
     <div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div>
