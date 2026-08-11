@@ -26,7 +26,9 @@ The ideal gym setup is:
 Internet-connected laptop + Bluetooth VBT device
 ```
 
-Everything else should be hosted centrally.
+The backend, application data, and browser synchronization should be hosted
+centrally. The narrowly scoped Rack Helper keeps BLE, rep detection, and its bounded
+outage queue on the rack laptop.
 
 ### Network Decision
 
@@ -70,7 +72,9 @@ The desired workflow is:
 Open Edge Athlete website
   -> Log in or enter Rack mode
   -> Select athlete and workout
-  -> Install and pair the Rack Helper during first-time setup
+  -> Select Launch Helper; signed Download Rack Helper is available beside it
+  -> If no intent-bound helper check-in appears, follow start or pairing guidance
+  -> Pair the helper during first-time setup
   -> Rack Helper reconnects to the assigned VBT device
   -> Begin workout
 ```
