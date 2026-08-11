@@ -1,0 +1,63 @@
+name: Rack Helper Windows x64 Development Build
+
+# Unsigned development build only. Mirrors rack_helper/README.md "Windows x64
+# development". CI proves the hash-locked install, unit tests, pip-audit, the
+# PyInstaller one-folder bundle, and the CycloneDX SBOM. The Tkinter UI launch
+# and the edgeathlete-rack: HKCU handler registration are interactive Windows
+# smoke tests and are NOT covered here.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'rack_helper/**'
+      - '.github/workflows/rack-helper-windows-dev.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rack_helper
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up CPython 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Create virtualenv and pin build tooling
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install pip==25.3 pip-tools==7.6.0
+
+      - name: Generate Windows dependency lock
+        shell: pwsh
+        run: |
+          .\packaging\windows\Generate-DependencyLock.ps1 -Python "$PWD\.venv\Scripts\python.exe"
+
+      - name: Build unsigned development bundle
+        shell: pwsh
+        run: |
+          .\packaging\windows\Build-Development.ps1 -Python "$PWD\.venv\Scripts\python.exe"
+
+      - name: Upload development bundle and SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: EdgeAthleteRackHelperDevelopment-windows-x64
+          path: |
+            rack_helper/dist/EdgeAthleteRackHelperDevelopment/**
+            rack_helper/dist/EdgeAthleteRackHelperDevelopment.cdx.json
+          if-no-files-found: error
+
+      - name: Upload generated Windows lock
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-windows-x64-lock
+          path: rack_helper/requirements-windows-x64.lock
+          if-no-files-found: warn
