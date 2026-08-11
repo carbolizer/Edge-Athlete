@@ -170,6 +170,11 @@ local/Pi decisions below stay authoritative until an ADR resolves the proposal's
 open platform, endpoint, ingestion API, permanent `Rep` creation boundary,
 retention, and release decisions.
 
+The narrow server launch-intent contract in
+[`docs/_ADR_RACK_HELPER_LAUNCH_INTENT.md`](docs/_ADR_RACK_HELPER_LAUNCH_INTENT.md)
+is accepted. It does not authorize implementation until that ADR's hosted endpoint,
+helper identity, native runtime, status snapshot, and package-trust gates pass.
+
 ### End-to-end user flow
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.

@@ -7,6 +7,7 @@
 - Related vision: [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md)
 - Related identity contract: [`_RACK_DASHBOARD_TEAM_REGISTRATION.md`](_RACK_DASHBOARD_TEAM_REGISTRATION.md)
 - Related hosted transport: [`_VPS_EDGE_GATEWAY_SPEC.md`](_VPS_EDGE_GATEWAY_SPEC.md)
+- Related launch ADR: [`_ADR_RACK_HELPER_LAUNCH_INTENT.md`](_ADR_RACK_HELPER_LAUNCH_INTENT.md)
 
 ## User Story
 
@@ -347,7 +348,7 @@ The Rack never claims to have detected that the helper is not installed and cann
 silently install or execute a download.
 
 The server locks the endpoint and current installation, if any, when creating an
-intent. A database constraint permits at most one unconsumed intent per endpoint;
+intent. A database constraint permits at most one pending intent per endpoint;
 commit order determines which concurrent creation supersedes the other. The helper
 deterministically consumes that sole intent. Consumption and the bound
 acknowledgement commit atomically with a later server cursor and server receipt
@@ -516,7 +517,8 @@ The Rack and helper use this complete action matrix:
 | `launch_unconfirmed` with valid catalog | `Download Rack Helper` | Same signed package offered before timeout plus expanded install guidance |
 | `launch_unconfirmed` with unsupported/empty/failed/expired catalog | Catalog retry | AC31c unavailable state; no artifact |
 | Helper absent | Install verified package | Unpaired inert helper; no BLE or helper check-in |
-| Unpaired helper UI | Complete pairing | Pairing binds provisional intent; `launching` then `no_sensor` |
+| Unpaired helper UI with current intent | Complete pairing | Pairing binds intent; `launching` then `no_sensor` |
+| Unpaired helper UI without current intent | Complete pairing | Credential activates independently; helper remains inert until another Rack click |
 | Fresh `no_sensor`, `scanning`, `verifying`, `ready`, either active state, `recovery_required`, or a blocking state | `Open Helper` | `launch_requested`, then same or valid recovered cloud state |
 | `launching`, `stopping`, or `draining` | No repeated launch/open action | Current transition continues |
 | `released` or `stale` with queued rows | Intent-backed recovery | `launching`, then `draining`, `ready`, or `recovery_required` |
@@ -528,7 +530,7 @@ The Rack and helper use this complete action matrix:
 | `active_online` | `Disconnect and quit now` | `stopping` then `recovery_required`; lease retained |
 | `active_offline` | `Disconnect and quit now` | Prior state until `stale`; next contact reports `recovery_required` |
 | `recovery_required` | `Disconnect and quit` | Close BLE; lease and recovery fence remain until authorized resolution |
-| `launching` | Quit | Cancel unconsumed intent if possible; close inert UI; no acquisition mutation |
+| `launching` | Quit | Close UI; consumed intent remains terminal and last status becomes stale after heartbeat expiry |
 | `stopping` or `draining` | Repeated quit | No duplicate release; bounded stop continues |
 | `released` or `stale` process UI | Quit | Close inert UI; cloud state unchanged |
 | Any running state | Crash or forced kill | Last cloud state until heartbeat expiry, then `stale`; OS tears down BLE |
@@ -553,6 +555,9 @@ authentication_blocked
 sensor_reconnecting
 queue_full
 queue_corrupt
+queue_unsafe
+queue_read_only
+queue_write_failed
 keychain_unavailable
 update_required
 endpoint_reassigned
@@ -561,9 +566,9 @@ recovery_required
 
 Browser-observed state distinguishes local `launch_requested` and
 `launch_unconfirmed` from cloud `launching`, `pairing_required`, `no_sensor`,
-`ready`, `active_online`, `active_offline`, `stopping`, `draining`, `released`,
-`stale`, and `recovery_required`. Missing heartbeat is never proof that BLE
-disconnected.
+`scanning`, `verifying`, `ready`, `active_online`, `active_offline`, `stopping`,
+`draining`, `released`, `stale`, and every blocking-state code listed above.
+Missing heartbeat is never proof that BLE disconnected.
 
 `ready` requires a valid credential, healthy queue, supported contract version,
 current endpoint assignment, current acquisition lease, restored sensor binding,
@@ -633,8 +638,9 @@ The initial design target is 10,000 events or 16 MiB, whichever comes first. The
 ADR must align queue capacity, maximum supported outage, context lifetime, and
 server deduplication retention. The helper never evicts the oldest event. At
 capacity it preserves the queue, enters `queue_full`, stops accepting new events,
-blocks new sets, and publishes a cloud-visible `capture_stopped` state when a
-connection exists. During an active offline set the native UI shows that reps are
+blocks new sets, and publishes cloud-visible helper status `queue_full` plus
+active-set field `capture_stopped=true` when a connection exists. During an active
+offline set the native UI shows that reps are
 no longer captured and requires the operator to stop. Recovery requires freeing
 disk space through the platform-approved operator procedure or completing the
 release runbook's reviewed queue recovery; automatic eviction is forbidden.
@@ -899,10 +905,12 @@ later slices.
   remaining queue.
 - [ ] AC14: Given queue full, corruption, unsafe permissions, read-only storage, or
   failed durable write, when another rep occurs, then the same transition that
-  detects the fault changes native status to the mapped blocking state before the
-  detector can accept another candidate. The active set reports `capture_stopped`,
+  detects the fault changes native status respectively to `queue_full`,
+  `queue_corrupt`, `queue_unsafe`, `queue_read_only`, or `queue_write_failed` before
+  the detector can accept another candidate. The active set reports `capture_stopped`,
   no new set starts, and existing encrypted files remain. The endpoint snapshot
-  reports the same stable state code on the next authenticated connection.
+  reports the stable helper blocking code and separate active-set
+  `capture_stopped=true` field on the next authenticated connection.
 - [ ] AC15: Given endpoint reassignment, sensor replacement, acquisition change,
   revocation, or replay expiry, when an old queued event uploads, then an
   authenticated explicit scope disposition advances no cursor, changes no new
@@ -982,8 +990,10 @@ later slices.
   and install instructions; otherwise AC31c controls the download state.
 - [ ] AC30: Given malformed, oversized, parameterized, or attacker-originated
   protocol input or no valid launch intent, when the helper handles it, then it
-  performs no BLE, heartbeat, pairing, upload, update, lease, sensor, set, queue, or
-  credential mutation and logs no sensitive field.
+  performs no BLE, heartbeat, upload, update, lease, sensor, set, queue, credential,
+  or pairing mutation and logs no sensitive field. A later pairing mutation may
+  occur only through the separate authenticated, coach-confirmed pairing API;
+  opening the inert UI grants that API no authority.
 - [ ] AC31a: Given release metadata with invalid signature, trust root, origin,
   redirect, expiry, version, architecture, hash, or size, when the backend builds
   the Rack download list, then it offers no affected artifact and provides no
@@ -1050,7 +1060,7 @@ later slices.
 | 11 | Kill-after-enqueue durability test and UI/cloud ordering evidence |
 | 12 | Multi-boot queue, outage, response-loss, and deduplication tests |
 | 13 | Canonical-digest replay and identity-collision tests |
-| 14 | Disk-full/corrupt/read-only/fsync fault injection and UI evidence |
+| 14 | Full/corrupt/unsafe/read-only/write-failure injection and exact status evidence |
 | 15 | Reassignment/replacement/revocation/expiry terminal-disposition tests |
 | 16 | Authenticated invalidation, cursor-gap, snapshot, IndexedDB ordering tests |
 | 17 | Online/offline reassignment cache-purge and cross-team rendering tests |
@@ -1182,10 +1192,12 @@ later slices.
    proxy trust and source-IP metadata retention reviewed?
 8. Who approves the accepted detector/event fencing and physical WT901
    qualification evidence?
-9. Which launch-intent endpoint, provisional pairing binding, expiry, uniqueness
-   constraint, custom protocol registration, helper status fields, heartbeat
-   freshness, server cursor, and browser reconciliation behavior implement
-   intent-bound helper check-in?
+9. The accepted
+   [`_ADR_RACK_HELPER_LAUNCH_INTENT.md`](_ADR_RACK_HELPER_LAUNCH_INTENT.md) fixes
+   launch-intent operation semantics, provisional pairing binding, five-minute
+   expiry, uniqueness, fixed URI, acknowledgement cursor, and concurrency rules.
+   `_MESSAGE_CONTRACT.md`, native protocol registration, and the complete endpoint
+   status snapshot remain blocked by that ADR's implementation gates.
 10. What lease-release endpoint, idempotency key, lease TTL, stop watermark, queue
     drain timeout, and state transitions implement graceful and offline stop?
 11. What measured graceful-exit and forced-process-death BLE release bounds apply to
@@ -1194,8 +1206,8 @@ later slices.
 The fixture queue/ingestion proof must not begin until its queue/upload ADR defines
 the first-slice interfaces, encryption, migration rollback, development profile,
 and validation commands listed above. Pairing, BLE, browser synchronization,
-launch/download/stop, and production packaging must not begin until the ADRs answer
-their applicable questions 1–11 and approve migrations and rollback. A production
+launch/download/stop, and production packaging must not begin until the applicable
+decisions 1–11 and migration/rollback plans are approved. A production
 release requires the full OS packaging, keychain, BLE, autostart, update, proxy,
 and validation matrix. Physical rep ingestion must remain disabled until question
 8 and AC24 pass.
