@@ -7655,8 +7655,11 @@ class HostedRackControlPlaneTests(APITestCase):
         )
         OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
         self.group = TrainingGroup.objects.create(organization=self.organization, name="Hosted varsity")
-        self.assertEqual(self.client.get("/api/rack/v1/csrf/").status_code, 200)
+        csrf_response = self.client.get("/api/rack/v1/csrf/")
+        self.assertEqual(csrf_response.status_code, 200)
         self.csrf = self.client.cookies["ea_rack_csrf"].value
+        self.assertEqual(csrf_response.data, {"csrf_token": self.csrf})
+        self.assertEqual(csrf_response["Cache-Control"], "no-store")
         self.mutation_headers = {
             "HTTP_ORIGIN": self.origin,
             "HTTP_X_CSRFTOKEN": self.csrf,

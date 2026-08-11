@@ -86,9 +86,10 @@ def rack_csrf(request):
         ])
     except control.ControlPlaneError as exc:
         return _error(exc)
-    response = _response({})
+    csrf_token = control.encode_secret(secrets.token_bytes(32))
+    response = _response({"csrf_token": csrf_token})
     _set_host_cookie(
-        response, "ea_rack_csrf", control.encode_secret(secrets.token_bytes(32)),
+        response, "ea_rack_csrf", csrf_token,
         path="/api/rack/v1/", max_age=control.ENDPOINT_COOKIE_AGE, httponly=False,
     )
     return response

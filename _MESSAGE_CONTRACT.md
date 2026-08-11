@@ -1108,13 +1108,15 @@ separators, alternate UUID spellings, and noncanonical base64url are rejected.
 
 ### `GET /api/rack/v1/csrf/` — establish endpoint CSRF
 
-No request body. Returns `200 {}` and sets:
+No request body. Returns `200 {"csrf_token":"<opaque token>"}` and sets the
+identical value as:
 
 ```text
 ea_rack_csrf=<opaque token>; Path=/api/rack/v1/; Secure; SameSite=Strict
 ```
 
-The cookie is host-only and intentionally readable by the Rack JavaScript. Every
+The cookie is host-only. The Rack retains the no-store response value in memory
+because a cookie scoped to the API path is not readable at `/rack`. Every
 endpoint-cookie `POST` sends the identical value as `X-CSRFToken` and exactly one
 `Origin` equal to the configured canonical HTTPS application origin. Missing,
 duplicate, `null`, malformed, HTTP, subdomain, suffix, or foreign Origin fails;

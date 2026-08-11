@@ -1,4 +1,6 @@
 const API_ROOT = '/api/rack/v1'
+let csrfToken = null
+let csrfBootstrap = null
 
 export class HostedRackApiError extends Error {
   constructor(status, body) {
@@ -10,21 +12,12 @@ export class HostedRackApiError extends Error {
   }
 }
 
-function cookieValue(name) {
-  if (typeof document === 'undefined') return null
-  const prefix = `${name}=`
-  const part = document.cookie.split(';').map((value) => value.trim())
-    .find((value) => value.startsWith(prefix))
-  return part ? decodeURIComponent(part.slice(prefix.length)) : null
-}
-
 async function request(path, { method = 'GET', body, csrf = false } = {}) {
   const headers = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (csrf) {
-    const token = cookieValue('ea_rack_csrf')
-    if (!token) throw new Error('Rack request verification is unavailable. Refresh and try again.')
-    headers['X-CSRFToken'] = token
+    if (!csrfToken) throw new Error('Rack request verification is unavailable. Refresh and try again.')
+    headers['X-CSRFToken'] = csrfToken
   }
   const response = await fetch(`${API_ROOT}${path}`, {
     method,
@@ -39,7 +32,16 @@ async function request(path, { method = 'GET', body, csrf = false } = {}) {
 }
 
 export function bootstrapRackCsrf() {
-  return request('/csrf/')
+  if (csrfBootstrap) return csrfBootstrap
+  csrfToken = null
+  csrfBootstrap = request('/csrf/').then((payload) => {
+    if (!/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(payload?.csrf_token || '')) {
+      throw new Error('Rack request verification is unavailable. Refresh and try again.')
+    }
+    csrfToken = payload.csrf_token
+    return payload
+  }).finally(() => { csrfBootstrap = null })
+  return csrfBootstrap
 }
 
 export function getHostedRackStatus() {

@@ -168,8 +168,10 @@ the latest unexpired provisional launch intent as specified by the launch ADR.
 
 `GET /api/rack/v1/csrf/` sets a host-only, `Secure`, non-HttpOnly
 `ea_rack_csrf` cookie with `SameSite=Strict` and `Path=/api/rack/v1/`, and returns
-the empty JSON object `{}`. Every endpoint-cookie mutation sends the same value in
-`X-CSRFToken`.
+the same value as `{"csrf_token":"<opaque token>"}` in its no-store response.
+The Rack keeps the response value in memory because browsers do not expose an
+API-path cookie to JavaScript running at `/rack`. Every endpoint-cookie mutation
+sends that value in `X-CSRFToken`.
 
 The server accepts an endpoint-cookie mutation only when all of these are true:
 

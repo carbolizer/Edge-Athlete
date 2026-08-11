@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the public VPS boundary without using application credentials."""
 import argparse
+import base64
 import json
 import ssl
 import sys
@@ -53,6 +54,16 @@ def security_header_errors(headers):
     ]
 
 
+def is_canonical_csrf_token(value):
+    if not isinstance(value, str) or len(value) != 43:
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(value + "=")
+    except (ValueError, UnicodeEncodeError):
+        return False
+    return len(decoded) == 32 and base64.urlsafe_b64encode(decoded).rstrip(b"=").decode() == value
+
+
 def validate_observations(domain, observations):
     errors = []
 
@@ -76,6 +87,13 @@ def validate_observations(domain, observations):
     cookie = csrf.headers.get("Set-Cookie", "")
     if csrf.status != 200 or csrf.headers.get("Cache-Control") != "no-store":
         errors.append("Rack CSRF bootstrap was not a no-store 200 response")
+    try:
+        csrf_payload = json.loads(csrf.body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        csrf_payload = None
+    csrf_token = csrf_payload.get("csrf_token") if isinstance(csrf_payload, dict) else None
+    if not is_canonical_csrf_token(csrf_token) or f"ea_rack_csrf={csrf_token};" not in cookie:
+        errors.append("Rack CSRF bootstrap body did not match its cookie")
     for attribute in ("ea_rack_csrf=", "Secure", "SameSite=Strict", "Path=/api/rack/v1/"):
         if attribute not in cookie:
             errors.append(f"Rack CSRF cookie is missing {attribute}")

@@ -37,13 +37,13 @@ class VpsSmokeValidationTests(unittest.TestCase):
         csrf_headers = headers(
             **SECURITY_HEADERS,
             Cache_Control="no-store",
-            Set_Cookie="ea_rack_csrf=value; Path=/api/rack/v1/; SameSite=Strict; Secure",
+            Set_Cookie=f"ea_rack_csrf={'A' * 43}; Path=/api/rack/v1/; SameSite=Strict; Secure",
         )
         redirect_headers = headers(Location="https://edge.example.com/rack")
         return {
             "health": SMOKE.Observation(200, secure, b'{"status":"ok","database":"ok"}'),
             "rack": SMOKE.Observation(200, secure, b'<div id="root"></div>'),
-            "csrf": SMOKE.Observation(200, csrf_headers, b"{}"),
+            "csrf": SMOKE.Observation(200, csrf_headers, b'{"csrf_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}'),
             "rack_status": SMOKE.Observation(
                 401, secure,
                 b'{"code":"endpoint_authentication_failed","detail":"Endpoint authentication failed."}',
@@ -79,6 +79,37 @@ class VpsSmokeValidationTests(unittest.TestCase):
         )
         errors = SMOKE.validate_observations("edge.example.com", observations)
         self.assertTrue(any("Rack CSRF cookie is missing Secure" == error for error in errors))
+
+    def test_csrf_body_must_match_cookie(self):
+        observations = self.valid_observations()
+        observations["csrf"] = SMOKE.Observation(
+            200,
+            headers(
+                **SECURITY_HEADERS, Cache_Control="no-store",
+                Set_Cookie=f"ea_rack_csrf={'Q' * 43}; Path=/api/rack/v1/; SameSite=Strict; Secure",
+            ),
+            b'{"csrf_token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}',
+        )
+        self.assertIn(
+            "Rack CSRF bootstrap body did not match its cookie",
+            SMOKE.validate_observations("edge.example.com", observations),
+        )
+
+    def test_csrf_token_must_be_canonical_base64url(self):
+        observations = self.valid_observations()
+        token = f"{'A' * 42}B"
+        observations["csrf"] = SMOKE.Observation(
+            200,
+            headers(
+                **SECURITY_HEADERS, Cache_Control="no-store",
+                Set_Cookie=f"ea_rack_csrf={token}; Path=/api/rack/v1/; SameSite=Strict; Secure",
+            ),
+            f'{{"csrf_token":"{token}"}}'.encode(),
+        )
+        self.assertIn(
+            "Rack CSRF bootstrap body did not match its cookie",
+            SMOKE.validate_observations("edge.example.com", observations),
+        )
 
     def test_missing_security_header_fails(self):
         observations = self.valid_observations()
