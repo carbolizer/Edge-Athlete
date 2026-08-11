@@ -4,7 +4,10 @@ import {
   claimRackEndpoint, coachLogin, confirmRackHelper, getCoachToken,
   getCoachTrainingGroups, setCoachToken,
 } from './api.js'
-import { endpointClaimPayload, helperPairingId } from './rackPairing.js'
+import {
+  endpointClaimErrorMessage, endpointClaimPayload, helperConfirmationErrorMessage,
+  helperPairingId,
+} from './rackPairing.js'
 import './CoachRackPairing.css'
 
 export function RackPairingWorkspace({ token, groups, loadingGroups, onAuthLost }) {
@@ -28,7 +31,7 @@ export function RackPairingWorkspace({ token, groups, loadingGroups, onAuthLost 
       setEndpointState({ busy: false, error: '', result })
     } catch (error) {
       if (error.status === 401 || error.status === 403) onAuthLost()
-      setEndpointState({ busy: false, error: error.message, result: null })
+      setEndpointState({ busy: false, error: endpointClaimErrorMessage(error), result: null })
     }
   }
 
@@ -42,7 +45,7 @@ export function RackPairingWorkspace({ token, groups, loadingGroups, onAuthLost 
       setHelperState({ busy: false, error: '', result })
     } catch (error) {
       if (error.status === 401 || error.status === 403) onAuthLost()
-      setHelperState({ busy: false, error: error.message, result: null })
+      setHelperState({ busy: false, error: helperConfirmationErrorMessage(error), result: null })
     }
   }
 
@@ -110,7 +113,7 @@ function PairingLogin({ onLogin }) {
   return <main className="coach-pairing-login"><form onSubmit={submit}><span>Coach authentication</span><h1>Sign in to pair a Rack</h1><label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label><label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>{error && <p role="alert">{error}</p>}<button disabled={busy}>{busy ? 'Signing in...' : 'Continue'}</button></form></main>
 }
 
-export default function CoachRackPairing() {
+export default function CoachRackPairing({ showCoachWorkspace = true }) {
   const [token, setToken] = useState(() => getCoachToken())
   const [groups, setGroups] = useState([])
   const [groupError, setGroupError] = useState('')
@@ -134,5 +137,5 @@ export default function CoachRackPairing() {
   }, [token])
 
   if (!token) return <PairingLogin onLogin={setToken} />
-  return <div className="coach-pairing-root"><nav className="coach-pairing-nav" aria-label="Rack pairing navigation"><button onClick={() => navigate('/coach')}>Back to coach workspace</button><button onClick={logout}>Log out</button></nav>{groupError && <p className="coach-pairing-load-error" role="alert">{groupError}</p>}<RackPairingWorkspace token={token} groups={groups} loadingGroups={loadingGroups} onAuthLost={logout} /></div>
+  return <div className="coach-pairing-root"><nav className="coach-pairing-nav" aria-label="Rack pairing navigation">{showCoachWorkspace && <button onClick={() => navigate('/coach')}>Back to coach workspace</button>}<button onClick={logout}>Log out</button></nav>{groupError && <p className="coach-pairing-load-error" role="alert">{groupError}</p>}<RackPairingWorkspace token={token} groups={groups} loadingGroups={loadingGroups} onAuthLost={logout} /></div>
 }

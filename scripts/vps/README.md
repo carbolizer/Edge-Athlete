@@ -34,6 +34,13 @@ and minimal coach TrainingGroup routes listed in `nginx/vps.conf.template`. Its
 fallback denies every other `/api/` route; local rack, athlete, workout, report,
 hardware, system, and admin routes return `404`.
 
+The VPS React image is built with `VITE_DEPLOYMENT_PROFILE=hosted`. That profile
+contains only `/rack` and `/coach/rack-pairing`; legacy local routes redirect to
+those surfaces or the role picker. The default `local` profile retains the Pi
+dashboard, MQTT listeners, offline service worker, and local Rack routes. Builds
+reject any other profile value. On first hosted load, the app unregisters a
+previously installed local service worker and deletes `edgeathlete-shell-*` caches.
+
 ## DNS And Certificates
 
 Set `DOMAIN` in the shell only for these host commands:

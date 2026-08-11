@@ -70,6 +70,28 @@ class ApiAllowlistTests(unittest.TestCase):
             config_path.write_text(unsafe, encoding="utf-8")
             self.assertTrue(any("per-IP limiting" in error for error in CHECKER.validation_errors(config_path)))
 
+    def test_proxy_rate_limit_response_contract_is_required(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        unsafe = config.replace("    error_page 429 = @rate_limited;\n", "", 1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "vps.conf.template"
+            config_path.write_text(unsafe, encoding="utf-8")
+            self.assertIn(
+                "VPS proxy rate-limit response contract is missing",
+                CHECKER.validation_errors(config_path),
+            )
+
+    def test_proxy_rate_limit_response_is_not_cached(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        unsafe = config.replace('        add_header Cache-Control "no-store" always;\n', "", 1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "vps.conf.template"
+            config_path.write_text(unsafe, encoding="utf-8")
+            self.assertIn(
+                "VPS proxy rate-limit response contract is missing",
+                CHECKER.validation_errors(config_path),
+            )
+
     def test_upstream_security_headers_are_suppressed(self):
         config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
         unsafe = config.replace("    proxy_hide_header Referrer-Policy;\n", "", 1)

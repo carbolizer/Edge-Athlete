@@ -66,6 +66,20 @@ server {
     add_header Permissions-Policy "bluetooth=(), camera=(), geolocation=(), microphone=()" always;
     add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; connect-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'" always;
 
+    error_page 429 = @rate_limited;
+    location @rate_limited {
+        default_type application/json;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Permissions-Policy "bluetooth=(), camera=(), geolocation=(), microphone=()" always;
+        add_header Content-Security-Policy "default-src 'self'; base-uri 'none'; connect-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'" always;
+        add_header Cache-Control "no-store" always;
+        add_header Retry-After 12 always;
+        return 429 '{"code":"rate_limited","detail":"Too many requests.","retry_after_seconds":12}';
+    }
+
     # Django also emits these headers. Hide its copies so every public response
     # has one policy, owned by this TLS boundary, rather than conflicting values.
     proxy_hide_header X-Content-Type-Options;

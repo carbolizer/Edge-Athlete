@@ -12,7 +12,8 @@ import { createRoot } from 'react-dom/client'
 // offline network. This is the font the whole UI uses via theme.js.
 import '@fontsource-variable/inter'
 import './index.css'
-import App from './App.jsx'
+import App from '@edge-app'
+import { retireLocalOfflineShell } from './serviceWorker.js'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -20,7 +21,9 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-if ('serviceWorker' in navigator) {
+if (import.meta.env.VITE_DEPLOYMENT_PROFILE === 'hosted' && 'serviceWorker' in navigator) {
+  retireLocalOfflineShell(navigator.serviceWorker, window.caches).catch(() => {})
+} else if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js').catch(() => {})
   })

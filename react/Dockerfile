@@ -4,6 +4,9 @@
 # machines, crashing `vite build` with "node:util has no export 'styleText'".
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 
+ARG VITE_DEPLOYMENT_PROFILE=local
+ENV VITE_DEPLOYMENT_PROFILE=$VITE_DEPLOYMENT_PROFILE
+
 # create and copy working folder inside container
 WORKDIR /frontend_container
 # copy package list first so Docker can cache npm install
@@ -26,8 +29,11 @@ RUN npm run build
 # this part runs once docker is up to serve pages
 FROM nginx:alpine@sha256:dc48b7a872a79fb541ba5081d320b11b549231bc63ba465a7495afaa7d2ebcb8
 
+ARG VITE_DEPLOYMENT_PROFILE=local
+
 # copy finished website files from first part into nginx's default website folder
 COPY --from=build /frontend_container/dist /usr/share/nginx/html
+RUN if [ "$VITE_DEPLOYMENT_PROFILE" = "hosted" ]; then rm /usr/share/nginx/html/service-worker.js; fi
 
 # use our nginx config so client-side routes (e.g. /connection-test) fall back to
 # index.html instead of 404ing — see react/nginx.conf

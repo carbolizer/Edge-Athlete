@@ -68,7 +68,10 @@ services:
       start_period: 90s
 
   vps-react:
-    build: ./react
+    build:
+      context: ./react
+      args:
+        VITE_DEPLOYMENT_PROFILE: hosted
     container_name: edgeathlete-vps-react
     networks:
       - vps_react_proxy

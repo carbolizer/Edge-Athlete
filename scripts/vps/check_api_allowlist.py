@@ -56,8 +56,18 @@ def validation_errors(config_path):
         "connect-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; "
         "script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'\" always;"
     )
-    if main_csp not in config:
+    # The named 429 location defines Retry-After, so Nginx no longer inherits
+    # server-level add_header directives there. Require the CSP in both scopes.
+    if config.count(main_csp) < 2:
         errors.append("VPS main application CSP is missing")
+    rate_limit_response = (
+        "add_header Cache-Control \"no-store\" always;\n"
+        "        add_header Retry-After 12 always;\n"
+        "        return 429 '{\"code\":\"rate_limited\",\"detail\":\"Too many requests.\","
+        "\"retry_after_seconds\":12}';"
+    )
+    if "error_page 429 = @rate_limited;" not in config or rate_limit_response not in config:
+        errors.append("VPS proxy rate-limit response contract is missing")
     for header in ("X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"):
         if f"proxy_hide_header {header};" not in config:
             errors.append(f"VPS must suppress the upstream {header} header")

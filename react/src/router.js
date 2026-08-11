@@ -77,3 +77,17 @@ export function matchCoachPath(pathname) {
   if (pathname === '/coach/rack-pairing') return { kind: 'rack-pairing' }
   return null
 }
+
+export function hostedRoleHomePath(role) {
+  if (role === 'rack') return '/rack'
+  if (role === 'coach') return '/coach/rack-pairing'
+  return null
+}
+
+export function hostedCompatibilityRedirect(pathname, hosted = false) {
+  if (!hosted) return null
+  if (pathname === '/coach' || pathname === '/coach/setup') return '/coach/rack-pairing'
+  if (pathname === '/rack/setup' || /^\/rack\/[1-9]\d*$/.test(pathname)) return '/rack'
+  if (pathname === '/dashboard' || pathname === '/connection-test') return '/'
+  return null
+}
