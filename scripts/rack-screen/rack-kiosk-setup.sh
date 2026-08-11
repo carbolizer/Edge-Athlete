@@ -81,9 +81,12 @@ Type=Application
 Name=Edge Athlete — Coach
 Comment=Open the coach console. Use the browser menu to install it as an app.
 Exec=$SCRIPT_DIR/kiosk.sh coach $KIOSK_HOST windowed
+Icon=$SCRIPT_DIR/../../react/public/icon-coach-192.png
 Terminal=false
+StartupWMClass=Chromium
 Categories=Utility;
 EOF
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database || true
         echo "    tap 'Edge Athlete — Coach' in the app list, then install it from the"
         echo "    browser's ⋮ menu to get a proper full-screen app icon."
     else
@@ -107,7 +110,9 @@ EOF
 echo "[1] installing Chromium + kiosk helpers..."
 apt update
 # Package name differs by image: chromium-browser (older) vs chromium (newer).
-apt install -y network-manager x11-xserver-utils unclutter curl
+# procps supplies pkill, which ea-restart and ea-kiosk-exit both depend on. Without
+# it they print a cheerful message and do nothing, which is worse than failing.
+apt install -y network-manager x11-xserver-utils unclutter curl procps
 apt install -y chromium-browser || apt install -y chromium
 
 echo "[2] joining the '$AP_SSID' WiFi as a client..."
@@ -147,7 +152,7 @@ echo "[5b] installing the short commands..."
 # Linking the wrong one here would give a rack tablet a command that installs Docker
 # and stands up a competing WiFi access point.
 mkdir -p /usr/local/bin
-for cmd in ea ea-update ea-restart ea-kiosk-log ea-help; do
+for cmd in ea ea-update ea-restart ea-kiosk-log ea-kiosk-exit ea-help; do
     ln -sfn "$SCRIPT_DIR/ea.sh" "/usr/local/bin/$cmd"
 done
 chmod +x "$SCRIPT_DIR/ea.sh"

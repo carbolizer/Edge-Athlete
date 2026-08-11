@@ -6,6 +6,7 @@
 #   ea-sim [node_id]     start the fake rack sensor
 #   ea-sim-log           follow the simulator's decisions
 #   ea-sim-stop          stop it
+#   ea-kiosk-exit        leave the wall display for the desktop (Ctrl+Alt+K)
 #   ea-help              the list
 #
 # ── WHY THIS IS EXECUTED, NOT SOURCED (it used to be sourced, and that was wrong) ──
@@ -56,6 +57,7 @@ Edge Athlete — base station commands
   ea-sim [node_id]     start the fake rack sensor          (default: rack_1)
   ea-sim-log           follow the simulator's decisions
   ea-sim-stop          stop it
+  ea-kiosk-exit        leave the wall display for the desktop (Ctrl+Alt+K)
 
 The install lives at $EDGE_DIR
 EOF
@@ -106,6 +108,19 @@ ea-sim-log)
 ea-sim-stop)
     echo "==> stopping simulator"
     cd "$EDGE_DIR" && sudo docker compose --profile demo stop simulator
+    ;;
+
+ea-kiosk-exit)
+    # Leave the wall display and land on the plain desktop, so the app menu and the
+    # other roles' launchers are reachable. This is the base station's way out of a
+    # session that otherwise has no way out — see the relaunch loop in
+    # scripts/rack-screen/kiosk.sh.
+    #
+    # Flag FIRST, then kill: the other order races the relaunch loop, which would
+    # reopen the browser before the flag existed.
+    echo "==> leaving the kiosk (Ctrl+Alt+K does this too, on GNOME)"
+    touch "${EDGE_KIOSK_STOP:-/tmp/edgeathlete-kiosk.stop}"
+    pkill -f 'chromium.*--user-data-dir' || echo "    nothing running"
     ;;
 
 ea-help|ea--help|ea-h)

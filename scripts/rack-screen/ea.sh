@@ -48,6 +48,7 @@ Edge Athlete — screen commands (this is a SCREEN, not the base station)
   ea-update [branch]   pull latest code and re-provision   (default: main)
   ea-restart           restart the browser, keep the identity
   ea-kiosk-log [n]     last n lines the launcher printed   (default: 40)
+  ea-kiosk-exit        leave the kiosk for the desktop (Ctrl+Alt+K)
 
 The install lives at $EDGE_DIR
 EOF
@@ -69,6 +70,18 @@ ea-restart)
     # it beats pulling the power, which risks the on-device rep buffer mid-set.
     echo "==> restarting the browser (the launcher brings it back in ~3s)"
     pkill -f 'chromium.*--user-data-dir' || echo "    nothing running to restart"
+    ;;
+
+ea-kiosk-exit)
+    # Leave the kiosk and land on the plain desktop, so you can open the app menu or
+    # a different role. Sets the flag FIRST: kill the browser first and the relaunch
+    # loop would win the race and reopen it before the flag existed.
+    #
+    # Nothing is uninstalled and nothing is disabled — the next login starts the
+    # kiosk again, because kiosk.sh clears this flag when it launches.
+    echo "==> leaving the kiosk"
+    touch "${EDGE_KIOSK_STOP:-/tmp/edgeathlete-kiosk.stop}"
+    pkill -f 'chromium.*--user-data-dir' || echo "    nothing running"
     ;;
 
 ea-kiosk-log)

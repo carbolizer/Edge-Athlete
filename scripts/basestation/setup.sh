@@ -115,7 +115,8 @@ fi
 # unclutter hides the mouse pointer on a kiosk screen; x11-xserver-utils provides
 # xset, which is how kiosk.sh stops the display blanking mid-set. Both are tiny and
 # both are useless without a screen, so they ride along with Chromium.
-apt-get install -y -qq unclutter x11-xserver-utils 2>/dev/null || true
+# procps supplies pkill, which ea-kiosk-exit depends on.
+apt-get install -y -qq unclutter x11-xserver-utils procps 2>/dev/null || true
 
 echo "[4] enabling services..."
 systemctl enable --now NetworkManager
@@ -417,7 +418,7 @@ echo "[11] installing the short commands..."
 #
 # Symlinks rather than copies, so `ea-update` refreshes the commands themselves.
 mkdir -p /usr/local/bin
-for cmd in ea ea-update ea-seed ea-sim ea-sim-log ea-sim-stop ea-help; do
+for cmd in ea ea-update ea-seed ea-sim ea-sim-log ea-sim-stop ea-kiosk-exit ea-help; do
     ln -sfn "$PROJECT_DIR/scripts/basestation/ea.sh" "/usr/local/bin/$cmd"
 done
 chmod +x "$PROJECT_DIR/scripts/basestation/ea.sh"
@@ -448,25 +449,50 @@ chmod +x "$KIOSK_SH" "$PROJECT_DIR/scripts/basestation/basestation-kiosk.sh"
 mkdir -p /var/lib/edge-athlete/kiosk && chmod 1777 /var/lib/edge-athlete/kiosk
 mkdir -p /usr/share/applications /etc/xdg/autostart
 
-# One clickable launcher per role. The wall display and rack open full-screen; the
-# coach opens windowed, because a coach needs the browser menu (it is where "install
-# this app" lives) and needs to be able to close the thing.
+# One clickable launcher per role, ALL WINDOWED. This is not a style preference —
+# kiosk mode here actively broke the machine.
+#
+# The autostart already runs the wall display full-screen with a relaunch loop. Open
+# a second launcher that is ALSO full-screen with its own relaunch loop and the two
+# fight over the display: each grabs focus, each reopens itself when it loses, and
+# the screen cycles between roles several times a second. Adding the third made it
+# a three-way. Nothing crashes, so nothing reports an error — the machine just
+# becomes unusable.
+#
+# Windowed removes both halves of that. A normal window does not seize the display,
+# and windowed mode has no relaunch loop, so closing one means closing it. These
+# launchers exist to compare a role against a real screen and to install the apps —
+# both of which want a window and a reachable browser menu anyway.
+#
+# The full-screen wall display is still what the machine BOOTS into. That one is
+# unattended and should be exactly what it is.
 for role in dashboard rack coach; do
     case "$role" in
-        coach) mode=windowed; label="Coach" ;;
-        rack)  mode=kiosk;    label="Rack Screen" ;;
-        *)     mode=kiosk;    label="Wall Display" ;;
+        coach) label="Coach" ;;
+        rack)  label="Rack Screen" ;;
+        *)     label="Wall Display" ;;
     esac
+    mode=windowed
+    # Without an explicit icon the desktop falls back to a generic cog, so all three
+    # arrive looking like Settings and are indistinguishable in the app list. These
+    # are the app's own role icons, already in the repo for the web manifests.
+    icon="$PROJECT_DIR/react/public/icon-$role-192.png"
     cat > "/usr/share/applications/edgeathlete-$role.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete — $label
 Comment=Open the $role screen on this machine (localhost)
 Exec=$KIOSK_SH $role localhost $mode
+Icon=$icon
 Terminal=false
+StartupWMClass=Chromium
 Categories=Utility;
 EOF
 done
+
+# The desktop caches this directory; without a refresh the new names and icons do
+# not appear until the next login, which reads as "it did not work".
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database || true
 
 if [ -f /etc/xdg/autostart/edgeathlete-kiosk.desktop ]; then
     echo "    autostart already set, left alone"

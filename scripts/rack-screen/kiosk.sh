@@ -78,6 +78,9 @@ MODE="${3:-kiosk}"          # kiosk | windowed
 # then have to go and read would be obnoxious. `-t 1` is the test for "is stdout a
 # terminal", which is precisely the difference between those two cases.
 EDGE_KIOSK_LOG="${EDGE_KIOSK_LOG:-/tmp/edgeathlete-kiosk.log}"
+# Touched by `ea-kiosk-exit` to tell the relaunch loop at the bottom of this file to
+# stop rather than reopen the browser. See the comment there.
+STOP_FLAG="${EDGE_KIOSK_STOP:-/tmp/edgeathlete-kiosk.stop}"
 if [ ! -t 1 ]; then
     exec >>"$EDGE_KIOSK_LOG" 2>&1
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') launcher starting ==="
@@ -162,6 +165,20 @@ if command -v gsettings >/dev/null 2>&1; then
     # Laptops and small-form-factor desktops suspend on idle by default, which takes
     # the whole server down, not just the screen.
     gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type nothing 2>/dev/null || true
+
+    # Ctrl+Alt+K = leave the kiosk. This is the piece that makes the exit REACHABLE:
+    # `ea-kiosk-exit` exists as a command, but you cannot get to a terminal or an app
+    # menu from inside a full-screen browser — which is the whole problem. A desktop
+    # keybinding is handled by the desktop, not by the browser, so it still fires.
+    #
+    # GNOME only, and best-effort. Elsewhere the way out is Ctrl+Alt+F3 to a text
+    # console, then `ea-kiosk-exit`. That always works and is worth knowing anyway.
+    KB=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/edgeathlete-exit/
+    KBS="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$KB"
+    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['$KB']" 2>/dev/null || true
+    gsettings set "$KBS" name    'Exit Edge Athlete kiosk'                    2>/dev/null || true
+    gsettings set "$KBS" command 'ea-kiosk-exit'                              2>/dev/null || true
+    gsettings set "$KBS" binding '<Control><Alt>k'                            2>/dev/null || true
 fi
 # The cursor is hidden only on unattended screens. A coach is holding a pointer and
 # needs to see it.
@@ -231,8 +248,29 @@ if [ "$MODE" = "windowed" ]; then
   exec "$CHROME" "${CHROME_ARGS[@]}"
 fi
 
+# THE WAY OUT OF THE KIOSK. A relaunch loop is right for an unattended screen and
+# wrong for the base station, where somebody sitting at the machine wants to open a
+# different role, or just reach the app menu. Closing the browser could not do it:
+# the loop brought it straight back, so the kiosk user was sealed inside the wall
+# display with launchers installed that it had no way to reach.
+#
+# So the loop checks for a stop file. `ea-kiosk-exit` (or Ctrl+Alt+K, bound below on
+# GNOME) drops that file and closes the browser, and the loop lets the session fall
+# through to a plain desktop. Nothing is uninstalled and nothing is disabled — the
+# next login starts the kiosk again, because the file is cleared at launch.
+#
+# Deliberately NOT an exit built into the browser: a rack tablet in a gym must not
+# have a "leave the app" affordance an athlete can find by accident.
+rm -f "$STOP_FLAG"
+
 while true; do
   "$CHROME" "${CHROME_ARGS[@]}"
+  if [ -f "$STOP_FLAG" ]; then
+    rm -f "$STOP_FLAG"
+    echo "[kiosk] stop requested — leaving you on the desktop"
+    echo "[kiosk] log out and back in, or run: $0 $ROLE $HOST $MODE"
+    exit 0
+  fi
   echo "[kiosk] Chromium exited — restarting in 3s"
   sleep 3
 done
