@@ -157,6 +157,74 @@ else
     echo "    no netplan (not Ubuntu) — NetworkManager manages devices directly"
 fi
 
+echo "[4c] unblocking boot, and keeping the radio awake..."
+
+# ── the boot gate that waits for something that cannot happen ───────────────────
+# systemd-networkd-wait-online holds network-online.target until systemd-networkd
+# reports an interface up and routable. But [4b] just handed EVERY device to
+# NetworkManager, so networkd manages nothing at all and this unit waits for an
+# interface it will never be given. That is roughly two minutes added to every
+# boot, and it looks like this on the console:
+#
+#     Job systemd-networkd-wait-online.service/start running (56s / no limit)
+#
+# NetworkManager-wait-online is the unit actually doing this job here, and it
+# finishes normally — you can watch both in the boot log, two lines apart, one
+# done and one waiting. So enable that one FIRST, then mask the dead one:
+# edgeathlete.service still waits on network-online.target and still gets a real
+# guarantee, from the manager that actually owns the devices.
+#
+# ⚠️ THIS IS SAFE BECAUSE OF [4b], not on its own. Hand networking back to
+# systemd-networkd (delete $NM_NETPLAN) and this mask silently drops the ordering
+# guarantee instead of fixing anything. The two decisions travel together.
+if systemctl cat NetworkManager-wait-online.service >/dev/null 2>&1; then
+    systemctl enable NetworkManager-wait-online.service >/dev/null 2>&1 || true
+    systemctl mask --now systemd-networkd-wait-online.service >/dev/null 2>&1 || true
+    echo "    masked systemd-networkd-wait-online (NetworkManager-wait-online covers it)"
+else
+    echo "    [!] NetworkManager-wait-online missing — leaving the boot gate alone"
+fi
+
+# ── the radio must not nap ──────────────────────────────────────────────────────
+# A Wi-Fi adapter that power-saves adds latency to exactly the traffic that cannot
+# afford it: live reps during a set. The obvious command is
+#
+#     iw dev <iface> set power_save off
+#
+# and on this machine it FAILS with "Operation not supported" — power saving is a
+# client-mode concept and this adapter is running as an access point. So it has to
+# be set at the two layers that do apply, both of which survive a reboot, which is
+# more than the `iw` command would have done anyway.
+POWERSAVE_CONF="/etc/NetworkManager/conf.d/wifi-powersave-off.conf"
+if [ -f "$POWERSAVE_CONF" ]; then
+    echo "    NetworkManager powersave setting already present, left alone"
+else
+    mkdir -p /etc/NetworkManager/conf.d
+    # 2 means "disable". (0 = use the global default, 1 = don't touch it,
+    # 2 = disable, 3 = enable.) 0 and 1 both look like they might mean off.
+    printf '[connection]\nwifi.powersave = 2\n' > "$POWERSAVE_CONF"
+    echo "    NetworkManager powersave disabled"
+fi
+
+# Intel adapters ignore the generic setting in some modes and want module options
+# instead. power_scheme=1 is "CAM" — continuously active mode — and is the one that
+# actually matters on these cards. Only written when the driver is really loaded,
+# so a non-Intel base station does not carry a config for hardware it lacks.
+if lsmod 2>/dev/null | grep -q '^iwlwifi'; then
+    IWL_CONF="/etc/modprobe.d/iwlwifi-powersave.conf"
+    if [ -f "$IWL_CONF" ]; then
+        echo "    iwlwifi options already present, left alone"
+    else
+        # mkdir because this script runs under `set -e`: a redirect into a missing
+        # directory would abort the WHOLE provisioning run here — after the network
+        # was handed to NetworkManager but before the boot service exists, which is
+        # about the worst place to stop.
+        mkdir -p /etc/modprobe.d
+        printf 'options iwlwifi power_save=0\noptions iwlmvm power_scheme=1\n' > "$IWL_CONF"
+        echo "    iwlwifi set to stay awake (applies on reboot)"
+    fi
+fi
+
 echo "[5] preparing env file..."
 if [ ! -f "$PROJECT_DIR/.env" ]; then
     cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"

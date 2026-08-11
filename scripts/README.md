@@ -72,6 +72,8 @@ resolves. Consequences:
 | Kiosk autostart | `/etc/xdg/autostart/edgeathlete-kiosk.desktop` | generated |
 | Kiosk login account | `edgekiosk` — no sudo, password locked | — |
 | Autologin config | LightDM/SDDM drop-in, or `/etc/gdm3/custom.conf` | generated |
+| Wi-Fi powersave off | `/etc/NetworkManager/conf.d/wifi-powersave-off.conf` | generated |
+| Intel radio options | `/etc/modprobe.d/iwlwifi-powersave.conf` (Intel only) | generated |
 
 ### Three things worth knowing
 

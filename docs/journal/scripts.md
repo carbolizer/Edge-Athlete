@@ -143,6 +143,62 @@ installed at setup and is easy to forget when debugging.
 
 ---
 
+## Decision: two minutes of every boot were spent waiting for nothing
+
+**What forced it.** Every boot stalled for around two minutes on a service whose job is
+to wait for the network to come up. On the console it looked like this, and the "no
+limit" is what made people assume it was hung rather than slow:
+
+```
+Job systemd-networkd-wait-online.service/start running (56s / no limit)
+```
+
+**What was actually happening.** Linux here has *two* network managers, and this
+machine deliberately uses only one of them: the setup script hands every device to
+NetworkManager, because that is the only way the Wi-Fi adapter becomes visible to the
+tool that builds the access point. The other manager is left with nothing to manage —
+and its "wait until the network is up" service sat there waiting for an interface it
+was never going to be given, until it timed out. Every boot. For nothing.
+
+The proof was already on screen, two lines apart in the boot log: NetworkManager's own
+wait-service **finished** normally, while the orphaned one was still counting.
+
+**What we chose.** Make sure the working one is enabled, then disable the orphan. The
+application still waits for the network before it starts — that guarantee comes from
+the manager that actually owns the hardware.
+
+**Why this is not an independent fix.** It is only safe *because* of the decision to
+give NetworkManager the devices. Undo that, and this turns from removing dead weight
+into silently deleting a real safety check. The two travel together, and the script
+says so at both ends.
+
+**The lesson worth keeping.** Nothing was broken and nothing logged an error — a
+service was simply waiting for a condition that could not occur. That failure shape
+does not announce itself; it just looks like the machine being slow, and people build
+a habit around it. It is worth occasionally asking what a boot is actually waiting for.
+
+---
+
+## Decision: the radio is not allowed to nap
+
+**What forced it.** Wi-Fi adapters save power by sleeping between packets. That is
+sensible on a laptop and wrong here: it adds delay to exactly the traffic that cannot
+absorb it, which is a live rep travelling from a barbell to a screen while someone is
+watching.
+
+**The obvious command does not work.** The standard one-liner for switching power
+saving off returns *"Operation not supported"* on this machine — power saving is a
+concept for devices that *join* a network, and this adapter is busy *being* one. The
+setting has to be made at the layers that do apply: the network manager's own
+configuration, and for Intel adapters a driver-level option, since those ignore the
+generic setting in some modes.
+
+**What it cost.** It only takes effect after a reboot, and it is two more files. In
+exchange it survives one — which the failing command would not have done even if it
+had worked.
+
+---
+
 ## Decision: the browser is installed on the machine, not in a container
 
 **What forced it.** Everything else on the base station runs in a container, so a
