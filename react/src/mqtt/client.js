@@ -11,13 +11,25 @@
 //   edgeathlete/rack/command           — shared channel: remote commands to any/all tablets
 
 import mqtt from 'mqtt'
+import { getDeviceId } from '../device.js'
 
 let client = null
 
 export function getClient() {
   if (!client) {
     // location.hostname so it works from whatever device is pointed at the Pi.
-    client = mqtt.connect(`ws://${window.location.hostname}:9001`)
+    //
+    // clientId + clean:false: without a stable name, every reconnect looks like
+    // a brand-new stranger to the broker, so it has nothing saved for us and a
+    // dropped connection just loses whatever happened while we were away.
+    // Reusing this device's own id (already used elsewhere for the same
+    // "who is this screen" purpose) and telling the broker to keep a session
+    // for it means QoS 1 messages sent during a drop get queued and delivered
+    // the moment we reconnect, instead of vanishing.
+    client = mqtt.connect(`ws://${window.location.hostname}:9001`, {
+      clientId: getDeviceId(),
+      clean: false,
+    })
   }
   return client
 }
@@ -39,7 +51,7 @@ export function subscribeNodeReps(nodeId, onRep) {
     try { onRep(JSON.parse(msg.toString())) } catch (e) { /* ignore malformed */ }
   }
   c.on('message', handler)
-  whenReady(c, () => c.subscribe(topic))
+  whenReady(c, () => c.subscribe(topic, { qos: 1 }))
   return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
 }
 
@@ -53,7 +65,7 @@ export function subscribeRackState(rackNumber, onState) {
     try { onState(JSON.parse(msg.toString())) } catch (e) { /* ignore malformed */ }
   }
   c.on('message', handler)
-  whenReady(c, () => c.subscribe(topic))
+  whenReady(c, () => c.subscribe(topic, { qos: 1 }))
   return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
 }
 
@@ -71,7 +83,7 @@ export function subscribeRackCommand(onCommand) {
     try { onCommand(JSON.parse(msg.toString())) } catch (e) { /* ignore malformed */ }
   }
   c.on('message', handler)
-  whenReady(c, () => c.subscribe(topic))
+  whenReady(c, () => c.subscribe(topic, { qos: 1 }))
   return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
 }
 
@@ -89,7 +101,7 @@ export function subscribeWifiChange(onChange) {
     try { onChange(JSON.parse(msg.toString())) } catch (e) { /* ignore malformed */ }
   }
   c.on('message', handler)
-  whenReady(c, () => c.subscribe(topic))
+  whenReady(c, () => c.subscribe(topic, { qos: 1 }))
   return () => { c.removeListener('message', handler); c.unsubscribe(topic) }
 }
 

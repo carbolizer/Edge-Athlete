@@ -24,6 +24,7 @@ services:
     container_name: edgeathlete-mosquitto
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
     # 1883 = plain MQTT for hardware nodes + Django. 9001 = the SAME broker
     # spoken over WebSockets so browsers can subscribe directly — no Nginx proxy.
     ports:
@@ -199,3 +200,4 @@ services:
 
 volumes:
   postgres_data:
+  mosquitto_data:
