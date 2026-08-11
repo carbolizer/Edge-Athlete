@@ -283,6 +283,36 @@ it if it is present.**
 
 ---
 
+## Decision: the screen unlocks itself, the machine does not
+
+**What forced it.** Plug a monitor into the base station and you want to see the wall
+display — not a login prompt. Typing a password to look at a scoreboard is friction
+with nothing behind it, and in a gym nobody will do it.
+
+But the same machine is the server. Anything *other* than looking at that screen must
+still cost a password.
+
+**What we chose.** A dedicated account that exists only to look at a web page. It logs
+in automatically; it has no administrative rights; and its password is **locked**, which
+is stronger than blank — it cannot be authenticated against at all, only auto-started.
+Physical access gets you a wall display and nothing else. Real accounts still prompt for
+ssh and for anything privileged, exactly as before.
+
+**The wrong version of this, and why it is tempting.** Turning on automatic login for a
+normal admin account is one setting and gets you the same screen. It also leaves an
+unattended machine in a public room with a logged-in session that can administer the
+server, which anyone walking past inherits. The question worth asking was never
+*whether* to require a password — it was **who** logs in.
+
+**What it cost.** The base station's browser data now lives under that account rather
+than yours, so an app installed on the wall display belongs to it. Which is arguably
+right, and confusing exactly once.
+
+**Where it does not apply.** A base station with no browser installed — a genuinely
+headless one — is skipped rather than given an account that can never log in anywhere.
+
+---
+
 ## Decision: the same command on two devices, from two separate files
 
 **What forced it.** A screen and the base station both want a short "update this

@@ -70,6 +70,8 @@ resolves. Consequences:
 | Shell shortcuts | `/etc/profile.d/edge-athlete.sh` | symlink into the repo |
 | Kiosk browser profiles | `/var/lib/edge-athlete/kiosk/<user>-<role>` | **no** |
 | Kiosk autostart | `/etc/xdg/autostart/edgeathlete-kiosk.desktop` | generated |
+| Kiosk login account | `edgekiosk` — no sudo, password locked | — |
+| Autologin config | LightDM/SDDM drop-in, or `/etc/gdm3/custom.conf` | generated |
 
 ### Three things worth knowing
 

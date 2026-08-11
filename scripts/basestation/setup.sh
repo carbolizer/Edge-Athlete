@@ -386,6 +386,91 @@ EOF
     echo "    defaults to the wall display on boot"
 fi
 
+echo "[11c] setting up the unattended kiosk login..."
+# GOAL: plug in a monitor, see the wall display. No password, no keyboard.
+# CONSTRAINT: doing anything ELSE on this machine must still cost a password.
+#
+# Those two pull against each other, and the resolution is WHO logs in — not
+# whether a password is required. Turning on autologin for a real admin account
+# would satisfy the first and destroy the second: an unattended machine sitting in
+# a gym with a logged-in session that can sudo. Anyone who walks past inherits it.
+#
+# So a dedicated account exists purely to look at a web page. It has no sudo, and
+# its password is LOCKED — it cannot be logged into deliberately at all, only
+# auto-started by the display manager. Physical access gets you a wall display and
+# nothing more; ssh and sudo still prompt exactly as before, for real accounts.
+#
+# Set EDGE_KIOSK_AUTOLOGIN=0 to skip all of this (headless boxes, or a gym that
+# would rather type a password).
+KIOSK_USER="${EDGE_KIOSK_USER:-edgekiosk}"
+
+if [ "${EDGE_KIOSK_AUTOLOGIN:-1}" != "1" ]; then
+    echo "    skipped (EDGE_KIOSK_AUTOLOGIN=0)"
+elif ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
+    # No browser means no desktop means nothing to autologin into. Saying so beats
+    # creating an account that never does anything.
+    echo "    no browser installed — skipping (this box has no screen)"
+else
+    if id "$KIOSK_USER" >/dev/null 2>&1; then
+        echo "    user '$KIOSK_USER' already exists"
+    else
+        useradd -m -s /bin/bash -c "Edge Athlete kiosk" "$KIOSK_USER"
+        # Locked, not blank. A blank password is a login anybody can use; a locked
+        # one cannot be authenticated against at all, while autologin — which does
+        # not authenticate — still works.
+        passwd -l "$KIOSK_USER" >/dev/null 2>&1 || true
+        echo "    created '$KIOSK_USER' (no sudo, password locked)"
+    fi
+    # Groups a graphical session may want. Absent groups are skipped rather than
+    # failing the run — they differ by distro and none of them are required.
+    for grp in video audio input render; do
+        getent group "$grp" >/dev/null 2>&1 && usermod -aG "$grp" "$KIOSK_USER" || true
+    done
+
+    # Autologin, written for whichever display manager is actually installed. The
+    # first two take drop-in files, which is why they are preferred: nothing of the
+    # system's own config is edited, so removing our file fully reverts it.
+    AUTOLOGIN_SET=""
+    if [ -d /etc/lightdm ]; then
+        mkdir -p /etc/lightdm/lightdm.conf.d
+        cat > /etc/lightdm/lightdm.conf.d/50-edgeathlete.conf <<EOF
+[Seat:*]
+autologin-user=$KIOSK_USER
+autologin-user-timeout=0
+EOF
+        AUTOLOGIN_SET="LightDM"
+    elif [ -d /etc/sddm.conf.d ] || command -v sddm >/dev/null 2>&1; then
+        mkdir -p /etc/sddm.conf.d
+        cat > /etc/sddm.conf.d/50-edgeathlete.conf <<EOF
+[Autologin]
+User=$KIOSK_USER
+Session=plasma
+EOF
+        AUTOLOGIN_SET="SDDM"
+    elif [ -f /etc/gdm3/custom.conf ]; then
+        # GDM has no drop-in directory, so this is the one place we edit a file the
+        # system owns. Backed up once, and skipped entirely if autologin is already
+        # configured — an update must never quietly repoint someone else's setting.
+        if grep -qE '^\s*AutomaticLogin\s*=' /etc/gdm3/custom.conf; then
+            echo "    GDM already has an autologin set, left alone"
+            AUTOLOGIN_SET="GDM (pre-existing)"
+        else
+            cp -n /etc/gdm3/custom.conf /etc/gdm3/custom.conf.edgeathlete-backup
+            sed -i "/^\[daemon\]/a AutomaticLoginEnable=true\nAutomaticLogin=$KIOSK_USER" \
+                /etc/gdm3/custom.conf
+            AUTOLOGIN_SET="GDM"
+        fi
+    fi
+
+    if [ -n "$AUTOLOGIN_SET" ]; then
+        echo "    autologin configured via $AUTOLOGIN_SET"
+    else
+        echo "    [!] no display manager found (LightDM/SDDM/GDM)."
+        echo "        The account exists, but nothing will log it in. Install a desktop"
+        echo "        environment, then re-run this script."
+    fi
+fi
+
 echo "[12] building the stack (this takes a while the first time)..."
 docker compose build
 
@@ -408,4 +493,11 @@ SHORT COMMANDS (log out and back in, or: source /etc/profile.d/edge-athlete.sh)
   ea-seed      fill it with demo data
   ea-sim       start the fake rack sensor
   ea-help      the full list
+
+ON A MONITOR
+  Plug one in and it boots to the wall display as '$KIOSK_USER' — no password.
+  That account has no sudo and its password is locked, so ssh and sudo still
+  prompt as normal for real accounts. The app list also has launchers for the
+  rack and coach screens, for debugging.
+  Not wanted? Re-run with: sudo EDGE_KIOSK_AUTOLOGIN=0 ./scripts/basestation/setup.sh
 EOF
