@@ -40,9 +40,9 @@ import difflib
 
 from django.db import transaction
 
-from ..models import (Athlete, AthleteReferenceMax, Exercise, TrainingBlockExercise,
-                      TrainingBlockWorkout, TrainingGroup, TrainingProgramExercise,
-                      TrainingProgramWorkout)
+from ..models import (Athlete, AthleteReferenceMax, Exercise, TrainingBlock,
+                      TrainingBlockExercise, TrainingBlockWorkout, TrainingGroup,
+                      TrainingProgram, TrainingProgramExercise, TrainingProgramWorkout)
 from .csv_parsing import (check_headers, flip_last_first, is_blank, normalize_name,
                           optional_number, positive_integer, read_csv, required_text,
                           validation_error)
@@ -186,11 +186,12 @@ def _for(corrections, kind):
     return (corrections or {}).get(kind)
 
 
-def _athlete_resolver(scope_group=None, corrections=None):
+def _athlete_resolver(organization, scope_group=None, corrections=None):
     scope_ids = ()
     if scope_group is not None:
         scope_ids = list(scope_group.athletes.values_list("id", flat=True))
-    return NameResolver(Athlete.objects.values_list("id", "name"), scope_ids=scope_ids,
+    athletes = Athlete.objects.filter(organization=organization).values_list("id", "name")
+    return NameResolver(athletes, scope_ids=scope_ids,
                         corrections=_for(corrections, "athlete"))
 
 
@@ -278,7 +279,8 @@ def weight_column_label(raw):
     return str(value).strip() if value is not None else ""
 
 
-def validate_reference_max_rows(rows, headers, *, scope_group=None, corrections=None):
+def validate_reference_max_rows(rows, headers, *, organization, scope_group=None,
+                                corrections=None):
     """Check a max sheet. Returns (entries, errors, skipped)."""
     errors = []
     skipped = []
@@ -293,7 +295,7 @@ def validate_reference_max_rows(rows, headers, *, scope_group=None, corrections=
     if errors:
         return [], errors, skipped
 
-    athletes = _athlete_resolver(scope_group, corrections)
+    athletes = _athlete_resolver(organization, scope_group, corrections)
     exercises = _exercise_resolver(corrections)
 
     entries = []
@@ -340,7 +342,7 @@ def create_reference_maxes(entries):
 # ───────────────────────────── the roster sheet ─────────────────────────────
 
 
-def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
+def validate_roster_rows(rows, headers, *, organization, scope_group=None, corrections=None):
     """Check a roster. Returns (entries, errors, skipped).
 
     Someone already on the roster is SKIPPED, not an error: re-uploading last
@@ -354,10 +356,14 @@ def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
     if errors:
         return [], errors, skipped
 
-    existing = _athlete_resolver(corrections=corrections)
-    groups = NameResolver(TrainingGroup.objects.values_list("id", "name"),
+    existing = _athlete_resolver(organization, corrections=corrections)
+    groups = NameResolver(TrainingGroup.objects.filter(
+        organization=organization,
+    ).values_list("id", "name"),
                           corrections=_for(corrections, "training_group"))
-    taken_tags = set(Athlete.objects.exclude(nfc_tag_id=None).values_list("nfc_tag_id", flat=True))
+    taken_tags = set(Athlete.objects.filter(
+        organization=organization,
+    ).exclude(nfc_tag_id=None).values_list("nfc_tag_id", flat=True))
 
     entries = []
     seen_in_file = {}
@@ -404,6 +410,7 @@ def validate_roster_rows(rows, headers, *, scope_group=None, corrections=None):
             "nfc_tag_id": tag,
             "notes": notes.strip() if isinstance(notes, str) else "",
             "training_group_id": group_id,
+            "organization_id": organization.id,
         })
     return entries, errors, skipped
 
@@ -414,6 +421,7 @@ def create_athletes(entries):
     created = []
     for entry in entries:
         athlete = Athlete.objects.create(
+            organization_id=entry["organization_id"],
             name=entry["name"],
             nfc_tag_id=entry["nfc_tag_id"],
             notes=entry["notes"],
@@ -545,7 +553,7 @@ _PLAN_TARGETS = {
 
 
 @transaction.atomic
-def create_plan_workouts(workouts, target, kind):
+def create_plan_workouts(workouts, target, kind, organization):
     """Add these workouts to a template ("block") or to a TrainingGroup's plan ("program").
 
     New workouts are APPENDED after whatever the target already has, so importing
@@ -556,11 +564,28 @@ def create_plan_workouts(workouts, target, kind):
     workout_model = tables["workout_model"]
     exercise_model = tables["exercise_model"]
 
-    last_position = (workout_model.objects
-                     .filter(**{tables["parent_field"]: target})
-                     .order_by("-position")
-                     .values_list("position", flat=True)
-                     .first()) or 0
+    if kind == "block":
+        target = TrainingBlock.objects.select_for_update().filter(
+            pk=target.pk, organization=organization,
+        ).first()
+    else:
+        target = (TrainingProgram.objects.select_for_update()
+                  .filter(pk=target.pk, training_group__organization=organization).first())
+        if (target is not None and target.training_block_id is not None
+                and not TrainingBlock.objects.filter(
+                    pk=target.training_block_id, organization=organization,
+                ).exists()):
+            target = None
+    if target is None:
+        raise ValueError("the import target is outside the active organization")
+
+    existing_workouts = list(
+        workout_model.objects.select_for_update()
+        .filter(**{tables["parent_field"]: target}).order_by("position")
+    )
+    last_position = max((workout.position for workout in existing_workouts), default=0)
+    if last_position + len(workouts) > 2_147_000_000:
+        raise ValueError("workout positions must be reordered before importing")
 
     created = []
     for offset, workout_data in enumerate(workouts, start=1):
@@ -594,7 +619,7 @@ VALIDATORS = {
 }
 
 
-def validate_upload(uploaded_file, *, scope_group=None, corrections=None):
+def validate_upload(uploaded_file, *, organization, scope_group=None, corrections=None):
     """Read a file and check it, writing nothing.
 
     Returns (sheet_type, payload, errors, skipped). `payload` comes back even
@@ -623,15 +648,18 @@ def validate_upload(uploaded_file, *, scope_group=None, corrections=None):
     if sheet_type == SHEET_PLAN:
         payload, errors, skipped = validator(rows, headers, corrections=corrections)
     else:
-        payload, errors, skipped = validator(rows, headers, scope_group=scope_group,
-                                             corrections=corrections)
+        payload, errors, skipped = validator(
+            rows, headers, organization=organization, scope_group=scope_group,
+            corrections=corrections,
+        )
     return sheet_type, payload, errors, skipped
 
 
-def commit_upload(sheet_type, payload, target=None, kind=None):
+@transaction.atomic
+def commit_upload(sheet_type, payload, *, organization, target=None, kind=None):
     """Write a payload that has already been checked. Returns how many rows landed."""
     if sheet_type == SHEET_ROSTER:
         return len(create_athletes(payload))
     if sheet_type == SHEET_REFERENCE_MAX:
         return len(create_reference_maxes(payload))
-    return len(create_plan_workouts(payload, target, kind))
+    return len(create_plan_workouts(payload, target, kind, organization))

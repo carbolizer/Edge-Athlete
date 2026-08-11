@@ -790,6 +790,9 @@ past sessions and sets stay attached to whatever they ran under.
 
 ### `GET|POST /api/training-blocks/` — reusable templates (coach)
 
+TrainingBlock routes require active staff plus one active organization membership.
+Non-staff organization members cannot read or modify the programming catalog.
+
 ```jsonc
 { "id": 1, "name": "Fall Strength", "duration_weeks": 8,
   "cadence_days_of_week": "Mon,Wed,Fri",
@@ -804,7 +807,7 @@ snapshot and has no link back.
 
 | Param | Effect |
 |---|---|
-| *(none)* | Every block in the department. This is the default on purpose. |
+| *(none)* | Every block in the active organization. |
 | `?coach=me` | Only the caller's blocks |
 | `?coach={id}` | Only that coach's blocks. A non-numeric value that isn't `me` is a `400`, not a silent full list. |
 | `?category={id}` | Only blocks carrying that label. Repeatable. |
@@ -817,6 +820,8 @@ Filters combine: `?coach=me&category=2` is "my off-season blocks".
 
 PATCH accepts `name`, `categories`, `duration_weeks`, `cadence_days_of_week`.
 The days and rows *inside* the block have their own routes (below).
+`duration_weeks` is either omitted or 1–520; schedule generation enforces the
+same ceiling for rows written before API validation existed.
 
 This route exists because categories would otherwise be write-once: every block
 created before P11 has no labels, and a create-only API could never give it any.
@@ -840,11 +845,9 @@ behind a label before you click it.
 globally-unique name. Sharing one table would make a word like "Upper" mean a
 body region or a grade level depending on what it hangs off.
 
-> ⚠️ **`?coach=` is a lens, not a fence.** Blocks are global so a good one gets
-> reused; the filter exists so nobody scrolls a department-sized catalog to find
-> their own work. It grants nothing and forbids nothing: active staff can still
-> read and edit any block. Team-scoped authorization will be additive on top of
-> this filter.
+> **`?coach=` is a lens, not a fence.** Blocks are shared inside one organization
+> so a good one can be reused. The filter grants nothing and forbids nothing;
+> changing an ID cannot reach another organization's block.
 
 ### `GET|POST /api/training-blocks/{id}/workouts/` — one day inside a template (coach)
 
@@ -857,7 +860,12 @@ body region or a grade level depending on what it hangs off.
 ```
 
 The block is in the URL, not the body — a day cannot exist without one.
-`position` orders the day and must run 1, 2, 3… with no gaps; omit it to append.
+`position` orders the day. Existing gaps are valid; omit `position` to append after
+the current maximum. A whole-list reorder compacts positions to 1, 2, 3….
+Organization fields are rejected at the block root and at every nested write;
+ownership always comes from the authenticated membership.
+`target_percent` is finite and 1–150. Velocity bounds are finite, 0–10 m/s,
+supplied as a pair, and `velocity_zone_min` cannot exceed `velocity_zone_max`.
 
 ### Editing a template (coach)
 
@@ -873,9 +881,10 @@ The block is in the URL, not the body — a day cannot exist without one.
 **Reordering takes the WHOLE list, never one item.** Both `position` columns
 carry a `UniqueConstraint(parent, position)` that Postgres checks after every
 statement, so `PATCH {"position": 2}` collides with whichever row is still on 2.
-The server renumbers in two passes inside one transaction (shift everything to
-`position + 10000`, then write the finals), so no two rows ever share a number
-mid-flight. It is also idempotent and cannot leave a gap or a duplicate.
+The server renumbers in two passes inside one transaction. It first moves every
+row above the current maximum position, then writes the final values, so no two
+rows share a number mid-flight. It is idempotent and the completed reorder cannot
+leave a gap or duplicate.
 
 - **`position` is rejected by the row `PATCH`** (`400 nothing_to_change` if it is
   the only field sent) — ordering has exactly one route.
@@ -891,6 +900,10 @@ mid-flight. It is also idempotent and cannot leave a gap or a duplicate.
   changing the template. Editing a deployed program moves nothing on the block.
 
 ### `GET|POST /api/training-programs/` — deploy a template for a TrainingGroup (coach)
+
+These operations currently require both active staff status and one active
+organization membership. Lists, TrainingGroup IDs, and TrainingBlock IDs are
+scoped to that organization; changing an ID cannot copy another customer's plan.
 
 ```jsonc
 { "training_group": 4, "training_block": 1,
@@ -956,6 +969,10 @@ this says otherwise.
 `multipart/form-data`. **Preview writes nothing**; import re-checks and then saves
 all-or-nothing. Which of three sheets was uploaded is detected from the **column
 names** (D16) — the client never declares it.
+
+Both routes require active staff plus one active organization membership. Athlete,
+TrainingGroup, TrainingBlock, TrainingProgram, correction, and write targets are
+resolved only inside that organization; foreign IDs return `404`.
 
 | Sheet | Detected by | Required columns |
 |---|---|---|

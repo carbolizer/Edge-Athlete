@@ -15,6 +15,8 @@ import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+from threading import Event
+from time import sleep
 from unittest.mock import MagicMock, Mock, patch
 
 from django.conf import settings
@@ -40,7 +42,9 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      GatewayBoot, GatewayEventReceipt, GatewayNodeHealth,
                      Organization, OrganizationMembership)
 from .services.plan_resolution import movements_for_athlete
-from .services.planning import generate_schedule, instantiate_block, touch_block
+from .services.planning import (generate_schedule, instantiate_block,
+                                promote_program_to_block, touch_block)
+from .services.cadence import training_dates
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
 from .permissions import HasActiveOrganization, IsActiveStaff, active_organization_for_user
 from .urls import urlpatterns as event_handler_urlpatterns
@@ -2663,9 +2667,11 @@ class PlanningEndpointTests(APITestCase):
         block = self._template_with_a_day()
         group = self.client.post("/api/training-groups/", {"name": "Varsity"},
                                  format="json").data
-        program = self.client.post("/api/training-programs/", {
+        response = self.client.post("/api/training-programs/", {
             "training_group": group["id"], "training_block": block["id"],
-            "start_date": "2026-07-27"}, format="json").data
+            "start_date": "2026-07-27"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        program = response.data
 
         self.assertEqual(len(program["workouts"]), 1)
         self.assertEqual(len(program["workouts"][0]["exercises"]), 2)
@@ -2778,10 +2784,14 @@ class TemplateEditingTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Template organization")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
-        self.block = TrainingBlock.objects.create(name="Fall Strength", coach=self.coach)
+        self.block = TrainingBlock.objects.create(
+            organization=self.organization, name="Fall Strength", coach=self.coach,
+        )
         self.days = [
             TrainingBlockWorkout.objects.create(training_block=self.block, name=f"Day {n}", position=n)
             for n in (1, 2, 3)
@@ -2820,7 +2830,9 @@ class TemplateEditingTests(APITestCase):
     def test_a_day_in_another_block_cannot_be_edited_through_this_one(self):
         """Without the parent check, /training-blocks/1/workouts/99/ would edit
         a day belonging to block 2."""
-        other = TrainingBlock.objects.create(name="Spring", coach=self.coach)
+        other = TrainingBlock.objects.create(
+            organization=self.organization, name="Spring", coach=self.coach,
+        )
         stranger = TrainingBlockWorkout.objects.create(training_block=other, name="Theirs", position=1)
         res = self.client.patch(
             f"/api/training-blocks/{self.block.id}/workouts/{stranger.id}/",
@@ -2862,6 +2874,59 @@ class TemplateEditingTests(APITestCase):
         self.assertEqual(
             list(self.block.workouts.order_by("position").values_list("position", flat=True)),
             [1, 2, 3])
+
+    def test_duplicate_order_ids_are_refused_without_changes(self):
+        response = self.client.put(
+            f"/api/training-blocks/{self.block.id}/workout-order/",
+            {"workout_ids": [self.days[0].id, self.days[0].id, self.days[2].id]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            list(self.block.workouts.order_by("id").values_list("position", flat=True)),
+            [1, 2, 3],
+        )
+
+    def test_reorder_uses_positions_above_the_current_maximum(self):
+        self.days[1].position = 10_001
+        self.days[1].save(update_fields=["position"])
+        self.days[2].position = 20_001
+        self.days[2].save(update_fields=["position"])
+        order = [self.days[2].id, self.days[0].id, self.days[1].id]
+        response = self.client.put(
+            f"/api/training-blocks/{self.block.id}/workout-order/",
+            {"workout_ids": order}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            list(self.block.workouts.order_by("position").values_list("id", flat=True)),
+            order,
+        )
+
+    def test_reorder_rolls_back_temporary_positions_when_an_update_fails(self):
+        original_update = models.QuerySet.update
+        position_updates = 0
+
+        def fail_second_position_update(queryset, **fields):
+            nonlocal position_updates
+            if queryset.model is TrainingBlockWorkout and "position" in fields:
+                position_updates += 1
+                if position_updates == 2:
+                    raise RuntimeError("injected reorder failure")
+            return original_update(queryset, **fields)
+
+        with patch.object(models.QuerySet, "update", autospec=True,
+                          side_effect=fail_second_position_update):
+            with self.assertRaises(RuntimeError):
+                self.client.put(
+                    f"/api/training-blocks/{self.block.id}/workout-order/",
+                    {"workout_ids": [day.id for day in reversed(self.days)]}, format="json",
+                )
+
+        self.assertEqual(
+            list(self.block.workouts.order_by("id").values_list("position", flat=True)),
+            [1, 2, 3],
+        )
 
     def test_movements_inside_a_day_can_be_reordered(self):
         order = [self.rows[1].id, self.rows[0].id]
@@ -2915,7 +2980,9 @@ class TemplateEditingTests(APITestCase):
     def test_deleting_from_a_template_leaves_a_deployed_program_alone(self):
         """The whole reason deploying COPIES rather than references. A group
         mid-season must not lose a day because a coach tidied the template."""
-        group = TrainingGroup.objects.create(name="Varsity")
+        group = TrainingGroup.objects.create(
+            organization=self.organization, name="Varsity",
+        )
         program = instantiate_block(self.block, group, start_date=timezone.now().date())
         days_before = program.workouts.count()
         rows_before = TrainingProgramExercise.objects.filter(
@@ -2933,7 +3000,9 @@ class TemplateEditingTests(APITestCase):
     def test_editing_a_deployed_program_does_not_mark_the_template_as_edited(self):
         """A program is a snapshot. Reporting the template as changed when
         nobody changed it would imply a coupling that does not exist."""
-        group = TrainingGroup.objects.create(name="Varsity")
+        group = TrainingGroup.objects.create(
+            organization=self.organization, name="Varsity",
+        )
         program = instantiate_block(self.block, group, start_date=timezone.now().date())
         before = TrainingBlock.objects.get(id=self.block.id).updated_at
 
@@ -2943,6 +3012,77 @@ class TemplateEditingTests(APITestCase):
         row.save(update_fields=["target_percent"])
 
         self.assertEqual(TrainingBlock.objects.get(id=self.block.id).updated_at, before)
+
+
+class TrainingBlockSnapshotConcurrencyTests(TransactionTestCase):
+    def test_deployment_waits_for_block_edit_and_copies_one_committed_version(self):
+        organization = Organization.objects.create(display_name="Snapshot organization")
+        coach = User.objects.create_user(username="snapshot-coach", password="pw")
+        group = TrainingGroup.objects.create(organization=organization, name="Snapshot group")
+        exercise = Exercise.objects.get_or_create(name="Snapshot squat")[0]
+        block = TrainingBlock.objects.create(
+            organization=organization, coach=coach, name="Snapshot block",
+        )
+        workout = TrainingBlockWorkout.objects.create(
+            training_block=block, name="Before edit", position=1,
+        )
+        row = TrainingBlockExercise.objects.create(
+            training_block_workout=workout, exercise=exercise,
+            position=1, sets=3, reps=5, target_percent=75,
+        )
+        edit_has_lock = Event()
+        release_edit = Event()
+        deploy_started = Event()
+
+        def edit_source():
+            close_old_connections()
+            connections.close_all()
+            try:
+                with transaction.atomic():
+                    TrainingBlock.objects.select_for_update().get(pk=block.pk)
+                    locked_workout = TrainingBlockWorkout.objects.select_for_update().get(
+                        pk=workout.pk,
+                    )
+                    locked_row = TrainingBlockExercise.objects.select_for_update().get(pk=row.pk)
+                    locked_workout.name = "After edit"
+                    locked_workout.save(update_fields=["name"])
+                    locked_row.reps = 9
+                    locked_row.save(update_fields=["reps"])
+                    edit_has_lock.set()
+                    if not release_edit.wait(timeout=5):
+                        raise RuntimeError("deployment did not reach the lock")
+            finally:
+                connections.close_all()
+
+        def deploy_source():
+            close_old_connections()
+            connections.close_all()
+            try:
+                deploy_started.set()
+                deployed = instantiate_block(
+                    TrainingBlock.objects.get(pk=block.pk),
+                    TrainingGroup.objects.get(pk=group.pk),
+                    start_date=date(2026, 8, 3),
+                )
+                return deployed.pk
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            edit_future = pool.submit(edit_source)
+            self.assertTrue(edit_has_lock.wait(timeout=5))
+            deploy_future = pool.submit(deploy_source)
+            self.assertTrue(deploy_started.wait(timeout=5))
+            sleep(0.1)
+            self.assertFalse(deploy_future.done())
+            release_edit.set()
+            edit_future.result(timeout=5)
+            program_id = deploy_future.result(timeout=5)
+
+        copied_workout = TrainingProgramWorkout.objects.get(training_program_id=program_id)
+        copied_row = copied_workout.exercises.get()
+        self.assertEqual(copied_workout.name, "After edit")
+        self.assertEqual(copied_row.reps, 9)
 
 
 class BlockCatalogLensTests(APITestCase):
@@ -2959,9 +3099,16 @@ class BlockCatalogLensTests(APITestCase):
     def setUp(self):
         self.sarah = User.objects.create_user(username="sarah", password="pw", is_staff=True)
         self.mike = User.objects.create_user(username="mike", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Catalog organization")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.sarah)
+        OrganizationMembership.objects.create(organization=self.organization, user=self.mike)
         self.client.force_authenticate(user=self.sarah)
-        self.hers = TrainingBlock.objects.create(name="Alpha Fall", coach=self.sarah)
-        self.his = TrainingBlock.objects.create(name="Beta Winter", coach=self.mike)
+        self.hers = TrainingBlock.objects.create(
+            organization=self.organization, name="Alpha Fall", coach=self.sarah,
+        )
+        self.his = TrainingBlock.objects.create(
+            organization=self.organization, name="Beta Winter", coach=self.mike,
+        )
 
     def _names(self, response):
         return [block["name"] for block in response.data]
@@ -3024,16 +3171,24 @@ class BlockCategoryTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Category organization")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
         self.client.force_authenticate(user=self.coach)
         self.offseason = BlockCategory.objects.create(name="Off-season")
         self.football = BlockCategory.objects.create(name="Football")
         self.freshman = BlockCategory.objects.create(name="Freshman")
 
-        self.both = TrainingBlock.objects.create(name="Alpha", coach=self.coach)
+        self.both = TrainingBlock.objects.create(
+            organization=self.organization, name="Alpha", coach=self.coach,
+        )
         self.both.categories.set([self.offseason, self.football])
-        self.one = TrainingBlock.objects.create(name="Beta", coach=self.coach)
+        self.one = TrainingBlock.objects.create(
+            organization=self.organization, name="Beta", coach=self.coach,
+        )
         self.one.categories.set([self.freshman])
-        self.none = TrainingBlock.objects.create(name="Gamma", coach=self.coach)
+        self.none = TrainingBlock.objects.create(
+            organization=self.organization, name="Gamma", coach=self.coach,
+        )
 
     def _names(self, response):
         return sorted(block["name"] for block in response.data)
@@ -3124,7 +3279,9 @@ class BlockCategoryTests(APITestCase):
 
     def test_category_and_coach_filters_combine(self):
         other = User.objects.create_user(username="other", password="pw")
-        theirs = TrainingBlock.objects.create(name="Epsilon", coach=other)
+        theirs = TrainingBlock.objects.create(
+            organization=self.organization, name="Epsilon", coach=other,
+        )
         theirs.categories.set([self.football])
 
         res = self.client.get(f"/api/training-blocks/?coach=me&category={self.football.id}")
@@ -3597,7 +3754,13 @@ class ProgramPromotionTests(APITestCase):
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
-        self.group = TrainingGroup.objects.create(name="Varsity")
+        self.organization = Organization.objects.create(display_name="Promotion organization")
+        OrganizationMembership.objects.create(
+            organization=self.organization, user=self.coach,
+        )
+        self.group = TrainingGroup.objects.create(
+            organization=self.organization, name="Varsity",
+        )
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
         self.monday = date(2026, 8, 3)
@@ -3606,7 +3769,7 @@ class ProgramPromotionTests(APITestCase):
         """A program with real days and rows, deployed or hand-written."""
         if from_block:
             block = TrainingBlock.objects.create(
-                name="Fall Strength", coach=self.coach,
+                organization=self.organization, name="Fall Strength", coach=self.coach,
                 cadence_days_of_week="Mon,Wed,Fri", duration_weeks=4)
             for position in range(1, days + 1):
                 workout = TrainingBlockWorkout.objects.create(
@@ -3640,6 +3803,7 @@ class ProgramPromotionTests(APITestCase):
         self.assertEqual(res.status_code, 201)
 
         block = TrainingBlock.objects.get(id=res.data["id"])
+        self.assertEqual(block.organization, self.organization)
         self.assertEqual(block.workouts.count(), 2)
         self.assertTrue(all(w.exercises.exists() for w in block.workouts.all()))
 
@@ -3675,7 +3839,7 @@ class ProgramPromotionTests(APITestCase):
         program = self._program(days=2)
         block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
 
-        other = TrainingGroup.objects.create(name="Freshmen")
+        other = TrainingGroup.objects.create(organization=self.organization, name="Freshmen")
         redeployed = instantiate_block(block, other, start_date=self.monday)
 
         self.assertEqual(redeployed.workouts.count(), 2)
@@ -3689,7 +3853,7 @@ class ProgramPromotionTests(APITestCase):
         block = TrainingBlock.objects.get(id=self._promote(program).data["id"])
         self.assertEqual(block.cadence_days_of_week, "Mon,Wed,Fri")
 
-        other = TrainingGroup.objects.create(name="Freshmen")
+        other = TrainingGroup.objects.create(organization=self.organization, name="Freshmen")
         redeployed = instantiate_block(block, other, start_date=self.monday)
         self.assertGreater(redeployed.scheduled_sessions.count(), 0)
 
@@ -3737,6 +3901,7 @@ class ProgramPromotionTests(APITestCase):
 
     def test_the_promoting_coach_owns_the_new_block(self):
         other = User.objects.create_user(username="other", password="pw", is_staff=True)
+        OrganizationMembership.objects.create(organization=self.organization, user=other)
         self.client.force_authenticate(user=other)
         program = self._program()
         self.assertEqual(self._promote(program).data["coach"], other.id)
@@ -3750,7 +3915,68 @@ class ProgramPromotionTests(APITestCase):
             training_group=self.group, name="Empty", start_date=self.monday)
         res = self._promote(program)
         self.assertEqual(res.status_code, 400)
-        self.assertEqual(TrainingBlock.objects.filter(name="Empty").count(), 0)
+        self.assertFalse(TrainingBlock.objects.filter(name="Empty").exists())
+
+    def test_program_without_group_organization_is_outside_the_tenant_boundary(self):
+        legacy_group = TrainingGroup.objects.create(name="Unowned group")
+        program = TrainingProgram.objects.create(
+            training_group=legacy_group, name="Unowned plan", start_date=self.monday,
+        )
+        TrainingProgramWorkout.objects.create(
+            training_program=program, name="Day 1", position=1,
+        )
+        response = self._promote(program)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(TrainingBlock.objects.filter(name="Unowned plan").exists())
+
+    def test_foreign_program_cannot_be_promoted(self):
+        other_organization = Organization.objects.create(display_name="Foreign promotion org")
+        other_group = TrainingGroup.objects.create(
+            organization=other_organization, name="Foreign group",
+        )
+        program = TrainingProgram.objects.create(
+            training_group=other_group, name="Foreign program", start_date=self.monday,
+        )
+        TrainingProgramWorkout.objects.create(
+            training_program=program, name="Day 1", position=1,
+        )
+        response = self._promote(program)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(TrainingBlock.objects.filter(name="Foreign program").exists())
+
+    def test_inconsistent_program_hides_foreign_block_and_cannot_be_promoted(self):
+        other_organization = Organization.objects.create(display_name="Foreign source block org")
+        foreign_block = TrainingBlock.objects.create(
+            organization=other_organization, coach=self.coach, name="Foreign source block",
+        )
+        program = self._program(from_block=False)
+        program.training_block = foreign_block
+        program.save(update_fields=["training_block"])
+
+        listed = self.client.get("/api/training-programs/")
+        response = self._promote(program)
+
+        self.assertNotIn(program.id, [row["id"] for row in listed.data])
+        self.assertEqual(response.status_code, 404)
+        with self.assertRaises(ValueError):
+            promote_program_to_block(program, coach=self.coach)
+        self.assertFalse(
+            TrainingBlock.objects.filter(
+                organization=self.organization, name=program.name,
+            ).exists()
+        )
+
+    def test_promotion_name_and_organization_input_are_validated(self):
+        program = self._program()
+        for body in (
+            {"name": ["not", "a", "string"]},
+            {"name": "x" * 256},
+            {"organization": str(self.organization.pk)},
+            {"organization_id": str(self.organization.pk)},
+        ):
+            with self.subTest(body=body):
+                response = self._promote(program, **body)
+                self.assertEqual(response.status_code, 400)
 
     def test_a_missing_program_is_404(self):
         self.assertEqual(
@@ -3786,14 +4012,18 @@ class ScheduleGenerationTests(APITestCase):
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
         self.client.force_authenticate(user=self.coach)
-        self.group = TrainingGroup.objects.create(name="Varsity")
+        self.organization = Organization.objects.create(display_name="Schedule organization")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
+        self.group = TrainingGroup.objects.create(
+            organization=self.organization, name="Varsity",
+        )
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         # 2026-08-03 is a Monday. Every expectation below is anchored to that.
         self.monday = date(2026, 8, 3)
 
     def _block(self, *, cadence="Mon,Wed,Fri", weeks=2, days=3):
         block = TrainingBlock.objects.create(
-            name="Fall Strength", coach=self.coach,
+            organization=self.organization, name="Fall Strength", coach=self.coach,
             cadence_days_of_week=cadence, duration_weeks=weeks)
         for position in range(1, days + 1):
             workout = TrainingBlockWorkout.objects.create(
@@ -3881,6 +4111,18 @@ class ScheduleGenerationTests(APITestCase):
         program = self._deploy(self._block(days=0))
         self.assertEqual(program.scheduled_sessions.count(), 0)
 
+    def test_an_oversized_persisted_duration_is_rejected_before_scheduling(self):
+        block = self._block(weeks=521)
+        with self.assertRaises(ValueError):
+            self._deploy(block)
+        response = self.client.post("/api/training-programs/", {
+            "training_group": self.group.id,
+            "training_block": block.id,
+            "start_date": "2026-08-03",
+        }, format="json")
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(TrainingProgram.objects.filter(training_block=block).exists())
+
     # ── deploying through the API, not just the service ──────────────────────
 
     def test_deploying_through_the_api_generates_a_schedule(self):
@@ -3921,6 +4163,58 @@ class ScheduleGenerationTests(APITestCase):
         }, format="json")
         self.assertEqual(res.status_code, 400)
 
+    def test_a_block_cannot_be_deployed_to_another_organization(self):
+        second_organization = Organization.objects.create(display_name="Deployment organization B")
+        group = self.group
+        block = TrainingBlock.objects.create(
+            organization=second_organization, coach=self.coach, name="Foreign block",
+        )
+        response = self.client.post("/api/training-programs/", {
+            "training_group": group.id,
+            "training_block": block.id,
+            "start_date": "2026-08-03",
+        }, format="json")
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(TrainingProgram.objects.filter(training_group=group).exists())
+
+        with self.assertRaises(ValueError):
+            instantiate_block(block, group, start_date=self.monday)
+
+    def test_program_catalog_and_group_lookup_are_organization_scoped(self):
+        other_organization = Organization.objects.create(display_name="Foreign program org")
+        other_group = TrainingGroup.objects.create(
+            organization=other_organization, name="Foreign Varsity",
+        )
+        foreign_program = TrainingProgram.objects.create(
+            training_group=other_group, name="Foreign plan", start_date=self.monday,
+        )
+
+        listed = self.client.get("/api/training-programs/")
+        create = self.client.post("/api/training-programs/", {
+            "training_group": other_group.id,
+            "name": "Cross-tenant plan",
+            "start_date": "2026-08-03",
+        }, format="json")
+
+        self.assertNotIn(foreign_program.id, [row["id"] for row in listed.data])
+        self.assertEqual(create.status_code, 404)
+        self.assertFalse(TrainingProgram.objects.filter(name="Cross-tenant plan").exists())
+
+    def test_program_integer_inputs_are_bounded(self):
+        huge = "9" * 5000
+        listed = self.client.get(f"/api/training-programs/?training_group={huge}")
+        created = self.client.post("/api/training-programs/", {
+            "training_group": int("9" * 20),
+            "name": "Oversized group",
+            "start_date": "2026-08-03",
+        }, format="json")
+        promoted = self.client.post(
+            f"/api/training-programs/{int('9' * 20)}/promote/", {}, format="json",
+        )
+        self.assertEqual(listed.status_code, 400)
+        self.assertEqual(created.status_code, 400)
+        self.assertEqual(promoted.status_code, 404)
+
     def test_a_standalone_program_with_no_block_generates_nothing(self):
         program = TrainingProgram.objects.create(
             training_group=self.group, name="One-off", start_date=self.monday)
@@ -3957,7 +4251,9 @@ class ScheduleGenerationTests(APITestCase):
 
     def test_two_programs_can_train_on_the_same_date(self):
         """The constraint is per PROGRAM — two groups training Monday is normal."""
-        other_group = TrainingGroup.objects.create(name="Freshmen")
+        other_group = TrainingGroup.objects.create(
+            organization=self.organization, name="Freshmen",
+        )
         block = self._block()
         self._deploy(block)
         second = instantiate_block(block, other_group, start_date=self.monday)
@@ -4210,6 +4506,8 @@ class CadenceValidationTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Cadence organization")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
         self.client.force_authenticate(user=self.coach)
 
     def _post(self, **fields):
@@ -4563,6 +4861,8 @@ class CsvImportTests(APITestCase):
 
     def setUp(self):
         self.coach = User.objects.create_user(username="coach", password="pw", is_staff=True)
+        self.organization = Organization.objects.create(display_name="Import organization")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
         self.client.force_authenticate(user=self.coach)
         self.squat = Exercise.objects.get_or_create(name="Back Squat")[0]
         self.bench = Exercise.objects.get_or_create(name="Bench Press")[0]
@@ -4590,7 +4890,7 @@ class CsvImportTests(APITestCase):
     # ── the max sheet: never invent a number ─────────────────────────────────
 
     def test_a_bare_max_needs_no_guessing(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
                            url="/api/imports/")
         self.assertEqual(res.status_code, 200)
@@ -4601,7 +4901,7 @@ class CsvImportTests(APITestCase):
     def test_a_weight_with_reps_is_stored_at_that_rep_basis_not_converted_early(self):
         """225x5 is recorded honestly as 225 at 5 reps; the conversion to a single
         happens in one place later, so the original fact stays visible."""
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         self._upload("athlete_name,exercise,weight_lbs,reps\nJordan Lee,Back Squat,225,5\n",
                      url="/api/imports/")
         record = AthleteReferenceMax.objects.get()
@@ -4609,7 +4909,7 @@ class CsvImportTests(APITestCase):
         self.assertEqual(record.rep_basis, 5)
 
     def test_a_stated_percentage_is_back_solved_exactly(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         self._upload("athlete_name,exercise,weight_lbs,target_percent\n"
                      "Jordan Lee,Back Squat,225,75\n", url="/api/imports/")
         self.assertEqual(AthleteReferenceMax.objects.get().reference_weight_lbs, 300)
@@ -4618,7 +4918,7 @@ class CsvImportTests(APITestCase):
         """The whole point of D16: a made-up max is newest-wins, so it would
         outrank the athlete's real tested number and drag every other target
         down with it. Missing is safe; wrong is not."""
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,weight_lbs\nJordan Lee,Back Squat,225\n",
                            url="/api/imports/")
         self.assertEqual(res.status_code, 200)
@@ -4627,7 +4927,7 @@ class CsvImportTests(APITestCase):
         self.assertIn("Jordan Lee", res.data["skipped"][0]["detail"])
 
     def test_a_skipped_row_does_not_stop_the_good_rows(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,weight_lbs,reps\n"
                            "Jordan Lee,Back Squat,225,5\n"
                            "Jordan Lee,Bench Press,185,\n", url="/api/imports/")
@@ -4638,8 +4938,8 @@ class CsvImportTests(APITestCase):
     # ── typos are repairable, not fatal ──────────────────────────────────────
 
     def test_a_misspelled_name_suggests_the_real_one_and_keeps_the_other_rows(self):
-        Athlete.objects.create(name="Jordan Lee")
-        Athlete.objects.create(name="Sam Rivera")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Sam Rivera")
         res = self._upload("athlete_name,exercise,max_lbs\n"
                            "Jordn Lee,Back Squat,315\n"
                            "Sam Rivera,Back Squat,275\n")
@@ -4652,7 +4952,7 @@ class CsvImportTests(APITestCase):
         self.assertEqual([row["athlete_name"] for row in res.data["rows"]], ["Sam Rivera"])
 
     def test_nothing_is_written_while_any_row_is_still_broken(self):
-        Athlete.objects.create(name="Sam Rivera")
+        Athlete.objects.create(organization=self.organization, name="Sam Rivera")
         res = self._upload("athlete_name,exercise,max_lbs\n"
                            "Jordn Lee,Back Squat,315\n"
                            "Sam Rivera,Back Squat,275\n", url="/api/imports/")
@@ -4664,7 +4964,7 @@ class CsvImportTests(APITestCase):
     def test_a_correction_imports_the_row_without_re_uploading(self):
         """The point of the whole repair loop: answer "who did you mean?" once,
         send the SAME file back, and it goes in."""
-        jordan = Athlete.objects.create(name="Jordan Lee")
+        jordan = Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         sheet = ("athlete_name,exercise,max_lbs\n"
                  "Jordn Lee,Back Squat,315\n")
 
@@ -4679,7 +4979,7 @@ class CsvImportTests(APITestCase):
     def test_one_correction_repairs_every_row_with_that_spelling(self):
         """A name misspelled forty times is one fix, not forty — that is what
         makes repairing on screen better than editing the file."""
-        jordan = Athlete.objects.create(name="Jordan Lee")
+        jordan = Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\n"
                            "Jordn Lee,Back Squat,315\n"
                            "jordn lee,Bench Press,225\n",
@@ -4692,7 +4992,7 @@ class CsvImportTests(APITestCase):
     def test_a_correction_naming_a_record_that_does_not_exist_is_ignored(self):
         """A stale or hand-edited correction must not write to whatever row that
         id happens to be. It falls back to normal matching and re-reports."""
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordn Lee,Back Squat,315\n",
                            url="/api/imports/",
                            corrections=json.dumps({"athlete": {"Jordn Lee": 999999}}))
@@ -4703,7 +5003,7 @@ class CsvImportTests(APITestCase):
     def test_corrections_are_scoped_to_what_they_name(self):
         """An athlete correction must not satisfy a movement lookup, even when
         the misspelling is identical."""
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n",
                            url="/api/imports/",
                            corrections=json.dumps({"athlete": {"Bakc Squat": self.squat.id}}))
@@ -4713,14 +5013,42 @@ class CsvImportTests(APITestCase):
     def test_malformed_corrections_are_reported_rather_than_dropped(self):
         """Silently ignoring them would re-raise the errors the coach just fixed
         and look like their fix didn't take."""
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
                            url="/api/imports/", corrections="{not json")
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.data["code"], "invalid_corrections")
 
+    def test_correction_shape_and_ids_are_validated_before_resolution(self):
+        malformed = (
+            {"athlete": []},
+            {"athlete": "Jordan Lee"},
+            {"athlete": None},
+            {"athlete": {"Jordan Lee": []}},
+            {"athlete": {"Jordan Lee": {"id": 1}}},
+            {"athlete": {"Jordan Lee": True}},
+            {"athlete": {"Jordan Lee": int("9" * 20)}},
+            {"athlete": {" ": 1}},
+            {"athlete": {"Jordan Lee": 0}},
+            {"athlete": {"Jordan Lee": -1}},
+            {"athlete": {"Jordan Lee": None}},
+            {"unknown": {"Jordan Lee": 1}},
+            [],
+            None,
+            "scalar",
+            1,
+        )
+        sheet = "athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n"
+        for corrections in malformed:
+            with self.subTest(corrections=corrections):
+                response = self._upload(
+                    sheet, corrections=json.dumps(corrections),
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.data["code"], "invalid_corrections")
+
     def test_a_correction_also_repairs_a_misspelled_movement(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n",
                            url="/api/imports/",
                            corrections=json.dumps({"exercise": {"Bakc Squat": self.squat.id}}))
@@ -4728,7 +5056,7 @@ class CsvImportTests(APITestCase):
         self.assertEqual(AthleteReferenceMax.objects.get().exercise_id, self.squat.id)
 
     def test_a_misspelled_movement_suggests_the_catalog_entry(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Bakc Squat,315\n")
         problem = res.data["errors"][0]
         self.assertEqual(problem["code"], "unknown_exercise")
@@ -4737,9 +5065,11 @@ class CsvImportTests(APITestCase):
     def test_two_people_with_one_name_are_told_apart_by_the_group(self):
         """TrainingGroup-scoping is what collapses the ambiguity — two Jordan Lees in a
         gym is believable, two in one group is not."""
-        in_group = Athlete.objects.create(name="Jordan Lee")
-        Athlete.objects.create(name="Jordan Lee")   # a different Jordan, elsewhere
-        group = TrainingGroup.objects.create(name="Varsity")
+        in_group = Athlete.objects.create(organization=self.organization, name="Jordan Lee")
+        Athlete.objects.create(
+            organization=self.organization, name="Jordan Lee",
+        )   # a different Jordan, elsewhere
+        group = TrainingGroup.objects.create(organization=self.organization, name="Varsity")
         in_group.training_groups.add(group)
 
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n",
@@ -4748,15 +5078,15 @@ class CsvImportTests(APITestCase):
         self.assertEqual(AthleteReferenceMax.objects.get().athlete_id, in_group.id)
 
     def test_an_unscoped_duplicate_name_stops_and_asks(self):
-        Athlete.objects.create(name="Jordan Lee")
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n")
         problem = res.data["errors"][0]
         self.assertEqual(problem["code"], "ambiguous_athlete")
         self.assertEqual(len(problem["candidates"]), 2)
 
     def test_surname_first_and_stray_spacing_still_match(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\n\"Lee,  Jordan\",back  squat,315\n",
                            url="/api/imports/")
         self.assertEqual(res.status_code, 200)
@@ -4765,14 +5095,15 @@ class CsvImportTests(APITestCase):
     # ── the roster sheet ─────────────────────────────────────────────────────
 
     def test_a_roster_creates_people_and_can_drop_them_into_a_group(self):
-        group = TrainingGroup.objects.create(name="Varsity")
+        group = TrainingGroup.objects.create(organization=self.organization, name="Varsity")
         res = self._upload("athlete_name,training_group\nJordan Lee,Varsity\nSam Rivera,Varsity\n",
                            url="/api/imports/")
         self.assertEqual(res.data["created"], 2)
         self.assertEqual(group.athletes.count(), 2)
+        self.assertFalse(Athlete.objects.exclude(organization=self.organization).exists())
 
     def test_re_uploading_a_roster_adds_the_new_people_without_duplicating_the_old(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name\nJordan Lee\nSam Rivera\n",
                            url="/api/imports/")
         self.assertEqual(res.data["created"], 1)
@@ -4789,7 +5120,9 @@ class CsvImportTests(APITestCase):
     # ── the plan sheet ───────────────────────────────────────────────────────
 
     def _block(self):
-        return TrainingBlock.objects.create(coach=self.coach, name="Fall Strength")
+        return TrainingBlock.objects.create(
+            organization=self.organization, coach=self.coach, name="Fall Strength",
+        )
 
     def test_a_plan_imports_into_a_template_in_spreadsheet_order(self):
         block = self._block()
@@ -4806,7 +5139,7 @@ class CsvImportTests(APITestCase):
 
     def test_a_plan_imports_into_one_groups_program_too(self):
         """D7: both levels. A one-off for one TrainingGroup never becomes a template."""
-        group = TrainingGroup.objects.create(name="Varsity")
+        group = TrainingGroup.objects.create(organization=self.organization, name="Varsity")
         program = TrainingProgram.objects.create(training_group=group, name="Spring",
                                                  start_date=timezone.now().date())
         res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
@@ -4827,6 +5160,64 @@ class CsvImportTests(APITestCase):
         positions = list(TrainingBlockWorkout.objects.filter(training_block=block)
                          .order_by("position").values_list("position", flat=True))
         self.assertEqual(positions, [1, 2])
+
+    def test_plan_preview_and_commit_reject_foreign_targets(self):
+        other_organization = Organization.objects.create(display_name="Foreign import org")
+        foreign_group = TrainingGroup.objects.create(
+            organization=other_organization, name="Foreign import group",
+        )
+        foreign_block = TrainingBlock.objects.create(
+            organization=other_organization, coach=self.coach, name="Foreign import block",
+        )
+        foreign_program = TrainingProgram.objects.create(
+            training_group=foreign_group, name="Foreign import program",
+            start_date=timezone.localdate(),
+        )
+        local_group = TrainingGroup.objects.create(
+            organization=self.organization, name="Local inconsistent group",
+        )
+        inconsistent_program = TrainingProgram.objects.create(
+            training_group=local_group, training_block=foreign_block,
+            name="Inconsistent import program", start_date=timezone.localdate(),
+        )
+        sheet = ("workout_name,exercise,position,sets,reps,target_percent\n"
+                 "Day 1,Back Squat,1,5,3,80\n")
+
+        for url in ("/api/imports/preview/", "/api/imports/"):
+            for field, target_id in (
+                ("training_block", foreign_block.id),
+                ("training_program", foreign_program.id),
+                ("training_program", inconsistent_program.id),
+                ("training_group", foreign_group.id),
+            ):
+                with self.subTest(url=url, field=field):
+                    response = self._upload(sheet, url=url, **{field: target_id})
+                    self.assertEqual(response.status_code, 404)
+
+        self.assertFalse(foreign_block.workouts.exists())
+        self.assertFalse(foreign_program.workouts.exists())
+
+        for url in ("/api/imports/preview/", "/api/imports/"):
+            response = self._upload(
+                sheet, url=url, training_block=self._block().id,
+                organization=str(other_organization.pk),
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.data["code"], "organization_not_accepted")
+
+    def test_import_name_and_correction_resolution_excludes_foreign_athletes(self):
+        other_organization = Organization.objects.create(display_name="Foreign athlete import org")
+        foreign_athlete = Athlete.objects.create(
+            organization=other_organization, name="Foreign Athlete",
+        )
+        sheet = "athlete_name,exercise,max_lbs\nForeign Athlete,Back Squat,315\n"
+        response = self._upload(
+            sheet, url="/api/imports/",
+            corrections=json.dumps({"athlete": {"Foreign Athlete": foreign_athlete.id}}),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["errors"][0]["code"], "unknown_athlete")
+        self.assertFalse(AthleteReferenceMax.objects.filter(athlete=foreign_athlete).exists())
 
     def test_a_plan_with_nowhere_to_go_is_refused(self):
         res = self._upload("workout_name,exercise,position,sets,reps,target_percent\n"
@@ -4871,7 +5262,7 @@ class CsvImportTests(APITestCase):
     def test_a_spreadsheet_saved_out_of_excel_still_reads(self):
         """Excel writes an invisible marker at the start of the file; without
         handling it the first column name silently stops matching."""
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         upload = SimpleUploadedFile(
             "sheet.csv", "﻿athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n".encode("utf-8"),
             content_type="text/csv")
@@ -4879,7 +5270,7 @@ class CsvImportTests(APITestCase):
         self.assertEqual(res.status_code, 200)
 
     def test_preview_writes_nothing(self):
-        Athlete.objects.create(name="Jordan Lee")
+        Athlete.objects.create(organization=self.organization, name="Jordan Lee")
         res = self._upload("athlete_name,exercise,max_lbs\nJordan Lee,Back Squat,315\n")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(AthleteReferenceMax.objects.count(), 0)
@@ -5940,14 +6331,11 @@ class ApiAuthorizationFenceTests(APITestCase):
     ACTIVE_STAFF_ROUTES = {
         "analytics_athlete", "analytics_session", "athlete_exercise_override", "athlete_program",
         "ble_scans", "ble_verifications", "block_categories",
-        "change_wifi_password", "gateway_diagnostics", "import_commit", "import_preview",
+        "change_wifi_password", "gateway_diagnostics",
         "node_acquisition_kind", "rack_assign", "rack_ble_selection", "rack_node_assignment",
         "racks_unassigned", "reference_maxes", "report_detail", "report_pdf", "reports",
         "scheduled_session_create_session", "scheduled_session_detail", "scheduled_sessions",
         "session_detail", "session_participation", "session_start", "sessions", "system_status",
-        "training_block_detail", "training_block_exercise_detail", "training_block_exercise_order",
-        "training_block_workout_detail", "training_block_workout_order", "training_block_workouts",
-        "training_blocks", "training_program_promote", "training_programs",
     }
     PRIVATE_AP_ROUTES = {
         "athlete_progress", "exercises_list", "nodes_list", "prescriptions", "rack_checkin",
@@ -5959,6 +6347,13 @@ class ApiAuthorizationFenceTests(APITestCase):
     TENANT_ROUTES = {
         "athlete_detail", "athletes", "training_group_athletes",
         "training_group_coaches", "training_groups",
+    }
+    STAFF_TENANT_ROUTES = {
+        "import_commit", "import_preview", "training_block_detail",
+        "training_block_exercise_detail", "training_block_exercise_order",
+        "training_block_workout_detail", "training_block_workout_order",
+        "training_block_workouts", "training_blocks", "training_program_promote",
+        "training_programs",
     }
     MIXED_ROUTES = {"room_state"}
     SPECIAL_ROUTES = {"gateway_events", "health"}
@@ -6034,6 +6429,7 @@ class ApiAuthorizationFenceTests(APITestCase):
             self.ACTIVE_STAFF_ROUTES
             | self.PRIVATE_AP_ROUTES
             | self.TENANT_ROUTES
+            | self.STAFF_TENANT_ROUTES
             | self.MIXED_ROUTES
             | self.SPECIAL_ROUTES
         )
@@ -6048,6 +6444,11 @@ class ApiAuthorizationFenceTests(APITestCase):
             self.assertEqual(callbacks[route_name].cls.permission_classes, [IsActiveStaff])
         for route_name in self.TENANT_ROUTES:
             self.assertEqual(callbacks[route_name].cls.permission_classes, [HasActiveOrganization])
+        for route_name in self.STAFF_TENANT_ROUTES:
+            self.assertEqual(
+                callbacks[route_name].cls.permission_classes,
+                [IsActiveStaff, HasActiveOrganization],
+            )
         for route_name in self.PRIVATE_AP_ROUTES | self.MIXED_ROUTES | self.SPECIAL_ROUTES:
             self.assertEqual(callbacks[route_name].cls.permission_classes, [AllowAny])
 
@@ -6449,6 +6850,399 @@ class OrganizationScopedAthleteGroupTests(APITestCase):
         ]
         with patch("event_handler.models.OrganizationMembership.objects", manager):
             self.assertIsNone(active_organization_for_user(self.owner))
+
+
+class OrganizationScopedTrainingBlockTests(APITestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(display_name="Block organization A")
+        self.other_organization = Organization.objects.create(display_name="Block organization B")
+        self.owner = User.objects.create_user(
+            username="block-owner-a", password="pw", is_staff=True,
+        )
+        self.other_owner = User.objects.create_user(
+            username="block-owner-b", password="pw", is_staff=True,
+        )
+        OrganizationMembership.objects.create(organization=self.organization, user=self.owner)
+        OrganizationMembership.objects.create(
+            organization=self.other_organization, user=self.other_owner,
+        )
+        self.exercise = Exercise.objects.create(name="Tenant block squat")
+        self.block = TrainingBlock.objects.create(
+            organization=self.organization, coach=self.owner, name="Block A",
+        )
+        self.other_block = TrainingBlock.objects.create(
+            organization=self.other_organization, coach=self.other_owner, name="Block B",
+        )
+        self.workout = TrainingBlockWorkout.objects.create(
+            training_block=self.block, name="Day A", position=1,
+        )
+        self.row = TrainingBlockExercise.objects.create(
+            training_block_workout=self.workout, exercise=self.exercise,
+            position=1, sets=3, reps=5, target_percent=75,
+        )
+        self.other_workout = TrainingBlockWorkout.objects.create(
+            training_block=self.other_block, name="Day B", position=1,
+        )
+        self.other_row = TrainingBlockExercise.objects.create(
+            training_block_workout=self.other_workout, exercise=self.exercise,
+            position=1, sets=3, reps=5, target_percent=75,
+        )
+        self.client.force_authenticate(self.owner)
+
+    def test_catalog_and_create_are_scoped_to_active_organization(self):
+        listed = self.client.get("/api/training-blocks/")
+        self.assertEqual([row["id"] for row in listed.data], [self.block.id])
+        created = self.client.post(
+            "/api/training-blocks/", {"name": "Created block"}, format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(
+            TrainingBlock.objects.get(pk=created.data["id"]).organization,
+            self.organization,
+        )
+        self.assertNotIn("organization", created.data)
+
+    def test_client_cannot_choose_or_change_block_organization(self):
+        create = self.client.post(
+            "/api/training-blocks/",
+            {"name": "Wrong block", "organization": str(self.other_organization.pk)},
+            format="json",
+        )
+        patch_response = self.client.patch(
+            f"/api/training-blocks/{self.block.id}/",
+            {"organization_id": str(self.other_organization.pk)}, format="json",
+        )
+        self.assertEqual(create.status_code, 400)
+        self.assertEqual(patch_response.status_code, 400)
+
+    def test_cross_tenant_block_and_nested_paths_return_404_without_writes(self):
+        block_path = f"/api/training-blocks/{self.other_block.id}/"
+        workouts_path = f"{block_path}workouts/"
+        workout_path = f"{workouts_path}{self.other_workout.id}/"
+        exercise_path = f"{workout_path}exercises/{self.other_row.id}/"
+        requests = (
+            ("get", block_path, None),
+            ("patch", block_path, {"name": "Leaked block edit"}),
+            ("get", workouts_path, None),
+            ("post", workouts_path, {"name": "Leaked day", "exercises": []}),
+            ("patch", workout_path, {"name": "Leaked edit"}),
+            ("delete", workout_path, None),
+            ("put", f"{block_path}workout-order/", {"workout_ids": [self.other_workout.id]}),
+            ("patch", exercise_path, {"sets": 9}),
+            ("delete", exercise_path, None),
+            ("put", f"{workout_path}exercise-order/", {"exercise_ids": [self.other_row.id]}),
+        )
+        for method, path, payload in requests:
+            with self.subTest(method=method, path=path):
+                response = getattr(self.client, method)(path, payload, format="json")
+                self.assertEqual(response.status_code, 404)
+
+        self.other_block.refresh_from_db()
+        self.other_workout.refresh_from_db()
+        self.other_row.refresh_from_db()
+        self.assertEqual(self.other_block.name, "Block B")
+        self.assertEqual(self.other_workout.name, "Day B")
+        self.assertEqual(self.other_row.sets, 3)
+
+    def test_all_block_methods_require_unambiguous_active_membership(self):
+        block_path = f"/api/training-blocks/{self.block.id}/"
+        workouts_path = f"{block_path}workouts/"
+        workout_path = f"{workouts_path}{self.workout.id}/"
+        exercise_path = f"{workout_path}exercises/{self.row.id}/"
+        requests = (
+            ("get", "/api/training-blocks/", None),
+            ("post", "/api/training-blocks/", {"name": "Denied block"}),
+            ("get", block_path, None),
+            ("patch", block_path, {"name": "Denied edit"}),
+            ("get", workouts_path, None),
+            ("post", workouts_path, {"name": "Denied day", "exercises": []}),
+            ("patch", workout_path, {"name": "Denied edit"}),
+            ("delete", workout_path, None),
+            ("put", f"{block_path}workout-order/", {"workout_ids": [self.workout.id]}),
+            ("patch", exercise_path, {"sets": 9}),
+            ("delete", exercise_path, None),
+            ("put", f"{workout_path}exercise-order/", {"exercise_ids": [self.row.id]}),
+        )
+
+        def assert_forbidden():
+            for method, path, payload in requests:
+                with self.subTest(method=method, path=path):
+                    response = getattr(self.client, method)(path, payload, format="json")
+                    self.assertEqual(response.status_code, 403)
+
+        membership = OrganizationMembership.objects.get(user=self.owner)
+        membership.delete()
+        assert_forbidden()
+
+        membership = OrganizationMembership.objects.create(
+            organization=self.organization, user=self.owner, is_active=False,
+        )
+        assert_forbidden()
+
+        membership.delete()
+        OrganizationMembership.objects.create(organization=self.organization, user=self.owner)
+        with patch("event_handler.permissions.active_organization_for_user", return_value=None):
+            assert_forbidden()
+
+        nonstaff = User.objects.create_user(username="block-nonstaff", password="pw")
+        OrganizationMembership.objects.create(organization=self.organization, user=nonstaff)
+        self.client.force_authenticate(nonstaff)
+        assert_forbidden()
+
+    def test_nested_create_validates_ids_and_appends_after_position_gaps(self):
+        TrainingBlockWorkout.objects.create(
+            training_block=self.block, name="Day C", position=3,
+        )
+        invalid = self.client.post(
+            f"/api/training-blocks/{self.block.id}/workouts/",
+            {"name": "Bad", "exercises": [{
+                "exercise": 999999, "sets": 3, "reps": 5, "target_percent": 75,
+            }]}, format="json",
+        )
+        created = self.client.post(
+            f"/api/training-blocks/{self.block.id}/workouts/",
+            {"name": "Day D", "exercises": [{
+                "exercise": self.exercise.id, "sets": 3, "reps": 5,
+                "target_percent": 75,
+            }]}, format="json",
+        )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertFalse(self.block.workouts.filter(name="Bad").exists())
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(
+            TrainingBlockWorkout.objects.get(pk=created.data["id"]).position,
+            4,
+        )
+
+    def test_nested_create_rejects_effective_position_collisions_before_writing(self):
+        response = self.client.post(
+            f"/api/training-blocks/{self.block.id}/workouts/", {
+                "name": "Duplicate rows",
+                "exercises": [
+                    {"exercise": self.exercise.id, "sets": 3, "reps": 5,
+                     "target_percent": 75},
+                    {"exercise": self.exercise.id, "position": 1, "sets": 3,
+                     "reps": 5, "target_percent": 75},
+                ],
+            }, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.block.workouts.filter(name="Duplicate rows").exists())
+
+    def test_foreign_reorder_body_ids_return_404_without_position_changes(self):
+        workout_response = self.client.put(
+            f"/api/training-blocks/{self.block.id}/workout-order/",
+            {"workout_ids": [self.other_workout.id]}, format="json",
+        )
+        exercise_response = self.client.put(
+            f"/api/training-blocks/{self.block.id}/workouts/{self.workout.id}/exercise-order/",
+            {"exercise_ids": [self.other_row.id]}, format="json",
+        )
+        self.assertEqual(workout_response.status_code, 404)
+        self.assertEqual(exercise_response.status_code, 404)
+        self.workout.refresh_from_db()
+        self.row.refresh_from_db()
+        self.assertEqual(self.workout.position, 1)
+        self.assertEqual(self.row.position, 1)
+
+    def test_every_block_write_rejects_organization_input(self):
+        block_path = f"/api/training-blocks/{self.block.id}/"
+        workouts_path = f"{block_path}workouts/"
+        workout_path = f"{workouts_path}{self.workout.id}/"
+        exercise_path = f"{workout_path}exercises/{self.row.id}/"
+        for field in ("organization", "organization_id"):
+            value = str(self.other_organization.pk)
+            requests = (
+                ("post", "/api/training-blocks/", {"name": "Denied block", field: value}),
+                ("patch", block_path, {"name": "Denied block edit", field: value}),
+                ("post", workouts_path, {"name": "Denied day", "exercises": [], field: value}),
+                ("patch", workout_path, {"name": "Denied day edit", field: value}),
+                ("delete", workout_path, {field: value}),
+                ("put", f"{block_path}workout-order/",
+                 {"workout_ids": [self.workout.id], field: value}),
+                ("patch", exercise_path, {"sets": 9, field: value}),
+                ("delete", exercise_path, {field: value}),
+                ("put", f"{workout_path}exercise-order/",
+                 {"exercise_ids": [self.row.id], field: value}),
+            )
+            for method, path, payload in requests:
+                with self.subTest(field=field, method=method, path=path):
+                    response = getattr(self.client, method)(path, payload, format="json")
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.data["code"], "organization_not_accepted")
+
+            nested = self.client.post(workouts_path, {
+                "name": "Denied nested organization",
+                "exercises": [{
+                    "exercise": self.exercise.id, "sets": 3, "reps": 5,
+                    "target_percent": 75, field: value,
+                }],
+            }, format="json")
+            self.assertEqual(nested.status_code, 400)
+            self.assertEqual(nested.data["code"], "organization_not_accepted")
+
+        self.block.refresh_from_db()
+        self.workout.refresh_from_db()
+        self.row.refresh_from_db()
+        self.assertEqual(self.block.name, "Block A")
+        self.assertEqual(self.workout.name, "Day A")
+        self.assertEqual(self.row.sets, 3)
+
+    def test_oversized_ids_and_position_arithmetic_fail_cleanly(self):
+        huge = "9" * 5000
+        self.assertEqual(
+            self.client.get(f"/api/training-blocks/?coach={huge}").status_code, 400,
+        )
+        self.assertEqual(
+            self.client.get(f"/api/training-blocks/?category={huge}").status_code, 400,
+        )
+        self.assertEqual(
+            self.client.put(
+                f"/api/training-blocks/{self.block.id}/workout-order/",
+                {"workout_ids": [int("9" * 20)]}, format="json",
+            ).status_code,
+            400,
+        )
+
+        TrainingBlockWorkout.objects.create(
+            training_block=self.block, name="Position limit", position=2_147_000_000,
+        )
+        append = self.client.post(
+            f"/api/training-blocks/{self.block.id}/workouts/",
+            {"name": "Overflow append", "exercises": []}, format="json",
+        )
+        self.assertEqual(append.status_code, 400)
+        self.assertEqual(append.data["code"], "position_limit")
+        self.assertFalse(self.block.workouts.filter(name="Overflow append").exists())
+
+    def test_prescription_numbers_are_finite_bounded_and_use_complete_velocity_zones(self):
+        invalid_rows = (
+            {"target_percent": "NaN"},
+            {"target_percent": "Infinity"},
+            {"target_percent": 151},
+            {"target_percent": 80, "velocity_zone_min": 0.5},
+            {"target_percent": 80, "velocity_zone_min": 0.8, "velocity_zone_max": 0.5},
+            {"target_percent": 80, "velocity_zone_min": 0.5, "velocity_zone_max": 11},
+            {"target_percent": 80, "sets": int("9" * 20)},
+        )
+        for index, invalid_fields in enumerate(invalid_rows):
+            row = {
+                "exercise": self.exercise.id, "sets": 3, "reps": 5,
+                "target_percent": 75,
+            }
+            row.update(invalid_fields)
+            name = f"Invalid numbers {index}"
+            response = self.client.post(
+                f"/api/training-blocks/{self.block.id}/workouts/",
+                {"name": name, "exercises": [row]}, format="json",
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertFalse(self.block.workouts.filter(name=name).exists())
+
+        for fields in (
+            {"target_percent": "NaN"},
+            {"target_percent": 151},
+            {"velocity_zone_min": 0.5},
+            {"velocity_zone_min": 0.9, "velocity_zone_max": 0.4},
+        ):
+            with self.subTest(fields=fields):
+                response = self.client.patch(
+                    f"/api/training-blocks/{self.block.id}/workouts/{self.workout.id}/exercises/{self.row.id}/",
+                    fields, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.target_percent, 75)
+        self.assertEqual((self.row.velocity_zone_min, self.row.velocity_zone_max), (None, None))
+
+    def test_block_duration_is_bounded(self):
+        create = self.client.post(
+            "/api/training-blocks/", {"name": "Too long", "duration_weeks": 521},
+            format="json",
+        )
+        patch_response = self.client.patch(
+            f"/api/training-blocks/{self.block.id}/", {"duration_weeks": 521},
+            format="json",
+        )
+        self.assertEqual(create.status_code, 400)
+        self.assertEqual(patch_response.status_code, 400)
+        with self.assertRaises(ValueError):
+            training_dates(date(2026, 8, 3), "Mon,Wed,Fri", 521)
+
+    def test_category_filter_cannot_include_foreign_blocks(self):
+        category = BlockCategory.objects.create(name="Tenant category")
+        self.block.categories.add(category)
+        self.other_block.categories.add(category)
+        response = self.client.get(f"/api/training-blocks/?category={category.id}")
+        self.assertEqual([row["id"] for row in response.data], [self.block.id])
+
+
+class SeedActiveSessionTenantIsolationTests(APITestCase):
+    def test_reset_preserves_matching_rows_and_open_sessions_in_other_organizations(self):
+        legacy_organization = Organization.objects.get(
+            id=uuid.UUID("4ac9f970-4084-4f7f-9cb8-c586c995ed62"),
+        )
+        other_organization = Organization.objects.create(display_name="Seed isolation organization")
+        coach = User.objects.create_user(username="seed-isolation-coach", password="pw")
+        exercise, _ = Exercise.objects.get_or_create(name="Back Squat")
+        athlete = Athlete.objects.create(
+            organization=other_organization, name="Devin Walton",
+        )
+        group = TrainingGroup.objects.create(
+            organization=other_organization, name="Varsity",
+        )
+        block = TrainingBlock.objects.create(
+            organization=other_organization, coach=coach, name="Base Strength",
+        )
+        program = TrainingProgram.objects.create(
+            training_group=group, training_block=block, name="Foreign demo program",
+            start_date=timezone.localdate(),
+        )
+        session = TrainingSession.objects.create(
+            organization=other_organization, label="Thursday — Lower + Push",
+            started_at=timezone.now(),
+        )
+        report = DailyReport.objects.create(
+            organization=other_organization, session=session, snapshot={"athletes": []},
+        )
+        node = Node.objects.create(node_id="rack_1", rack_number=9)
+        workout_set = Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=node, set_number=1,
+        )
+        reference = AthleteReferenceMax.objects.create(
+            athlete=athlete, exercise=exercise, reference_weight_lbs=315,
+        )
+
+        call_command("seed_active_session", reset=True, stdout=io.StringIO())
+
+        self.assertTrue(Organization.objects.filter(pk=legacy_organization.pk).exists())
+        for model, row in (
+            (Athlete, athlete),
+            (TrainingGroup, group),
+            (TrainingBlock, block),
+            (TrainingProgram, program),
+            (TrainingSession, session),
+            (DailyReport, report),
+            (Set, workout_set),
+            (AthleteReferenceMax, reference),
+        ):
+            with self.subTest(model=model.__name__):
+                self.assertTrue(model.objects.filter(pk=row.pk).exists())
+        session.refresh_from_db()
+        workout_set.refresh_from_db()
+        self.assertIsNone(session.ended_at)
+        self.assertEqual(workout_set.node_id, node.pk)
+        self.assertTrue(Node.objects.filter(pk=node.pk).exists())
+        legacy_group = TrainingGroup.objects.get(
+            organization=legacy_organization, name="Varsity",
+        )
+        self.assertFalse(TrainingGroupCoach.objects.filter(
+            training_group=legacy_group, coach=coach,
+        ).exists())
+        seeded_coach = TrainingGroupCoach.objects.get(training_group=legacy_group).coach
+        self.assertTrue(OrganizationMembership.objects.filter(
+            organization=legacy_organization, user=seeded_coach, is_active=True,
+        ).exists())
 
 
 class OrganizationTenancyMigrationTests(TransactionTestCase):

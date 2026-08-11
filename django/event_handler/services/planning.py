@@ -23,6 +23,11 @@ from .cadence import training_dates
 
 # ─────────────────────── editing a template ───────────────────────
 
+
+class UnknownOrderObject(Exception):
+    pass
+
+
 def touch_block(block_id):
     """Mark a block as edited just now.
 
@@ -56,11 +61,18 @@ def apply_order(queryset, ordered_ids, *, position_field="position"):
     and cannot leave a gap or a duplicate. A sequence of per-item updates leaves
     the block in a broken order if one of them fails.
     """
+    if len(ordered_ids) != len(set(ordered_ids)):
+        raise ValueError("the id list must name every row in this parent, exactly once")
     rows = {row.pk: row for row in queryset}
-    if set(ordered_ids) != set(rows):
+    if not set(ordered_ids).issubset(rows):
+        raise UnknownOrderObject
+    if len(ordered_ids) != len(rows):
         raise ValueError("the id list must name every row in this parent, exactly once")
 
-    offset = 10_000
+    highest = max((getattr(row, position_field) for row in rows.values()), default=0)
+    offset = highest + len(rows) + 1
+    if offset + len(rows) > 2_147_483_647:
+        raise ValueError("positions are too large to reorder")
     for index, row_id in enumerate(ordered_ids, start=1):
         queryset.model.objects.filter(pk=row_id).update(**{position_field: index + offset})
     for index, row_id in enumerate(ordered_ids, start=1):
@@ -76,6 +88,16 @@ def instantiate_block(block, group, name=None, start_date=None, end_date=None):
     complete to a coach and short-change the TrainingGroup mid-week, so a failure part
     way through leaves nothing behind rather than something plausible-but-wrong.
     """
+    group = group.__class__.objects.select_for_update().get(pk=group.pk)
+    block = TrainingBlock.objects.select_for_update().get(pk=block.pk)
+    if block.organization_id != group.organization_id:
+        raise ValueError("the training block and group must belong to the same organization")
+
+    source_workouts = list(
+        TrainingBlockWorkout.objects.select_for_update()
+        .filter(training_block=block).order_by("position")
+    )
+
     program = TrainingProgram.objects.create(
         training_group=group,
         training_block=block,          # remembered so we know where it came from
@@ -84,10 +106,8 @@ def instantiate_block(block, group, name=None, start_date=None, end_date=None):
         end_date=end_date,
     )
 
-    for source_workout in (TrainingBlockWorkout.objects
-                           .filter(training_block=block)
-                           .prefetch_related("exercises")
-                           .order_by("position")):
+    for source_workout in source_workouts:
+        source_exercises = list(source_workout.exercises.select_for_update().order_by("position"))
         copied = TrainingProgramWorkout.objects.create(
             training_program=program,
             name=source_workout.name,
@@ -103,7 +123,7 @@ def instantiate_block(block, group, name=None, start_date=None, end_date=None):
                 target_percent=row.target_percent,
                 velocity_zone_min=row.velocity_zone_min,
                 velocity_zone_max=row.velocity_zone_max,
-            ) for row in source_workout.exercises.order_by("position")
+            ) for row in source_exercises
         ])
 
     generate_schedule(program, block)
@@ -136,11 +156,23 @@ def promote_program_to_block(program, coach, name=None):
     Works on ANY program, hand-written or edited-after-deploy, because the source
     rows are the same shape either way.
     """
-    source_block = program.training_block
+    program = (TrainingProgram.objects.select_for_update()
+               .select_related("training_group").get(pk=program.pk))
+    source_block = None
+    organization = program.training_group.organization
+    if organization is None:
+        raise ValueError("the program's training group has no organization")
+    if program.training_block_id is not None:
+        source_block = TrainingBlock.objects.select_for_update().get(pk=program.training_block_id)
+        if source_block.organization_id != organization.id:
+            raise ValueError("the program's training block belongs to another organization")
+
+    source_workouts = list(program.workouts.select_for_update().order_by("position"))
 
     block = TrainingBlock.objects.create(
         name=name or program.name,
         coach=coach,
+        organization=organization,
         # Carried across when the program came from a block: cadence and duration
         # are what make a block SCHEDULABLE, and the program was actually built on
         # them. A promoted block without them would generate an empty calendar.
@@ -150,9 +182,8 @@ def promote_program_to_block(program, coach, name=None):
         duration_weeks=source_block.duration_weeks if source_block else None,
     )
 
-    for source_workout in (program.workouts
-                           .prefetch_related("exercises")
-                           .order_by("position")):
+    for source_workout in source_workouts:
+        source_exercises = list(source_workout.exercises.select_for_update().order_by("position"))
         copied = TrainingBlockWorkout.objects.create(
             training_block=block,
             name=source_workout.name,
@@ -168,7 +199,7 @@ def promote_program_to_block(program, coach, name=None):
                 target_percent=row.target_percent,
                 velocity_zone_min=row.velocity_zone_min,
                 velocity_zone_max=row.velocity_zone_max,
-            ) for row in source_workout.exercises.order_by("position")
+            ) for row in source_exercises
         ])
 
     # Point the program at what it is now a deployment of.

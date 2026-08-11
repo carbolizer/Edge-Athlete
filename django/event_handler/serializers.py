@@ -8,11 +8,12 @@ as clean JSON. Think: a bouncer checking every field at the door, plus a
 receptionist handing back a tidy summary. One of these per kind of record.
 """
 from datetime import timedelta
+import math
 
 from django.utils import timezone
 from rest_framework import serializers
 
-from .services.cadence import CADENCE_DAYS
+from .services.cadence import CADENCE_DAYS, MAX_DURATION_WEEKS
 from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise,
@@ -236,6 +237,14 @@ class StrictPositiveIntegerField(serializers.IntegerField):
         return super().to_internal_value(data)
 
 
+class FiniteFloatField(serializers.FloatField):
+    def to_internal_value(self, data):
+        value = super().to_internal_value(data)
+        if not math.isfinite(value):
+            self.fail("invalid")
+        return value
+
+
 class AthleteAssociationSerializer(serializers.Serializer):
     athletes = serializers.ListField(
         child=StrictPositiveIntegerField(min_value=1), allow_empty=False, max_length=500,
@@ -280,12 +289,42 @@ class TrainingBlockExerciseSerializer(serializers.ModelSerializer):
     That is the whole point: one line serves a whole TrainingGroup, and everyone's number
     follows their own strength."""
     exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+    exercise = serializers.PrimaryKeyRelatedField(
+        queryset=Exercise.objects.all(),
+        pk_field=StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647),
+    )
+    sets = StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647)
+    reps = StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647)
+    target_percent = FiniteFloatField(min_value=1, max_value=150)
+    velocity_zone_min = FiniteFloatField(
+        min_value=0, max_value=10, required=False, allow_null=True,
+    )
+    velocity_zone_max = FiniteFloatField(
+        min_value=0, max_value=10, required=False, allow_null=True,
+    )
 
     class Meta:
         model = TrainingBlockExercise
         fields = ["id", "exercise", "exercise_name", "position", "sets", "reps",
                   "target_percent", "velocity_zone_min", "velocity_zone_max"]
         read_only_fields = ["id", "exercise_name"]
+
+    def validate(self, values):
+        minimum = values.get(
+            "velocity_zone_min",
+            self.instance.velocity_zone_min if self.instance is not None else None,
+        )
+        maximum = values.get(
+            "velocity_zone_max",
+            self.instance.velocity_zone_max if self.instance is not None else None,
+        )
+        if (minimum is None) != (maximum is None):
+            raise serializers.ValidationError(
+                "velocity_zone_min and velocity_zone_max must both be set or both be null",
+            )
+        if minimum is not None and minimum > maximum:
+            raise serializers.ValidationError("velocity_zone_max must be at least velocity_zone_min")
+        return values
 
 
 class TrainingBlockWorkoutSerializer(serializers.ModelSerializer):
@@ -296,6 +335,86 @@ class TrainingBlockWorkoutSerializer(serializers.ModelSerializer):
         model = TrainingBlockWorkout
         fields = ["id", "name", "position", "exercises"]
         read_only_fields = ["id", "exercises"]
+
+
+class TrainingBlockExerciseWriteSerializer(serializers.Serializer):
+    exercise = serializers.PrimaryKeyRelatedField(
+        queryset=Exercise.objects.all(),
+        pk_field=StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647),
+    )
+    position = StrictPositiveIntegerField(required=False, max_value=2_147_000_000)
+    sets = StrictPositiveIntegerField(required=False, default=1, max_value=2_147_483_647)
+    reps = StrictPositiveIntegerField(required=False, default=1, max_value=2_147_483_647)
+    target_percent = FiniteFloatField(min_value=1, max_value=150)
+    velocity_zone_min = FiniteFloatField(
+        min_value=0, max_value=10, required=False, allow_null=True,
+    )
+    velocity_zone_max = FiniteFloatField(
+        min_value=0, max_value=10, required=False, allow_null=True,
+    )
+
+    def validate(self, values):
+        minimum = values.get("velocity_zone_min")
+        maximum = values.get("velocity_zone_max")
+        if (minimum is None) != (maximum is None):
+            raise serializers.ValidationError(
+                "velocity_zone_min and velocity_zone_max must both be set or both be null",
+            )
+        if minimum is not None and minimum > maximum:
+            raise serializers.ValidationError("velocity_zone_max must be at least velocity_zone_min")
+        return values
+
+
+class TrainingBlockWorkoutWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255, required=False, default="Workout")
+    position = StrictPositiveIntegerField(required=False, max_value=2_147_000_000)
+    exercises = TrainingBlockExerciseWriteSerializer(
+        many=True, required=False, default=list, max_length=500,
+    )
+
+    def validate_exercises(self, exercises):
+        positions = [
+            row.get("position", default_position)
+            for default_position, row in enumerate(exercises, start=1)
+        ]
+        if len(positions) != len(set(positions)):
+            raise serializers.ValidationError("exercise positions must be unique")
+        return exercises
+
+
+class TrainingProgramPromotionSerializer(serializers.Serializer):
+    name = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, allow_null=True,
+    )
+
+
+class TrainingProgramWriteSerializer(serializers.Serializer):
+    training_group = StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647)
+    training_block = StrictPositiveIntegerField(
+        min_value=1, max_value=2_147_483_647, required=False, allow_null=True,
+    )
+    name = serializers.CharField(max_length=255, required=False, allow_blank=False)
+    start_date = serializers.DateField()
+    end_date = serializers.DateField(required=False, allow_null=True)
+
+    def validate(self, values):
+        if not values.get("training_block") and not values.get("name"):
+            raise serializers.ValidationError({"name": "This field is required."})
+        return values
+
+
+class TrainingBlockWorkoutOrderSerializer(serializers.Serializer):
+    workout_ids = serializers.ListField(
+        child=StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647),
+        max_length=500,
+    )
+
+
+class TrainingBlockExerciseOrderSerializer(serializers.Serializer):
+    exercise_ids = serializers.ListField(
+        child=StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647),
+        max_length=500,
+    )
 
 
 class TrainingBlockSerializer(serializers.ModelSerializer):
@@ -315,6 +434,10 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
     workouts = TrainingBlockWorkoutSerializer(many=True, read_only=True)
     category_names = serializers.SlugRelatedField(
         source="categories", slug_field="name", many=True, read_only=True)
+    categories = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BlockCategory.objects.all(), required=False,
+        pk_field=StrictPositiveIntegerField(min_value=1, max_value=2_147_483_647),
+    )
 
     class Meta:
         model = TrainingBlock
@@ -353,8 +476,10 @@ class TrainingBlockSerializer(serializers.ModelSerializer):
     def validate_duration_weeks(self, value):
         """A block that runs for zero or negative weeks would generate an empty
         calendar and look like the generator was broken."""
-        if value is not None and value < 1:
-            raise serializers.ValidationError("a block runs for at least one week")
+        if value is not None and not 1 <= value <= MAX_DURATION_WEEKS:
+            raise serializers.ValidationError(
+                f"a block duration must be between 1 and {MAX_DURATION_WEEKS} weeks",
+            )
         return value
 
 

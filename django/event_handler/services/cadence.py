@@ -17,6 +17,7 @@ from datetime import date, timedelta
 # Week order, and the ONLY accepted tokens. Index matters: it lines up with
 # Python's date.weekday(), where Monday is 0.
 CADENCE_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+MAX_DURATION_WEEKS = 520
 
 _WEEKDAY_BY_TOKEN = {token: index for index, token in enumerate(CADENCE_DAYS)}
 
@@ -53,6 +54,8 @@ def training_dates(start_date, cadence, duration_weeks):
     weekdays = cadence_weekdays(cadence)
     if not start_date or not weekdays or not duration_weeks or duration_weeks < 1:
         return []
+    if duration_weeks > MAX_DURATION_WEEKS:
+        raise ValueError(f"duration_weeks cannot exceed {MAX_DURATION_WEEKS}")
 
     # ⚠️ A date can still arrive here as a STRING. Django coerces a date on its
     # way into the database but leaves the in-memory attribute exactly as it was

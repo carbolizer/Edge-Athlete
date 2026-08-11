@@ -195,7 +195,8 @@ timeless template, and a dated copy of it.**
 A plan a coach designs once and redeploys — tweak last year's block, run it again this
 year. It has **no group and no dates**; those only appear when it's deployed. It also
 carries how long it runs (`duration_weeks`) and which days of the week it trains
-(`cadence_days_of_week`), which is what the calendar generator reads.
+(`cadence_days_of_week`), which is what the calendar generator reads. Blocks belong
+to an organization and are reusable by its coaches, not visible to other customers.
 
 - `TrainingBlockWorkout` — one ordered day inside the template ("Day 1: Squat").
 - `TrainingBlockExercise` — one prescription row inside a day: which movement, how many

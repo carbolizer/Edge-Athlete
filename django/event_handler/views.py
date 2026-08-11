@@ -60,7 +60,11 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
                           AthleteAssociationSerializer, CoachAssociationSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
-                          TrainingBlockExerciseSerializer, TrainingProgramSerializer,
+                          TrainingBlockExerciseSerializer, TrainingBlockWorkoutWriteSerializer,
+                          TrainingProgramSerializer, TrainingProgramPromotionSerializer,
+                          TrainingProgramWriteSerializer,
+                          TrainingBlockWorkoutOrderSerializer,
+                          TrainingBlockExerciseOrderSerializer,
                           BlockCategorySerializer, TrainingGroupCoachSerializer,
                           ScheduledSessionSerializer)
 from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
@@ -73,7 +77,8 @@ from .services.reports import (AthleteNotInReport, reports_for_athlete, report_l
 from .services.report_pdf import render_report_pdf, PdfTooLarge
 from .services.plan_resolution import (movements_for_athlete as plan_movements_for_athlete,
                                        plans_by_athlete, resolve_target_weight)
-from .services.planning import apply_order, instantiate_block, promote_program_to_block, touch_block
+from .services.planning import (UnknownOrderObject, apply_order, instantiate_block,
+                                promote_program_to_block, touch_block)
 from .services.csv_import import SHEET_PLAN, commit_upload, validate_upload
 from .services.tuning import RESTING_WINDOW
 from .services.node_health import node_is_usable
@@ -326,12 +331,34 @@ def _active_staff_denial(request):
 
 
 def _organization_input_denial(request):
-    if "organization" not in request.data and "organization_id" not in request.data:
+    pending = [request.data]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            if "organization" in value or "organization_id" in value:
+                return Response({
+                    "code": "organization_not_accepted",
+                    "detail": "organization is derived from the active membership",
+                }, status=400)
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return None
+
+
+def _database_id(value):
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 2_147_483_647
+
+
+def _query_database_id(value):
+    if not isinstance(value, str) or not value.isdigit() or len(value) > 10:
         return None
-    return Response({
-        "code": "organization_not_accepted",
-        "detail": "organization is derived from the active membership",
-    }, status=400)
+    parsed = int(value)
+    return parsed if _database_id(parsed) else None
+
+
+def _input_database_id(value):
+    return value if _database_id(value) else _query_database_id(value)
 
 
 def _is_nfc_tag_conflict(error):
@@ -2485,21 +2512,30 @@ def training_group_athletes_view(request, group_id):
     return Response(AthleteSerializer(current, many=True).data)
 
 
+def _scoped_training_block(request, block_id, *, for_update=False):
+    if not _database_id(block_id):
+        return None
+    blocks = TrainingBlock.objects
+    if for_update:
+        blocks = blocks.select_for_update()
+    return blocks.filter(id=block_id, organization=request.organization).first()
+
+
 @api_view(["GET", "POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_blocks_view(request):
     """Coach-only: the reusable TEMPLATES a coach designs once and redeploys.
 
     A TrainingBlock has no TrainingGroup and no dates — it is the recipe, not a
     serving of it.
 
-    Blocks are GLOBAL ON PURPOSE. The whole department can see and reuse every
-    one, because a good block getting reused is the point of a shared catalog.
+    Blocks are shared inside one organization. Its coaches can reuse every block
+    in that catalog, because a good block getting reused is the point.
     So `?coach=` is a LENS, NOT A FENCE — it exists so nobody scrolls a
     department-sized list to find their own work, and the full list is always
     one request away. It grants nothing and forbids nothing.
 
-      GET /api/training-blocks/                    -> every block (default)
+      GET /api/training-blocks/                    -> every block in the organization
       GET /api/training-blocks/?coach=me           -> only the caller's
       GET /api/training-blocks/?coach=4            -> only that coach's
       GET /api/training-blocks/?category=2         -> only blocks with that label
@@ -2516,35 +2552,43 @@ def training_blocks_view(request):
     catalog you are browsing rather than resuming reads better by name.
     """
     if request.method == "GET":
-        blocks = TrainingBlock.objects.prefetch_related("workouts__exercises", "categories")
+        blocks = TrainingBlock.objects.filter(
+            organization=request.organization,
+        ).prefetch_related("workouts__exercises", "categories")
 
         coach = request.query_params.get("coach")
         if coach == "me":
             blocks = blocks.filter(coach=request.user)
         elif coach:
-            if not coach.isdigit():
+            coach_id = _query_database_id(coach)
+            if coach_id is None:
                 return Response({"error": "coach must be a coach id or 'me'"}, status=400)
-            blocks = blocks.filter(coach_id=int(coach))
+            blocks = blocks.filter(coach_id=coach_id)
 
         categories = request.query_params.getlist("category")
         if categories:
-            if not all(value.isdigit() for value in categories):
+            category_ids = [_query_database_id(value) for value in categories]
+            if any(value is None for value in category_ids):
                 return Response({"error": "category must be a category id"}, status=400)
             # A join across a many-to-many repeats a row once per match, so a
             # block carrying two of the requested labels would otherwise be
             # listed twice.
-            blocks = blocks.filter(categories__id__in=[int(v) for v in categories]).distinct()
+            blocks = blocks.filter(categories__id__in=category_ids).distinct()
 
         order = "-updated_at" if request.query_params.get("sort") == "recent" else "name"
         return Response(TrainingBlockSerializer(blocks.order_by(order), many=True).data)
 
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
     form = TrainingBlockSerializer(data=request.data)
     form.is_valid(raise_exception=True)
-    return Response(TrainingBlockSerializer(form.save(coach=request.user)).data, status=201)
+    block = form.save(coach=request.user, organization=request.organization)
+    return Response(TrainingBlockSerializer(block).data, status=201)
 
 
 @api_view(["GET", "PATCH"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_block_detail(request, block_id):
     """Coach-only: read or amend one block's own fields.
 
@@ -2561,18 +2605,26 @@ def training_block_detail(request, block_id):
     than a permission fence rests partly on that. Adding one is a real decision,
     not a convenience — make it on purpose.
     """
-    block = TrainingBlock.objects.filter(id=block_id).first()
+    block = _scoped_training_block(request, block_id)
     if block is None:
         return Response({"error": "training block not found"}, status=404)
 
     if request.method == "GET":
         return Response(TrainingBlockSerializer(block).data)
 
-    form = TrainingBlockSerializer(block, data=request.data, partial=True)
-    form.is_valid(raise_exception=True)
-    # auto_now on `updated_at` fires here, so amending a block's own fields
-    # counts as editing it — same as editing a day inside it.
-    return Response(TrainingBlockSerializer(form.save()).data)
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    with transaction.atomic():
+        block = _scoped_training_block(request, block_id, for_update=True)
+        if block is None:
+            return Response({"error": "training block not found"}, status=404)
+        form = TrainingBlockSerializer(block, data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        # auto_now on `updated_at` fires here, so amending a block's own fields
+        # counts as editing it — same as editing a day inside it.
+        block = form.save()
+    return Response(TrainingBlockSerializer(block).data)
 
 
 @api_view(["GET", "POST"])
@@ -2595,7 +2647,7 @@ def block_categories_view(request):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_block_workouts_view(request, block_id):
     """Coach-only: the individual days inside a template, and their movements.
 
@@ -2612,7 +2664,7 @@ def training_block_workouts_view(request, block_id):
 
     Writing the day in one call also means a half-entered workout can't exist.
     """
-    block = TrainingBlock.objects.filter(id=block_id).first()
+    block = _scoped_training_block(request, block_id)
     if block is None:
         return Response({"error": "training block not found"}, status=404)
 
@@ -2620,27 +2672,43 @@ def training_block_workouts_view(request, block_id):
         workouts = block.workouts.prefetch_related("exercises").order_by("position")
         return Response(TrainingBlockWorkoutSerializer(workouts, many=True).data)
 
-    rows = request.data.get("exercises") or []
-    with transaction.atomic():
-        workout = TrainingBlockWorkout.objects.create(
-            training_block=block,
-            name=request.data.get("name") or "Workout",
-            position=request.data.get("position") or (block.workouts.count() + 1),
-        )
-        for position, row in enumerate(rows, start=1):
-            if not Exercise.objects.filter(id=row.get("exercise")).exists():
-                raise ValueError(f"exercise {row.get('exercise')} not found")
-            TrainingBlockExercise.objects.create(
-                training_block_workout=workout,
-                exercise_id=row["exercise"],
-                position=row.get("position") or position,
-                sets=row.get("sets") or 1,
-                reps=row.get("reps") or 1,
-                target_percent=row.get("target_percent"),
-                velocity_zone_min=row.get("velocity_zone_min"),
-                velocity_zone_max=row.get("velocity_zone_max"),
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    payload = TrainingBlockWorkoutWriteSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    values = payload.validated_data
+    try:
+        with transaction.atomic():
+            block = _scoped_training_block(request, block_id, for_update=True)
+            if block is None:
+                return Response({"error": "training block not found"}, status=404)
+            position = values.get("position")
+            if position is None:
+                highest = block.workouts.aggregate(value=models.Max("position"))["value"] or 0
+                if highest >= 2_147_000_000:
+                    return Response({
+                        "code": "position_limit",
+                        "detail": "workout positions must be reordered before appending",
+                    }, status=400)
+                position = highest + 1
+            workout = TrainingBlockWorkout.objects.create(
+                training_block=block, name=values["name"], position=position,
             )
-    touch_block(block.id)
+            for default_position, row in enumerate(values["exercises"], start=1):
+                TrainingBlockExercise.objects.create(
+                    training_block_workout=workout,
+                    exercise=row["exercise"],
+                    position=row.get("position", default_position),
+                    sets=row["sets"],
+                    reps=row["reps"],
+                    target_percent=row["target_percent"],
+                    velocity_zone_min=row.get("velocity_zone_min"),
+                    velocity_zone_max=row.get("velocity_zone_max"),
+                )
+            touch_block(block.id)
+    except IntegrityError:
+        return Response({"code": "position_conflict", "detail": "workout positions must be unique"}, status=400)
     return Response(TrainingBlockWorkoutSerializer(workout).data, status=201)
 
 
@@ -2654,31 +2722,50 @@ def training_block_workouts_view(request, block_id):
 # deleting a day from a template cannot remove it from a group that is
 # currently training it. That independence is deliberate and load-bearing.
 
-def _block_workout(block_id, workout_id):
+def _block_workout(request, block_id, workout_id, *, for_update=False):
     """One day, confirmed to be inside the block named in the URL.
 
     Checking the parent matters: without it, /training-blocks/1/workouts/99/
     would happily edit a day belonging to block 2.
     """
-    return TrainingBlockWorkout.objects.filter(
-        id=workout_id, training_block_id=block_id).first()
+    if not _database_id(block_id) or not _database_id(workout_id):
+        return None
+    workouts = TrainingBlockWorkout.objects
+    if for_update:
+        workouts = workouts.select_for_update()
+    return workouts.filter(
+        id=workout_id,
+        training_block_id=block_id,
+        training_block__organization=request.organization,
+    ).first()
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_block_workout_detail(request, block_id, workout_id):
     """Coach-only: rename or remove one day in a template.
 
     Deleting takes its prescription rows with it (they cannot outlive the day
     they belong to) but leaves every deployed program untouched.
     """
-    workout = _block_workout(block_id, workout_id)
+    workout = _block_workout(request, block_id, workout_id)
     if workout is None:
         return Response({"error": "workout not found in this block"}, status=404)
 
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+
     if request.method == "DELETE":
-        workout.delete()
-        touch_block(block_id)
+        with transaction.atomic():
+            block = _scoped_training_block(request, block_id, for_update=True)
+            if block is None:
+                return Response({"error": "training block not found"}, status=404)
+            workout = _block_workout(request, block_id, workout_id, for_update=True)
+            if workout is None:
+                return Response({"error": "workout not found in this block"}, status=404)
+            workout.delete()
+            touch_block(block_id)
         return Response(status=204)
 
     name = request.data.get("name")
@@ -2686,14 +2773,21 @@ def training_block_workout_detail(request, block_id, workout_id):
         if not str(name).strip():
             return Response({"code": "invalid_name",
                              "detail": "A day needs a name."}, status=400)
-        workout.name = str(name).strip()
-        workout.save(update_fields=["name"])
-        touch_block(block_id)
+        with transaction.atomic():
+            block = _scoped_training_block(request, block_id, for_update=True)
+            if block is None:
+                return Response({"error": "training block not found"}, status=404)
+            workout = _block_workout(request, block_id, workout_id, for_update=True)
+            if workout is None:
+                return Response({"error": "workout not found in this block"}, status=404)
+            workout.name = str(name).strip()
+            workout.save(update_fields=["name"])
+            touch_block(block_id)
     return Response(TrainingBlockWorkoutSerializer(workout).data)
 
 
 @api_view(["PUT"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_block_workout_order(request, block_id):
     """Coach-only: set the order of the days in a template.
 
@@ -2702,40 +2796,61 @@ def training_block_workout_order(request, block_id):
     against a non-deferrable position constraint, and why it is the better API
     regardless.
     """
-    block = TrainingBlock.objects.filter(id=block_id).first()
+    block = _scoped_training_block(request, block_id)
     if block is None:
         return Response({"error": "training block not found"}, status=404)
 
-    ids = request.data.get("workout_ids")
-    if not isinstance(ids, list):
-        return Response({"code": "invalid_order",
-                         "detail": "Send workout_ids as a list."}, status=400)
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    payload = TrainingBlockWorkoutOrderSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    ids = payload.validated_data["workout_ids"]
     try:
-        apply_order(block.workouts.all(), ids)
+        with transaction.atomic():
+            block = _scoped_training_block(request, block_id, for_update=True)
+            if block is None:
+                return Response({"error": "training block not found"}, status=404)
+            apply_order(block.workouts.select_for_update(), ids)
+            touch_block(block_id)
     except ValueError as problem:
-        # Naming a subset would silently drop days out of the order, so the whole
-        # list is required and a mismatch is refused rather than half-applied.
         return Response({"code": "invalid_order", "detail": str(problem)}, status=400)
-
-    touch_block(block_id)
+    except UnknownOrderObject:
+        return Response({"error": "workout not found in this block"}, status=404)
     return Response(TrainingBlockWorkoutSerializer(
         block.workouts.prefetch_related("exercises").order_by("position"), many=True).data)
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_block_exercise_detail(request, block_id, workout_id, exercise_id):
     """Coach-only: change or remove one prescribed movement in a template day."""
-    workout = _block_workout(block_id, workout_id)
+    workout = _block_workout(request, block_id, workout_id)
     if workout is None:
         return Response({"error": "workout not found in this block"}, status=404)
+    if not _database_id(exercise_id):
+        return Response({"error": "exercise row not found in this workout"}, status=404)
     row = workout.exercises.filter(id=exercise_id).first()
     if row is None:
         return Response({"error": "exercise row not found in this workout"}, status=404)
 
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+
     if request.method == "DELETE":
-        row.delete()
-        touch_block(block_id)
+        with transaction.atomic():
+            block = _scoped_training_block(request, block_id, for_update=True)
+            if block is None:
+                return Response({"error": "training block not found"}, status=404)
+            workout = _block_workout(request, block_id, workout_id, for_update=True)
+            if workout is None:
+                return Response({"error": "workout not found in this block"}, status=404)
+            row = workout.exercises.select_for_update().filter(id=exercise_id).first()
+            if row is None:
+                return Response({"error": "exercise row not found in this workout"}, status=404)
+            row.delete()
+            touch_block(block_id)
         return Response(status=204)
 
     # Only the prescription itself is editable here. `position` is deliberately
@@ -2746,44 +2861,66 @@ def training_block_exercise_detail(request, block_id, workout_id, exercise_id):
         if field in request.data:
             fields[field] = request.data[field]
     if "exercise" in request.data:
-        if not Exercise.objects.filter(id=request.data["exercise"]).exists():
-            return Response({"error": "exercise not found"}, status=404)
-        fields["exercise_id"] = request.data["exercise"]
+        fields["exercise"] = request.data["exercise"]
+    if "position" in request.data:
+        return Response({"code": "nothing_to_change", "detail": "use exercise-order to reorder"}, status=400)
     if not fields:
         return Response({"code": "nothing_to_change",
                          "detail": "Send at least one field to change."}, status=400)
 
-    for name, value in fields.items():
-        setattr(row, name, value)
-    row.save(update_fields=list(fields))
-    touch_block(block_id)
+    form = TrainingBlockExerciseSerializer(row, data=fields, partial=True)
+    form.is_valid(raise_exception=True)
+    with transaction.atomic():
+        block = _scoped_training_block(request, block_id, for_update=True)
+        if block is None:
+            return Response({"error": "training block not found"}, status=404)
+        workout = _block_workout(request, block_id, workout_id, for_update=True)
+        if workout is None:
+            return Response({"error": "workout not found in this block"}, status=404)
+        row = workout.exercises.select_for_update().filter(id=exercise_id).first()
+        if row is None:
+            return Response({"error": "exercise row not found in this workout"}, status=404)
+        form = TrainingBlockExerciseSerializer(row, data=fields, partial=True)
+        form.is_valid(raise_exception=True)
+        row = form.save()
+        touch_block(block_id)
     return Response(TrainingBlockExerciseSerializer(row).data)
 
 
 @api_view(["PUT"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_block_exercise_order(request, block_id, workout_id):
     """Coach-only: set the order of the movements inside one template day."""
-    workout = _block_workout(block_id, workout_id)
+    workout = _block_workout(request, block_id, workout_id)
     if workout is None:
         return Response({"error": "workout not found in this block"}, status=404)
 
-    ids = request.data.get("exercise_ids")
-    if not isinstance(ids, list):
-        return Response({"code": "invalid_order",
-                         "detail": "Send exercise_ids as a list."}, status=400)
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    payload = TrainingBlockExerciseOrderSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    ids = payload.validated_data["exercise_ids"]
     try:
-        apply_order(workout.exercises.all(), ids)
+        with transaction.atomic():
+            block = _scoped_training_block(request, block_id, for_update=True)
+            if block is None:
+                return Response({"error": "training block not found"}, status=404)
+            workout = _block_workout(request, block_id, workout_id, for_update=True)
+            if workout is None:
+                return Response({"error": "workout not found in this block"}, status=404)
+            apply_order(workout.exercises.select_for_update(), ids)
+            touch_block(block_id)
     except ValueError as problem:
         return Response({"code": "invalid_order", "detail": str(problem)}, status=400)
-
-    touch_block(block_id)
+    except UnknownOrderObject:
+        return Response({"error": "exercise row not found in this workout"}, status=404)
     return Response(TrainingBlockExerciseSerializer(
         workout.exercises.order_by("position"), many=True).data)
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_programs_view(request):
     """Coach-only: a template DEPLOYED for a TrainingGroup, starting on a date.
 
@@ -2798,20 +2935,38 @@ def training_programs_view(request):
     and leave the block empty.
     """
     if request.method == "GET":
-        programs = TrainingProgram.objects.select_related("training_group") \
-                                          .prefetch_related("workouts__exercises")
+        programs = (TrainingProgram.objects
+                    .filter(training_group__organization=request.organization)
+                    .filter(models.Q(training_block__isnull=True)
+                            | models.Q(training_block__organization=request.organization))
+                    .select_related("training_group")
+                    .prefetch_related("workouts__exercises"))
         group_id = request.query_params.get("training_group")
         if group_id:
-            programs = programs.filter(training_group_id=group_id)
+            parsed_group_id = _query_database_id(group_id)
+            if parsed_group_id is None:
+                return Response({"error": "training_group must be an id"}, status=400)
+            programs = programs.filter(training_group_id=parsed_group_id)
         return Response(TrainingProgramSerializer(programs.order_by("-start_date"), many=True).data)
 
-    group = TrainingGroup.objects.filter(id=request.data.get("training_group")).first()
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    payload = TrainingProgramWriteSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+    values = payload.validated_data
+
+    group = TrainingGroup.objects.filter(
+        id=values["training_group"], organization=request.organization,
+    ).first()
     if group is None:
         return Response({"error": "training group not found"}, status=404)
 
-    block_id = request.data.get("training_block")
+    block_id = values.get("training_block")
     if block_id:
-        block = TrainingBlock.objects.filter(id=block_id).first()
+        block = TrainingBlock.objects.filter(
+            id=block_id, organization=request.organization,
+        ).first()
         if block is None:
             return Response({"error": "training block not found"}, status=404)
         # ⚠️ PARSE THE DATES HERE. They arrive as strings, and Django only coerces
@@ -2820,37 +2975,28 @@ def training_programs_view(request):
         # started doing arithmetic on `program.start_date` and got
         # "can only concatenate str to str" on every deploy through the API.
         # Every P14 test passed real `date` objects, so none of them caught it.
-        dates = {}
-        for field in ("start_date", "end_date"):
-            raw = request.data.get(field)
-            if raw in (None, ""):
-                dates[field] = None
-                continue
-            parsed = parse_date(raw) if isinstance(raw, str) else raw
-            if parsed is None:
-                return Response({"error": f"{field} must be a date (YYYY-MM-DD)"},
-                                status=400)
-            dates[field] = parsed
-
-        if dates["start_date"] is None:
-            return Response({"error": "start_date is required to deploy a block"},
-                            status=400)
-
-        program = instantiate_block(
-            block, group,
-            name=request.data.get("name"),
-            start_date=dates["start_date"],
-            end_date=dates["end_date"],
-        )
+        try:
+            program = instantiate_block(
+                block, group,
+                name=values.get("name"),
+                start_date=values["start_date"],
+                end_date=values.get("end_date"),
+            )
+        except ValueError as problem:
+            return Response({"code": "invalid_block", "detail": str(problem)}, status=409)
         return Response(TrainingProgramSerializer(program).data, status=201)
 
-    form = TrainingProgramSerializer(data=request.data)
-    form.is_valid(raise_exception=True)
-    return Response(TrainingProgramSerializer(form.save()).data, status=201)
+    program = TrainingProgram.objects.create(
+        training_group=group,
+        name=values["name"],
+        start_date=values["start_date"],
+        end_date=values.get("end_date"),
+    )
+    return Response(TrainingProgramSerializer(program).data, status=201)
 
 
 @api_view(["POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 def training_program_promote(request, program_id):
     """Coach-only: turn this program into a new reusable TrainingBlock.
 
@@ -2868,8 +3014,18 @@ def training_program_promote(request, program_id):
     The program itself is unchanged apart from its `training_block` now naming
     the block it is a deployment of.
     """
+    if not _database_id(program_id):
+        return Response({"error": "training program not found"}, status=404)
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
+    payload = TrainingProgramPromotionSerializer(data=request.data)
+    payload.is_valid(raise_exception=True)
+
     program = (TrainingProgram.objects
-               .filter(id=program_id)
+               .filter(id=program_id, training_group__organization=request.organization)
+               .filter(models.Q(training_block__isnull=True)
+                       | models.Q(training_block__organization=request.organization))
                .prefetch_related("workouts__exercises").first())
     if program is None:
         return Response({"error": "training program not found"}, status=404)
@@ -2882,8 +3038,11 @@ def training_program_promote(request, program_id):
             "detail": "Add at least one day to the program before making a block from it.",
         }, status=400)
 
-    name = (request.data.get("name") or "").strip() or None
-    block = promote_program_to_block(program, coach=request.user, name=name)
+    name = payload.validated_data.get("name") or None
+    try:
+        block = promote_program_to_block(program, coach=request.user, name=name)
+    except ValueError as problem:
+        return Response({"error": str(problem)}, status=409)
     return Response(TrainingBlockSerializer(block).data, status=201)
 
 
@@ -3189,20 +3348,29 @@ def _import_target(request):
              "detail": "Send training_block or training_program, not both."}, status=400)
 
     if block_id:
-        block = TrainingBlock.objects.filter(id=block_id).first()
+        block = TrainingBlock.objects.filter(
+            id=_input_database_id(block_id), organization=request.organization,
+        ).first()
         if block is None:
             return None, None, None, Response({"error": "training block not found"}, status=404)
         return block, "block", None, None
 
     if program_id:
-        program = TrainingProgram.objects.filter(id=program_id).select_related("training_group").first()
+        program = (TrainingProgram.objects
+                   .filter(id=_input_database_id(program_id),
+                           training_group__organization=request.organization)
+                   .filter(models.Q(training_block__isnull=True)
+                           | models.Q(training_block__organization=request.organization))
+                   .select_related("training_group").first())
         if program is None:
             return None, None, None, Response({"error": "training program not found"}, status=404)
         return program, "program", program.training_group, None
 
     group = None
     if group_id:
-        group = TrainingGroup.objects.filter(id=group_id).first()
+        group = TrainingGroup.objects.filter(
+            id=_input_database_id(group_id), organization=request.organization,
+        ).first()
         if group is None:
             return None, None, None, Response({"error": "training group not found"}, status=404)
     return None, None, group, None
@@ -3229,6 +3397,25 @@ def _import_corrections(request):
     if not isinstance(parsed, dict):
         return None, Response({"code": "invalid_corrections",
                                "detail": "Corrections must be an object keyed by kind."}, status=400)
+    allowed_kinds = {"athlete", "exercise", "training_group"}
+    if set(parsed) - allowed_kinds:
+        return None, Response({
+            "code": "invalid_corrections",
+            "detail": "Corrections may name only athlete, exercise, or training_group.",
+        }, status=400)
+    for kind, corrections in parsed.items():
+        if not isinstance(corrections, dict):
+            return None, Response({
+                "code": "invalid_corrections",
+                "detail": f"{kind} corrections must be an object of name-to-id pairs.",
+            }, status=400)
+        for name, record_id in corrections.items():
+            if (not isinstance(name, str) or not name.strip()
+                    or _input_database_id(record_id) is None):
+                return None, Response({
+                    "code": "invalid_corrections",
+                    "detail": f"{kind} corrections require names and bounded positive integer ids.",
+                }, status=400)
     return parsed, None
 
 
@@ -3257,7 +3444,7 @@ def _import_response(sheet_type, payload, errors, skipped, *, created=None):
 
 
 @api_view(["POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 @parser_classes([MultiPartParser, FormParser])
 def import_preview(request):
     """Check an uploaded spreadsheet and write NOTHING.
@@ -3265,6 +3452,9 @@ def import_preview(request):
     Always the first half of the pair: the coach sees what we understood, fixes
     anything marked wrong, and only then imports. See services/csv_import.py.
     """
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
     target, kind, scope_group, error = _import_target(request)
     if error is not None:
         return error
@@ -3273,7 +3463,8 @@ def import_preview(request):
         return error
 
     sheet_type, payload, errors, skipped = validate_upload(
-        request.FILES.get("file"), scope_group=scope_group, corrections=corrections)
+        request.FILES.get("file"), organization=request.organization,
+        scope_group=scope_group, corrections=corrections)
 
     if sheet_type == SHEET_PLAN and target is None and not errors:
         errors = [{"row": None, "field": "training_block", "code": "target_required",
@@ -3282,7 +3473,7 @@ def import_preview(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsActiveStaff])
+@permission_classes([IsActiveStaff, HasActiveOrganization])
 @parser_classes([MultiPartParser, FormParser])
 def import_commit(request):
     """Re-check an uploaded spreadsheet and, if it is clean, save it in one step.
@@ -3291,6 +3482,9 @@ def import_commit(request):
     the two calls — an athlete could be renamed, or another coach could import
     the same sheet first. Nothing is saved unless every row passes now.
     """
+    denial = _organization_input_denial(request)
+    if denial is not None:
+        return denial
     target, kind, scope_group, error = _import_target(request)
     if error is not None:
         return error
@@ -3299,7 +3493,8 @@ def import_commit(request):
         return error
 
     sheet_type, payload, errors, skipped = validate_upload(
-        request.FILES.get("file"), scope_group=scope_group, corrections=corrections)
+        request.FILES.get("file"), organization=request.organization,
+        scope_group=scope_group, corrections=corrections)
 
     if sheet_type == SHEET_PLAN and target is None and not errors:
         errors = [{"row": None, "field": "training_block", "code": "target_required",
@@ -3307,7 +3502,13 @@ def import_commit(request):
     if errors:
         return _import_response(sheet_type, payload, errors, skipped)
 
-    created = commit_upload(sheet_type, payload, target=target, kind=kind)
+    try:
+        created = commit_upload(
+            sheet_type, payload, organization=request.organization,
+            target=target, kind=kind,
+        )
+    except ValueError as problem:
+        return Response({"code": "invalid_import_target", "detail": str(problem)}, status=409)
     return _import_response(sheet_type, payload, errors, skipped, created=created)
 
 

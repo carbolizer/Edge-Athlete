@@ -2597,8 +2597,11 @@ write endpoint plus a who-can-do-what test matrix, and because the scenario it
 would guard is not reachable — there is no block DELETE and no way for one coach
 to destroy another's work.
 
-The active-staff fence now blocks non-staff users from these unscoped routes.
-Organization and team object scoping remains pending.
+The active-staff fence now blocks non-staff users from remaining unscoped routes.
+Athlete, TrainingGroup, and TrainingBlock routes enforce organization scope;
+program catalog/deployment/promotion also require active staff plus organization
+scope. CSV imports use the same staff-plus-organization boundary. Remaining
+program, session, report, and analytics scoping is pending.
 
 ### The actual work
 

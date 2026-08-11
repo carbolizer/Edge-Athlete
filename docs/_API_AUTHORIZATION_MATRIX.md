@@ -1,7 +1,8 @@
 # API Authorization Matrix
 
 - Date: 2026-08-10
-- Status: Athlete/TrainingGroup tenant scope implemented; registration remains disabled
+- Status: Athlete, TrainingGroup, and TrainingBlock tenant scope implemented;
+  registration remains disabled
 - Source of truth: `django/event_handler/urls.py`, view decorators, and `nginx/vps.conf.template`
 
 ## Boundaries
@@ -48,18 +49,7 @@ authenticated non-staff user, and reach domain validation for active staff.
 | `/api/racks/<device_id>/` | PATCH | `404` |
 | `/api/sessions/` | POST | `404` |
 | `/api/sessions/<session_id>/` | PATCH | `404` |
-| `/api/training-blocks/` | GET, POST | `404` |
-| `/api/training-blocks/<block_id>/` | GET, PATCH | `404` |
-| `/api/training-blocks/<block_id>/workouts/` | GET, POST | `404` |
 | `/api/block-categories/` | GET, POST | `404` |
-| `/api/training-blocks/<block_id>/workout-order/` | PUT | `404` |
-| `/api/training-blocks/<block_id>/workouts/<workout_id>/` | PATCH, DELETE | `404` |
-| `/api/training-blocks/<block_id>/workouts/<workout_id>/exercise-order/` | PUT | `404` |
-| `/api/training-blocks/<block_id>/workouts/<workout_id>/exercises/<exercise_id>/` | PATCH, DELETE | `404` |
-| `/api/training-programs/` | GET, POST | `404` |
-| `/api/training-programs/<program_id>/promote/` | POST | `404` |
-| `/api/imports/preview/` | POST | `404` |
-| `/api/imports/` | POST | `404` |
 | `/api/sessions/<session_id>/participation/` | GET, POST, DELETE | `404` |
 | `/api/sessions/<session_id>/start/` | POST | `404` |
 | `/api/scheduled-sessions/` | GET | `404` |
@@ -91,6 +81,28 @@ cross-tenant ID returns `404`.
 
 Organization comes only from the authenticated membership and is absent from
 request/response fields. NFC tag IDs are unique within one organization.
+
+## Active-Staff And Organization-Scoped Routes
+
+These programming and import operations remain unavailable to non-staff coaches.
+Active staff must also have exactly one active organization membership. Program,
+group, block, athlete, and correction IDs resolve only inside that organization;
+foreign IDs return `404`. Reusable blocks are shared by staff coaches inside the
+organization; `coach=` remains an author filter, not a team permission.
+
+| Route | Methods | VPS ingress |
+|---|---|---|
+| `/api/training-programs/` | GET, POST | `404` |
+| `/api/training-programs/<program_id>/promote/` | POST | `404` |
+| `/api/training-blocks/` | GET, POST | `404` |
+| `/api/training-blocks/<block_id>/` | GET, PATCH | `404` |
+| `/api/training-blocks/<block_id>/workouts/` | GET, POST | `404` |
+| `/api/training-blocks/<block_id>/workout-order/` | PUT | `404` |
+| `/api/training-blocks/<block_id>/workouts/<workout_id>/` | PATCH, DELETE | `404` |
+| `/api/training-blocks/<block_id>/workouts/<workout_id>/exercise-order/` | PUT | `404` |
+| `/api/training-blocks/<block_id>/workouts/<workout_id>/exercises/<exercise_id>/` | PATCH, DELETE | `404` |
+| `/api/imports/preview/` | POST | `404` |
+| `/api/imports/` | POST | `404` |
 
 ## Mixed Routes
 

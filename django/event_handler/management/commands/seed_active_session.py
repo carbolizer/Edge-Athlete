@@ -18,8 +18,9 @@
 # Re-runnable: pass --reset to wipe just the rows this command creates (matched
 # by the fixed names below) and rebuild them cleanly.
 from datetime import timedelta
+import uuid
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
@@ -28,7 +29,8 @@ from django.contrib.auth.models import User
 from event_handler.models import (Athlete, AthleteReferenceMax, DailyReport, Exercise,
                                   Node, Rep, TrainingSession, SessionParticipation, Set,
                                   TrainingBlock, TrainingBlockExercise, TrainingBlockWorkout,
-                                  TrainingGroup, TrainingGroupCoach, TrainingProgram)
+                                  TrainingGroup, TrainingGroupCoach, TrainingProgram, Organization,
+                                  OrganizationMembership)
 from event_handler.services.planning import generate_schedule, instantiate_block
 
 SESSION_LABEL = "Thursday — Lower + Push"
@@ -40,6 +42,7 @@ BLOCK_NAME = "Base Strength"
 # moment the calendar puts "Thursday" on a Friday. The SESSION label above is a
 # different thing and can name a real day, because a session IS one.
 WORKOUT_NAME = "Day 1 — Lower + Push"
+LEGACY_ORGANIZATION_ID = uuid.UUID("4ac9f970-4084-4f7f-9cb8-c586c995ed62")
 
 # The demo roster is the team. Real names beat "Jordan Lee" in front of a room:
 # nobody has to be told the gym is fake, and everyone watching can find
@@ -74,6 +77,7 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        organization = Organization.objects.get(pk=LEGACY_ORGANIZATION_ID)
         names = list(ATHLETES)
 
         if options["reset"]:
@@ -89,15 +93,23 @@ class Command(BaseCommand):
             #
             # The report side only bites once a day has actually been ENDED, so
             # it went unnoticed until someone ended one in the browser.
-            Set.objects.filter(session__label=SESSION_LABEL).delete()
-            DailyReport.objects.filter(session__label=SESSION_LABEL).delete()
-            TrainingSession.objects.filter(label=SESSION_LABEL).delete()
-            AthleteReferenceMax.objects.filter(athlete__name__in=names).delete()
-            TrainingProgram.objects.filter(training_group__name=GROUP_NAME).delete()
-            TrainingBlock.objects.filter(name=BLOCK_NAME).delete()
-            TrainingGroup.objects.filter(name=GROUP_NAME).delete()
-            Athlete.objects.filter(name__in=names).delete()
-            Node.objects.filter(node_id=NODE_ID).delete()
+            Set.objects.filter(
+                session__organization=organization, session__label=SESSION_LABEL,
+            ).delete()
+            DailyReport.objects.filter(
+                organization=organization, session__label=SESSION_LABEL,
+            ).delete()
+            TrainingSession.objects.filter(organization=organization, label=SESSION_LABEL).delete()
+            AthleteReferenceMax.objects.filter(
+                athlete__organization=organization, athlete__name__in=names,
+            ).delete()
+            TrainingProgram.objects.filter(
+                training_group__organization=organization,
+                training_group__name=GROUP_NAME,
+            ).delete()
+            TrainingBlock.objects.filter(organization=organization, name=BLOCK_NAME).delete()
+            TrainingGroup.objects.filter(organization=organization, name=GROUP_NAME).delete()
+            Athlete.objects.filter(organization=organization, name__in=names).delete()
             self.stdout.write("Reset: cleared previously seeded rows.")
 
         # A sensor node linked to rack 1, so the simulator + broadcasts have a
@@ -109,14 +121,40 @@ class Command(BaseCommand):
         squat, _ = Exercise.objects.get_or_create(name=SQUAT)
         bench, _ = Exercise.objects.get_or_create(name=BENCH)
 
-        # A coach to own the group and the template.
-        coach = User.objects.filter(is_staff=True).first() or User.objects.first()
-        if coach is None:
-            coach = User.objects.create_user(username="coach", password="coach")
+        # A coach to own the group and template. Never borrow an arbitrary global
+        # user: that could attach another customer's account to legacy demo data.
+        membership = (OrganizationMembership.objects
+                      .filter(organization=organization, is_active=True, user__is_active=True)
+                      .select_related("user").order_by("-user__is_staff", "id").first())
+        if membership is None:
+            coach, _ = User.objects.get_or_create(
+                username="legacy-demo-coach",
+                defaults={"is_active": True, "is_staff": True},
+            )
+            conflicting_membership = (OrganizationMembership.objects
+                                      .filter(user=coach, is_active=True)
+                                      .exclude(organization=organization).exists())
+            if conflicting_membership:
+                raise CommandError(
+                    "legacy-demo-coach already belongs to another organization",
+                )
+            membership, _ = OrganizationMembership.objects.get_or_create(
+                organization=organization, user=coach,
+                defaults={"is_active": True},
+            )
+            if not membership.is_active:
+                membership.is_active = True
+                membership.save(update_fields=["is_active"])
+        coach = membership.user
 
         # Athletes, and the group they all train with.
-        athletes = {name: Athlete.objects.get_or_create(name=name)[0] for name in ATHLETES}
-        group, _ = TrainingGroup.objects.get_or_create(name=GROUP_NAME)
+        athletes = {
+            name: Athlete.objects.get_or_create(organization=organization, name=name)[0]
+            for name in ATHLETES
+        }
+        group, _ = TrainingGroup.objects.get_or_create(
+            organization=organization, name=GROUP_NAME,
+        )
         # Staff are a join table now, not a field — a group can have several.
         TrainingGroupCoach.objects.get_or_create(
             training_group=group, coach=coach,
@@ -131,7 +169,9 @@ class Command(BaseCommand):
         # They were both blank before P14, which was harmless while nothing read
         # them — now it would mean a deployed program with an empty calendar and
         # no obvious reason why.
-        block, _ = TrainingBlock.objects.get_or_create(name=BLOCK_NAME, coach=coach)
+        block, _ = TrainingBlock.objects.get_or_create(
+            organization=organization, name=BLOCK_NAME, coach=coach,
+        )
         # Set rather than passed as `defaults`: defaults only apply when the row
         # is CREATED, so on any database that already held this block from before
         # P14 the cadence would have stayed blank and the demo would show a
@@ -189,15 +229,16 @@ class Command(BaseCommand):
         # day" look broken (canon D18) — ending the top one just promoted the
         # next. The API now refuses a second open session; the seeder writes rows
         # directly, so it has to hold the same rule itself.
-        closed = TrainingSession.objects.filter(ended_at__isnull=True).update(
-            ended_at=timezone.now())
+        closed = TrainingSession.objects.filter(
+            organization=organization, ended_at__isnull=True,
+        ).update(ended_at=timezone.now())
         if closed:
             self.stdout.write(f"  closed {closed} session(s) that were still open")
 
         # The live session, roster = all four athletes.
         # started_at is explicit since P14 — a session can now exist unstarted,
         # and the whole point of this seeder is a day that is actually running.
-        session = TrainingSession.objects.create(label=SESSION_LABEL,
+        session = TrainingSession.objects.create(organization=organization, label=SESSION_LABEL,
                                                  started_at=timezone.now())
         session.athletes.set(athletes.values())
 
