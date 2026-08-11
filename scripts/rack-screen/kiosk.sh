@@ -10,9 +10,14 @@
 #          MODE IS TWO INDEPENDENT QUESTIONS, and they were tangled together at first:
 #          "full-screen or a window?" and "reopen itself if it closes?"
 #
-#            kiosk     full-screen, reopens itself     a gym screen, unattended
-#            once      full-screen, stays closed       the base station at boot
-#            windowed  a window,    stays closed       demoing, debugging, the coach
+#            kiosk     LOCKED full-screen, reopens itself   a gym screen, unattended
+#            once      full-screen window, stays closed     the base station at boot
+#            windowed  a maximised window, stays closed     when you want the toolbar
+#
+#          `kiosk` is a cage on purpose: no toolbar, no window buttons, no F11. An
+#          athlete must not be able to leave the rack screen. `once` looks identical
+#          on arrival but is an ordinary window — hover the top edge for the toolbar,
+#          F11 to leave, minimise like anything else.
 #
 #          Reopening is right for a rack screen nobody is standing at: one that closed
 #          itself and stayed closed is a dead screen with no one to notice. It is
@@ -231,19 +236,33 @@ CHROME_ARGS=(
   --password-store=basic
 )
 
-# Full-screen is `kiosk` AND `once` — the difference between those two is only
-# whether it comes back, which is handled at the bottom of this file.
-if [ "$MODE" != "windowed" ]; then
-  CHROME_ARGS+=(
-    --kiosk
-    --disable-infobars
-    # Stops a swipe from the screen edge navigating back — fine on an unattended
-    # screen, actively wrong on a coach's tablet where back is a real gesture.
-    --overscroll-history-navigation=0
-  )
-else
-  CHROME_ARGS+=( --start-maximized )
-fi
+# ── full-screen has two flavours, and only one of them is a cage ────────────────
+# --kiosk is a LOCK: no toolbar, no window buttons, no F11, no way out. That is
+# correct for a rack screen an athlete uses and must not be able to escape, and
+# wrong everywhere else — it also hides the browser menu, which is the only place
+# "install this app" lives, so a screen launched that way cannot be installed.
+#
+# --start-fullscreen fills the screen the same way but the window stays an ordinary
+# window: hover the top edge and the toolbar returns, F11 leaves full-screen, and it
+# can be minimised like anything else. That is what you want on a machine someone is
+# sitting at — full-screen by default, not full-screen by force.
+case "$MODE" in
+  kiosk)
+    CHROME_ARGS+=(
+      --kiosk
+      --disable-infobars
+      # Stops a swipe from the screen edge navigating back — fine on an unattended
+      # screen, actively wrong on a coach's tablet where back is a real gesture.
+      --overscroll-history-navigation=0
+    )
+    ;;
+  once)
+    CHROME_ARGS+=( --start-fullscreen )
+    ;;
+  windowed)
+    CHROME_ARGS+=( --start-maximized )
+    ;;
+esac
 CHROME_ARGS+=( "$URL" )
 
 # Only needed when the origin is not already trusted. localhost always is, and

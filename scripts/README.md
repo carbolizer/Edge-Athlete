@@ -203,11 +203,17 @@ into full-screen Chromium. Runs **no** server.
   A third argument picks the mode, which is **two independent questions** —
   full-screen or windowed, and does it reopen itself:
 
-  | mode | | on close | used by |
+  | mode | window | on close | used by |
   |---|---|---|---|
-  | `kiosk` | full-screen | reopens in 3s | rack screens in a gym |
-  | `once` | full-screen | stays closed | the base station at boot |
-  | `windowed` | a window | stays closed | coach tablets, demoing |
+  | `kiosk` | **locked** full-screen | reopens in 3s | rack screens in a gym |
+  | `once` | full-screen window | stays closed | everything on the base station |
+  | `windowed` | maximised window | stays closed | when you want the toolbar up front |
+
+  `kiosk` is a cage on purpose — no toolbar, no window buttons, no F11 — because an
+  athlete must not be able to leave the rack screen. It also hides the browser menu,
+  which is the only place "install this app" lives. `once` looks identical on arrival
+  but is an ordinary window underneath: hover the top edge for the toolbar, F11 to
+  leave, minimise to reach the desktop.
 
   Reopening is right for a screen nobody is standing at — one that closed itself
   and stayed closed is a dead screen with no one to notice. It is wrong anywhere a

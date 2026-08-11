@@ -80,7 +80,7 @@ install_launcher() {
 Type=Application
 Name=Edge Athlete — Coach
 Comment=Open the coach console. Use the browser menu to install it as an app.
-Exec=$SCRIPT_DIR/kiosk.sh coach $KIOSK_HOST windowed
+Exec=$SCRIPT_DIR/kiosk.sh coach $KIOSK_HOST once
 Icon=$SCRIPT_DIR/../../react/public/icon-coach-192.png
 Terminal=false
 StartupWMClass=Chromium

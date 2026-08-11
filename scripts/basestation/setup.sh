@@ -466,15 +466,21 @@ mkdir -p /usr/share/applications /etc/xdg/autostart
 #
 # The full-screen wall display is still what the machine BOOTS into. That one is
 # unattended and should be exactly what it is.
+# ALL THREE open full-screen, in `once` mode. Each screen is meant to be seen the way
+# an athlete or a coach sees it, so a browser window with a toolbar is the wrong first
+# impression — but `--kiosk` would be a cage, and on the coach screen it would also
+# hide the browser menu that "install this app" lives in.
+#
+# `once` is the middle: full-screen on arrival, ordinary window underneath. Hover the
+# top edge for the toolbar, F11 to leave, minimise to get at the desktop, close to
+# close. Nothing relaunches, so nothing fights for the display.
 for role in dashboard rack coach; do
     case "$role" in
-        coach) label="Coach";       mode=windowed ;;
-        rack)  label="Rack Screen"; mode=windowed ;;
-        # The wall display reopens FULL-SCREEN, because that is what it is — this is
-        # the launcher you use to put the scoreboard back after closing it. It still
-        # does not relaunch itself, so it stays closed the next time you close it.
-        *)     label="Wall Display"; mode=once ;;
+        coach) label="Coach" ;;
+        rack)  label="Rack Screen" ;;
+        *)     label="Wall Display" ;;
     esac
+    mode=once
     # Without an explicit icon the desktop falls back to a generic cog, so all three
     # arrive looking like Settings and are indistinguishable in the app list. These
     # are the app's own role icons, already in the repo for the web manifests.
@@ -664,8 +670,8 @@ SHORT COMMANDS (available right now — no re-login, no sourcing)
 ON A MONITOR
   Plug one in and it boots to the wall display as '$KIOSK_USER' — no password.
   Close it and it STAYS closed; reopen it from the app list ("Wall Display").
-  The rack and coach launchers open in a window, so you can demo one next to
-  the scoreboard rather than fighting it for the screen.
+  All three launchers open full-screen but stay ordinary windows — hover the
+  top edge for the toolbar, F11 to leave, minimise to get at the desktop.
   That account has no sudo and its password is locked, so ssh and sudo still
   prompt as normal for real accounts. The app list also has launchers for the
   rack and coach screens, for debugging.
