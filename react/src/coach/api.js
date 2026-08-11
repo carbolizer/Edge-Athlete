@@ -66,9 +66,9 @@ export function claimRackEndpoint(token, body) {
   })
 }
 
-export function confirmRackHelper(token, pairingId) {
+export function confirmRackHelper(token, pairingCode) {
   return coachFetch('/api/coach/v1/rack-helper-pairings/confirm/', {
-    token, method: 'POST', body: { pairing_id: pairingId },
+    token, method: 'POST', body: { pairing_code: pairingCode },
   })
 }
 

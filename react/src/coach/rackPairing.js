@@ -6,8 +6,8 @@ export function endpointClaimPayload(pairingCode, trainingGroup, displayName) {
   }
 }
 
-export function helperPairingId(value) {
-  return value.trim().toLowerCase()
+export function helperConfirmationCode(value) {
+  return value.trim().toUpperCase()
 }
 
 export function endpointClaimErrorMessage(error) {

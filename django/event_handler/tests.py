@@ -7759,11 +7759,17 @@ class HostedRackControlPlaneTests(APITestCase):
         self.client.force_authenticate(self.coach)
         confirmed = self.client.post(
             "/api/coach/v1/rack-helper-pairings/confirm/",
-            {"pairing_id": pairing.data["pairing_id"]}, format="json", HTTP_ORIGIN=self.origin,
+            {"pairing_code": pairing.data["pairing_code"]}, format="json", HTTP_ORIGIN=self.origin,
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        confirmed_retry = self.client.post(
+            "/api/coach/v1/rack-helper-pairings/confirm/",
+            {"pairing_code": pairing.data["pairing_code"]}, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(confirmed_retry.data, confirmed.data)
+        self.assertNotIn("pairing_id", confirmed.data)
         self.assertTrue(ApiThrottleBucket.objects.filter(
-            scope="helper_confirm_endpoint", count=1,
+            scope="helper_confirm_endpoint", count=2,
         ).exists())
         activated = self.client.post(
             "/api/rack-helper/v1/pairings/activate/",
@@ -7838,10 +7844,70 @@ class HostedRackControlPlaneTests(APITestCase):
         })
         denied_confirm = self.client.post(
             "/api/coach/v1/rack-helper-pairings/confirm/",
-            {"pairing_id": str(pairing.pk)}, format="json", HTTP_ORIGIN=self.origin,
+            {"pairing_code": code}, format="json", HTTP_ORIGIN=self.origin,
         )
         self.assertEqual(denied_confirm.status_code, 403)
         self.assertFalse(RackHelperInstallation.objects.filter(endpoint=endpoint).exists())
+
+    def test_helper_confirmation_code_hides_foreign_scope_and_rejects_legacy_body(self):
+        other_organization = Organization.objects.create(display_name="Foreign helper organization")
+        other_group = TrainingGroup.objects.create(
+            organization=other_organization, name="Foreign helper group",
+        )
+        endpoint = BrowserEndpoint.objects.create(
+            organization=other_organization,
+            training_group=other_group,
+            display_name="Foreign helper Rack",
+        )
+        pairing, code = rack_control_plane.create_helper_pairing(endpoint.pk)
+        rack_control_plane.claim_helper_pairing({
+            "pairing_code": code,
+            "bootstrap_token": controller_token(),
+            "credential": f"earh1.{uuid.uuid4()}.{controller_token()}",
+            "platform": "linux_x64",
+            "contract_version": 1,
+        })
+        self.client.force_authenticate(self.coach)
+
+        for _attempt in range(11):
+            response = self.client.post(
+                "/api/coach/v1/rack-helper-pairings/confirm/",
+                {"pairing_code": code}, format="json", HTTP_ORIGIN=self.origin,
+            )
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.data, {"code": "not_found", "detail": "Not found."})
+
+        self.assertFalse(RackHelperInstallation.objects.filter(endpoint=endpoint).exists())
+        self.assertFalse(ApiThrottleBucket.objects.filter(
+            scope__in=["helper_confirm_pairing", "helper_confirm_endpoint"],
+        ).exists())
+        self.assertEqual(ApiThrottleBucket.objects.get(scope="helper_confirm_coach").count, 11)
+        self.assertEqual(ApiThrottleBucket.objects.get(scope="helper_confirm_organization").count, 11)
+        legacy = self.client.post(
+            "/api/coach/v1/rack-helper-pairings/confirm/",
+            {"pairing_id": str(pairing.pk)}, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(legacy.status_code, 400)
+        self.assertEqual(legacy.data["code"], "invalid_request")
+
+    def test_expired_helper_confirmation_code_is_scrubbed(self):
+        endpoint = BrowserEndpoint.objects.create(
+            organization=self.organization,
+            training_group=self.group,
+            display_name="Expiring helper Rack",
+        )
+        pairing, code = rack_control_plane.create_helper_pairing(endpoint.pk)
+        rack_control_plane.cleanup_control_plane(now=pairing.expires_at)
+        pairing.refresh_from_db()
+        self.assertEqual(pairing.state, RackHelperPairing.STATE_EXPIRED)
+        self.assertIsNone(pairing.code_digest)
+        self.client.force_authenticate(self.coach)
+        response = self.client.post(
+            "/api/coach/v1/rack-helper-pairings/confirm/",
+            {"pairing_code": code}, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data, {"code": "not_found", "detail": "Not found."})
 
     def test_tenant_escape_is_not_found_and_creates_nothing(self):
         pairing = self.client.post(
@@ -8059,7 +8125,7 @@ class HostedRackControlPlaneTests(APITestCase):
         self.client.force_authenticate(self.coach)
         confirmed = self.client.post(
             "/api/coach/v1/rack-helper-pairings/confirm/",
-            {"pairing_id": pairing.data["pairing_id"]}, format="json", HTTP_ORIGIN=self.origin,
+            {"pairing_code": pairing.data["pairing_code"]}, format="json", HTTP_ORIGIN=self.origin,
         )
         self.assertEqual(confirmed.status_code, 200, confirmed.data)
         # A launch intent raised before activation has no target installation yet.

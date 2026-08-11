@@ -1355,15 +1355,18 @@ Requires an active-staff coach access token, exact Origin, and permission to man
 current endpoint and TrainingGroup. Exact body:
 
 ```json
-{"pairing_id":"UUID"}
+{"pairing_code":"8-character Crockford-base32 uppercase code"}
 ```
 
 The coach confirms only after comparing the six words displayed by Rack and helper.
+The code is the same short-lived value already entered in the Helper; its digest is
+retained only through activation so a lost confirmation response can be retried,
+then cleared when activation succeeds.
 Success creates the provisional installation and pending credential and returns
 `200`:
 
 ```json
-{"pairing_id":"UUID","state":"confirmed","activation_expires_at":"UTC RFC 3339 timestamp"}
+{"state":"confirmed","activation_expires_at":"UTC RFC 3339 timestamp"}
 ```
 
 Retry is idempotent. A foreign, expired, cancelled, or unknown pairing is `404

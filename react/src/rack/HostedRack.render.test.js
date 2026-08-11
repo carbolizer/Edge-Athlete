@@ -44,10 +44,33 @@ describe('hosted Rack control plane renders', () => {
       busy: false, error: '', onStart: () => {},
     }))
     expect(html).toContain('ABCDEFGH')
-    expect(html).toContain('Coach confirmation ID')
-    expect(html).toContain('00000000-0000-0000-0000-000000000001')
+    expect(html).not.toContain('00000000-0000-0000-0000-000000000001')
     expect(html).toContain('amber')
     expect(html).toContain('exactly match')
+  })
+
+  it('clears a stale launch warning after a fresh Helper check-in', () => {
+    const html = renderToStaticMarkup(createElement(HelperStatusPanel, {
+      helper: { status: 'no_sensor', freshness: 'fresh', status_cursor: 45 },
+      attempt: { state: 'unconfirmed', created: { create_status_cursor: 44 } },
+      disabled: false, onLaunch: () => {},
+    }))
+    expect(html).toContain('No sensor')
+    expect(html).toContain('Open Helper')
+    expect(html).not.toContain('Rack Helper has not checked in.')
+    expect(html).not.toContain('Try Launch Helper Again')
+  })
+
+  it('retains the launch warning without a newer Helper status cursor', () => {
+    for (const statusCursor of [44, null, 'invalid']) {
+      const html = renderToStaticMarkup(createElement(HelperStatusPanel, {
+        helper: { status: 'no_sensor', freshness: 'fresh', status_cursor: statusCursor },
+        attempt: { state: 'unconfirmed', created: { create_status_cursor: 44 } },
+        disabled: false, onLaunch: () => {},
+      }))
+      expect(html).toContain('Rack Helper has not checked in.')
+      expect(html).toContain('Try Launch Helper Again')
+    }
   })
 
   it('offers no unsafe download when the backend has no release catalog', () => {

@@ -155,7 +155,9 @@ confirmation phrase comes from 66 bits of domain-separated SHA-256 over pairing 
 endpoint ID, proposed credential ID and digest, bootstrap digest, and server nonce,
 mapped to the repository's fixed 2,048-word list. The browser and helper compare
 the same phrase; the coach confirmation body repeats no phrase and confirms the
-pairing ID currently shown by the endpoint-authenticated Rack.
+same short-lived eight-character code already shown by the endpoint-authenticated
+Rack and entered in the Helper. The pairing UUID remains internal to Helper polling
+and activation; the coach confirmation response does not return it.
 
 Claim, confirmation, activation, expiry, replacement, and cleanup lock
 `BrowserEndpoint` first, then pairing, installation, and credential. Confirmation
@@ -236,7 +238,8 @@ Initial limits are:
 | Endpoint pairing create | 10/source/15 minutes; 1,000/service/minute |
 | Endpoint coach claim | 5/code; 20/coach/hour; 50/organization/hour; 1,000/service/minute |
 | Helper claim | 5/pairing; 10/source/15 minutes; 20/endpoint/hour; 50/organization/hour; 1,000/service/minute |
-| Helper confirm or activate | 10/pairing; 20/endpoint/hour; 1,000/service/minute |
+| Helper confirm | 20/coach/hour; 50/organization/hour; 10/pairing; 20/endpoint/hour; 1,000/service/minute |
+| Helper activate | 10/pairing; 20/endpoint/hour; 1,000/service/minute |
 | Endpoint status read | 120/endpoint/minute; 2,000/service/minute |
 | Helper status write | 20/installation/minute; 2,000/service/minute |
 

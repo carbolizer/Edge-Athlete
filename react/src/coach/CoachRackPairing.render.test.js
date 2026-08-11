@@ -13,7 +13,7 @@ describe('coach hosted Rack pairing renders', () => {
     expect(html).toContain('Endpoint code')
     expect(html).toContain('Varsity')
     expect(html).toContain('Rack label')
-    expect(html).toContain('Helper pairing ID')
+    expect(html).toContain('Helper code')
     expect(html).toContain('I compared all six words')
     expect(html).toContain('required=""')
   })

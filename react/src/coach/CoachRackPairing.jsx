@@ -6,7 +6,7 @@ import {
 } from './api.js'
 import {
   endpointClaimErrorMessage, endpointClaimPayload, helperConfirmationErrorMessage,
-  helperPairingId,
+  helperConfirmationCode,
 } from './rackPairing.js'
 import './CoachRackPairing.css'
 
@@ -39,7 +39,7 @@ export function RackPairingWorkspace({ token, groups, loadingGroups, onAuthLost 
     event.preventDefault()
     setHelperState({ busy: true, error: '', result: null })
     try {
-      const result = await confirmRackHelper(token, helperPairingId(helperCode))
+      const result = await confirmRackHelper(token, helperConfirmationCode(helperCode))
       setHelperCode('')
       setPhraseConfirmed(false)
       setHelperState({ busy: false, error: '', result })
@@ -80,9 +80,9 @@ export function RackPairingWorkspace({ token, groups, loadingGroups, onAuthLost 
           <div className="coach-pairing-step">02</div>
           <span className="coach-pairing-kicker">Helper trust</span>
           <h2>Confirm Rack Helper</h2>
-          <p>Use the pairing ID shown with the Rack’s Helper code. Confirm only while both screens show the same six words.</p>
-          <label htmlFor="helper-code">Helper pairing ID</label>
-          <input id="helper-code" value={helperCode} onChange={(event) => setHelperCode(event.target.value)} autoComplete="off" spellCheck="false" placeholder="00000000-0000-0000-0000-000000000000" required />
+          <p>Enter the eight-character Helper code shown on the Rack. Confirm only while both screens show the same six words.</p>
+          <label htmlFor="helper-code">Helper code</label>
+          <input id="helper-code" value={helperCode} onChange={(event) => setHelperCode(event.target.value.toUpperCase())} autoComplete="off" autoCapitalize="characters" maxLength="8" pattern="[0-9A-HJ-KM-NP-TV-Z]{8}" placeholder="ABCDEFGH" required />
           <label className="coach-pairing-check" htmlFor="phrase-confirmed">
             <input id="phrase-confirmed" type="checkbox" checked={phraseConfirmed} onChange={(event) => setPhraseConfirmed(event.target.checked)} required />
             <span>I compared all six words on the Rack and Helper, and they exactly match.</span>

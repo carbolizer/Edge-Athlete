@@ -22,17 +22,17 @@ describe('coach hosted Rack API', () => {
     })
   })
 
-  it('loads scoped TrainingGroups and sends only pairing_id for confirmation', async () => {
+  it('loads scoped TrainingGroups and sends only the short code for confirmation', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response([{ id: 7, name: 'Varsity' }]))
       .mockResolvedValueOnce(response({ state: 'confirmed' }))
     vi.stubGlobal('fetch', fetchMock)
 
     await getCoachTrainingGroups('coach-token')
-    await confirmRackHelper('coach-token', 'pairing-id')
+    await confirmRackHelper('coach-token', 'ABCDEFGH')
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/coach/v1/training-groups/')
-    expect(fetchMock.mock.calls[1][1].body).toBe('{"pairing_id":"pairing-id"}')
+    expect(fetchMock.mock.calls[1][1].body).toBe('{"pairing_code":"ABCDEFGH"}')
   })
 
   it('preserves the API detail and stable code on errors', async () => {

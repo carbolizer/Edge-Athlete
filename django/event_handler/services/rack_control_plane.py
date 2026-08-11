@@ -575,11 +575,23 @@ def helper_claim_scope(code):
     return tuple(str(value) for value in pairing) if pairing else None
 
 
-def helper_confirm_scope(pairing_id):
-    endpoint_id = RackHelperPairing.objects.filter(pk=pairing_id).values_list(
-        "endpoint_id", flat=True,
+def helper_confirm_scope(user, organization, code):
+    if not isinstance(code, str) or len(code) != 8 or any(c not in CODE_ALPHABET for c in code):
+        return None
+    pairing = RackHelperPairing.objects.select_related("endpoint__training_group").filter(
+        code_digest=code_digest(code, helper=True),
     ).first()
-    return str(endpoint_id) if endpoint_id else None
+    if pairing is None:
+        return None
+    endpoint = pairing.endpoint
+    group = endpoint.training_group
+    if (
+        endpoint.organization_id != organization.id or group is None
+        or group.organization_id != organization.id
+        or not coach_can_manage_group(user, organization, group)
+    ):
+        return None
+    return str(pairing.pk), str(endpoint.pk)
 
 
 def _confirmation_phrase_values(pairing, credential_id, credential_digest, bootstrap_digest):
@@ -650,8 +662,7 @@ def confirm_helper_pairing(user, organization, pairing_id):
     )
     pairing.state = RackHelperPairing.STATE_CONFIRMED
     pairing.confirmed_at = now
-    pairing.code_digest = None
-    pairing.save(update_fields=["state", "confirmed_at", "code_digest"])
+    pairing.save(update_fields=["state", "confirmed_at"])
     return pairing, installation
 
 

@@ -311,26 +311,29 @@ def endpoint_helper_pairing_status(request):
 def helper_pairing_confirm(request):
     try:
         control.require_coach_origin(request)
-        data = control.require_exact_object(request.data, {"pairing_id"})
-        pairing_id = control.parse_uuid(data["pairing_id"])
-        if pairing_id is None:
-            raise control.ControlPlaneError("not_found", "Not found.", 404)
+        data = control.require_exact_object(request.data, {"pairing_code"})
         control.apply_limits([
-            ("helper_confirm_pairing", str(pairing_id), 10, 5 * 60),
+            ("helper_confirm_coach", str(request.user.pk), 20, 60 * 60),
+            ("helper_confirm_organization", str(request.organization.pk), 50, 60 * 60),
             ("helper_confirm_service", "service", 1000, 60),
         ])
-        confirm_scope = control.helper_confirm_scope(pairing_id)
-        if confirm_scope:
-            control.apply_limits([
-                ("helper_confirm_endpoint", confirm_scope, 20, 60 * 60),
-            ])
+        confirm_scope = control.helper_confirm_scope(
+            request.user, request.organization, data["pairing_code"],
+        )
+        if confirm_scope is None:
+            raise control.ControlPlaneError("not_found", "Not found.", 404)
+        pairing_id, endpoint_id = confirm_scope
+        control.apply_limits([
+            ("helper_confirm_pairing", pairing_id, 10, 5 * 60),
+            ("helper_confirm_endpoint", endpoint_id, 20, 60 * 60),
+        ])
         pairing, installation = control.confirm_helper_pairing(
             request.user, request.organization, pairing_id,
         )
     except control.ControlPlaneError as exc:
         return _error(exc)
     return _response({
-        "pairing_id": str(pairing.id), "state": "confirmed",
+        "state": "confirmed",
         "activation_expires_at": installation.activation_expires_at.isoformat(),
     })
 

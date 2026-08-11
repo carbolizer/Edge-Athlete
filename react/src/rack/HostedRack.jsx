@@ -45,7 +45,14 @@ export function EndpointPairingPanel({ pairing, busy, error, onStart }) {
 
 export function HelperStatusPanel({ helper, attempt, disabled, onLaunch }) {
   const view = helperPresentation(helper?.status)
-  const localState = attempt?.state
+  const launchCursor = Number(attempt?.created?.create_status_cursor)
+  const statusCursor = Number(helper?.status_cursor)
+  const helperCheckedIn = (
+    helper?.freshness === 'fresh' && helper?.status !== 'launching'
+    && Number.isInteger(launchCursor) && Number.isInteger(statusCursor)
+    && statusCursor > launchCursor
+  )
+  const localState = helperCheckedIn ? null : attempt?.state
   return (
     <section className={`hosted-rack-card hosted-helper-status tone-${view.tone}`}>
       <header>
@@ -60,7 +67,7 @@ export function HelperStatusPanel({ helper, attempt, disabled, onLaunch }) {
         <div><dt>Last cloud check-in</dt><dd>{formatTime(helper?.status_at)}</dd></div>
         <div><dt>Status cursor</dt><dd>{helper?.status_cursor ?? 'Not available'}</dd></div>
       </dl>
-      {attempt?.state === 'unconfirmed' && (
+      {localState === 'unconfirmed' && (
         <div className="hosted-launch-warning" role="status">
           <strong>Rack Helper has not checked in.</strong>
           <p>It may not be installed, may be blocked by the operating system, or may still be starting.</p>
@@ -98,16 +105,12 @@ export function HelperPairingPanel({ pairing, busy, error, onStart }) {
       {pairing && (
         <>
           <strong className="hosted-rack-code">{pairing.pairing_code}</strong>
-          <div className="hosted-helper-pairing-id">
-            <span>Coach confirmation ID</span>
-            <code>{pairing.pairing_id}</code>
-          </div>
           {pairing.confirmation_phrase?.length === 6 ? (
             <div className="hosted-helper-phrase" aria-label="Helper confirmation phrase">
               {pairing.confirmation_phrase.map((word, index) => <span key={`${index}-${word}`}>{word}</span>)}
             </div>
           ) : <p>Waiting for the Helper to claim this code.</p>}
-          <p>Confirm only when these six words exactly match the Helper. A coach completes confirmation from the authenticated coach workflow.</p>
+          <p>Confirm only when these six words exactly match the Helper. Enter this eight-character code in the authenticated coach workflow.</p>
         </>
       )}
       {error && <p className="hosted-rack-error" role="alert">{error}</p>}

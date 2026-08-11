@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   endpointClaimErrorMessage, endpointClaimPayload, helperConfirmationErrorMessage,
-  helperPairingId,
+  helperConfirmationCode,
 } from './rackPairing.js'
 
 describe('coach Rack pairing payloads', () => {
@@ -11,8 +11,8 @@ describe('coach Rack pairing payloads', () => {
     })
   })
 
-  it('trims and canonicalizes the helper pairing ID', () => {
-    expect(helperPairingId(' ABCD-1234 ')).toBe('abcd-1234')
+  it('trims and canonicalizes the short Helper code', () => {
+    expect(helperConfirmationCode(' abcdefgh ')).toBe('ABCDEFGH')
   })
 })
 
