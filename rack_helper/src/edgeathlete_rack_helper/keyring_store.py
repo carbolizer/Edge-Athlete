@@ -4,7 +4,7 @@ import json
 import sys
 
 
-SERVICE = "Edge Athlete Rack Helper Development"
+SERVICE = "Edge Athlete Rack Helper Development app.edgeathlete.online v1"
 APPROVED_BACKENDS = {
     "linux": {"keyring.backends.SecretService.Keyring"},
     "win32": {"keyring.backends.Windows.WinVaultKeyring"},

@@ -10,8 +10,10 @@ does not hand off arguments or open a listener; it exits with code 4 and the sta
 error `single_instance_active`.
 
 The application origin is fixed at build time in
-`src/edgeathlete_rack_helper/config.py` as `https://edgeathlete.online`. Runtime
+`src/edgeathlete_rack_helper/config.py` as `https://app.edgeathlete.online`. Runtime
 arguments, environment variables, and files cannot change it.
+Credentials use an origin-versioned OS-keyring namespace, so a development build
+pinned to another origin cannot reuse them. An origin change requires re-pairing.
 
 ## Linux development
 

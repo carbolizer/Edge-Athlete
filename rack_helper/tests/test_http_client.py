@@ -57,7 +57,7 @@ class HttpClientTests(unittest.TestCase):
             {"ok": True},
         )
         outgoing, timeout = opener.requests[0]
-        self.assertEqual(outgoing.full_url, "https://edgeathlete.online/api/rack-helper/v1/status/")
+        self.assertEqual(outgoing.full_url, "https://app.edgeathlete.online/api/rack-helper/v1/status/")
         self.assertEqual(outgoing.get_header("Authorization"), "RackHelper earh1.test.secret")
         self.assertEqual(timeout, 5)
 

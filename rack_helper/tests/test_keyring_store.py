@@ -18,18 +18,18 @@ class FakeKeyring:
 
     def get_password(self, service, name):
         self._check(service)
-        return self.values.get(name)
+        return self.values.get((service, name))
 
     def set_password(self, service, name, value):
         self._check(service)
-        self.values[name] = value
+        self.values[(service, name)] = value
 
     def delete_password(self, service, name):
         self._check(service)
-        del self.values[name]
+        del self.values[(service, name)]
 
     def _check(self, service):
-        if service != SERVICE or self.fail:
+        if self.fail:
             raise RuntimeError("backend failure with private detail")
 
 
@@ -43,6 +43,19 @@ class KeyringStoreTests(unittest.TestCase):
         self.assertEqual(store.get_json("dispatch"), {"request": "id"})
         store.clear_identity()
         self.assertEqual(keyring.values, {})
+
+    def test_legacy_origin_namespace_is_never_reused(self):
+        keyring = FakeKeyring()
+        keyring.values[("Edge Athlete Rack Helper Development", "credential")] = "legacy-secret"
+        store = KeyringStore(keyring, platform="linux")
+
+        self.assertIsNone(store.get("credential"))
+        store.set("credential", "new-secret")
+        self.assertEqual(keyring.values[(SERVICE, "credential")], "new-secret")
+        self.assertEqual(
+            keyring.values[("Edge Athlete Rack Helper Development", "credential")],
+            "legacy-secret",
+        )
 
     def test_plaintext_and_unknown_backends_fail_closed(self):
         with self.assertRaises(KeychainUnavailable):
@@ -59,7 +72,7 @@ class KeyringStoreTests(unittest.TestCase):
 
     def test_invalid_metadata_never_falls_back_to_a_file(self):
         keyring = FakeKeyring()
-        keyring.values["dispatch"] = "[]"
+        keyring.values[(SERVICE, "dispatch")] = "[]"
         store = KeyringStore(keyring, platform="linux")
         with self.assertRaises(KeychainUnavailable):
             store.get_json("dispatch")

@@ -1,6 +1,6 @@
 """Immutable values embedded in each development helper build."""
 
-APPLICATION_ORIGIN = "https://edgeathlete.online"
+APPLICATION_ORIGIN = "https://app.edgeathlete.online"
 CONTRACT_VERSION = 1
 HEARTBEAT_SECONDS = 15
 HTTP_TIMEOUT_SECONDS = 5

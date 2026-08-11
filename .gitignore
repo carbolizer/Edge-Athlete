@@ -18,6 +18,7 @@ db.sqlite3
 # generated bundle + SBOM — both are rebuilt by scripts/build-*-development.sh.
 rack_helper/build/
 rack_helper/dist/
+rack_helper/.venv/
 *.egg-info/
 
 
