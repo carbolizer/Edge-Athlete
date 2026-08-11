@@ -622,7 +622,7 @@ NEXT:
   2. reboot, or: sudo systemctl start edgeathlete.service
   3. join the "EdgeAthlete" Wi-Fi and open http://basestation
 
-SHORT COMMANDS (log out and back in, or: source /etc/profile.d/edge-athlete.sh)
+SHORT COMMANDS (available right now — no re-login, no sourcing)
   ea-update    pull latest code and rebuild
   ea-seed      fill it with demo data
   ea-sim       start the fake rack sensor
