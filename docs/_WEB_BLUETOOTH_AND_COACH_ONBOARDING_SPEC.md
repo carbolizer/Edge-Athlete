@@ -3,7 +3,9 @@
 - Date: 2026-08-10
 - Status: BLE lab implemented; physical browser qualification did not run because
   the tested environment exposed no Web Bluetooth API. Native Rack Helper approved
-  as product direction; helper architecture and implementation remain draft.
+  as product direction; its thin hosted control plane and unsigned development
+  runtime are accepted, while physical ingestion and production release remain
+  blocked.
   Public registration remains design-gated.
 - Related vision: [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md)
 - Related production helper proposal: [`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md)

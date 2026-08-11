@@ -1043,6 +1043,478 @@ answer it just asked for.
 
 ---
 
+## 3d. Hosted Rack endpoint and helper control plane
+
+These are the accepted hosted operations. They are separate from the private-AP
+`/api/racks/...` routes. The VPS uses exact path-and-method allowlist entries; a
+broad `/api/rack` prefix is forbidden.
+
+Every operation in this section uses HTTPS, JSON, and `Cache-Control: no-store`.
+Every request with a body requires `Content-Type: application/json`. An empty
+mutation body is exactly the JSON object `{}`. No body, JSON `null`, an array, or
+an object with extra fields returns:
+
+```json
+{"code":"invalid_request","detail":"The request body is invalid."}
+```
+
+Malformed JSON returns `400 invalid_json`. A foreign, unknown, or malformed scoped
+identifier returns `404 {"code":"not_found","detail":"Not found."}`. Endpoint
+authentication failure is `401
+{"code":"endpoint_authentication_failed","detail":"Endpoint authentication
+failed."}`. Helper authentication failure is `401
+{"code":"helper_authentication_failed","detail":"Helper authentication
+failed."}`. CSRF or Origin failure is `403
+{"code":"csrf_failed","detail":"Request verification failed."}`.
+
+Throttling returns integer `Retry-After` and `429`:
+
+```json
+{"code":"rate_limited","detail":"Too many requests.","retry_after_seconds":30}
+```
+
+Cleanup-retention backlog or a full installation consume ledger denies only new
+pairing or launch admission with `503`:
+
+```json
+{"code":"service_unavailable","detail":"The service is temporarily unavailable."}
+```
+
+### Credential syntax and transport
+
+The Rack endpoint credential is exactly:
+
+```text
+eae1.<canonical-lowercase-UUID>.<43-character-canonical-unpadded-base64url>
+```
+
+It is sent only in the host-only cookie:
+
+```text
+ea_rack_endpoint=<eae1 token>; Max-Age=31536000; Path=/api/rack/v1/; Secure; HttpOnly; SameSite=Strict
+```
+
+The server emits no `Domain` or `Expires` attribute. A successful endpoint status
+read refreshes the same rolling `Max-Age` without rotating the token. The helper
+credential is exactly:
+
+```text
+earh1.<canonical-lowercase-UUID>.<43-character-canonical-unpadded-base64url>
+Authorization: RackHelper <earh1 token>
+```
+
+Each final component decodes to exactly 32 bytes. Padding, whitespace, extra
+separators, alternate UUID spellings, and noncanonical base64url are rejected.
+
+### `GET /api/rack/v1/csrf/` — establish endpoint CSRF
+
+No request body. Returns `200 {}` and sets:
+
+```text
+ea_rack_csrf=<opaque token>; Path=/api/rack/v1/; Secure; SameSite=Strict
+```
+
+The cookie is host-only and intentionally readable by the Rack JavaScript. Every
+endpoint-cookie `POST` sends the identical value as `X-CSRFToken` and exactly one
+`Origin` equal to the configured canonical HTTPS application origin. Missing,
+duplicate, `null`, malformed, HTTP, subdomain, suffix, or foreign Origin fails;
+there is no `Referer` fallback.
+
+### Endpoint browser pairing
+
+#### `POST /api/rack/v1/endpoint-pairings/`
+
+Endpoint authentication is not required. CSRF and exact Origin are required. Exact
+body: `{}`. Success returns `201`:
+
+```json
+{
+  "pairing_id": "UUID",
+  "pairing_code": "ABCDEFGH",
+  "expires_at": "UTC RFC 3339 timestamp",
+  "poll_after_seconds": 2
+}
+```
+
+It also sets the independent bootstrap capability:
+
+```text
+ea_rack_endpoint_pairing=<opaque 43-character base64url value>; Max-Age=300; Path=/api/rack/v1/endpoint-pairings/; Secure; HttpOnly; SameSite=Strict
+```
+
+The cookie is host-only. Pairing code and bootstrap capability are never the
+persistent endpoint credential.
+
+#### `POST /api/coach/v1/rack-endpoint-pairings/claim/`
+
+Requires an active-staff coach access token, one active organization membership, permission to
+manage the named TrainingGroup, and exact application Origin. It does not use the
+endpoint cookie. Exact body:
+
+```json
+{
+  "pairing_code": "ABCDEFGH",
+  "training_group": 7,
+  "display_name": "Rack 3"
+}
+```
+
+Success atomically consumes the code and returns `200`:
+
+```json
+{
+  "endpoint": {
+    "id": "UUID",
+    "kind": "rack",
+    "display_name": "Rack 3",
+    "training_group": {"id": 7, "name": "Varsity"},
+    "endpoint_revision": 1
+  },
+  "state": "claimed"
+}
+```
+
+Unknown, malformed, expired, already-used, or foreign-organization codes all return
+the same `404 not_found` and create no endpoint.
+
+#### `POST /api/rack/v1/endpoint-pairings/status/`
+
+Uses `ea_rack_endpoint_pairing`, CSRF, and exact Origin. Exact body: `{}`. Pending
+returns `200`:
+
+```json
+{"state":"pending","expires_at":"UTC RFC 3339 timestamp","poll_after_seconds":2}
+```
+
+After coach claim, success derives and stores the endpoint credential, sets
+`ea_rack_endpoint`, deletes `ea_rack_endpoint_pairing` with `Max-Age=0`, and
+returns `200`:
+
+```json
+{
+  "state": "paired",
+  "endpoint": {
+    "id": "UUID",
+    "kind": "rack",
+    "display_name": "Rack 3",
+    "training_group": {"id": 7, "name": "Varsity"},
+    "endpoint_revision": 1
+  }
+}
+```
+
+A status response lost after claim can be retried with the bootstrap cookie and
+sets the same endpoint credential. Expiry returns `410
+{"code":"pairing_expired","detail":"The pairing session expired."}` and clears
+the bootstrap cookie.
+
+### `GET /api/rack/v1/status/` — endpoint and helper snapshot
+
+Requires `ea_rack_endpoint`; no request body or CSRF header. Success returns `200`:
+
+```json
+{
+  "endpoint": {
+    "id": "UUID",
+    "kind": "rack",
+    "display_name": "Rack 3",
+    "training_group": {"id": 7, "name": "Varsity"},
+    "endpoint_revision": 1
+  },
+  "helper": {
+    "installation_id": "UUID or null",
+    "status": "pairing_required|launching|no_sensor|scanning|verifying|ready|active_online|active_offline|stopping|draining|released|stale|credential_revoked|authentication_blocked|sensor_reconnecting|queue_full|queue_corrupt|keychain_unavailable|update_required|queue_unsafe|queue_read_only|queue_write_failed|endpoint_reassigned|recovery_required",
+    "status_at": "UTC RFC 3339 server receipt timestamp or null",
+    "status_cursor": 41,
+    "freshness": "fresh|stale|not_applicable",
+    "stale_at": "UTC RFC 3339 timestamp or null",
+    "heartbeat_interval_seconds": 15,
+    "stale_after_seconds": 60
+  },
+  "server_time": "UTC RFC 3339 timestamp"
+}
+```
+
+With no active installation, `installation_id` and `status_at` are null, status is
+`pairing_required`, freshness is `not_applicable`, and `stale_at` is null.
+Heartbeat-derived status and `launching` are fresh exactly while
+`server_time < status_at + 60 seconds`; at equality the returned status is `stale`,
+freshness is `stale`, and `stale_at` is `status_at + 60 seconds`. `released` and
+`pairing_required` use `not_applicable`. Browser time never determines freshness.
+
+### Helper pairing and activation
+
+#### `POST /api/rack/v1/helper-pairings/`
+
+Requires the endpoint cookie, CSRF, exact Origin, an active Rack assignment, and no
+pending or active helper installation. Exact body: `{}`. Success returns `201`:
+
+```json
+{
+  "pairing_id": "UUID",
+  "pairing_code": "ABCDEFGH",
+  "expires_at": "UTC RFC 3339 timestamp"
+}
+```
+
+An existing pending pairing returns `409
+{"code":"helper_pairing_pending","detail":"Helper pairing is already pending."}`.
+An active installation returns `409
+{"code":"helper_already_paired","detail":"A Rack Helper is already paired."}`.
+
+#### `POST /api/rack-helper/v1/pairings/claim/`
+
+Unauthenticated, but source, pairing, endpoint, organization, and service throttles
+apply. Before calling, the helper creates the `earh1` credential and independent
+32-byte bootstrap capability and stores both in the OS keyring. Exact body:
+
+```json
+{
+  "pairing_code": "ABCDEFGH",
+  "bootstrap_token": "43-character-canonical-unpadded-base64url",
+  "credential": "earh1.UUID.43-character-canonical-unpadded-base64url",
+  "platform": "linux_x64",
+  "contract_version": 1
+}
+```
+
+Success returns `200`:
+
+```json
+{
+  "pairing_id": "UUID",
+  "state": "claimed",
+  "confirmation_phrase": ["word1","word2","word3","word4","word5","word6"],
+  "expires_at": "UTC RFC 3339 timestamp",
+  "poll_after_seconds": 2
+}
+```
+
+`platform` is exactly `linux_x64` or `windows_x64`.
+
+Retrying the same pairing code, bootstrap, and credential returns the same body.
+Changing any claim field returns the generic `404 not_found`. The server stores
+only domain-separated digests of bootstrap and credential secrets.
+
+#### `POST /api/rack/v1/helper-pairings/status/`
+
+Requires endpoint cookie, CSRF, and exact Origin. Exact body:
+
+```json
+{"pairing_id":"UUID"}
+```
+
+Before helper claim:
+
+```json
+{"pairing_id":"UUID","state":"pending","confirmation_phrase":null,"expires_at":"UTC RFC 3339 timestamp"}
+```
+
+After claim or confirmation:
+
+```json
+{
+  "pairing_id": "UUID",
+  "state": "claimed|confirmed|activated",
+  "confirmation_phrase": ["word1","word2","word3","word4","word5","word6"],
+  "expires_at": "UTC RFC 3339 timestamp"
+}
+```
+
+The endpoint may read only its own current pairing. Expiry returns `410
+pairing_expired`.
+
+#### `POST /api/coach/v1/rack-helper-pairings/confirm/`
+
+Requires an active-staff coach access token, exact Origin, and permission to manage the pairing's
+current endpoint and TrainingGroup. Exact body:
+
+```json
+{"pairing_id":"UUID"}
+```
+
+The coach confirms only after comparing the six words displayed by Rack and helper.
+Success creates the provisional installation and pending credential and returns
+`200`:
+
+```json
+{"pairing_id":"UUID","state":"confirmed","activation_expires_at":"UTC RFC 3339 timestamp"}
+```
+
+Retry is idempotent. A foreign, expired, cancelled, or unknown pairing is `404
+not_found`; it creates no installation.
+
+#### `POST /api/rack-helper/v1/pairings/status/`
+
+No persistent helper authentication yet. Exact body:
+
+```json
+{"pairing_id":"UUID","bootstrap_token":"43-character-canonical-unpadded-base64url"}
+```
+
+Success returns `200`:
+
+```json
+{
+  "pairing_id": "UUID",
+  "state": "claimed|confirmed|activated",
+  "activation_expires_at": "UTC RFC 3339 timestamp or null",
+  "poll_after_seconds": 2
+}
+```
+
+Unknown, malformed, expired, wrong-bootstrap, or terminal pairing state returns the
+same `404 not_found`.
+
+#### `POST /api/rack-helper/v1/pairings/activate/`
+
+Uses `Authorization: RackHelper <earh1 token>`. Exact body:
+
+```json
+{"pairing_id":"UUID","activation_request_id":"UUID"}
+```
+
+Success atomically activates the installation/credential and binds the latest
+unexpired provisional launch intent when present. It returns `200`:
+
+```json
+{
+  "installation_id": "UUID",
+  "endpoint_revision": 1,
+  "status_cursor": 41,
+  "launch_intent_bound": true
+}
+```
+
+`launch_intent_bound` is false when no current provisional intent exists. Retrying
+the same activation-request UUID and body returns the original response. Reusing it
+with changed bytes returns `409
+{"code":"activation_request_conflict","detail":"The activation request cannot be reused."}`.
+An expired or no-longer-current pairing returns `409
+{"code":"activation_unavailable","detail":"Helper activation is unavailable."}`
+and activates nothing.
+
+### `POST /api/rack-helper/v1/status/` — helper heartbeat
+
+Requires an active `earh1` credential and a launch intent consumed by the current
+helper boot. Exact body:
+
+```json
+{
+  "helper_boot_id": "UUID",
+  "status_request_id": "UUID",
+  "status": "no_sensor|scanning|verifying|ready|active_online|active_offline|stopping|draining|credential_revoked|authentication_blocked|sensor_reconnecting|queue_full|queue_corrupt|keychain_unavailable|update_required|queue_unsafe|queue_read_only|queue_write_failed|endpoint_reassigned|recovery_required"
+}
+```
+
+`pairing_required`, `launching`, `released`, and `stale` are server-derived and are
+rejected as `400 invalid_status`. Success returns `200`:
+
+```json
+{
+  "status": "no_sensor",
+  "status_at": "UTC RFC 3339 server receipt timestamp",
+  "status_cursor": 42,
+  "next_heartbeat_seconds": 15,
+  "stale_after_seconds": 60
+}
+```
+
+The helper sends a new heartbeat every 15 seconds. The same installation,
+`status_request_id`, boot ID, and status return the immutable prior body without a
+second cursor increment. Reuse with changed boot or status returns `409
+{"code":"status_request_conflict","detail":"The status request cannot be reused."}`.
+An active credential without a launch consumed by that boot returns `409
+{"code":"launch_required","detail":"Launch authorization is required."}` and
+does not change contact time or status.
+
+### Rack Helper launch intent
+
+These operations retain the transaction, locking, five-minute expiry, supersession,
+idempotency, cursor, first-pair binding, retention, and cleanup semantics in
+[`docs/_ADR_RACK_HELPER_LAUNCH_INTENT.md`](docs/_ADR_RACK_HELPER_LAUNCH_INTENT.md).
+
+#### `POST /api/rack/v1/helper-launch-intents/`
+
+Requires endpoint cookie, CSRF, exact Origin, active assignment, and exact body
+`{}`. Success is `201`:
+
+```json
+{
+  "intent_id": "UUID",
+  "expires_at": "UTC RFC 3339 timestamp",
+  "launch_uri": "edgeathlete-rack:launch",
+  "create_status_cursor": 41
+}
+```
+
+Organization, endpoint, installation, command, and return-URL fields are invalid,
+not ignored. A new committed create supersedes the prior pending intent.
+
+#### `POST /api/rack/v1/helper-launch-intents/inspect/`
+
+Requires endpoint cookie, CSRF, exact Origin, and exact body:
+
+```json
+{"intent_id":"UUID"}
+```
+
+Success is `200`:
+
+```json
+{
+  "intent_id": "UUID",
+  "state": "pending|consumed|superseded|expired|cancelled",
+  "expires_at": "UTC RFC 3339 timestamp",
+  "acknowledged_at": "UTC RFC 3339 timestamp or null",
+  "ack_cursor": 42,
+  "current_status_cursor": 44,
+  "helper_status": "accepted helper status or null"
+}
+```
+
+`ack_cursor` is null unless consumed and never changes afterward. The endpoint may
+inspect only its own intent; foreign, malformed, and unknown IDs are `404 not_found`.
+
+#### `POST /api/rack-helper/v1/launch-intents/consume/`
+
+Uses active `Authorization: RackHelper <earh1 token>`. Exact body:
+
+```json
+{"helper_boot_id":"UUID","consume_request_id":"UUID"}
+```
+
+Success atomically consumes the current targeted intent, writes `launching`, and
+returns `200`:
+
+```json
+{
+  "intent_id": "UUID",
+  "acknowledged_at": "UTC RFC 3339 timestamp",
+  "ack_cursor": 42,
+  "next": "reconcile"
+}
+```
+
+The same installation, consume-request UUID, and boot ID return the immutable prior
+body even after intent cleanup or a later create. Changed boot data returns `409
+{"code":"consume_request_conflict","detail":"The consume request cannot be reused."}`.
+No consumable intent returns `409
+{"code":"launch_intent_unavailable","detail":"No launch request is available."}`
+and creates no heartbeat, status, lease, queue, sensor, set, or rep write.
+The replay ledger is capped at 10,000 receipts per installation. At capacity,
+existing receipt retries remain available and new launch-intent admission receives
+the generic `503 service_unavailable` response above.
+
+### Thin-slice prohibition
+
+These accepted routes cannot upload a derived event, connect a sensor, create or
+complete a set, create a permanent `Rep`, change a ranking/report/reference max, or
+publish physical VBT state. Those operations remain absent until their own accepted
+ADR, physical qualification, and contract revision.
+
+---
+
 ## 4. Derived values — who computes what (read this)
 
 These fields are *not* sent raw by the hardware; something computes them. Getting

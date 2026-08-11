@@ -10,6 +10,10 @@ EXPECTED_API_LOCATIONS = {
     "= /api/health/",
     "= /api/gateways/diagnostics/",
     "~ ^/api/auth/(login|refresh)/$",
+    "~ ^/api/rack/v1/(csrf|status)/$",
+    "~ ^/api/rack/v1/(endpoint-pairings(?:/status)?|helper-pairings(?:/status)?|helper-launch-intents(?:/inspect)?)/$",
+    "~ ^/api/coach/v1/(rack-endpoint-pairings/claim|rack-helper-pairings/confirm)/$",
+    "~ ^/api/rack-helper/v1/(pairings/(claim|status|activate)|status|launch-intents/consume)/$",
     "/api/",
 }
 
@@ -30,6 +34,28 @@ def validation_errors(config_path):
         errors.append("VPS API fallback must contain only 'return 404;'")
     if not re.search(r"^\s*location\s+\^~\s+/admin/\s*\{\s*return\s+404;", config, re.MULTILINE):
         errors.append("VPS admin denial is missing")
+    required_method_guards = {
+        "~ ^/api/rack/v1/(csrf|status)/$": "GET",
+        "~ ^/api/rack/v1/(endpoint-pairings(?:/status)?|helper-pairings(?:/status)?|helper-launch-intents(?:/inspect)?)/$": "POST",
+        "~ ^/api/coach/v1/(rack-endpoint-pairings/claim|rack-helper-pairings/confirm)/$": "POST",
+        "~ ^/api/rack-helper/v1/(pairings/(claim|status|activate)|status|launch-intents/consume)/$": "POST",
+    }
+    for location, method in required_method_guards.items():
+        block = re.search(
+            rf"^\s*location\s+{re.escape(location)}\s*\{{(?P<body>.*?)^\s*\}}",
+            config, re.MULTILINE | re.DOTALL,
+        )
+        if block is None or f"if ($request_method != {method})" not in block.group("body"):
+            errors.append(f"VPS hosted Rack location lacks exact {method} method guard: {location}")
+        if block is None or "limit_req zone=hosted_control_plane" not in block.group("body"):
+            errors.append(f"VPS hosted Rack location lacks per-IP limiting: {location}")
+    main_csp = (
+        "add_header Content-Security-Policy \"default-src 'self'; base-uri 'none'; "
+        "connect-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; "
+        "script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'\" always;"
+    )
+    if main_csp not in config:
+        errors.append("VPS main application CSP is missing")
     return errors
 
 

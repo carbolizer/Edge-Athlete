@@ -1,8 +1,8 @@
 # API Authorization Matrix
 
 - Date: 2026-08-10
-- Status: Athlete, TrainingGroup, and TrainingBlock tenant scope implemented;
-  registration remains disabled
+- Status: Athlete, TrainingGroup, TrainingBlock, and thin hosted Rack control-plane
+  scope implemented; registration remains disabled
 - Source of truth: `django/event_handler/urls.py`, view decorators, and `nginx/vps.conf.template`
 
 ## Boundaries
@@ -17,8 +17,10 @@ permission evaluation; an inactive user that reaches the permission check return
 public health. Controller routes also validate their rack capability. Gateway
 ingestion disables JWT authentication and validates its versioned gateway bearer.
 
-The VPS proxies only health, gateway ingestion, gateway diagnostics, login, and
-refresh. Every other `/api/` path returns `404` at public Nginx before Django.
+The VPS proxies health, gateway ingestion, gateway diagnostics, login, refresh,
+and the exact hosted Rack control-plane routes below. Every other `/api/` path,
+including similarly prefixed private-AP `/api/racks/...` routes, returns `404` at
+public Nginx before Django.
 
 ## Public And Special Routes
 
@@ -30,6 +32,35 @@ refresh. Every other `/api/` path returns `404` at public Nginx before Django.
 | `/api/auth/register/` | POST | No route | `404`; creates no user | `404` |
 | `/api/gateway/v1/events/` | POST | Gateway bearer | `401` without valid gateway bearer | Public, throttled |
 | `/api/gateways/diagnostics/` | GET | `IsActiveStaff` | `401 / 403 / allowed` | Public, staff JWT |
+
+## Hosted Rack Control Plane
+
+The backend gates below are fixed by
+[`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md)
+and [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md). VPS ingress uses anchored,
+method-fenced allowlist entries; similarly prefixed private-AP routes remain `404`.
+
+| Route | Methods | Backend gate | VPS ingress |
+|---|---|---|---|
+| `/api/rack/v1/csrf/` | GET | CSRF bootstrap; no endpoint authority | Exact public route |
+| `/api/rack/v1/endpoint-pairings/` | POST | CSRF + exact Origin + PostgreSQL throttle | Exact public route |
+| `/api/rack/v1/endpoint-pairings/status/` | POST | Bootstrap cookie + CSRF + exact Origin | Exact public route |
+| `/api/coach/v1/rack-endpoint-pairings/claim/` | POST | Active-staff coach token + active organization membership + TrainingGroup manage permission + exact Origin | Exact public route |
+| `/api/rack/v1/status/` | GET | `ea_rack_endpoint` scoped to its own endpoint | Exact public route |
+| `/api/rack/v1/helper-pairings/` | POST | Endpoint cookie + CSRF + exact Origin | Exact public route |
+| `/api/rack/v1/helper-pairings/status/` | POST | Endpoint cookie + CSRF + exact Origin; own pairing only | Exact public route |
+| `/api/coach/v1/rack-helper-pairings/confirm/` | POST | Active-staff coach token + active organization membership + endpoint/TrainingGroup manage permission + exact Origin | Exact public route |
+| `/api/rack-helper/v1/pairings/claim/` | POST | Pairing/bootstrap validation + PostgreSQL throttle | Exact public route |
+| `/api/rack-helper/v1/pairings/status/` | POST | Pairing bootstrap capability | Exact public route |
+| `/api/rack-helper/v1/pairings/activate/` | POST | Pending `earh1` credential scoped to its provisional installation | Exact public route |
+| `/api/rack-helper/v1/status/` | POST | Active `earh1` credential + launch consumed by current boot | Exact public route |
+| `/api/rack/v1/helper-launch-intents/` | POST | Endpoint cookie + CSRF + exact Origin | Exact public route |
+| `/api/rack/v1/helper-launch-intents/inspect/` | POST | Endpoint cookie + CSRF + exact Origin; own intent only | Exact public route |
+| `/api/rack-helper/v1/launch-intents/consume/` | POST | Active `earh1` credential scoped to target installation | Exact public route |
+
+No accepted hosted route uploads derived events, reads a roster, starts or completes
+a set, creates a `Rep`, transfers a sensor, releases an acquisition lease, or serves
+a helper package. Those capabilities remain absent and public `404`.
 
 ## Active-Staff Routes
 

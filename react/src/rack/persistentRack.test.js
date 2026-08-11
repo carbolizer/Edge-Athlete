@@ -21,6 +21,7 @@ describe('persistentRackHost', () => {
   })
 
   it('does not retain a rack during setup, role changes, or another rack route', () => {
+    expect(persistentRackHost('/rack', 'rack', '1')).toBeNull()
     expect(persistentRackHost('/rack/setup', 'rack', '1')).toBeNull()
     expect(persistentRackHost('/coach', 'coach', '1')).toBeNull()
     expect(persistentRackHost('/rack/2', 'rack', '1')).toBeNull()

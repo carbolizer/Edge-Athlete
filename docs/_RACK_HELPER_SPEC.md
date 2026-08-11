@@ -3,11 +3,16 @@
 - Ticket: N/A
 - Owner: Edge Athlete team
 - Date: 2026-08-10
-- Status: Product direction approved; architecture and implementation draft
+- Status: Thin hosted control plane and unsigned development runtime accepted;
+  physical ingestion and production release blocked
 - Related vision: [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md)
 - Related identity contract: [`_RACK_DASHBOARD_TEAM_REGISTRATION.md`](_RACK_DASHBOARD_TEAM_REGISTRATION.md)
 - Related hosted transport: [`_VPS_EDGE_GATEWAY_SPEC.md`](_VPS_EDGE_GATEWAY_SPEC.md)
 - Related launch ADR: [`_ADR_RACK_HELPER_LAUNCH_INTENT.md`](_ADR_RACK_HELPER_LAUNCH_INTENT.md)
+- Accepted endpoint/helper identity ADR:
+  [`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md)
+- Accepted development runtime ADR:
+  [`_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md`](_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md)
 
 ## User Story
 
@@ -90,8 +95,9 @@ derived rep events to the cloud.
 - Claiming production detector accuracy before physical qualification passes.
 - Starting or completing a hosted set solely from helper data.
 - Replacing the local/Pi compatibility profile in this feature.
-- Selecting the desktop runtime, installer framework, or supported OS versions in
-  this specification.
+- Selecting a signed production runtime, installer framework, or customer-supported
+  OS matrix. The accepted unsigned development runtime is CPython 3.12 with
+  Tkinter, Bleak, and `keyring` on Linux x64 and Windows x64.
 - Silent browser installation, automatic execution of a downloaded package, or
   inferring installation or launch causation from browser focus and
   protocol-handler behavior.
@@ -167,9 +173,13 @@ Organization
   -> Active set context
 ```
 
-## Proposed Data Model
+## Data Model Status
 
-The ADR must finalize names and constraints. The minimum server-side records are:
+The endpoint, endpoint credential/pairing, helper installation/credential/pairing,
+launch, status, throttle, and cleanup subset is accepted by
+[`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md).
+The sensor, lease, set-context, receipt, and rep-state records below remain proposed.
+The full product model is:
 
 - `BrowserEndpoint`: the single Rack/Dashboard endpoint identity from
   [`_RACK_DASHBOARD_TEAM_REGISTRATION.md`](_RACK_DASHBOARD_TEAM_REGISTRATION.md).
@@ -202,7 +212,13 @@ The migration plan must include rollback before production data, an audit for
 cross-organization endpoint relationships, and a prohibition on dropping helper
 ownership after customer data exists.
 
-Pairing behavior:
+The HPKE ceremony below remains a production-hardening proposal and does not govern
+the accepted thin control plane. The accepted helper generates and durably stores
+its `earh1` credential before claim; the server stores only its digest, and
+activation proves possession after coach confirmation. Exact operations are in
+[`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md).
+
+Proposed production pairing behavior:
 
 1. An authenticated coach authorized to manage the Rack endpoint requests a helper
    pairing code.
@@ -273,8 +289,11 @@ installations.
 
 ## Runtime Contract
 
-An architecture decision record must finalize endpoint names and schemas before
-implementation. The interface must provide these operations:
+The accepted endpoint/helper identity and launch ADRs finalize the thin control-plane
+names, schemas, and operations in [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md).
+Implementation may provide CSRF, endpoint pairing/status, helper pairing/activation/
+status, and launch create/inspect/consume. The remaining full-product interface must
+eventually provide:
 
 - Create, inspect, confirm, expire, and cancel a pairing session.
 - Exchange a confirmed bootstrap capability for one persistent credential.
@@ -808,48 +827,37 @@ failure never triggers automatic failover.
 
 ## Smallest First Slice
 
-The first slice is a non-production queue/ingestion proof on one development OS:
+The first authorized slice is the hosted control plane with no physical BLE reps:
 
-1. Provision one fixture installation credential and test context outside the
-   product pairing flow.
-2. Enqueue one normalized derived-rep fixture in an encrypted SQLite queue.
-3. Upload it over the constrained HTTPS client, record one receipt, and update only
-   recoverable Rack state.
-4. Lose the response after commit, replay, and prove one receipt/state effect.
-5. Restart with an unacknowledged old-boot row, drain it under the original boot,
-   and prove no listener exists.
+1. Add `BrowserEndpoint`, endpoint/helper pairing and credential records, helper
+   status/cursor records, PostgreSQL throttle buckets, launch records, and cleanup.
+2. Implement only the exact CSRF, endpoint pairing/status, helper pairing/
+   activation/status, and launch create/inspect/consume operations in
+   [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md).
+3. Run the unsigned CPython 3.12/Tkinter development helper on Linux x64 and Windows
+   x64, storing pending and active secrets through `keyring` and handling only the
+   exact `edgeathlete-rack:launch` protocol.
+4. After intent consumption, report `no_sensor` every 15 seconds and prove the Rack
+   snapshot changes to `stale` at 60 seconds by server time.
+5. Prove the helper exposes no listener and that the entire flow creates no sensor,
+   event, set, rep, ranking, report, reference-max, insight, or analytics write.
 
-Fixture provisioning exists only in a separate development/test command or profile.
-Production configuration rejects fixture credentials and contexts; public Nginx
-exposes no fixture route. Each test run generates its own uncommitted fixture
-secret, and CI scans the production package and route table for fixture code,
-credentials, and endpoints.
-
-The first-slice fixture states are `fixture_idle`, `fixture_queued`,
-`fixture_uploading`, `fixture_retry_wait`, and `fixture_draining`. The listener scan
-runs in each state.
-
-Before this slice, the queue/upload ADR must define the fixture credential and
-context schema, canonical event bytes, receipt and recoverable-live-state schema,
-batch/error/cursor behavior, encryption on the selected development OS, and exact
-validation commands. Its gates are AC2b; AC6 for missing,
-malformed, expired, and wrong-endpoint fixture credentials; AC9; the durable-commit
-ordering in AC11; AC12–AC13; the fixture barrier and zero-permanent-effect clauses
-in AC20; AC22a, AC22b, and AC22c's encryption, backup-exclusion, and expiry clauses;
-and AC25. Pairing, keychain enrollment, BLE, native UI, browser delivery,
-completion, packaging, updates, rotation/revocation, and physical qualification are
-later slices.
+This slice has no fixture ingestion credential, SQLite event queue, upload route,
+recoverable rep state, BLE call, set context, release catalog, installer, or update
+path. Those remain later slices behind separate accepted ADRs.
 
 ### First-Slice Demo
 
-1. Exercise every fixture state and show that a local listener scan remains empty
-   in each.
-2. Enqueue one fixture event and inspect encrypted-at-rest storage evidence.
-3. Upload it, drop the response, replay, and show one cloud receipt and one
-   recoverable state update.
-4. Restart with a queued prior-boot event and show it drains before a new context
-   can start.
-5. Start the unchanged local/Pi profile without helper configuration.
+1. Pair a Rack browser to one authorized TrainingGroup and inspect the scoped,
+   host-only endpoint cookie.
+2. Pair and activate the unsigned development helper through keyring-backed
+   credentials and matching six-word confirmation.
+3. Create a launch intent, invoke the exact protocol, consume it, and observe the
+   intent-bound cursor acknowledgement followed by `no_sensor` status.
+4. Stop heartbeats and observe fresh status through 59.999 seconds and `stale` at
+   60 seconds. Restart without another intent and show inert UI with no status write.
+5. Show PostgreSQL throttle/cleanup evidence, an empty listener scan, zero physical
+   or permanent-rep writes, and unchanged local/Pi startup.
 
 ## Acceptance Criteria
 
@@ -860,18 +868,20 @@ later slices.
 - [ ] AC2a: Given protocol handling, any helper or browser-observed state named in
   Lifecycle, or any blocking state, when TCP/UDP listeners and localhost APIs are
   scanned, then none belong to the helper.
-- [ ] AC2b: Given any first-slice fixture state, when TCP/UDP listeners and localhost
-  APIs are scanned, then none belong to the helper.
+- [ ] AC2b: Given any first-slice unpaired, paired, launching, status, failure, or
+  exit state, when TCP/UDP listeners and localhost APIs are scanned, then none
+  belong to the helper.
 - [ ] AC3: Given a pairing claim, when the code, bootstrap, confirmation phrase,
   expiry, rate limit, organization, or endpoint check fails, then the generic
   response reveals no validity signal and no credential activates.
 - [ ] AC4: Given two helpers claim one code concurrently, when the coach confirms
-  the matching phrase, then at most the helper public key bound to that phrase can
-  activate and every competing claim fails.
-- [ ] AC5: Given confirmation succeeds but the response is lost, the process dies,
-  or keychain storage fails, when the helper retries before bootstrap expiry, then
-  it receives the same transcript-bound HPKE envelope and activation occurs only
-  after durable keychain storage and credential proof-of-possession.
+  the matching phrase, then at most the `earh1` credential UUID and digest bound to
+  that phrase can activate and every competing claim fails.
+- [ ] AC5: Given keyring storage fails before claim, then no claim occurs. Given
+  confirmation succeeds but its response is lost or the process dies, when the
+  helper retries before bootstrap expiry, then pairing status recovers the same
+  confirmed installation and activation requires possession of the durably stored
+  `earh1` credential.
 - [ ] AC6: Given a missing, malformed, expired, inactive for more than 24 hours,
   superseded-after-overlap, revoked, or wrong-endpoint credential, when context or
   upload is requested, then the server returns one generic authentication failure
@@ -1048,10 +1058,10 @@ later slices.
 |---|---|
 | 1 | Installer/signing/keychain/autostart/update matrix for each supported OS |
 | 2a | Listener scan for protocol handling and every lifecycle/blocking state |
-| 2b | Listener scan in every first-slice fixture state |
+| 2b | Listener scan in every first-slice control-plane state |
 | 3 | Pairing API rate-limit, expiry, generic-error, and tenant tests |
-| 4 | Concurrent claim/confirm transaction test and phrase comparison demo |
-| 5 | Lost-response, process-kill, keychain-failure, and envelope-retry tests |
+| 4 | Concurrent claim/confirm transaction test and credential-bound phrase comparison demo |
+| 5 | Pre-claim keyring failure, lost-response, process-kill, status-recovery, and credential-possession tests |
 | 6 | Credential negative matrix with zero-write assertions |
 | 7 | Physical scan/verify/replacement test plus cloud/log field scan |
 | 8 | Restart, random-address, collision, missing-device, and reverification tests |
@@ -1171,43 +1181,34 @@ later slices.
 
 ## Open Questions And Stop Conditions
 
-1. Which OS versions and CPU architectures belong to the first release matrix,
-   and which installer format, keychain API, BLE stack, and autostart mechanism
-   applies to each?
-2. Does the helper package the existing Python/Bleak detector or use another
-   reviewed runtime and UI? What dependency lock, SBOM, provenance, and patch
-   process applies?
-3. What exact endpoint, snapshot, invalidation, pagination, and cursor schemas
-   implement the proposed Rack models and browser reconciliation?
-4. Does completion submit receipt event IDs or a server cursor? The chosen ADR
+1. Which signed production OS/CPU matrix, installer format, publisher identities,
+   dependency/SBOM/provenance process, and autostart mechanism pass release review?
+   The unsigned development choice does not answer this.
+2. What exact ingestion, receipt, recoverable-live-state, invalidation, pagination,
+   and browser event-snapshot schemas follow the accepted control-plane status
+   snapshot?
+3. Does completion submit receipt event IDs or a server cursor? The chosen ADR
    must revise [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md) and
    [`_RACK_BLE_LIVE_WORKFLOW_SPEC.md`](_RACK_BLE_LIVE_WORKFLOW_SPEC.md).
-5. Which encryption library and OS-keychain wrapping design protects SQLite on
+4. Which encryption library and OS-keychain wrapping design protects SQLite on
    every supported platform, including WAL, crash dump, backup, uninstall, and
    secure key-destruction behavior?
-6. Which signing identities, embedded trust roots, update origins, metadata format,
+5. Which signing identities, embedded trust roots, update origins, metadata format,
    key-rotation process, vulnerability threshold, and release owner control
    production packages?
-7. Does the supported network policy permit enterprise TLS proxies, and how are
+6. Does the supported network policy permit enterprise TLS proxies, and how are
    proxy trust and source-IP metadata retention reviewed?
-8. Who approves the accepted detector/event fencing and physical WT901
+7. Who approves the accepted detector/event fencing and physical WT901
    qualification evidence?
-9. The accepted
-   [`_ADR_RACK_HELPER_LAUNCH_INTENT.md`](_ADR_RACK_HELPER_LAUNCH_INTENT.md) fixes
-   launch-intent operation semantics, provisional pairing binding, five-minute
-   expiry, uniqueness, fixed URI, acknowledgement cursor, and concurrency rules.
-   `_MESSAGE_CONTRACT.md`, native protocol registration, and the complete endpoint
-   status snapshot remain blocked by that ADR's implementation gates.
-10. What lease-release endpoint, idempotency key, lease TTL, stop watermark, queue
-    drain timeout, and state transitions implement graceful and offline stop?
-11. What measured graceful-exit and forced-process-death BLE release bounds apply to
-    each supported OS, and what transfer workflow resolves an offline prior owner?
+8. What lease-release endpoint, idempotency key, lease TTL, stop watermark, queue
+   drain timeout, and state transitions implement graceful and offline stop?
+9. What measured graceful-exit and forced-process-death BLE release bounds apply to
+   each supported OS, and what transfer workflow resolves an offline prior owner?
 
-The fixture queue/ingestion proof must not begin until its queue/upload ADR defines
-the first-slice interfaces, encryption, migration rollback, development profile,
-and validation commands listed above. Pairing, BLE, browser synchronization,
-launch/download/stop, and production packaging must not begin until the applicable
-decisions 1–11 and migration/rollback plans are approved. A production
-release requires the full OS packaging, keychain, BLE, autostart, update, proxy,
-and validation matrix. Physical rep ingestion must remain disabled until question
-8 and AC24 pass.
+The endpoint/helper identity ADR, runtime ADR, launch ADR, and revised message
+contract authorize only the control-plane first slice above. Queue/ingestion,
+browser rep synchronization, BLE, completion, download, stop/release, transfer, and
+production packaging must not begin until their applicable decisions and rollback
+plans are approved. A production release requires the full signing, packaging,
+keychain, BLE, autostart, update, proxy, and validation matrix. Physical rep
+ingestion remains disabled until physical qualification and AC24 pass.

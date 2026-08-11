@@ -56,6 +56,22 @@ export async function coachFetch(path, { token, method = 'GET', body } = {}) {
   return data
 }
 
+export function getCoachTrainingGroups(token) {
+  return coachFetch('/api/training-groups/', { token })
+}
+
+export function claimRackEndpoint(token, body) {
+  return coachFetch('/api/coach/v1/rack-endpoint-pairings/claim/', {
+    token, method: 'POST', body,
+  })
+}
+
+export function confirmRackHelper(token, pairingId) {
+  return coachFetch('/api/coach/v1/rack-helper-pairings/confirm/', {
+    token, method: 'POST', body: { pairing_id: pairingId },
+  })
+}
+
 /** Short slice shown on waiting tablets / coach dropdowns (not a full UUID wall). */
 export function shortId(id) {
   if (!id) return '—'

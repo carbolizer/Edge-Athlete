@@ -15,6 +15,8 @@ open items in those documents are not accepted product behavior.
 | [`_RACK_DASHBOARD_TEAM_REGISTRATION.md`](_RACK_DASHBOARD_TEAM_REGISTRATION.md) | Team-scoped Rack/Dashboard identity, pairing, persistent credentials, and backend authorization direction |
 | [`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md) | Native desktop BLE acquisition, pairing, queue, cloud synchronization, security, and implementation blockers |
 | [`_ADR_RACK_HELPER_LAUNCH_INTENT.md`](_ADR_RACK_HELPER_LAUNCH_INTENT.md) | Accepted server launch-intent, fixed protocol URI, first-pair binding, concurrency, and implementation gates |
+| [`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md) | Accepted hosted Rack endpoint/helper identity, pairing, credentials, status freshness, PostgreSQL throttling, and cleanup for the thin control plane |
+| [`_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md`](_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md) | Accepted unsigned CPython 3.12/Tkinter/Bleak/keyring development runtime and exact protocol handling for Linux x64 and Windows x64 |
 | [`_HANDOFF.md`](_HANDOFF.md) | **Read first.** The things that are not obvious from the code — why a prescribed weight can go *down*, where the formulas live, and what is deliberately unfinished |
 
 ## What changed, and how to see it

@@ -2,9 +2,12 @@
 
 - Source: `EDGE_ATHLETE_RACK_DASHBOARD_REGISTRATION_UPDATED.md`, supplied by the
   product owner on 2026-08-10
-- Status: Product and architecture direction; database implementation pending
+- Status: Product direction; Rack endpoint identity contract accepted, database
+  implementation pending
 - Related vision: [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md)
 - Related ADR: [`_ADR_COACH_WORKSPACE_TENANCY.md`](_ADR_COACH_WORKSPACE_TENANCY.md)
+- Accepted Rack endpoint/helper identity ADR:
+  [`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md)
 
 ## Problem
 

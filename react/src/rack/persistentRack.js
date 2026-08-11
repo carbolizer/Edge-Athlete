@@ -5,6 +5,7 @@ export function persistentRackHost(pathname, role, storedRackNumber) {
   if (role !== 'rack' || !Number.isInteger(rackNumber) || rackNumber < 1) return null
 
   const path = `/rack/${rackNumber}`
+  if (pathname === '/rack') return null
   if (pathname === '/rack/setup') return null
   if (pathname.startsWith('/rack/') && pathname !== path) return null
 

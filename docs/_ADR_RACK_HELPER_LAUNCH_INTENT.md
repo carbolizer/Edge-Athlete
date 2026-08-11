@@ -1,11 +1,16 @@
 # ADR: Rack Helper Launch Intent
 
 - Date: 2026-08-10
-- Status: Accepted contract; implementation blocked by the gates in this ADR
+- Status: Accepted; thin control-plane implementation authorized, signed release
+  work blocked
 - Related spec: [`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md)
 - Related identity direction:
   [`_RACK_DASHBOARD_TEAM_REGISTRATION.md`](_RACK_DASHBOARD_TEAM_REGISTRATION.md)
 - Related tenancy ADR: [`_ADR_COACH_WORKSPACE_TENANCY.md`](_ADR_COACH_WORKSPACE_TENANCY.md)
+- Accepted identity ADR:
+  [`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md)
+- Accepted development runtime ADR:
+  [`_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md`](_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md)
 
 ## Context
 
@@ -21,8 +26,8 @@ would make the helper a confused deputy for an unrelated website.
 The current `RackScreen`, controller capability, and `/api/racks/...` routes belong
 to the private-AP compatibility profile. They are absent from VPS ingress and have
 no organization ownership. This ADR does not expose or extend them. Hosted launch
-uses the proposed organization-owned `BrowserEndpoint(kind=rack)` identity after
-its separate schema and authentication contract are accepted.
+uses the accepted organization-owned `BrowserEndpoint(kind=rack)` identity in the
+endpoint/helper identity ADR.
 
 ## Existing Patterns
 
@@ -57,8 +62,9 @@ before dispatch. It never invokes a shell.
 
 ## Data Model
 
-This ADR depends on the future `BrowserEndpoint` and `RackHelperInstallation`
-models. It adds these fields or records when those roots exist.
+This ADR uses the accepted `BrowserEndpoint` and `RackHelperInstallation` models in
+[`_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md).
+It adds these fields or records when those roots are implemented.
 
 ### `RackHelperLaunchIntent`
 
@@ -126,10 +132,9 @@ access.
 
 ## Interface Contract
 
-The operation semantics below are accepted. URL and wire shapes are proposed until
-the same contract is approved in [`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md);
-implementation cannot use them before that revision. Exact route inclusion also
-remains blocked until hosted `BrowserEndpoint` routes exist.
+The operation semantics, URLs, and wire shapes below are accepted in
+[`../_MESSAGE_CONTRACT.md`](../_MESSAGE_CONTRACT.md). Exact public route inclusion
+still requires implementation tests and VPS allowlist review.
 
 ### Create Intent
 
@@ -137,7 +142,8 @@ remains blocked until hosted `BrowserEndpoint` routes exist.
 POST /api/rack/v1/helper-launch-intents/
 ```
 
-Authentication uses the host-only Rack endpoint cookie. The request body is empty.
+Authentication uses the host-only Rack endpoint cookie. The exact request body is
+the empty JSON object `{}`.
 The server requires CSRF, exact application Origin, `BrowserEndpoint(kind=rack)`,
 and an active endpoint assignment. Organization, endpoint, installation, and return
 URL fields are rejected rather than ignored.
@@ -288,8 +294,8 @@ pairing-confirmation transaction locks endpoint and pairing, then inserts a
 `activation_expires_at` equal to bootstrap expiry. Installation states are
 `pending_activation|active|expired|cancelled|revoked`. A partial constraint permits
 one pending or active installation per endpoint. Concurrent confirmation serializes
-on the endpoint; only one provisional installation can survive. HPKE envelope and
-installation ID bind to that provisional row.
+on the endpoint; only one provisional installation can survive. The proposed
+credential UUID and digest bind to that provisional row.
 
 After durable keychain storage, the confirmed activation transaction locks in this
 order:
@@ -311,12 +317,12 @@ BLE/helper status remain inert until another Rack click.
 
 Bootstrap expiry, pairing cancellation, replacement, revocation, and abandoned
 process cleanup lock the endpoint then provisional installation. They move
-`pending_activation` to `expired`, `cancelled`, or `revoked`, destroy envelope and
-bootstrap material, and ensure no active credential exists. Cleanup runs before a
-new pairing inserts its provisional row; a terminal provisional row cannot block the
-partial uniqueness constraint and is deleted from the primary database after 24
-hours. Expiry versus activation revalidates under the same endpoint lock, so exactly
-one terminal outcome commits.
+`pending_activation` to `expired`, `cancelled`, or `revoked`, destroy pending
+credential and bootstrap material, and ensure no active credential exists. Cleanup
+runs before a new pairing inserts its provisional row; a terminal provisional row
+cannot block the partial uniqueness constraint and is deleted from the primary
+database after 24 hours. Expiry versus activation revalidates under the same
+endpoint lock, so exactly one terminal outcome commits.
 
 ## Concurrency And Expiry
 
@@ -422,8 +428,8 @@ lower but not remove these scopes.
 ## Migration And Rollback
 
 The launch-intent migration is additive and must land with the accepted
-`BrowserEndpoint` and helper-installation migrations. Before production launch, it
-may roll back by deleting launch-intent rows and status fields.
+`BrowserEndpoint` and helper-installation migrations. Before customer use, it may
+roll back by deleting launch-intent rows and status fields.
 
 After helper launch is enabled, rollback follows a compatibility deployment:
 
@@ -458,7 +464,7 @@ package is uninstalled; it never becomes authority by itself.
 - Transaction tests for create/create, create/consume, consume/consume, pairing bind,
   replacement, revocation, response loss followed by new create and retry, and
   create-versus-cleanup races.
-- API tests for CSRF, Origin, cookie scope, foreign IDs, empty-body validation,
+- API tests for CSRF, Origin, cookie scope, foreign IDs, exact-`{}` validation,
   throttles, stable errors, and zero-write failures.
 - Browser tests for one create and one protocol invocation per click, five-second UI
   fallback, superseded attempts, and server-cursor acknowledgement binding.
@@ -500,17 +506,19 @@ runtime ADR; this ADR does not invent a command before the runtime exists.
 
 ## Implementation Gates
 
-Do not implement these routes, models, or browser actions until:
+The identity ADR accepts the organization-owned `BrowserEndpoint(kind=rack)`,
+endpoint cookie/CSRF/Origin behavior, helper installation/pairing/credential,
+inactivity expiry, status snapshot, cursor, PostgreSQL throttling, and cleanup. The
+runtime ADR selects the unsigned development runtime and exact Linux/Windows
+protocol parser. `_MESSAGE_CONTRACT.md` accepts launch create, inspect, consume,
+status enum, stable errors, and cache/header wire formats.
 
-1. The organization-owned `BrowserEndpoint(kind=rack)` schema, endpoint credential,
-   CSRF/Origin behavior, team assignment, and VPS ingress routes are accepted.
-2. `RackHelperInstallation`, pairing activation, credential authentication, and
-   inactivity expiry are accepted.
-3. The native runtime and per-OS protocol registration/parser are selected.
-4. The endpoint status snapshot and cursor schema are accepted.
-5. The release catalog/package trust ADR is accepted before download UI ships.
-6. `_MESSAGE_CONTRACT.md` accepts the launch create, inspect, consume, status enum,
-   stable errors, and cache/header wire formats.
+Those decisions authorize the thin launch control-plane implementation. Exact VPS
+route allowlisting, migration tests, transaction/race tests, browser tests, runtime
+parser evidence, QA, and security review remain implementation exit criteria rather
+than architecture blockers.
 
-The current private-AP `RackScreen` routes remain unchanged and absent from VPS
-ingress.
+The release catalog/package-trust ADR remains required before download UI, signed
+installer claims, customer distribution, or updates ship. Physical BLE and rep
+ingestion remain blocked by the identity/runtime ADR exclusions. The current
+private-AP `RackScreen` routes remain unchanged and absent from VPS ingress.

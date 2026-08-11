@@ -503,6 +503,7 @@ function CoachView({ monitor, accessToken, onLogout }) {
     <div className="coach-topbar-actions">
       <ConnectionBadge connectionState={connectionState} requestState={requestState}/>
       <select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select>
+      <button className="coach-logout" onClick={()=>navigate("/coach/rack-pairing")}>Pair hosted Rack</button>
       {/* Room Layout — assigning tablets to rack numbers. It lives on its own
           screen because it is setup work a coach does once when the room is
           built, not something they touch during a session. */}

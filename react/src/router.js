@@ -61,3 +61,19 @@ function subscribe(onChange) {
 export function usePathname() {
   return useSyncExternalStore(subscribe, () => window.location.pathname)
 }
+
+export function matchRackPath(pathname) {
+  if (pathname === '/rack') return { kind: 'hosted' }
+  if (pathname === '/rack/setup') return { kind: 'setup' }
+  if (!pathname.startsWith('/rack/')) return null
+  const rest = pathname.slice('/rack/'.length)
+  const rackNumber = Number(rest)
+  return rest !== '' && Number.isInteger(rackNumber) && rackNumber > 0
+    ? { kind: 'live', rackNumber }
+    : { kind: 'invalid' }
+}
+
+export function matchCoachPath(pathname) {
+  if (pathname === '/coach/rack-pairing') return { kind: 'rack-pairing' }
+  return null
+}

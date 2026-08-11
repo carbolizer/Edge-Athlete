@@ -93,6 +93,7 @@ if VPS_DEPLOYMENT:
         "POSTGRES_DB": os.environ.get("POSTGRES_DB", ""),
         "POSTGRES_USER": os.environ.get("POSTGRES_USER", ""),
         "POSTGRES_PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+        "RACK_CONTROL_PLANE_KEY": os.environ.get("RACK_CONTROL_PLANE_KEY", ""),
     }
     missing_or_placeholder = [
         name for name, value in required_values.items()
@@ -122,6 +123,11 @@ if VPS_DEPLOYMENT:
     if len(SECRET_KEY) < 50 or len(set(SECRET_KEY)) < 5:
         raise ImproperlyConfigured(
             "VPS SECRET_KEY must contain at least 50 characters with sufficient variety"
+        )
+    control_plane_key = required_values["RACK_CONTROL_PLANE_KEY"]
+    if len(control_plane_key) < 32 or len(set(control_plane_key)) < 5:
+        raise ImproperlyConfigured(
+            "VPS RACK_CONTROL_PLANE_KEY must contain at least 32 characters with sufficient variety"
         )
     database_password = required_values["POSTGRES_PASSWORD"]
     if len(database_password) < 16 or len(set(database_password)) < 5:
@@ -163,6 +169,12 @@ if VPS_DEPLOYMENT:
         )
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+RACK_PUBLIC_ORIGIN = os.environ.get(
+    "RACK_PUBLIC_ORIGIN",
+    f"https://{os.environ.get('VPS_DOMAIN')}" if VPS_DEPLOYMENT else "https://localhost",
+)
+RACK_CONTROL_PLANE_KEY = os.environ.get("RACK_CONTROL_PLANE_KEY", SECRET_KEY)
+
 # Application definition
 # Every Django app and third party package must be listed here
 # or Django will not recognize it exists
@@ -187,6 +199,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware', # Must be first - handles CORS before anything else
     'django.middleware.security.SecurityMiddleware',
+    'event_handler.control_plane_middleware.ControlPlaneWireMiddleware',
     # Directly after SecurityMiddleware, which is where WhiteNoise must sit.
     # It is what serves the admin and DRF stylesheets now that gunicorn runs the
     # app — see the STATIC_ROOT note below for why nothing served them before.

@@ -37,10 +37,12 @@ Two things worth understanding before you read:
 See https://docs.djangoproject.com/en/5.1/topics/db/models/
 """
 import uuid
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
+from django.utils import timezone
 
 
 class Node(models.Model):
@@ -197,6 +199,422 @@ class OrganizationMembership(models.Model):
                 fields=["user"], condition=models.Q(is_active=True),
                 name="one_active_organization_per_user",
             ),
+        ]
+
+
+class BrowserEndpoint(models.Model):
+    KIND_RACK = "rack"
+    STATE_ACTIVE = "active"
+    STATE_UNPAIRED = "unpaired"
+    STATE_REVOKED = "revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization, on_delete=models.PROTECT, related_name="browser_endpoints",
+    )
+    training_group = models.ForeignKey(
+        "TrainingGroup", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="browser_endpoints",
+    )
+    kind = models.CharField(max_length=16, default=KIND_RACK)
+    display_name = models.CharField(max_length=80)
+    endpoint_revision = models.PositiveBigIntegerField(default=1)
+    state = models.CharField(
+        max_length=16,
+        choices=[(STATE_ACTIVE, "Active"), (STATE_UNPAIRED, "Unpaired"), (STATE_REVOKED, "Revoked")],
+        default=STATE_ACTIVE,
+    )
+    helper_status_cursor = models.PositiveBigIntegerField(default=1)
+    helper_status = models.CharField(max_length=32, null=True, blank=True)
+    helper_status_at = models.DateTimeField(null=True, blank=True)
+    helper_status_boot_id = models.UUIDField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_launch_intent = models.ForeignKey(
+        "RackHelperLaunchIntent", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="last_for_endpoints",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(kind="rack"), name="browser_endpoint_rack_kind"),
+            models.CheckConstraint(condition=models.Q(endpoint_revision__gte=1), name="browser_endpoint_revision_positive"),
+            models.CheckConstraint(condition=models.Q(helper_status_cursor__gte=1), name="browser_endpoint_cursor_positive"),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(helper_status__isnull=True)
+                    | models.Q(helper_status__in=[
+                        "launching", "no_sensor", "scanning", "verifying", "ready",
+                        "active_online", "active_offline", "stopping", "draining",
+                        "released", "credential_revoked", "authentication_blocked",
+                        "sensor_reconnecting", "queue_full", "queue_corrupt",
+                        "keychain_unavailable", "update_required", "queue_unsafe",
+                        "queue_read_only", "queue_write_failed", "endpoint_reassigned",
+                        "recovery_required",
+                    ])
+                ),
+                name="browser_endpoint_helper_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="revoked", revoked_at__isnull=False)
+                    | models.Q(state__in=["active", "unpaired"], revoked_at__isnull=True)
+                ),
+                name="browser_endpoint_revocation_state",
+            ),
+        ]
+
+
+class EndpointCredential(models.Model):
+    STATE_ACTIVE = "active"
+    STATE_REVOKED = "revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    endpoint = models.ForeignKey(BrowserEndpoint, on_delete=models.PROTECT, related_name="credentials")
+    secret_digest = models.CharField(max_length=64, unique=True)
+    version = models.PositiveIntegerField(default=1)
+    state = models.CharField(
+        max_length=16, choices=[(STATE_ACTIVE, "Active"), (STATE_REVOKED, "Revoked")],
+        default=STATE_ACTIVE,
+    )
+    issued_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["endpoint"], condition=models.Q(state="active"),
+                name="one_active_endpoint_credential",
+            ),
+            models.CheckConstraint(condition=models.Q(version__gte=1), name="endpoint_credential_version_positive"),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="revoked", revoked_at__isnull=False)
+                    | models.Q(state="active", revoked_at__isnull=True)
+                ),
+                name="endpoint_credential_revocation_state",
+            ),
+        ]
+
+
+class EndpointPairing(models.Model):
+    STATE_PENDING = "pending"
+    STATE_CLAIMED = "claimed"
+    STATE_DELIVERED = "delivered"
+    STATE_EXPIRED = "expired"
+    STATE_CANCELLED = "cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code_digest = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    bootstrap_digest = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    credential_id = models.UUIDField(default=uuid.uuid4, unique=True)
+    state = models.CharField(max_length=16, default=STATE_PENDING)
+    endpoint = models.ForeignKey(
+        BrowserEndpoint, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="endpoint_pairings",
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    expires_at = models.DateTimeField()
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    terminal_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="pending", endpoint__isnull=True, claimed_at__isnull=True, delivered_at__isnull=True)
+                    | models.Q(state="claimed", endpoint__isnull=False, claimed_at__isnull=False, delivered_at__isnull=True)
+                    | models.Q(state="delivered", endpoint__isnull=False, claimed_at__isnull=False, delivered_at__isnull=False)
+                    | models.Q(state__in=["expired", "cancelled"], delivered_at__isnull=True)
+                ),
+                name="endpoint_pairing_state_shape",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(expires_at=models.F("created_at") + models.Value(timedelta(minutes=5))),
+                name="endpoint_pairing_five_minute_expiry",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(state__in=["pending", "claimed", "delivered", "expired", "cancelled"]),
+                name="endpoint_pairing_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state__in=["pending", "claimed"], terminal_at__isnull=True)
+                    | models.Q(state__in=["delivered", "expired", "cancelled"], terminal_at__isnull=False)
+                ),
+                name="endpoint_pairing_terminal_time_shape",
+            ),
+        ]
+
+
+class ApiThrottleBucket(models.Model):
+    scope = models.CharField(max_length=48)
+    key_digest = models.CharField(max_length=64)
+    window_start = models.DateTimeField()
+    count = models.PositiveIntegerField(default=1)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["scope", "key_digest", "window_start"], name="api_throttle_window_unique",
+            ),
+            models.CheckConstraint(condition=models.Q(count__gte=1), name="api_throttle_count_positive"),
+        ]
+        indexes = [models.Index(fields=["expires_at"], name="api_throttle_expiry_idx")]
+
+
+class RackHelperPairing(models.Model):
+    STATE_PENDING = "pending"
+    STATE_CLAIMED = "claimed"
+    STATE_CONFIRMED = "confirmed"
+    STATE_ACTIVATED = "activated"
+    STATE_EXPIRED = "expired"
+    STATE_CANCELLED = "cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    endpoint = models.ForeignKey(BrowserEndpoint, on_delete=models.PROTECT, related_name="helper_pairings")
+    code_digest = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    bootstrap_digest = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    proposed_credential_id = models.UUIDField(null=True, blank=True, unique=True)
+    proposed_credential_digest = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    platform = models.CharField(max_length=16, blank=True)
+    contract_version = models.PositiveIntegerField(null=True, blank=True)
+    confirmation_phrase_digest = models.CharField(max_length=64, blank=True)
+    server_nonce = models.BinaryField(max_length=32, null=True, blank=True)
+    state = models.CharField(max_length=16, default=STATE_PENDING)
+    attempt_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    expires_at = models.DateTimeField()
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    activation_request_id = models.UUIDField(null=True, blank=True)
+    activation_response = models.JSONField(null=True, blank=True)
+    terminal_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["endpoint"], condition=models.Q(state__in=["pending", "claimed", "confirmed"]),
+                name="one_current_helper_pairing",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(expires_at=models.F("created_at") + models.Value(timedelta(minutes=5))),
+                name="helper_pairing_five_minute_expiry",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(state__in=["pending", "claimed", "confirmed", "activated", "expired", "cancelled"]),
+                name="helper_pairing_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(platform="") | models.Q(platform__in=["linux_x64", "windows_x64"]),
+                name="helper_pairing_platform_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state__in=["pending", "claimed", "confirmed"], terminal_at__isnull=True)
+                    | models.Q(state__in=["activated", "expired", "cancelled"], terminal_at__isnull=False)
+                ),
+                name="helper_pairing_terminal_time_shape",
+            ),
+        ]
+
+
+class RackHelperInstallation(models.Model):
+    STATE_PENDING = "pending_activation"
+    STATE_ACTIVE = "active"
+    STATE_EXPIRED = "expired"
+    STATE_CANCELLED = "cancelled"
+    STATE_REVOKED = "revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    endpoint = models.ForeignKey(BrowserEndpoint, on_delete=models.PROTECT, related_name="helper_installations")
+    pairing = models.OneToOneField(
+        RackHelperPairing, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="installation",
+    )
+    state = models.CharField(max_length=24, default=STATE_PENDING)
+    platform = models.CharField(max_length=16)
+    contract_version = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    activation_expires_at = models.DateTimeField()
+    activated_at = models.DateTimeField(null=True, blank=True)
+    last_contact_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_status_request_id = models.UUIDField(null=True, blank=True)
+    last_status_boot_id = models.UUIDField(null=True, blank=True)
+    last_status_value = models.CharField(max_length=32, blank=True)
+    last_status_response = models.JSONField(null=True, blank=True)
+    terminal_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["endpoint"], condition=models.Q(state__in=["pending_activation", "active"]),
+                name="one_current_helper_installation",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(state__in=["pending_activation", "active", "expired", "cancelled", "revoked"]),
+                name="helper_installation_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(platform__in=["linux_x64", "windows_x64"]),
+                name="helper_installation_platform_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state__in=["pending_activation", "active"], terminal_at__isnull=True)
+                    | models.Q(state__in=["expired", "cancelled", "revoked"], terminal_at__isnull=False)
+                ),
+                name="helper_installation_terminal_time_shape",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="pending_activation", pairing__isnull=False)
+                    | models.Q(state__in=["active", "expired", "cancelled", "revoked"], pairing__isnull=True)
+                ),
+                name="helper_installation_pairing_shape",
+            ),
+        ]
+
+
+class RackHelperCredential(models.Model):
+    STATE_PENDING = "pending"
+    STATE_ACTIVE = "active"
+    STATE_REVOKED = "revoked"
+
+    id = models.UUIDField(primary_key=True, editable=False)
+    installation = models.ForeignKey(
+        RackHelperInstallation, on_delete=models.PROTECT, related_name="credentials",
+    )
+    secret_digest = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
+    state = models.CharField(max_length=16, default=STATE_PENDING)
+    issued_at = models.DateTimeField(auto_now_add=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["installation"], condition=models.Q(state__in=["pending", "active"]),
+                name="one_current_helper_credential",
+            ),
+            models.CheckConstraint(condition=models.Q(version__gte=1), name="helper_credential_version_positive"),
+            models.CheckConstraint(
+                condition=models.Q(state__in=["pending", "active", "revoked"]),
+                name="helper_credential_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="pending", secret_digest__isnull=False, activated_at__isnull=True, revoked_at__isnull=True)
+                    | models.Q(state="active", secret_digest__isnull=False, activated_at__isnull=False, revoked_at__isnull=True)
+                    | models.Q(state="revoked", revoked_at__isnull=False)
+                ),
+                name="helper_credential_state_shape",
+            ),
+        ]
+
+
+class RackHelperLaunchIntent(models.Model):
+    STATE_PENDING = "pending"
+    STATE_CONSUMED = "consumed"
+    STATE_SUPERSEDED = "superseded"
+    STATE_EXPIRED = "expired"
+    STATE_CANCELLED = "cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    endpoint = models.ForeignKey(BrowserEndpoint, on_delete=models.PROTECT, related_name="launch_intents")
+    target_installation = models.ForeignKey(
+        RackHelperInstallation, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="launch_intents",
+    )
+    state = models.CharField(max_length=16, default=STATE_PENDING)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    consumer_boot_id = models.UUIDField(null=True, blank=True)
+    consume_request_id = models.UUIDField(null=True, blank=True)
+    ack_cursor = models.PositiveBigIntegerField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    terminal_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["endpoint"], condition=models.Q(state="pending"),
+                name="one_pending_launch_intent",
+            ),
+            models.UniqueConstraint(
+                fields=["target_installation", "consume_request_id"],
+                condition=models.Q(consume_request_id__isnull=False),
+                name="launch_consume_request_unique",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        state="consumed", target_installation__isnull=False,
+                        consumed_at__isnull=False, consumer_boot_id__isnull=False,
+                        consume_request_id__isnull=False, ack_cursor__isnull=False,
+                    )
+                    | models.Q(
+                        state__in=["pending", "superseded", "expired", "cancelled"],
+                        consumed_at__isnull=True, consumer_boot_id__isnull=True,
+                        consume_request_id__isnull=True, ack_cursor__isnull=True,
+                    )
+                ),
+                name="launch_intent_consume_shape",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(expires_at=models.F("created_at") + models.Value(timedelta(minutes=5))),
+                name="launch_intent_five_minute_expiry",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="superseded", superseded_at__isnull=False, cancelled_at__isnull=True)
+                    | models.Q(state="cancelled", cancelled_at__isnull=False, superseded_at__isnull=True)
+                    | models.Q(state__in=["pending", "consumed", "expired"], superseded_at__isnull=True, cancelled_at__isnull=True)
+                ),
+                name="launch_intent_terminal_timestamp_shape",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(state__in=["pending", "consumed", "superseded", "expired", "cancelled"]),
+                name="launch_intent_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(state="pending", terminal_at__isnull=True)
+                    | models.Q(state__in=["consumed", "superseded", "expired", "cancelled"], terminal_at__isnull=False)
+                ),
+                name="launch_intent_terminal_time_shape",
+            ),
+        ]
+
+
+class RackHelperLaunchConsumeReceipt(models.Model):
+    installation = models.ForeignKey(
+        RackHelperInstallation, on_delete=models.PROTECT, related_name="launch_consume_receipts",
+    )
+    consume_request_id = models.UUIDField()
+    helper_boot_id = models.UUIDField()
+    intent_id = models.UUIDField()
+    acknowledged_at = models.DateTimeField()
+    ack_cursor = models.PositiveBigIntegerField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["installation", "consume_request_id"], name="helper_consume_receipt_unique",
+            ),
+            models.CheckConstraint(condition=models.Q(ack_cursor__gte=1), name="consume_receipt_cursor_positive"),
         ]
 
 

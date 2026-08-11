@@ -13,6 +13,7 @@ first or they'd get swallowed.
 from django.urls import path
 
 from . import views
+from . import control_plane_views
 from . import health
 from . import system_status
 from . import wifi_config
@@ -33,6 +34,36 @@ urlpatterns = [
 
     path('gateway/v1/events/', views.gateway_events, name='gateway_events'),
     path('gateways/diagnostics/', views.gateway_diagnostics, name='gateway_diagnostics'),
+
+    # Public hosted Rack control plane. These exact paths are distinct from the
+    # private-AP /api/racks/... compatibility surface below.
+    path('rack/v1/csrf/', control_plane_views.rack_csrf, name='rack_control_csrf'),
+    path('rack/v1/endpoint-pairings/', control_plane_views.endpoint_pairing_create,
+         name='endpoint_pairing_create'),
+    path('rack/v1/endpoint-pairings/status/', control_plane_views.endpoint_pairing_status,
+         name='endpoint_pairing_status'),
+    path('coach/v1/rack-endpoint-pairings/claim/', control_plane_views.endpoint_pairing_claim,
+         name='endpoint_pairing_claim'),
+    path('rack/v1/status/', control_plane_views.endpoint_status, name='endpoint_status'),
+    path('rack/v1/helper-pairings/', control_plane_views.helper_pairing_create,
+         name='helper_pairing_create'),
+    path('rack/v1/helper-pairings/status/', control_plane_views.endpoint_helper_pairing_status,
+         name='endpoint_helper_pairing_status'),
+    path('coach/v1/rack-helper-pairings/confirm/', control_plane_views.helper_pairing_confirm,
+         name='helper_pairing_confirm'),
+    path('rack-helper/v1/pairings/claim/', control_plane_views.helper_pairing_claim,
+         name='helper_pairing_claim'),
+    path('rack-helper/v1/pairings/status/', control_plane_views.helper_pairing_status,
+         name='helper_pairing_status'),
+    path('rack-helper/v1/pairings/activate/', control_plane_views.helper_pairing_activate,
+         name='helper_pairing_activate'),
+    path('rack-helper/v1/status/', control_plane_views.helper_status, name='helper_status'),
+    path('rack/v1/helper-launch-intents/', control_plane_views.launch_intent_create,
+         name='launch_intent_create'),
+    path('rack/v1/helper-launch-intents/inspect/', control_plane_views.launch_intent_inspect,
+         name='launch_intent_inspect'),
+    path('rack-helper/v1/launch-intents/consume/', control_plane_views.launch_intent_consume,
+         name='launch_intent_consume'),
 
     # tablet: racks
     path('racks/register/', views.rack_register, name='rack_register'),

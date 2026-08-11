@@ -27,7 +27,7 @@ from django.db.models import ProtectedError
 from django.utils import timezone
 from django.contrib.auth.models import User
 from django.db.migrations.executor import MigrationExecutor
-from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TransactionTestCase, override_settings
 from rest_framework.permissions import AllowAny
 from rest_framework.test import APIClient, APITestCase
 from basestation_config.urls import urlpatterns as base_urlpatterns
@@ -40,7 +40,10 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt,
                      HostedGym, EdgeGateway, GatewayCredential, GatewayNodeGrant,
                      GatewayBoot, GatewayEventReceipt, GatewayNodeHealth,
-                     Organization, OrganizationMembership)
+                     Organization, OrganizationMembership, BrowserEndpoint,
+                     EndpointPairing, ApiThrottleBucket, RackHelperPairing,
+                     RackHelperInstallation, RackHelperCredential,
+                     RackHelperLaunchIntent, RackHelperLaunchConsumeReceipt)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import (generate_schedule, instantiate_block,
                                 promote_program_to_block, touch_block)
@@ -53,10 +56,15 @@ from .management.commands.simulate_node import (MODE_ALWAYS, MODE_CHECKIN, MODE_
 from .realtime.mqtt_ingester.parser import parse_pulse_payload
 from .realtime.event_processor.process_pulse import process_pulse_event
 from .serializers import AthleteSerializer
+from .services import rack_control_plane
 
 
 def controller_token():
     return base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+
+
+def latest_migration_targets():
+    return MigrationExecutor(connection).loader.graph.leaf_nodes()
 
 
 def acquire_controller(client, rack_number, *, device_id=None, client_instance_id="tab-a", token=None):
@@ -3472,7 +3480,7 @@ class TrainingGroupCoachMigrationTests(TransactionTestCase):
     def tearDown(self):
         # Leave the database at the latest migration, or every test that runs
         # after this class sees a half-migrated schema.
-        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
+        self._migrate(latest_migration_targets())
 
 
 class NodeAssignmentMigrationTests(TransactionTestCase):
@@ -3526,7 +3534,7 @@ class NodeAssignmentMigrationTests(TransactionTestCase):
         self.assertIsNone(RolledBackNode.objects.get(node_id="duplicate-b").rack_number)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
+        self._migrate(latest_migration_targets())
 
 
 class NodeAcquisitionMigrationTests(TransactionTestCase):
@@ -3552,7 +3560,7 @@ class NodeAcquisitionMigrationTests(TransactionTestCase):
         self.assertEqual(NewNode.objects.get(node_id="mqtt").acquisition_kind, "mqtt")
 
     def tearDown(self):
-        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
+        self._migrate(latest_migration_targets())
 
 
 class OneOpenSessionTests(APITestCase):
@@ -6147,7 +6155,7 @@ class VpsSettingsTests(SimpleTestCase):
             "VPS_DEPLOYMENT", "VPS_DOMAIN", "SECRET_KEY", "DEBUG", "ALLOWED_HOSTS",
             "CSRF_TRUSTED_ORIGINS", "SECURE_SSL_REDIRECT", "SESSION_COOKIE_SECURE",
             "CSRF_COOKIE_SECURE", "USE_X_FORWARDED_HOST", "POSTGRES_DB",
-            "POSTGRES_USER", "POSTGRES_PASSWORD",
+            "POSTGRES_USER", "POSTGRES_PASSWORD", "RACK_CONTROL_PLANE_KEY",
         ):
             environment.pop(name, None)
         environment.update(overrides)
@@ -6176,6 +6184,7 @@ class VpsSettingsTests(SimpleTestCase):
             "POSTGRES_DB": "edgeathlete_vps",
             "POSTGRES_USER": "edgeathlete_vps_user",
             "POSTGRES_PASSWORD": "unique-vps-database-password",
+            "RACK_CONTROL_PLANE_KEY": "independent-rack-control-plane-key-123456789",
         }
 
     def test_local_settings_do_not_require_vps_values(self):
@@ -6312,7 +6321,7 @@ class GatewayFoundationMigrationTests(TransactionTestCase):
         self.assertEqual(rolled_back_apps.get_model("event_handler", "Rep").objects.count(), 1)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
+        self._migrate(latest_migration_targets())
 
 
 class PublicCoachRegistrationDisabledTests(APITestCase):
@@ -6353,16 +6362,37 @@ class ApiAuthorizationFenceTests(APITestCase):
         "training_block_exercise_detail", "training_block_exercise_order",
         "training_block_workout_detail", "training_block_workout_order",
         "training_block_workouts", "training_blocks", "training_program_promote",
-        "training_programs",
+        "training_programs", "endpoint_pairing_claim", "helper_pairing_confirm",
     }
     MIXED_ROUTES = {"room_state"}
-    SPECIAL_ROUTES = {"gateway_events", "health"}
+    SPECIAL_ROUTES = {
+        "gateway_events", "health", "rack_control_csrf", "endpoint_pairing_create",
+        "endpoint_pairing_status", "endpoint_status", "helper_pairing_create",
+        "endpoint_helper_pairing_status", "helper_pairing_claim", "helper_pairing_status",
+        "helper_pairing_activate", "helper_status", "launch_intent_create",
+        "launch_intent_inspect", "launch_intent_consume",
+    }
     ROUTE_METHODS = {
         "health": {"GET"},
         "system_status": {"GET"},
         "change_wifi_password": {"POST"},
         "gateway_events": {"POST"},
         "gateway_diagnostics": {"GET"},
+        "rack_control_csrf": {"GET"},
+        "endpoint_pairing_create": {"POST"},
+        "endpoint_pairing_status": {"POST"},
+        "endpoint_pairing_claim": {"POST"},
+        "endpoint_status": {"GET"},
+        "helper_pairing_create": {"POST"},
+        "endpoint_helper_pairing_status": {"POST"},
+        "helper_pairing_confirm": {"POST"},
+        "helper_pairing_claim": {"POST"},
+        "helper_pairing_status": {"POST"},
+        "helper_pairing_activate": {"POST"},
+        "helper_status": {"POST"},
+        "launch_intent_create": {"POST"},
+        "launch_intent_inspect": {"POST"},
+        "launch_intent_consume": {"POST"},
         "rack_register": {"POST"},
         "rack_racknumber": {"GET"},
         "racks_unassigned": {"GET"},
@@ -7391,7 +7421,7 @@ class OrganizationTenancyMigrationTests(TransactionTestCase):
         self.assertEqual(rolled_back_rep.mean_velocity, 0.6)
 
     def tearDown(self):
-        self._migrate([("event_handler", "0024_organization_local_nfc_tag")])
+        self._migrate(latest_migration_targets())
 
 
 class OrganizationLocalNfcMigrationTests(TransactionTestCase):
@@ -7464,4 +7494,502 @@ class OrganizationLocalNfcMigrationTests(TransactionTestCase):
         self._migrate(self.migrate_to)
 
     def tearDown(self):
-        self._migrate(self.migrate_to)
+        self._migrate(latest_migration_targets())
+
+
+@override_settings(
+    RACK_PUBLIC_ORIGIN="https://edgeathlete.example",
+    RACK_CONTROL_PLANE_KEY="rack-control-plane-test-key",
+)
+class HostedRackControlPlaneTests(APITestCase):
+    origin = "https://edgeathlete.example"
+
+    def setUp(self):
+        self.organization = Organization.objects.create(display_name="Hosted organization")
+        self.coach = User.objects.create_user(
+            username="hosted-coach", password="pw", is_staff=True,
+        )
+        OrganizationMembership.objects.create(organization=self.organization, user=self.coach)
+        self.group = TrainingGroup.objects.create(organization=self.organization, name="Hosted varsity")
+        self.assertEqual(self.client.get("/api/rack/v1/csrf/").status_code, 200)
+        self.csrf = self.client.cookies["ea_rack_csrf"].value
+        self.mutation_headers = {
+            "HTTP_ORIGIN": self.origin,
+            "HTTP_X_CSRFTOKEN": self.csrf,
+        }
+
+    def pair_endpoint(self):
+        created = self.client.post(
+            "/api/rack/v1/endpoint-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.client.force_authenticate(self.coach)
+        claimed = self.client.post(
+            "/api/coach/v1/rack-endpoint-pairings/claim/",
+            {
+                "pairing_code": created.data["pairing_code"],
+                "training_group": self.group.pk,
+                "display_name": "Rack 3",
+            }, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(claimed.status_code, 200, claimed.data)
+        delivered = self.client.post(
+            "/api/rack/v1/endpoint-pairings/status/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(delivered.status_code, 200, delivered.data)
+        cookie = delivered.cookies["ea_rack_endpoint"]
+        self.assertTrue(cookie["secure"])
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Strict")
+        self.assertEqual(cookie["path"], "/api/rack/v1/")
+        self.assertFalse(cookie["domain"])
+        self.assertFalse(cookie["expires"])
+        return BrowserEndpoint.objects.get(pk=claimed.data["endpoint"]["id"])
+
+    def pair_helper(self, endpoint):
+        pairing = self.client.post(
+            "/api/rack/v1/helper-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(pairing.status_code, 201, pairing.data)
+        helper_token = f"earh1.{uuid.uuid4()}.{controller_token()}"
+        self._last_helper_bootstrap = controller_token()
+        claim_body = {
+            "pairing_code": pairing.data["pairing_code"],
+            "bootstrap_token": self._last_helper_bootstrap,
+            "credential": helper_token,
+            "platform": "linux_x64",
+            "contract_version": 1,
+        }
+        claim = self.client.post(
+            "/api/rack-helper/v1/pairings/claim/", claim_body, format="json",
+        )
+        self.assertEqual(claim.status_code, 200, claim.data)
+        self.assertEqual(len(claim.data["confirmation_phrase"]), 6)
+        claim_retry = self.client.post(
+            "/api/rack-helper/v1/pairings/claim/", claim_body, format="json",
+        )
+        self.assertEqual(claim_retry.data, claim.data)
+        self.client.force_authenticate(self.coach)
+        confirmed = self.client.post(
+            "/api/coach/v1/rack-helper-pairings/confirm/",
+            {"pairing_id": pairing.data["pairing_id"]}, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        self.assertTrue(ApiThrottleBucket.objects.filter(
+            scope="helper_confirm_endpoint", count=1,
+        ).exists())
+        activated = self.client.post(
+            "/api/rack-helper/v1/pairings/activate/",
+            {"pairing_id": pairing.data["pairing_id"], "activation_request_id": str(uuid.uuid4())},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(activated.status_code, 200, activated.data)
+        return helper_token, RackHelperInstallation.objects.get(endpoint=endpoint)
+
+    def test_exact_origin_csrf_cookie_and_token_parser(self):
+        before = EndpointPairing.objects.count()
+        empty = self.client.generic(
+            "POST", "/api/rack/v1/endpoint-pairings/", b"",
+            content_type="application/json", **self.mutation_headers,
+        )
+        self.assertEqual(empty.json()["code"], "invalid_request")
+        malformed = self.client.generic(
+            "POST", "/api/rack/v1/endpoint-pairings/", b"{",
+            content_type="application/json", **self.mutation_headers,
+        )
+        self.assertEqual(malformed.json()["code"], "invalid_json")
+        wrong_method = self.client.get("/api/rack/v1/endpoint-pairings/")
+        self.assertEqual(wrong_method.status_code, 405)
+        self.assertEqual(wrong_method["Cache-Control"], "no-store")
+        for origin in [None, "null", "http://edgeathlete.example", "https://sub.edgeathlete.example"]:
+            headers = {"HTTP_X_CSRFTOKEN": self.csrf}
+            if origin is not None:
+                headers["HTTP_ORIGIN"] = origin
+            response = self.client.post(
+                "/api/rack/v1/endpoint-pairings/", {}, format="json", **headers,
+            )
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(
+                response.json(),
+                {"code": "csrf_failed", "detail": "Request verification failed."},
+            )
+        self.assertEqual(EndpointPairing.objects.count(), before)
+        endpoint = self.pair_endpoint()
+        self.assertEqual(self.client.get("/api/rack/v1/status/").data["endpoint"]["id"], str(endpoint.id))
+        self.client.cookies["ea_rack_endpoint"] = self.client.cookies["ea_rack_endpoint"].value + "="
+        self.assertEqual(self.client.get("/api/rack/v1/status/").status_code, 401)
+
+    def test_coach_claim_and_helper_confirm_require_active_staff_membership(self):
+        nonstaff = User.objects.create_user(username="hosted-nonstaff", password="pw")
+        OrganizationMembership.objects.create(organization=self.organization, user=nonstaff)
+        created = self.client.post(
+            "/api/rack/v1/endpoint-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        self.client.force_authenticate(nonstaff)
+        denied_claim = self.client.post(
+            "/api/coach/v1/rack-endpoint-pairings/claim/",
+            {
+                "pairing_code": created.data["pairing_code"],
+                "training_group": self.group.pk,
+                "display_name": "Denied rack",
+            },
+            format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(denied_claim.status_code, 403)
+        self.assertFalse(BrowserEndpoint.objects.exists())
+
+        endpoint = BrowserEndpoint.objects.create(
+            organization=self.organization, training_group=self.group, display_name="Existing rack",
+        )
+        pairing, code = rack_control_plane.create_helper_pairing(endpoint.pk)
+        rack_control_plane.claim_helper_pairing({
+            "pairing_code": code,
+            "bootstrap_token": controller_token(),
+            "credential": f"earh1.{uuid.uuid4()}.{controller_token()}",
+            "platform": "linux_x64",
+            "contract_version": 1,
+        })
+        denied_confirm = self.client.post(
+            "/api/coach/v1/rack-helper-pairings/confirm/",
+            {"pairing_id": str(pairing.pk)}, format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(denied_confirm.status_code, 403)
+        self.assertFalse(RackHelperInstallation.objects.filter(endpoint=endpoint).exists())
+
+    def test_tenant_escape_is_not_found_and_creates_nothing(self):
+        pairing = self.client.post(
+            "/api/rack/v1/endpoint-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        other_org = Organization.objects.create(display_name="Other tenant")
+        other_group = TrainingGroup.objects.create(organization=other_org, name="Foreign")
+        self.client.force_authenticate(self.coach)
+        response = self.client.post(
+            "/api/coach/v1/rack-endpoint-pairings/claim/",
+            {"pairing_code": pairing.data["pairing_code"], "training_group": other_group.pk,
+             "display_name": "Foreign rack"},
+            format="json", HTTP_ORIGIN=self.origin,
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(BrowserEndpoint.objects.exists())
+
+    def test_superseded_hpke_envelope_route_remains_absent(self):
+        response = self.client.post(
+            "/api/rack-helper/v1/pairings/envelope/", {}, format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(RackHelperCredential.objects.exists())
+
+    def test_launch_response_loss_new_intent_retry_and_status_idempotency(self):
+        endpoint = self.pair_endpoint()
+        helper_token, installation = self.pair_helper(endpoint)
+        first = self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        self.assertEqual(first.status_code, 201, first.data)
+        boot_id, consume_id = str(uuid.uuid4()), str(uuid.uuid4())
+        consumed = self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/",
+            {"helper_boot_id": boot_id, "consume_request_id": consume_id}, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(consumed.status_code, 200, consumed.data)
+        second = self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        retried = self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/",
+            {"helper_boot_id": boot_id, "consume_request_id": consume_id}, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(retried.data, consumed.data)
+        self.assertEqual(RackHelperLaunchIntent.objects.get(pk=second.data["intent_id"]).state, "pending")
+        status_id = str(uuid.uuid4())
+        body = {"helper_boot_id": boot_id, "status_request_id": status_id, "status": "no_sensor"}
+        heartbeat = self.client.post(
+            "/api/rack-helper/v1/status/", body, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        heartbeat_retry = self.client.post(
+            "/api/rack-helper/v1/status/", body, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(heartbeat_retry.data, heartbeat.data)
+        endpoint.refresh_from_db()
+        self.assertEqual(endpoint.helper_status_cursor, heartbeat.data["status_cursor"])
+        self.assertEqual(RackHelperLaunchConsumeReceipt.objects.filter(installation=installation).count(), 1)
+
+    def test_activation_sets_snapshot_status_and_scrubs_pairing_secrets(self):
+        endpoint = self.pair_endpoint()
+        self.pair_helper(endpoint)
+        endpoint.refresh_from_db()
+        pairing = RackHelperPairing.objects.get(endpoint=endpoint)
+        self.assertEqual(endpoint.helper_status, "no_sensor")
+        self.assertIsNotNone(endpoint.helper_status_at)
+        self.assertGreaterEqual(endpoint.helper_status_cursor, 2)
+        self.assertIsNone(pairing.code_digest)
+        self.assertIsNotNone(pairing.bootstrap_digest)
+        self.assertIsNone(pairing.proposed_credential_digest)
+        self.assertIsNone(pairing.server_nonce)
+        installation = RackHelperInstallation.objects.get(endpoint=endpoint)
+        self.assertIsNone(installation.pairing_id)
+        helper_status = self.client.post(
+            "/api/rack-helper/v1/pairings/status/",
+            {
+                "pairing_id": str(pairing.pk),
+                "bootstrap_token": self._last_helper_bootstrap,
+            },
+            format="json",
+        )
+        self.assertEqual(helper_status.data["state"], "activated")
+        snapshot = rack_control_plane.helper_snapshot(endpoint, endpoint.helper_status_at)
+        self.assertEqual(snapshot["status"], "no_sensor")
+        self.assertIsNotNone(snapshot["status_at"])
+
+    def test_rejected_helper_claim_throttles_commit_independently(self):
+        endpoint = self.pair_endpoint()
+        pairing = self.client.post(
+            "/api/rack/v1/helper-pairings/", {}, format="json", **self.mutation_headers,
+        )
+        body = {
+            "pairing_code": pairing.data["pairing_code"],
+            "bootstrap_token": controller_token(),
+            "credential": f"earh1.{uuid.uuid4()}.{controller_token()}",
+            "platform": "linux_x64",
+            "contract_version": 1,
+        }
+        self.assertEqual(self.client.post(
+            "/api/rack-helper/v1/pairings/claim/", body, format="json",
+        ).status_code, 200)
+        body["platform"] = "windows_x64"
+        self.assertEqual(self.client.post(
+            "/api/rack-helper/v1/pairings/claim/", body, format="json",
+        ).status_code, 404)
+        bucket = ApiThrottleBucket.objects.get(scope="helper_claim_pairing")
+        self.assertEqual(bucket.count, 2)
+        pairing_id = RackHelperPairing.objects.get(endpoint=endpoint).pk
+        self.assertEqual(bucket.key_digest, rack_control_plane._hmac_digest(
+            b"edgeathlete-throttle-v1",
+            f"helper_claim_pairing\0{pairing_id}".encode(),
+        ))
+
+    def test_source_header_is_trusted_only_in_vps_mode(self):
+        request = RequestFactory().post(
+            "/api/rack-helper/v1/pairings/claim/", REMOTE_ADDR="192.0.2.10",
+            HTTP_X_EDGE_CLIENT_ADDRESS="198.51.100.20",
+        )
+        with override_settings(VPS_DEPLOYMENT=False):
+            self.assertEqual(rack_control_plane.source_key(request), "192.0.2.10")
+        with override_settings(VPS_DEPLOYMENT=True):
+            self.assertEqual(rack_control_plane.source_key(request), "198.51.100.20")
+
+    def test_consume_ledger_cap_preserves_existing_replay(self):
+        endpoint = self.pair_endpoint()
+        helper_token, _installation = self.pair_helper(endpoint)
+        self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        body = {
+            "helper_boot_id": str(uuid.uuid4()),
+            "consume_request_id": str(uuid.uuid4()),
+        }
+        consumed = self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/", body, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(consumed.status_code, 200)
+        with patch.object(rack_control_plane, "MAX_CONSUME_RECEIPTS_PER_INSTALLATION", 1):
+            denied = self.client.post(
+                "/api/rack/v1/helper-launch-intents/", {}, format="json",
+                **self.mutation_headers,
+            )
+        self.assertEqual(denied.status_code, 503)
+        replay = self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/", body, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(replay.data, consumed.data)
+
+    def test_freshness_boundary_cleanup_and_zero_training_writes(self):
+        endpoint = self.pair_endpoint()
+        helper_token, installation = self.pair_helper(endpoint)
+        launch = self.client.post(
+            "/api/rack/v1/helper-launch-intents/", {}, format="json", **self.mutation_headers,
+        )
+        boot_id = str(uuid.uuid4())
+        self.client.post(
+            "/api/rack-helper/v1/launch-intents/consume/",
+            {"helper_boot_id": boot_id, "consume_request_id": str(uuid.uuid4())}, format="json",
+            HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        status = self.client.post(
+            "/api/rack-helper/v1/status/",
+            {"helper_boot_id": boot_id, "status_request_id": str(uuid.uuid4()), "status": "no_sensor"},
+            format="json", HTTP_AUTHORIZATION=f"RackHelper {helper_token}",
+        )
+        self.assertEqual(status.status_code, 200, status.data)
+        endpoint.refresh_from_db()
+        at = endpoint.helper_status_at
+        self.assertEqual(rack_control_plane.helper_snapshot(endpoint, at + timedelta(seconds=59, microseconds=999000))["status"], "no_sensor")
+        self.assertEqual(rack_control_plane.helper_snapshot(endpoint, at + timedelta(seconds=60))["status"], "stale")
+        pairing, _code, _bootstrap = rack_control_plane.create_endpoint_pairing()
+        rack_control_plane.cleanup_control_plane(now=pairing.expires_at)
+        pairing.refresh_from_db()
+        self.assertEqual(pairing.state, "expired")
+        self.assertIsNone(pairing.code_digest)
+        pending, _cursor = rack_control_plane.create_launch_intent(endpoint.pk)
+        RackHelperInstallation.objects.filter(pk=installation.pk).update(
+            last_contact_at=at - timedelta(hours=24),
+        )
+        rack_control_plane.cleanup_control_plane(now=at)
+        installation.refresh_from_db()
+        self.assertEqual(installation.state, "expired")
+        credential = installation.credentials.get()
+        self.assertEqual(credential.state, "revoked")
+        self.assertIsNone(credential.secret_digest)
+        self.assertEqual(RackHelperLaunchIntent.objects.get(pk=pending.pk).state, "cancelled")
+        self.assertEqual(Set.objects.count(), 0)
+        self.assertEqual(Rep.objects.count(), 0)
+        self.assertEqual(RackHelperLaunchIntent.objects.get(pk=launch.data["intent_id"]).state, "consumed")
+
+
+class HostedRackConcurrencyTests(TransactionTestCase):
+    def setUp(self):
+        organization = Organization.objects.create(display_name="Race organization")
+        group = TrainingGroup.objects.create(organization=organization, name="Race group")
+        self.endpoint = BrowserEndpoint.objects.create(
+            organization=organization, training_group=group, display_name="Race rack",
+        )
+
+    @staticmethod
+    def _create_intent(endpoint_id, start):
+        close_old_connections()
+        start.wait()
+        try:
+            return rack_control_plane.create_launch_intent(endpoint_id)[0].pk
+        finally:
+            close_old_connections()
+
+    def test_concurrent_launch_creates_leave_one_commit_order_winner(self):
+        start = Event()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(self._create_intent, self.endpoint.pk, start) for _ in range(2)]
+            start.set()
+            intent_ids = [future.result(timeout=10) for future in futures]
+        self.assertEqual(len(set(intent_ids)), 2)
+        self.assertEqual(RackHelperLaunchIntent.objects.filter(endpoint=self.endpoint, state="pending").count(), 1)
+        self.assertEqual(RackHelperLaunchIntent.objects.filter(endpoint=self.endpoint, state="superseded").count(), 1)
+
+    @staticmethod
+    def _increment_throttle(now, start):
+        close_old_connections()
+        start.wait()
+        try:
+            rack_control_plane.throttle("concurrency_test", "shared", 100, 60, now)
+        finally:
+            close_old_connections()
+
+    def test_postgresql_throttle_increment_is_atomic(self):
+        now = timezone.now()
+        start = Event()
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(self._increment_throttle, now, start) for _ in range(8)]
+            start.set()
+            for future in futures:
+                future.result(timeout=10)
+        self.assertEqual(ApiThrottleBucket.objects.get(scope="concurrency_test").count, 8)
+
+    def test_rejected_throttle_attempt_is_still_counted(self):
+        now = timezone.now()
+        rack_control_plane.throttle("reject_count", "shared", 1, 60, now)
+        with self.assertRaises(rack_control_plane.ControlPlaneError):
+            rack_control_plane.throttle("reject_count", "shared", 1, 60, now)
+        self.assertEqual(ApiThrottleBucket.objects.get(scope="reject_count").count, 2)
+
+
+class HostedRackRetentionAndConstraintTests(TransactionTestCase):
+    def test_cleanup_is_capped_at_ten_transactions_and_one_thousand_rows_each(self):
+        now = timezone.now()
+        created_at = now - timedelta(minutes=5)
+        for index in range(12):
+            EndpointPairing.objects.create(
+                code_digest=hashlib.sha256(f"cleanup-{index}".encode()).hexdigest(),
+                bootstrap_digest=hashlib.sha256(f"bootstrap-{index}".encode()).hexdigest(),
+                created_at=created_at, expires_at=now,
+            )
+        counts = rack_control_plane.cleanup_control_plane(
+            now=now, batch_size=1, max_transactions=50,
+        )
+        self.assertEqual(counts["expired"], 10)
+        self.assertEqual(EndpointPairing.objects.filter(state="pending").count(), 2)
+
+    def test_cleanup_retention_uses_terminal_time_not_expiry(self):
+        now = timezone.now()
+        created_at = now - timedelta(days=2, minutes=5)
+        pairing = EndpointPairing.objects.create(
+            code_digest=hashlib.sha256(b"old-code").hexdigest(),
+            bootstrap_digest=hashlib.sha256(b"old-bootstrap").hexdigest(),
+            created_at=created_at, expires_at=created_at + timedelta(minutes=5),
+        )
+        rack_control_plane.cleanup_control_plane(now=now)
+        pairing.refresh_from_db()
+        self.assertEqual(pairing.terminal_at, now)
+        self.assertTrue(EndpointPairing.objects.filter(pk=pairing.pk).exists())
+        rack_control_plane.cleanup_control_plane(now=now + timedelta(hours=24))
+        self.assertFalse(EndpointPairing.objects.filter(pk=pairing.pk).exists())
+
+    def test_backlog_gate_denies_new_admission_before_retention_breach(self):
+        now = timezone.now()
+        created_at = now - timedelta(days=1)
+        EndpointPairing.objects.create(
+            state=EndpointPairing.STATE_EXPIRED,
+            created_at=created_at,
+            expires_at=created_at + timedelta(minutes=5),
+            terminal_at=now - rack_control_plane.BACKLOG_GATE_AGE,
+        )
+        with self.assertRaises(rack_control_plane.ControlPlaneError) as raised:
+            rack_control_plane.create_endpoint_pairing()
+        self.assertEqual(raised.exception.code, "service_unavailable")
+
+    def test_database_rejects_invalid_or_incomplete_terminal_states(self):
+        now = timezone.now()
+        pairing = EndpointPairing.objects.create(
+            code_digest=hashlib.sha256(b"constraint-code").hexdigest(),
+            bootstrap_digest=hashlib.sha256(b"constraint-bootstrap").hexdigest(),
+            created_at=now, expires_at=now + timedelta(minutes=5),
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            EndpointPairing.objects.filter(pk=pairing.pk).update(state="invented")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            EndpointPairing.objects.filter(pk=pairing.pk).update(state="expired")
+
+
+class HostedRackMigrationTests(TransactionTestCase):
+    migrate_from = [("event_handler", "0024_organization_local_nfc_tag")]
+    migrate_to = [("event_handler", "0029_control_plane_retention_and_state_constraints")]
+
+    def _migrate(self, targets):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(targets)
+        return MigrationExecutor(connection).loader.project_state(targets).apps
+
+    def test_additive_forward_and_clean_reverse(self):
+        old_apps = self._migrate(self.migrate_from)
+        organization = old_apps.get_model("event_handler", "Organization").objects.create(
+            display_name="Migration tenant",
+        )
+        group = old_apps.get_model("event_handler", "TrainingGroup").objects.create(
+            organization=organization, name="Migration group",
+        )
+        new_apps = self._migrate(self.migrate_to)
+        endpoint = new_apps.get_model("event_handler", "BrowserEndpoint").objects.create(
+            organization_id=organization.pk, training_group_id=group.pk,
+            display_name="Migration rack",
+        )
+        self.assertEqual(endpoint.endpoint_revision, 1)
+        self.assertEqual(endpoint.helper_status_cursor, 1)
+        rolled_back = self._migrate(self.migrate_from)
+        self.assertTrue(rolled_back.get_model("event_handler", "TrainingGroup").objects.filter(pk=group.pk).exists())
+
+    def tearDown(self):
+        self._migrate(latest_migration_targets())

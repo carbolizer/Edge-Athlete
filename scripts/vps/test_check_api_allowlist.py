@@ -31,6 +31,45 @@ class ApiAllowlistTests(unittest.TestCase):
                 CHECKER.validation_errors(config_path),
             )
 
+    def test_hosted_allowlist_is_anchored_away_from_legacy_racks(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        hosted_locations = [
+            value for value in CHECKER.EXPECTED_API_LOCATIONS
+            if "rack" in value and value.startswith("~ ")
+        ]
+        self.assertTrue(hosted_locations)
+        self.assertNotIn("/api/racks/", "\n".join(hosted_locations))
+        self.assertTrue(all(value.endswith("$") for value in hosted_locations))
+
+    def test_missing_method_guard_fails(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        unsafe = config.replace("if ($request_method != GET)", "if ($request_method != POST)", 1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "vps.conf.template"
+            config_path.write_text(unsafe, encoding="utf-8")
+            self.assertTrue(any("method guard" in error for error in CHECKER.validation_errors(config_path)))
+
+    def test_main_application_csp_is_required(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        unsafe = config.replace(
+            "    add_header Content-Security-Policy \"default-src 'self'; base-uri 'none'; connect-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self'\" always;\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(unsafe, config)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "vps.conf.template"
+            config_path.write_text(unsafe, encoding="utf-8")
+            self.assertIn("VPS main application CSP is missing", CHECKER.validation_errors(config_path))
+
+    def test_hosted_routes_require_per_ip_limits(self):
+        config = (REPO_ROOT / "nginx" / "vps.conf.template").read_text(encoding="utf-8")
+        unsafe = config.replace("limit_req zone=hosted_control_plane burst=20 nodelay;", "", 1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "vps.conf.template"
+            config_path.write_text(unsafe, encoding="utf-8")
+            self.assertTrue(any("per-IP limiting" in error for error in CHECKER.validation_errors(config_path)))
+
 
 if __name__ == "__main__":
     unittest.main()

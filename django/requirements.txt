@@ -2,7 +2,7 @@
 # Install with: pip install -r requirements.txt
 # This file is used by Docker during the image build to install dependencies
 
-django==5.1.2               # The Django web framework
+django==5.2.17              # Current available Django 5.2 LTS patch (PyPI checked 2026-08-10)
 djangorestframework==3.15.2 # Adds tools for building JSON APIs for React
 psycopg2-binary==2.9.9      # PostgreSQL database driver — required for Docker
 paho-mqtt==1.6.1            # Python Mosquitto broker library

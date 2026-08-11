@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools==83.0.0", "wheel==0.46.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edgeathlete-rack-helper-development"
+version = "0.1.0"
+description = "Unsigned development Rack Helper control-plane client"
+requires-python = "==3.12.*"
+dependencies = [
+  "keyring==25.6.0",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Environment :: X11 Applications",
+  "Operating System :: Microsoft :: Windows :: Windows 10",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.12",
+]
+
+[project.gui-scripts]
+edgeathlete-rack-helper-development = "edgeathlete_rack_helper.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

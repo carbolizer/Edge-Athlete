@@ -165,15 +165,32 @@ describes nodes provisioned with `acquisition_kind="mqtt"`.
 **Hosted Rack Helper direction:** Product direction selects a native Rack Helper as
 the primary hosted BLE path and delegates its requirements
 to [`docs/_RACK_HELPER_SPEC.md`](docs/_RACK_HELPER_SPEC.md). Its architecture and
-implementation contracts remain draft, not accepted implementation behavior. The
-local/Pi decisions below stay authoritative until an ADR resolves the proposal's
-open platform, endpoint, ingestion API, permanent `Rep` creation boundary,
-retention, and release decisions.
+implementation remains split by accepted ADR. The organization-owned
+`BrowserEndpoint(kind=rack)`, endpoint cookie/CSRF and pairing, helper
+installation/credential/pairing, authenticated status, freshness, PostgreSQL
+throttling, and cleanup contract are delegated to
+[`docs/_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md`](docs/_ADR_BROWSER_ENDPOINT_AND_HELPER_IDENTITY.md).
+The unsigned Linux x64 and Windows x64 development runtime is delegated to
+[`docs/_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md`](docs/_ADR_RACK_HELPER_RUNTIME_LINUX_WINDOWS.md).
+Those ADRs authorize only the thin hosted control plane and exact-protocol
+development helper. The local/Pi decisions below remain authoritative for physical
+rep ingestion.
 
 The narrow server launch-intent contract in
 [`docs/_ADR_RACK_HELPER_LAUNCH_INTENT.md`](docs/_ADR_RACK_HELPER_LAUNCH_INTENT.md)
-is accepted. It does not authorize implementation until that ADR's hosted endpoint,
-helper identity, native runtime, status snapshot, and package-trust gates pass.
+is accepted, and its exact wire operations now live in `_MESSAGE_CONTRACT.md`.
+The endpoint identity, helper identity, native development runtime, and status
+snapshot gates have passed for the thin control-plane slice. Signed package trust
+and download UI remain blocked.
+
+**Hosted physical-ingestion block:** None of the hosted helper decisions authorize
+BLE scan or connection, sensor enrollment, notification decoding, detector
+acceptance, derived-event queue/upload, recoverable rep state, set completion, or
+permanent `Rep` creation. Physical helper ingestion remains disabled until an
+accepted ingestion/completion ADR revises `_MESSAGE_CONTRACT.md` and
+`docs/_RACK_BLE_LIVE_WORKFLOW_SPEC.md`, and the physical qualification evidence
+passes. Control-plane implementation must prove that it cannot change sets, reps,
+rankings, reports, reference maxima, insights, or analytics.
 
 ### End-to-end user flow
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.

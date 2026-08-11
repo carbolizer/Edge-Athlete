@@ -39,6 +39,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.vps}
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.vps}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.vps}
+      RACK_CONTROL_PLANE_KEY: ${RACK_CONTROL_PLANE_KEY:?set RACK_CONTROL_PLANE_KEY in .env.vps}
+      RACK_PUBLIC_ORIGIN: https://${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}
     command:
       - sh
       - -c
@@ -71,6 +73,35 @@ services:
     networks:
       - vps_react_proxy
     restart: unless-stopped
+
+  vps-control-plane-cleanup:
+    build: ./django
+    container_name: edgeathlete-vps-control-plane-cleanup
+    environment:
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env.vps}
+      DEBUG: "False"
+      VPS_DOMAIN: ${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS in .env.vps}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?set CSRF_TRUSTED_ORIGINS in .env.vps}
+      SECURE_SSL_REDIRECT: "True"
+      SESSION_COOKIE_SECURE: "True"
+      CSRF_COOKIE_SECURE: "True"
+      USE_X_FORWARDED_HOST: "True"
+      VPS_DEPLOYMENT: "True"
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.vps}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.vps}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.vps}
+      RACK_CONTROL_PLANE_KEY: ${RACK_CONTROL_PLANE_KEY:?set RACK_CONTROL_PLANE_KEY in .env.vps}
+      RACK_PUBLIC_ORIGIN: https://${VPS_DOMAIN:?set VPS_DOMAIN in .env.vps}
+    command: ["python", "manage.py", "run_control_plane_cleanup"]
+    networks:
+      - vps_database
+    restart: unless-stopped
+    depends_on:
+      vps-postgres:
+        condition: service_healthy
+      vps-django:
+        condition: service_healthy
 
   vps-nginx:
     image: nginx:alpine

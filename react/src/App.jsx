@@ -21,15 +21,17 @@ import RackScreen from './rack/RackScreen.jsx'
 import RackSetup from './rack/RackSetup.jsx'
 import RackNodeSetup from './rack/RackNodeSetup.jsx'
 import RackObserver from './rack/RackObserver.jsx'
+import HostedRack from './rack/HostedRack.jsx'
 import { useRackController } from './rack/controller.js'
 import { persistentRackHost, shouldClearCoachToken } from './rack/persistentRack.js'
 import CoachTablet from './coach/CoachTablet.jsx'
+import CoachRackPairing from './coach/CoachRackPairing.jsx'
 import { setCoachToken } from './coach/api.js'
 import Dashboard from './Dashboard.jsx'
 import WifiChangeOverlay from './WifiChangeOverlay.jsx'
 import { getActiveSession } from './api/client.js'
 import { subscribeRackCommand } from './mqtt/client.js'
-import { navigate, usePathname } from './router.js'
+import { matchCoachPath, matchRackPath, navigate, usePathname } from './router.js'
 import { applyRoleIdentity, getDeviceId } from './device.js'
 import { Centered } from './ui.jsx'
 import { T } from './theme.js'
@@ -232,7 +234,11 @@ function RackCommandListener() {
 
 function route(pathname) {
   if (pathname === '/connection-test') return <ConnectionTest />
-  if (pathname === '/rack/setup') return <RackSetup />
+  const rackPath = matchRackPath(pathname)
+  const coachPath = matchCoachPath(pathname)
+  if (rackPath?.kind === 'hosted') return <HostedRack />
+  if (rackPath?.kind === 'setup') return <RackSetup />
+  if (coachPath?.kind === 'rack-pairing') return <CoachRackPairing />
   if (pathname === '/coach/setup') return <CoachTablet />
   // Two faces of one screen: the coach view is the working tool (login, athletes,
   // planning, reports); the wall view is the read-only room display. Same file,
@@ -240,13 +246,8 @@ function route(pathname) {
   if (pathname === '/coach') return <Dashboard mode="coach" />
   if (pathname === '/dashboard') return <Dashboard mode="wall" />
 
-  if (pathname.startsWith('/rack/')) {
-    const rest = pathname.slice('/rack/'.length)
-    const n = Number(rest)
-    return rest !== '' && Number.isInteger(n) && n > 0
-      ? <RackLive key={n} rackNumber={n} />
-      : <Redirect to="/" />
-  }
+  if (rackPath?.kind === 'live') return <RackLive key={rackPath.rackNumber} rackNumber={rackPath.rackNumber} />
+  if (rackPath?.kind === 'invalid') return <Redirect to="/" />
 
   if (pathname === '/') return <Home />
 
@@ -260,7 +261,8 @@ export default function App() {
   // (it stays put while the screen behind it changes), so `enter_setup` works
   // whether the tablet is live, waiting, or mid-session.
   const role = localStorage.getItem('device_role')
-  const isRack = role === 'rack'
+  const isHostedRack = pathname === '/rack'
+  const isRack = role === 'rack' && !isHostedRack
   const rackHost = persistentRackHost(pathname, role, localStorage.getItem('rack_number'))
   useEffect(() => {
     if (shouldClearCoachToken(pathname, role)) setCoachToken(null)
@@ -269,7 +271,7 @@ export default function App() {
   // type the new Wi-Fi password and drop offline when it changes, so they get an
   // overlay showing it. The coach tablet initiates the change and has its own
   // copy-the-password flow, so it does not need this.
-  const isBystanderScreen = role === 'rack' || role === 'dashboard'
+  const isBystanderScreen = (role === 'rack' && !isHostedRack) || role === 'dashboard'
   return (
     <>
       {rackHost && (

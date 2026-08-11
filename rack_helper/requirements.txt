@@ -1,0 +1,4 @@
+# Direct runtime dependencies are exact for the unsigned development build.
+# Build each target in a clean CPython 3.12 virtual environment so pip selects
+# only that target's platform wheels.
+keyring==25.6.0
