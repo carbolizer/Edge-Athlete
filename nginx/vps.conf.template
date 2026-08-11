@@ -284,6 +284,10 @@ server {
         return 404;
     }
 
+    location = /service-worker.js {
+        return 410;
+    }
+
     location / {
         proxy_pass http://vps_react;
         proxy_http_version 1.1;

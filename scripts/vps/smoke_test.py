@@ -94,6 +94,9 @@ def validate_observations(domain, observations):
     if observations["coach_groups"].status != 401:
         errors.append("hosted coach TrainingGroup route did not require authentication")
 
+    if observations["service_worker"].status != 410:
+        errors.append("retired local service worker did not return 410")
+
     for label in ("private_api", "admin"):
         if observations[label].status != 404:
             errors.append(f"{label} returned {observations[label].status}, expected 404")
@@ -104,7 +107,10 @@ def validate_observations(domain, observations):
     if observations["http_post"].status != 405:
         errors.append("credential-bearing HTTP POST was not rejected with 405")
 
-    for label in ("health", "rack", "csrf", "rack_status", "coach_groups", "private_api", "admin"):
+    for label in (
+        "health", "rack", "csrf", "rack_status", "coach_groups", "service_worker",
+        "private_api", "admin",
+    ):
         errors.extend(f"{label}: {error}" for error in security_header_errors(observations[label].headers))
     return errors
 
@@ -128,6 +134,7 @@ def run(base_url, ca_file=None):
         "csrf": request_once(opener, https_origin + "/api/rack/v1/csrf/"),
         "rack_status": request_once(opener, https_origin + "/api/rack/v1/status/"),
         "coach_groups": request_once(opener, https_origin + "/api/coach/v1/training-groups/"),
+        "service_worker": request_once(opener, https_origin + "/service-worker.js"),
         "private_api": request_once(opener, https_origin + "/api/athletes/"),
         "admin": request_once(opener, https_origin + "/admin/"),
         "http_redirect": request_once(opener, http_origin + "/rack"),

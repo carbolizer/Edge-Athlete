@@ -49,6 +49,7 @@ class VpsSmokeValidationTests(unittest.TestCase):
                 b'{"code":"endpoint_authentication_failed","detail":"Endpoint authentication failed."}',
             ),
             "coach_groups": SMOKE.Observation(401, secure, b""),
+            "service_worker": SMOKE.Observation(410, secure, b""),
             "private_api": SMOKE.Observation(404, secure, b""),
             "admin": SMOKE.Observation(404, secure, b""),
             "http_redirect": SMOKE.Observation(308, redirect_headers, b""),
@@ -86,6 +87,16 @@ class VpsSmokeValidationTests(unittest.TestCase):
             error.startswith("rack: missing or invalid")
             for error in SMOKE.validate_observations("edge.example.com", observations)
         ))
+
+    def test_published_local_service_worker_fails(self):
+        observations = self.valid_observations()
+        observations["service_worker"] = SMOKE.Observation(
+            200, headers(**SECURITY_HEADERS), b"self.addEventListener('fetch', () => {})",
+        )
+        self.assertIn(
+            "retired local service worker did not return 410",
+            SMOKE.validate_observations("edge.example.com", observations),
+        )
 
 
 if __name__ == "__main__":
