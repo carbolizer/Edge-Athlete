@@ -11,8 +11,9 @@ open items in those documents are not accepted product behavior.
 
 | File | What it is |
 |---|---|
-| [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md) | Long-term cloud-hosted, browser-to-BLE product and architecture north star |
+| [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md) | Long-term cloud-hosted Rack, VBT, and product architecture north star |
 | [`_RACK_DASHBOARD_TEAM_REGISTRATION.md`](_RACK_DASHBOARD_TEAM_REGISTRATION.md) | Team-scoped Rack/Dashboard identity, pairing, persistent credentials, and backend authorization direction |
+| [`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md) | Native desktop BLE acquisition, pairing, queue, cloud synchronization, security, and implementation blockers |
 | [`_HANDOFF.md`](_HANDOFF.md) | **Read first.** The things that are not obvious from the code — why a prescribed weight can go *down*, where the formulas live, and what is deliberately unfinished |
 
 ## What changed, and how to see it

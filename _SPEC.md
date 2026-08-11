@@ -162,6 +162,14 @@ Discovery and health are accepted. WT901 rep detection, accepted-event transport
 and eight-sensor adapter capacity remain deferred. The MQTT flow below still
 describes nodes provisioned with `acquisition_kind="mqtt"`.
 
+**Hosted Rack Helper direction:** Product direction selects a native Rack Helper as
+the primary hosted BLE path and delegates its requirements
+to [`docs/_RACK_HELPER_SPEC.md`](docs/_RACK_HELPER_SPEC.md). Its architecture and
+implementation contracts remain draft, not accepted implementation behavior. The
+local/Pi decisions below stay authoritative until an ADR resolves the proposal's
+open platform, endpoint, ingestion API, permanent `Rep` creation boundary,
+retention, and release decisions.
+
 ### End-to-end user flow
 1. A coach powers on the Pi. It boots the Docker stack and broadcasts its private AP. Every node and screen in the room joins that AP; nothing needs internet.
 2. Each **node** (ESP32 + MPU-6050) computes velocity on-device and publishes each completed rep as its own MQTT message, plus a pulse/heartbeat on an interval. It never streams raw accelerometer data.

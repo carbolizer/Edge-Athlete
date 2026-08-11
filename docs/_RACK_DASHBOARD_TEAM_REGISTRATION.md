@@ -3,8 +3,8 @@
 - Source: `EDGE_ATHLETE_RACK_DASHBOARD_REGISTRATION_UPDATED.md`, supplied by the
   product owner on 2026-08-10
 - Status: Product and architecture direction; database implementation pending
-- Related vision: `docs/_PROJECT_VISION_ARCHITECTURE.md`
-- Related ADR: `docs/_ADR_COACH_WORKSPACE_TENANCY.md`
+- Related vision: [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md)
+- Related ADR: [`_ADR_COACH_WORKSPACE_TENANCY.md`](_ADR_COACH_WORKSPACE_TENANCY.md)
 
 ## Problem
 
@@ -216,9 +216,12 @@ remain separate gateway concepts.
 
 Rack and Dashboard browsers use ordinary customer internet/Wi-Fi. The hosted
 product does not provision or depend on an Edge Athlete access point, Raspberry
-Pi, local application server, or local MQTT broker. Browser-to-sensor BLE remains
-local to the Rack device. The current Pi/private-AP profile is migration fallback,
-not a cloud deployment prerequisite.
+Pi, local application server, or local MQTT broker. The native Rack Helper keeps
+sensor BLE and rep detection on the Rack computer and sends derived events through
+outbound TLS. Web Bluetooth is an optional zero-install adapter. The current
+Pi/private-AP profile is migration fallback, not a cloud deployment prerequisite.
+Proposed pairing, credential, queue, and failure requirements are in
+[`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md).
 
 ## Instruction for Coding Agents
 

@@ -36,10 +36,10 @@ internet connection and local network. No daily workflow may depend on a Raspber
 Pi, private SSID, local Django server, local MQTT broker, or Edge Athlete network
 configuration.
 
-The existing Pi/private-AP deployment remains a selectable compatibility profile
-while browser BLE and cloud Rack behavior are qualified. It is not the target
-customer architecture. If Web Bluetooth is unavailable on required hardware, the
-fallback must be a narrowly scoped local sensor bridge; it must not require Edge
+The existing Pi/private-AP deployment remains a selectable compatibility profile.
+It is not the target customer architecture. The native Rack Helper is the primary
+hosted BLE path. Web Bluetooth may provide an optional zero-install path on
+qualified browser, OS, and hardware combinations. Neither path may require Edge
 Athlete to operate the customer's network.
 
 ## 2. Intended User Experience
@@ -61,8 +61,8 @@ The coach should be able to do this from a normal internet-connected computer.
 ## 3. Rack System
 
 A Rack represents the computer used at a physical lifting station. Each station
-has a laptop and VBT device. The laptop should preferably not require a dedicated
-Edge Athlete application.
+has a laptop and VBT device. The native Rack Helper is the primary hosted BLE path;
+Web Bluetooth is optional where it passes qualification.
 
 The desired workflow is:
 
@@ -70,9 +70,8 @@ The desired workflow is:
 Open Edge Athlete website
   -> Log in or enter Rack mode
   -> Select athlete and workout
-  -> Click Connect VBT
-  -> Use the browser Bluetooth device picker
-  -> Select the Edge Athlete or WitMotion VBT device
+  -> Install and pair the Rack Helper during first-time setup
+  -> Rack Helper reconnects to the assigned VBT device
   -> Begin workout
 ```
 
@@ -80,43 +79,48 @@ Once connected, the Rack interface should display VBT measurements in real time.
 
 ## 4. Bluetooth Architecture
 
-The current plan is to investigate Web Bluetooth so the Rack browser communicates
-directly with the VBT device over BLE:
+The production direction uses a downloadable Rack Helper. The available
+Linux/browser environment exposed no Web Bluetooth API, and the supported release
+matrix has not been selected:
 
 ```text
 VBT sensor
   -> Bluetooth Low Energy
 Rack laptop
-  -> Web Bluetooth
-React Rack interface
-  -> HTTPS or WebSocket
+  -> Native Rack Helper
+  -> Local rep detection and bounded offline queue
+  -> Outbound HTTPS
 Edge Athlete cloud
+  -> Authenticated invalidation and HTTPS reconciliation
+React Rack interface
 ```
 
-The VPS does not communicate directly with Bluetooth devices. Bluetooth remains
-local between the Rack computer and sensor. The browser sends relevant workout
-and VBT information to the Edge Athlete backend.
+The proposed helper would make outbound cloud connections only, expose no LAN
+service, store a revocable credential in the operating-system keychain, and upload
+derived rep events rather than raw IMU frames. Browser-restart and offline-queue
+behavior require implementation and qualification. Pairing would use a short-lived
+code displayed by the Rack page; the code would not be the persistent credential.
+
+Web Bluetooth remains an optional zero-install path where it passes qualification.
+It is not the production dependency and cannot block supported rack hardware.
 
 ## 5. Current VBT Hardware
 
-Current development and testing hardware is a WitMotion BLE IMU. Python/Bleak
-communication with the sensor on Linux has already demonstrated that BLE works.
-
-Future work should identify and document:
+Current development and testing hardware is a WitMotion BLE IMU. A Linux/Bleak
+test connected to the WT901, received notifications from `FFE4` under service
+`FFE5`, decoded 20-byte `55 61` frames, and restored the connection after tested
+disconnects. The decoder implements the current conversion factors; physical
+measurement and detector accuracy remain unqualified. Future qualification must
+still document:
 
 - BLE device identification.
-- Service UUID.
-- Characteristic UUIDs.
-- Notification characteristics.
 - Command and configuration characteristics.
-- Packet structure.
 - Sampling frequency.
-- Accelerometer scaling.
-- Gyroscope scaling.
 - Timestamp behavior.
 - Connection and disconnection behavior.
 
-The goal is to reproduce the necessary BLE communication through Web Bluetooth.
+The existing Python/Bleak work is the protocol and rep-detection reference for the
+proposed packaged Rack Helper. Platform support remains an open release decision.
 
 ## 6. VBT Processing
 
@@ -134,7 +138,7 @@ potentially orientation or angle information. Edge Athlete needs to derive:
 The processing location can evolve. A likely architecture is:
 
 ```text
-IMU -> BLE -> Rack browser -> Rep detection and VBT processing -> Cloud API
+IMU -> BLE -> Rack Helper -> Rep detection and VBT processing -> Cloud API -> Rack browser
 ```
 
 Time-sensitive signal processing should occur locally so network latency does not
@@ -147,14 +151,15 @@ development and debugging when explicitly required.
 The Rack should eventually tolerate temporary internet interruptions:
 
 ```text
-Sensor -> Rack browser -> Local temporary buffer
+Sensor -> Rack Helper -> Durable bounded local queue
 Internet unavailable -> Workout continues
 Internet restored -> Buffered reps synchronize to the server
 ```
 
 A temporary outage should not destroy an athlete's current set or workout.
-Browser-side storage such as IndexedDB may be appropriate. This does not need to
-be implemented immediately, but architecture decisions should preserve the path.
+The helper owns primary acquisition durability. The browser keeps a delivered-event
+IndexedDB cache before rendering so a browser restart can reconcile without making
+the browser the only durable receiver.
 
 ## 8. Cloud Architecture
 
@@ -299,9 +304,9 @@ The long-term system has three layers:
 +------------------------v-------------------------+
 | RACK LAPTOP                                      |
 | Edge Athlete Rack web interface                  |
-| Web Bluetooth                                    |
-| Rep detection and VBT processing                 |
-| Temporary offline buffer                         |
+| Native Rack Helper (primary)                     |
+| BLE rep detection and durable offline queue      |
+| Web Bluetooth (optional qualified adapter)       |
 +------------------------+-------------------------+
                          |
                     Bluetooth LE
@@ -319,7 +324,11 @@ The long-term system has three layers:
 
 The cloud manages athletes and workouts.
 
-The Rack manages the lifting session and local VBT connection.
+The Rack browser manages the lifting workflow. The Rack Helper manages the local
+VBT connection, rep detection, and outage queue.
+
+The detailed contract and implementation blockers are in
+[`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md).
 
 The VBT device measures movement.
 

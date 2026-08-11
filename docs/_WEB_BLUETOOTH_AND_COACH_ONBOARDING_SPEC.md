@@ -1,9 +1,12 @@
 # Feature Spec: Browser BLE Lab and Public Coach Onboarding
 
 - Date: 2026-08-10
-- Status: BLE lab implemented with dedicated-origin deployment and physical
-  qualification pending; public registration design-gated
-- Related vision: `docs/_PROJECT_VISION_ARCHITECTURE.md`
+- Status: BLE lab implemented; physical browser qualification did not run because
+  the tested environment exposed no Web Bluetooth API. Native Rack Helper approved
+  as product direction; helper architecture and implementation remain draft.
+  Public registration remains design-gated.
+- Related vision: [`_PROJECT_VISION_ARCHITECTURE.md`](_PROJECT_VISION_ARCHITECTURE.md)
+- Related production helper proposal: [`_RACK_HELPER_SPEC.md`](_RACK_HELPER_SPEC.md)
 
 ## User Stories
 
@@ -26,10 +29,13 @@ without seeing another coach's data.
 - Preserve staff access and the existing local/Pi deployment during migration.
 - Do not require an Edge Athlete-managed access point in the hosted product;
   browsers use ordinary customer internet/Wi-Fi.
+- Use a packaged native Rack Helper as the primary production BLE path. Keep Web
+  Bluetooth as optional zero-install acquisition where qualification passes.
 
 ## Non-Goals
 
 - Browser-side rep detection or workout persistence in the BLE lab.
+- Production Rack Helper implementation; it receives a separate feature spec.
 - Writing any BLE characteristic or changing sensor configuration.
 - Uploading raw frames, device identifiers, or diagnostics.
 - Enabling public registration before ownership, throttling, and tenant-escape
@@ -134,6 +140,6 @@ without seeing another coach's data.
 - Dedicated origin deployment observed on 2026-08-10: BLE root `200`, unknown/API
   path `404`, app-origin lab path `404`, TLS 1.3 certificate verified, BLE CSP and
   Permissions-Policy present, and main-origin Bluetooth denied.
-- Available desktop browser and Linux laptop both reported no Web Bluetooth API.
+- The tested browser on the available Linux laptop exposed no `navigator.bluetooth`.
   No chooser/GATT test ran. Browser-only acquisition remains unqualified pending a
   supported Chromium/OS combination with a Bluetooth radio.
