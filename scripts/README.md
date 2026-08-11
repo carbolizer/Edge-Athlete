@@ -200,11 +200,18 @@ into full-screen Chromium. Runs **no** server.
   **role**, not a URL — `kiosk.sh rack`, `kiosk.sh coach`, `kiosk.sh dashboard` —
   because the role decides three things that have to agree: the URL, the browser
   profile, and which app installs.
-  A third argument picks the mode: `kiosk.sh coach basestation windowed` opens a
-  normal window instead, which is how a **coach tablet** runs. Same trusted origin
-  and same on-disk profile — so the offline copy and the app install both work —
-  but no full-screen lock (the browser menu is where "install" lives) and no
-  relaunch loop (a coach closing the window means it).
+  A third argument picks the mode, which is **two independent questions** —
+  full-screen or windowed, and does it reopen itself:
+
+  | mode | | on close | used by |
+  |---|---|---|---|
+  | `kiosk` | full-screen | reopens in 3s | rack screens in a gym |
+  | `once` | full-screen | stays closed | the base station at boot |
+  | `windowed` | a window | stays closed | coach tablets, demoing |
+
+  Reopening is right for a screen nobody is standing at — one that closed itself
+  and stayed closed is a dead screen with no one to notice. It is wrong anywhere a
+  person is at the keyboard, where closing has to mean closing.
 
 Two things about it are load-bearing and easy to undo by accident:
 

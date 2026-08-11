@@ -5,7 +5,19 @@
 #
 #   role   rack | coach | dashboard        (default: rack)
 #   host   the base station's address      (default: basestation)
-#   mode   kiosk | windowed                (default: kiosk)
+#   mode   kiosk | once | windowed         (default: kiosk)
+#
+#          MODE IS TWO INDEPENDENT QUESTIONS, and they were tangled together at first:
+#          "full-screen or a window?" and "reopen itself if it closes?"
+#
+#            kiosk     full-screen, reopens itself     a gym screen, unattended
+#            once      full-screen, stays closed       the base station at boot
+#            windowed  a window,    stays closed       demoing, debugging, the coach
+#
+#          Reopening is right for a rack screen nobody is standing at: one that closed
+#          itself and stayed closed is a dead screen with no one to notice. It is
+#          wrong for the base station, where a person is sitting in front of it and
+#          closing a window has to mean closing it.
 #
 #          On the base station ITSELF, pass `localhost` — see WHY LOCALHOST below.
 #
@@ -101,8 +113,8 @@ fi
 # browser writes its own launcher icon and runs it standalone — no browser chrome,
 # its own name, its own icon. After that the coach taps the installed app, not this.
 case "$MODE" in
-  kiosk|windowed) ;;
-  *) echo "[kiosk] unknown mode '$MODE' — expected kiosk or windowed"; exit 1 ;;
+  kiosk|once|windowed) ;;
+  *) echo "[kiosk] unknown mode '$MODE' — expected kiosk, once, or windowed"; exit 1 ;;
 esac
 
 case "$ROLE" in
@@ -219,7 +231,9 @@ CHROME_ARGS=(
   --password-store=basic
 )
 
-if [ "$MODE" = "kiosk" ]; then
+# Full-screen is `kiosk` AND `once` — the difference between those two is only
+# whether it comes back, which is handled at the bottom of this file.
+if [ "$MODE" != "windowed" ]; then
   CHROME_ARGS+=(
     --kiosk
     --disable-infobars
@@ -242,9 +256,11 @@ fi
 #    screen, and nobody is there to restart it. The profile is on disk, so it comes
 #    back as the SAME device rather than a new one.
 #
-#    Windowed mode does NOT relaunch. A coach closing the window means it, and a loop
-#    that reopens it would be a bug they cannot escape.
-if [ "$MODE" = "windowed" ]; then
+#    `once` and `windowed` do NOT relaunch. Closing has to mean closing when there is
+#    a person at the keyboard — a window that reopens itself is a bug they cannot
+#    escape, and on the base station it also means you can never get to the desktop
+#    to demo anything else.
+if [ "$MODE" != "kiosk" ]; then
   exec "$CHROME" "${CHROME_ARGS[@]}"
 fi
 

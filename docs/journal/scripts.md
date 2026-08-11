@@ -248,6 +248,24 @@ looks at where it points. Same machine, same server, different answer.
 which is a heavier configuration than a server needs. It is optional — a gym running a
 separate wall display should leave it off.
 
+**A distinction we had to learn the hard way.** The launcher originally treated
+"full-screen" and "reopen itself if it closes" as one setting, because on a rack screen
+you always want both. On the base station that combination is wrong twice over. Opening
+a second screen to demo it produced two full-screen windows, each grabbing focus and
+each reopening when it lost — the display cycled between roles several times a second,
+with no error logged anywhere, because nothing had actually failed. And closing the
+wall display to get at the desktop was impossible: it came back three seconds later.
+
+They are now separate. Reopening is for screens **nobody is standing at** — one that
+closed itself and stayed closed is a dead screen with no one to notice. Anywhere a
+person is at the keyboard, closing has to mean closing, and anything opened deliberately
+opens in a window so it can sit beside the scoreboard instead of fighting it for the
+screen.
+
+The general point: **two behaviours that always travel together in the case you built
+for are not necessarily one behaviour.** They only look like one until a second case
+shows up.
+
 ---
 
 ## Decision: kiosk state belongs to the machine, not to a user

@@ -468,11 +468,13 @@ mkdir -p /usr/share/applications /etc/xdg/autostart
 # unattended and should be exactly what it is.
 for role in dashboard rack coach; do
     case "$role" in
-        coach) label="Coach" ;;
-        rack)  label="Rack Screen" ;;
-        *)     label="Wall Display" ;;
+        coach) label="Coach";       mode=windowed ;;
+        rack)  label="Rack Screen"; mode=windowed ;;
+        # The wall display reopens FULL-SCREEN, because that is what it is — this is
+        # the launcher you use to put the scoreboard back after closing it. It still
+        # does not relaunch itself, so it stays closed the next time you close it.
+        *)     label="Wall Display"; mode=once ;;
     esac
-    mode=windowed
     # Without an explicit icon the desktop falls back to a generic cog, so all three
     # arrive looking like Settings and are indistinguishable in the app list. These
     # are the app's own role icons, already in the repo for the web manifests.
@@ -497,14 +499,19 @@ command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database ||
 if [ -f /etc/xdg/autostart/edgeathlete-kiosk.desktop ]; then
     echo "    autostart already set, left alone"
 else
+    # `once`, not `kiosk`: full-screen at boot, but CLOSING IT MEANS CLOSING IT.
+    # A rack screen in a gym should fight to stay alive because nobody is standing
+    # there to notice it died. The base station is the opposite — you are sitting at
+    # it, and a wall display that reopens itself three seconds after you close it
+    # leaves no way to demo anything else on the machine.
     cat > /etc/xdg/autostart/edgeathlete-kiosk.desktop <<EOF
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete Kiosk (dashboard)
-Exec=$KIOSK_SH dashboard localhost
+Exec=$KIOSK_SH dashboard localhost once
 X-GNOME-Autostart-enabled=true
 EOF
-    echo "    defaults to the wall display on boot"
+    echo "    boots to the wall display; closing it leaves it closed"
 fi
 
 echo "[11c] setting up the unattended kiosk login..."
@@ -656,6 +663,9 @@ SHORT COMMANDS (available right now — no re-login, no sourcing)
 
 ON A MONITOR
   Plug one in and it boots to the wall display as '$KIOSK_USER' — no password.
+  Close it and it STAYS closed; reopen it from the app list ("Wall Display").
+  The rack and coach launchers open in a window, so you can demo one next to
+  the scoreboard rather than fighting it for the screen.
   That account has no sudo and its password is locked, so ssh and sudo still
   prompt as normal for real accounts. The app list also has launchers for the
   rack and coach screens, for debugging.
