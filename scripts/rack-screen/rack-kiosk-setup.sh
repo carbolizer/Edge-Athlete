@@ -149,6 +149,23 @@ mkdir -p /etc/profile.d
 ln -sfn "$SCRIPT_DIR/aliases.sh" /etc/profile.d/edge-athlete.sh
 
 echo "[6] keeping the screen awake..."
+# A screen that suspends mid-set looks identical to one that crashed, and unlike a
+# blanked screen it does not come back on a tap — someone has to find a keyboard.
+# Masked outright: there is no moment when a rack screen should suspend itself.
+#
+# This is the same fix the base station got, for the same reason. The base station's
+# version was written first, after a monitor was plugged in and the machine put
+# itself to sleep. Rack screens have the identical exposure and nobody had checked.
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target \
+    >/dev/null 2>&1 || true
+echo "    suspend/hibernate masked"
+
+# The screen LOCK is handled in kiosk.sh instead, not here, because those settings
+# are per-user and only exist inside a running session — see the gsettings block
+# there. Worth knowing this screen is NOT exposed to the trap the base station hit:
+# it autologins an ordinary account whose password someone actually knows, rather
+# than a locked-password kiosk account that no password can unlock.
+
 # The xset calls inside kiosk.sh only work under X11. Under Wayland (Raspberry Pi
 # OS Bookworm defaults to labwc) they are silent no-ops and the screen blanks
 # mid-set, which looks exactly like a crashed tablet. labwc reads this config.

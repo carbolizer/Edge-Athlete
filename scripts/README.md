@@ -75,6 +75,14 @@ resolves. Consequences:
 | Wi-Fi powersave off | `/etc/NetworkManager/conf.d/wifi-powersave-off.conf` | generated |
 | Intel radio options | `/etc/modprobe.d/iwlwifi-powersave.conf` (Intel only) | generated |
 
+Turning the kiosk login **off** removes it rather than skipping it:
+
+```bash
+sudo EDGE_KIOSK_AUTOLOGIN=0 /srv/edge-athlete/Edge-Athlete/scripts/basestation/setup.sh
+```
+
+The `edgekiosk` account is kept — it owns the browser profile and any app installed on the wall display, and without autologin nothing logs it in. `sudo userdel -r edgekiosk` if you want it gone too.
+
 ### Three things worth knowing
 
 **Nothing depends on who is logged in.** The old Pi version hardcoded

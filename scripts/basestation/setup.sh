@@ -485,7 +485,29 @@ echo "[11c] setting up the unattended kiosk login..."
 KIOSK_USER="${EDGE_KIOSK_USER:-edgekiosk}"
 
 if [ "${EDGE_KIOSK_AUTOLOGIN:-1}" != "1" ]; then
-    echo "    skipped (EDGE_KIOSK_AUTOLOGIN=0)"
+    # TEARDOWN, not "skip". Skipping was the original behaviour and it was useless:
+    # a machine that already had autologin kept it, so the opt-out did nothing on the
+    # only machines where anyone would reach for it. Setting this to 0 has to actively
+    # undo what setting it to 1 did, or it is not an off switch.
+    echo "    EDGE_KIOSK_AUTOLOGIN=0 — removing autologin"
+    rm -f /etc/lightdm/lightdm.conf.d/50-edgeathlete.conf
+    rm -f /etc/sddm.conf.d/50-edgeathlete.conf
+    if [ -f /etc/gdm3/custom.conf ]; then
+        # Delete OUR two lines rather than restoring the backup wholesale. The
+        # backup is the file as it was before we touched it, so restoring it would
+        # also throw away anything edited since — which is not ours to discard.
+        sed -i "/^AutomaticLoginEnable=true$/d;/^AutomaticLogin=$KIOSK_USER$/d" \
+            /etc/gdm3/custom.conf
+    fi
+    # The ACCOUNT stays. It owns the browser profile and any app installed on the
+    # wall display, and it is harmless without autologin — no sudo, password locked,
+    # nothing logs it in. Deleting it silently would destroy that state to undo a
+    # login setting, which is a much bigger action than was asked for.
+    if id "$KIOSK_USER" >/dev/null 2>&1; then
+        echo "    account '$KIOSK_USER' kept (holds the browser profile)."
+        echo "    to remove it as well:  sudo userdel -r $KIOSK_USER"
+    fi
+    echo "    reboot, or: sudo systemctl restart display-manager"
 elif ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
     # No browser means no desktop means nothing to autologin into. Saying so beats
     # creating an account that never does anything.
@@ -596,5 +618,7 @@ ON A MONITOR
   That account has no sudo and its password is locked, so ssh and sudo still
   prompt as normal for real accounts. The app list also has launchers for the
   rack and coach screens, for debugging.
-  Not wanted? Re-run with: sudo EDGE_KIOSK_AUTOLOGIN=0 ./scripts/basestation/setup.sh
+  Not wanted? sudo EDGE_KIOSK_AUTOLOGIN=0 ./scripts/basestation/setup.sh
+  That REMOVES the autologin (it does not just skip it). The account is kept,
+  because it owns the browser profile; userdel -r it separately if you want.
 EOF

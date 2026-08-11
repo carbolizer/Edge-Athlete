@@ -382,6 +382,17 @@ The general shape is worth remembering: **two settings that are each right can c
 into a state with no exit.** Neither looked wrong in review. It took plugging in a
 monitor and walking away.
 
+**An off switch has to switch something off.** The first version of this took a
+setting that meant "do not set up the kiosk login" and made it *skip* — which did
+nothing at all on the only machines where anybody would reach for it, the ones that
+already had it. It now actively removes what it added. Where that means touching a
+file the system owns, it deletes precisely the lines it wrote rather than restoring
+its own backup, so an edit somebody made afterwards survives being undone.
+
+The account is deliberately left behind. It holds the browser profile and anything
+installed on the wall display, and without automatic login nothing logs it in anyway.
+Deleting it to undo a *login setting* would destroy far more than was asked for.
+
 **Where it does not apply.** A base station with no browser installed — a genuinely
 headless one — is skipped rather than given an account that can never log in anywhere.
 
