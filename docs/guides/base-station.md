@@ -213,6 +213,40 @@ network, so services reach each other by name (e.g. `postgres`, `mosquitto`).
 > project ran a second, duplicate listener — it has been removed here.
 :::
 
+:::{dropdown} Running the tests — read this before trusting a green run
+**The Django image contains a *copy* of the source. There is no live mount.** So this
+tests whatever you last built, not what is on disk:
+
+```bash
+docker compose run --rm django python manage.py test event_handler
+```
+
+Edit a file, run that, and you can get a confident pass that never saw your change.
+It has already happened once during this project: a whole suite reported OK while the
+edit under test was not in the image.
+
+Build first, every time:
+
+```bash
+docker compose build django
+docker compose run --rm django python manage.py test event_handler
+```
+
+The frontend has no such trap — Vite reads the working tree directly:
+
+```bash
+cd react && npx vitest run
+```
+
+**This does not affect the base station.** `ea-update` runs `setup.sh`, which builds
+the images as part of provisioning, so a deployed box is always on current code. The
+trap is local development only.
+
+Why it is worth a note rather than a fix: the failure mode is a **passing** test run.
+Nothing errors, nothing looks wrong, and the result is wrong in the direction you were
+hoping for — which is the hardest kind to catch by noticing.
+:::
+
 :::{dropdown} Start, stop, and watch logs
 
 From the repo root (where `docker-compose.yml` lives):
