@@ -4139,6 +4139,26 @@ class ScheduleRouteTests(APITestCase):
         self.assertEqual(self.client.get("/api/sessions/active/").data["session_id"],
                          session_id)
 
+    def test_starting_a_day_tells_the_room_about_it(self):
+        """Starting a session must emit an invalidation, like ending one does.
+
+        Screens do not poll — they refetch when told something changed. Ending a day
+        already announced itself and starting did not, so the wall display sat on
+        "no active session" until somebody reloaded it by hand. The bug looked like a
+        flaky display rather than a missing emitter, which is exactly why it is worth
+        a test: the failure mode is correct-looking stale data, not an error.
+        """
+        before = MonitoringEvent.objects.filter(reason="session_started").count()
+        session_id = self._create_session(self.slots[0])
+        res = self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            MonitoringEvent.objects.filter(reason="session_started").count(),
+            before + 1,
+            "starting a training day must emit a session_started invalidation",
+        )
+
     def test_starting_a_second_day_is_refused_while_one_runs(self):
         first = self._create_session(self.slots[0])
         second = self._create_session(self.slots[1])

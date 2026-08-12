@@ -2923,6 +2923,23 @@ def session_start(request, session_id):
 
     session.started_at = timezone.now()
     session.save(update_fields=["started_at"])
+    # Tell the room a day has begun.
+    #
+    # THIS WAS MISSING, and the symptom was completely unlike the cause: the wall
+    # display stayed on "no active session" after a coach started one, and only a
+    # manual reload fixed it. Ending a day already emitted an event, so ending
+    # worked and starting did not — which reads like the display being flaky rather
+    # than a mutation that never announced itself.
+    #
+    # Screens do not poll; they refetch when told something changed (see the
+    # invalidation decision in docs/journal/rack-tablet.md). That design is only as
+    # complete as its emitters, and it fails silently by showing correct-looking
+    # stale data. Any mutation the room can see needs one of these, in the same
+    # transaction as the change.
+    MonitoringEvent.objects.create(
+        reason="session_started",
+        is_simulated=session.is_simulated,
+    )
     return Response(TrainingSessionSerializer(session).data)
 
 

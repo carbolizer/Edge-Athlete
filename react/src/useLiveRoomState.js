@@ -30,6 +30,25 @@ import { parseMonitoringEvent, ROOM_STATE_TOPIC, shouldReconcile } from "./roomM
 
 const STALE_AFTER_MS = 15_000;
 
+// How often to refetch even when nothing has told us to.
+//
+// WHY THIS EXISTS. Screens refetch when an invalidation arrives, which is the right
+// design — it keeps athlete data off a channel anything on the gym WiFi can hear.
+// But it makes every screen only as reliable as the emitters behind it, and it fails
+// in the worst possible way: a missed message leaves correct-LOOKING data on screen
+// forever, with no error and no visible difference from working.
+//
+// That is not hypothetical. A coach starting a training day did not emit an event at
+// all, so the wall display sat on "no active session" until someone reloaded it by
+// hand. The emitter is fixed; this is the reason it will not be a demo-stopper the
+// next time one is missed.
+//
+// Deliberately SLOW. This is a backstop, not the transport — 20s is fast enough that
+// nobody stands in front of a wrong screen for long, and slow enough that a room of
+// tablets does not add meaningful load. Extra polling from many tablets was already
+// a suspect in one demo slowdown, so this stays a floor, not a heartbeat.
+const BACKSTOP_POLL_MS = 20_000;
+
 export default function useLiveRoomState({ mode, accessToken, onAuthRequired }) {
   const [roomState, setRoomState] = useState(null);
   const [requestState, setRequestState] = useState("loading");
@@ -155,7 +174,15 @@ export default function useLiveRoomState({ mode, accessToken, onAuthRequired }) 
     });
     client.on("error", () => setConnectionState("reconnecting"));
 
+    // The backstop. preserveSnapshot so a failed poll never blanks a working screen,
+    // and no forceAfterInFlight so it yields to a refetch already running rather than
+    // stacking on top of one.
+    const backstop = setInterval(() => {
+      refresh({ preserveSnapshot: true });
+    }, BACKSTOP_POLL_MS);
+
     return () => {
+      clearInterval(backstop);
       generationRef.current += 1;
       abortRef.current?.abort();
       fetchInFlightRef.current = false;
