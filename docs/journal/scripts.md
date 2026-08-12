@@ -2,6 +2,12 @@
 
 How a blank machine becomes a working base station, and how it stays one.
 
+:::{admonition} Who built this
+:class: note
+**All of it** — **Devin**. Base station provisioning, the rack-screen kiosk, and the
+short commands on both.
+:::
+
 ## What it is
 
 Two sets of scripts, for two completely different devices:

@@ -3,6 +3,16 @@
 The tablet at each rack. The only surface an athlete actually touches, and the one
 part of the system where losing data is unrecoverable.
 
+:::{admonition} Who built this
+:class: note
+**Bluetooth sensor acquisition** — the host agent, sensor selection at the rack, and
+the NFC groundwork — **Braydon**. The design record behind it is
+`docs/_ADR_RACK_BLE_LIVE_WORKFLOW.md`.
+
+**Everything else on this page** — the set lifecycle, on-device rep buffering, the
+install and offline work — **Devin**.
+:::
+
 ## What it is
 
 A web app running full-screen on a tablet at each rack. It shows the athlete their
