@@ -277,6 +277,50 @@ def rack_register(request):
     return Response({"device_id": screen.device_id, "rack_number": screen.rack_number})
 
 
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def node_register(request):
+    """A sensor announces itself. Body: { node_id }.
+
+    THE HOLE THIS FILLS. Until now nothing could create an MQTT sensor row. The
+    seeder made exactly one, BLE sensors got theirs through verified enrollment, and
+    a pulse from anything else was rejected with "node is not registered" — so a
+    second simulated rack published into the void, and eight real ESP32s would have
+    had to be typed into the database by hand.
+
+    IT DELIBERATELY MIRRORS rack_register, a few lines above. A rack tablet already
+    announces itself and waits for a coach to give it a rack number; sensors were the
+    one device type without that story, and there was no reason for the asymmetry.
+
+    Registering does NOT give a sensor a rack. It creates a row with rack_number
+    empty, which shows up in the coach's list and does nothing until a coach links
+    it. That is what keeps this safe to leave open: an unknown device on the gym
+    network can make a row nobody has claimed, exactly as it can already make an
+    unclaimed rack screen.
+
+    Idempotent, because firmware will call it on every boot.
+    """
+    node_id = request.data.get("node_id")
+    # Same shape the assignment endpoint enforces, so a node_id that registers is
+    # always one that can later be assigned.
+    if not isinstance(node_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id) is None:
+        return Response({
+            "code": "invalid_node_id",
+            "detail": "node_id may contain only letters, numbers, underscores, and hyphens",
+        }, status=400)
+
+    node, created = Node.objects.get_or_create(node_id=node_id)
+    # Registering must never change an EXISTING sensor. A BLE node that was enrolled
+    # by standing at the rack must not be able to re-register itself as something
+    # else by sending one POST.
+    return Response({
+        "node_id": node.node_id,
+        "rack_number": node.rack_number,
+        "acquisition_kind": node.acquisition_kind,
+        "created": created,
+    }, status=201 if created else 200)
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def rack_racknumber(request):

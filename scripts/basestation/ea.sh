@@ -79,14 +79,27 @@ ea-seed)
     # base station: it deletes by NAME, so it takes out any real group called
     # "Varsity" and any athlete sharing a name with the demo four.
     echo "==> seeding demo session + coach"
-    cd "$EDGE_DIR" && sudo docker compose run --rm seed
+    # --profile seed on the BUILD as well: profile-gated services are skipped by a
+    # plain `docker compose build`, so without this the seeder can run months-old
+    # code on a box that was updated yesterday.
+    cd "$EDGE_DIR" || exit 1
+    sudo docker compose --profile seed build seed
+    sudo docker compose run --rm seed
     ;;
 
 ea-sim)
-    # Publishing pulses is what makes the node appear as an unassigned rack on the
-    # tablet — that IS the registration. Assign it a rack there and reps follow.
+    # The simulator REGISTERS its node on startup, then publishes. It used to just
+    # publish, and pulses from an unknown node are rejected — so any rack other than
+    # the one the seeder creates published into nothing, with a healthy-looking log.
+    # Once registered it shows up unassigned in the coach admin page; link it there
+    # and reps follow.
     node="${1:-rack_1}"
     cd "$EDGE_DIR" || exit 1
+    # Same reason as ea-seed: `docker compose build` skips profile-gated services,
+    # so the simulator image can lag the rest of the stack by months without saying
+    # so. That is how a second simulated rack ended up publishing from old code that
+    # never registered its node.
+    sudo docker compose --profile demo build simulator
     if [ "$node" = "rack_1" ]; then
         # The compose service is already defined as rack_1, so use it by name and
         # `ea-sim-stop` and `docker compose ps` can both see it.

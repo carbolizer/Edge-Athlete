@@ -55,6 +55,9 @@ urlpatterns = [
 
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),
+    # A sensor announces itself, the way a rack tablet already does at
+    # racks/register/. Creates it unassigned; a coach links it to a rack.
+    path('nodes/register/', views.node_register, name='node_register'),
     path('nodes/<str:node_id>/acquisition-kind/', views.node_acquisition_kind,
          name='node_acquisition_kind'),
 

@@ -62,7 +62,6 @@ export default function RackNodeSetup({ rackNumber, onReady, onObserve }) {
       setCurrentNode(assigned)
       setWifiNodes((allNodes || []).filter(
         (n) => n.acquisition_kind !== 'wt901_ble'
-          && !n.is_simulated
           && (n.rack_number == null || n.rack_number === rackNumber),
       ))
       setStatus(assigned ? 'ready' : 'login')

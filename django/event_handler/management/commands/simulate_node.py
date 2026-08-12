@@ -184,6 +184,29 @@ class Command(BaseCommand):
         reps_per_set = options["reps_per_set"]
         mode = options["active_when"]
 
+        # Register before publishing, the way real firmware should.
+        #
+        # Pulses from an unknown node are REJECTED ("node is not registered"), so
+        # without this a second simulated rack published forever into nothing: the
+        # container ran, the log looked healthy, and no node ever appeared for a
+        # coach to link. The only thing that had ever created an MQTT node was the
+        # seeder, which makes exactly one.
+        #
+        # Deliberately NOT marked simulated. is_simulated exists so demo rows are
+        # easy to wipe, but it also bars a node from being assigned to a rack at
+        # all — and driving a rack is the entire point of this command. A fake
+        # sensor that cannot be linked to anything can only be watched, not demoed.
+        from ...models import Node
+        node, created = Node.objects.get_or_create(node_id=node_id)
+        self.stdout.write(
+            f"{'Registered' if created else 'Found'} node {node_id} "
+            f"(rack: {node.rack_number if node.rack_number is not None else 'unassigned'})"
+        )
+        if node.rack_number is None:
+            self.stdout.write(
+                "  ^ link it to a rack in the coach admin page before it publishes reps"
+            )
+
         self.stdout.write(f"Starting simulate_node for {node_id} "
                           f"(gate: {mode}, rack: {fixed_rack or 'from database'})")
 

@@ -478,7 +478,7 @@ function RoomLayout({ token, onAuthLost }) {
   // Offer sensors this rack can actually take: unassigned, or already on the chosen
   // rack. One owned by a different rack is left out rather than shown and refused.
   const nodeOptions = nodes
-    .filter((n) => !n.is_simulated && (n.rack_number == null || String(n.rack_number) === String(nodeSlot)))
+    .filter((n) => n.rack_number == null || String(n.rack_number) === String(nodeSlot))
     .map((n) => ({ key: n.node_id, ...n }))
 
   return (

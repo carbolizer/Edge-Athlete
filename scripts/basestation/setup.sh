@@ -645,7 +645,15 @@ EOF
 fi
 
 echo "[12] building the stack (this takes a while the first time)..."
-docker compose build
+# --profile demo --profile seed is LOAD-BEARING, not thoroughness.
+#
+# `seed` and `simulator` are profile-gated so a plain `docker compose up` never
+# starts them. But `docker compose build` ALSO skips profile services by default —
+# so a bare build left those two images at whatever they were the day someone last
+# built them by hand, while everything else moved on. On this machine that meant
+# `ea-seed` and `ea-sim` silently ran months-old code after an update that reported
+# success. Naming the profiles is what makes an update actually update them.
+docker compose --profile demo --profile seed build
 
 cat <<EOF
 

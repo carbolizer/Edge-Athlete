@@ -995,6 +995,55 @@ def _token_digest_for_test(token):
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
 
+class NodeRegistrationTests(APITestCase):
+    """A sensor announcing itself — the MQTT counterpart of racks/register/.
+
+    Nothing could create an MQTT node before this: the seeder made exactly one, BLE
+    nodes came from verified enrollment, and pulses from anything unknown were
+    rejected. That is fine with one simulated rack and impossible with eight real
+    ones.
+    """
+
+    def test_an_unknown_sensor_can_announce_itself(self):
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_7"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertTrue(res.data["created"])
+        node = Node.objects.get(node_id="rack_7")
+        self.assertIsNone(node.rack_number, "registering must not hand out a rack")
+
+    def test_registering_is_idempotent_because_firmware_reboots(self):
+        self.client.post("/api/nodes/register/", {"node_id": "rack_7"}, format="json")
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_7"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["created"])
+        self.assertEqual(Node.objects.filter(node_id="rack_7").count(), 1)
+
+    def test_registering_never_alters_a_sensor_that_already_exists(self):
+        """The one that would be a security hole if it regressed.
+
+        A BLE sensor is enrolled by a coach standing at the rack and verifying it
+        moves. If a POST could overwrite that row, anything on the gym network could
+        re-register a verified sensor as something else and inherit its rack.
+        """
+        Node.objects.create(
+            node_id="wt901-real",
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            rack_number=4,
+        )
+        res = self.client.post("/api/nodes/register/", {"node_id": "wt901-real"}, format="json")
+        self.assertEqual(res.status_code, 200)
+
+        node = Node.objects.get(node_id="wt901-real")
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_WT901_BLE)
+        self.assertEqual(node.rack_number, 4, "an existing sensor must keep its rack")
+
+    def test_a_junk_node_id_is_refused(self):
+        for bad in ["", "has space", "semi;colon", "x" * 65, None, 7]:
+            res = self.client.post("/api/nodes/register/", {"node_id": bad}, format="json")
+            self.assertEqual(res.status_code, 400, f"{bad!r} should be refused")
+        self.assertEqual(Node.objects.count(), 0)
+
+
 class RackNodeAssignmentTests(APITestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
