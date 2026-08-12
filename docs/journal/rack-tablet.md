@@ -111,21 +111,44 @@ Worth knowing before changing anything nearby:
 
 ---
 
-## Known bug: a tablet can only be assigned once
+## Decision: a tablet can be released, not only assigned
+
+:::{note}
+**Fixed on 12 August 2026.** This was a known bug for most of the project. The
+description of the deadlock is kept because the shape of it is worth recognising
+again, and because the workaround people found made things quietly worse.
+:::
 
 A tablet and its sensor are separate identities, each told "you are rack 3"
 independently by a coach — see {doc}`coach-tablet` for why that is a screen rather
 than configuration.
 
-The consequence lands here: **there is no way to un-assign a tablet.** Once it has a
-rack number, sending it back to setup does not clear that number, and the coach's list
-of waiting tablets only shows ones with *no* number. The tablet becomes invisible and
-cannot be reassigned.
+**The deadlock.** Nothing ever cleared a tablet's rack number, and the coach's list of
+waiting tablets only shows ones with *no* number. So a tablet sent back to setup kept
+the rack it already had, never reappeared in the list, and could not be reassigned. It
+was still working, still on the network, and completely unreachable from the coach's
+side.
 
-Clearing the browser's site data appears to fix it, but that is a coincidence worth
-understanding: it erases the tablet's stored identity, so it invents a new one the
-server has never seen and gets created fresh with no rack. You are not repairing the
-tablet, you are replacing it.
+**The workaround that made it worse.** Clearing the tablet's browser data appeared to
+fix it, and became folklore. It works for a reason nobody liked once it was said out
+loud: it erases the tablet's stored identity, so the tablet comes back as a device the
+server has never seen and is created fresh with no rack. You were not repairing the
+tablet — you were replacing it, and abandoning the old record every time.
+
+**What we chose.** Assignment now accepts an explicit "no rack" to mean *release this
+tablet*, and the coach's room layout has a button for it. A released tablet reappears
+in the waiting list within a few seconds and can be assigned again.
+
+**The half that is easy to miss.** Releasing the server-side record is not enough. The
+tablet only leaves its waiting screen when the rack it is told about *differs* from the
+one it already knew — so a tablet freed from rack 3 and put straight back on rack 3
+would have waited forever, which is exactly what someone sorting out a mislabelled room
+would try first. Being released now also makes the tablet forget its old rack, so any
+assignment moves it.
+
+**What it cost.** A meaningful null. "No rack number in the request" and "rack number
+is deliberately empty" are different statements and now have to be told apart, which is
+a small sharp edge in an otherwise dull endpoint.
 
 ---
 
@@ -411,6 +434,40 @@ Two reasons, and the second is the one that generalises:
 one of these notices, in the same transaction as the change itself. Miss one and a
 screen silently shows stale data — a known live bug of exactly this shape is described
 in {doc}`dashboard`.
+
+---
+
+## Decision: a sensor announces itself, the way a screen already does
+
+**What forced it.** Nothing could put an MQTT sensor into the system. The demo seeder
+created exactly one, Bluetooth sensors got theirs through verified enrollment at the
+rack, and a message from any sensor the database had never heard of was **rejected**.
+
+So a second simulated rack published into nothing — the process ran, its log looked
+healthy, and no sensor ever appeared for a coach to link. That is a demo annoyance.
+The real problem is what happens with hardware: bolt eight sensors to eight racks and
+there is no way to get them into the system at all, short of typing rows into the
+database by hand.
+
+**What we chose.** The pattern the system already used everywhere else. A rack tablet
+has always *announced itself* — it says "I exist, here is my id" and waits for a coach
+to give it a rack. Sensors were the one device type without that story, and there was
+no reason for the difference. Now they announce themselves too, and the simulator does
+it on startup exactly as real firmware should.
+
+**Why leaving it open is safe.** Announcing gets a sensor a row and nothing else — no
+rack, no data path, no effect on anything. It sits in a list until a coach links it.
+That is the same bargain already accepted for tablets, and the guard that matters is
+the *linking* step, which is a coach action either way.
+
+**The one rule that would be a hole if it broke.** Announcing must never modify a
+sensor that already exists. Otherwise anything on the gym network could re-announce a
+Bluetooth sensor that a coach verified in person, and inherit the rack it was trusted
+with. There is a test whose only job is that.
+
+**What it cost.** One more endpoint, and a decision we deliberately did not make:
+whether a *simulated* sensor may drive a real rack. It may, for now, because the demo
+depends on it — but that is a judgment worth revisiting with real hardware in the room.
 
 ---
 

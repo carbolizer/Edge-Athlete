@@ -393,7 +393,10 @@ function RoomLayout({ token, onAuthLost }) {
   }, [load])
 
   const occupancyBySlot = {}
-  for (const n of RACK_SLOTS) occupancyBySlot[n] = { screenId: screenBySlot[n] || null, node: null }
+  // screenIdBySlot comes from room-state and knows every rack, not just the ones
+  // assigned in this browser session — which is what makes Release usable on a
+  // tablet somebody else assigned last week.
+  for (const n of RACK_SLOTS) occupancyBySlot[n] = { screenId: screenIdBySlot[n] || screenBySlot[n] || null, node: null }
   for (const n of nodes) {
     if (n.rack_number != null && occupancyBySlot[n.rack_number]) {
       occupancyBySlot[n.rack_number].node = n
@@ -471,6 +474,38 @@ function RoomLayout({ token, onAuthLost }) {
       else setMsg({ text, kind: 'err' })
     } finally {
       setBusyNode(false)
+    }
+  }
+
+  // Send a tablet back to the waiting list.
+  //
+  // This is the escape from a deadlock, not a convenience. Nothing used to clear a
+  // screen's rack number, and the "unassigned" list only shows screens without one —
+  // so a tablet sent to setup mode kept its old rack, never reappeared for the
+  // coach, and could not be reassigned. The only known workaround was wiping the
+  // tablet's browser data, which does not fix it so much as replace the device.
+  async function releaseScreen(deviceId, rack) {
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${encodeURIComponent(deviceId)}/`, {
+        token,
+        method: 'PATCH',
+        body: { rack_number: null },
+      })
+      setScreenBySlot((prev) => {
+        const next = { ...prev }
+        delete next[rack]
+        return next
+      })
+      setMsg({ text: `Screen ${shortId(deviceId)} released from rack ${rack}`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'release failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
     }
   }
 
@@ -576,6 +611,18 @@ function RoomLayout({ token, onAuthLost }) {
                   <div className="coach-slot-line">
                     Node <strong>{slot.node ? slot.node.node_id : '—'}</strong>
                   </div>
+                  {slot.screenId && (
+                    <button
+                      type="button"
+                      className="coach-btn coach-btn-ghost"
+                      style={{ marginTop: 6, fontSize: 12 }}
+                      disabled={busyScreen}
+                      onClick={() => releaseScreen(slot.screenId, n)}
+                      title="Send this tablet back to the waiting list so it can be reassigned"
+                    >
+                      Release screen
+                    </button>
+                  )}
                 </>
               )}
             </div>

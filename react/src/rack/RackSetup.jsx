@@ -60,8 +60,15 @@ export default function RackSetup() {
 function Waiting() {
   const deviceId = useRef(getDeviceId()).current
   // The rack this device was on when we arrived (string, or null if unassigned).
-  // We only navigate away when the server reports something DIFFERENT from this.
-  const baseline = useRef(localStorage.getItem('rack_number')).current
+  // We only navigate away when the server reports something DIFFERENT from this,
+  // so that simply landing here does not bounce straight back out.
+  //
+  // A REF, and it is deliberately mutable — see the release branch in the poll.
+  // Held as a constant, this created the other half of the reassignment deadlock:
+  // a tablet that had been on rack 3 kept '3' as its baseline, so a coach putting
+  // it back on rack 3 changed nothing the poll could see and it waited forever.
+  // Being freed from a rack has to forget that rack.
+  const baselineRef = useRef(localStorage.getItem('rack_number'))
 
   useEffect(() => {
     localStorage.setItem('device_role', 'rack')
@@ -77,7 +84,15 @@ function Waiting() {
       try {
         const { rack_number } = await getRackNumber(deviceId)
         const current = rack_number == null ? null : String(rack_number)
-        if (current != null && current !== baseline) {
+        if (current == null) {
+          // The coach released this tablet. Drop the stale local number so ANY
+          // assignment from here moves us — including back to the same rack, which
+          // is the common case when someone is sorting out a mislabelled room.
+          if (baselineRef.current != null) {
+            localStorage.removeItem('rack_number')
+            baselineRef.current = null
+          }
+        } else if (current !== baselineRef.current) {
           localStorage.setItem('rack_number', current)
           navigate(`/rack/${current}`, { replace: true })
           return // stop polling
@@ -87,7 +102,7 @@ function Waiting() {
     }
     poll()
     return () => { stopped = true; if (timer) clearTimeout(timer) }
-  }, [deviceId, baseline])
+  }, [deviceId])
 
   // Show the LAST 8 chars of the device id so this matches how the coach admin
   // page labels the same tablet in its "unassigned screen" dropdown (its shortId

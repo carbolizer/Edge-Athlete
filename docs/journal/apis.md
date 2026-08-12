@@ -115,7 +115,7 @@ Rack screens, and the sensors on them.
 | `/api/nodes/` | `GET` | open | Open: list every sensor node and its latest status | `nodes_list` |
 | `/api/nodes/register/` | `POST` | open | A sensor announces itself | `node_register` |
 | `/api/nodes/<str:node_id>/acquisition-kind/` | `PUT` | open | Provision the transport trusted to supply one registered node's health | `node_acquisition_kind` |
-| `/api/racks/<str:device_id>/` | `PATCH` | open | Coach-only: give a waiting tablet its rack number | `rack_assign` |
+| `/api/racks/<str:device_id>/` | `PATCH` | open | Coach-only: give a waiting tablet its rack number, or release it | `rack_assign` |
 <!-- routes:the-room:end -->
 
 :::::

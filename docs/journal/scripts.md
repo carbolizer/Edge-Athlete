@@ -551,6 +551,33 @@ what it tried to do.
 
 ---
 
+## Decision: the build has to name the optional pieces, or it silently skips them
+
+**What forced it.** Two services are marked optional so they never start on their own:
+the demo-data loader and the fake sensor. That part works. What nobody expected is that
+the **build** step skips them for the same reason — so an update that reported success
+rebuilt everything except those two, and left them running whatever they were the last
+time someone built them by hand.
+
+It was found the hard way: a change to the fake sensor was made, the stack was rebuilt,
+the change did not appear. The file inside that image was ten days old.
+
+**What we chose.** Every place that builds now names the optional pieces explicitly,
+including the two commands that run them — so using one builds it first rather than
+trusting that some earlier update did.
+
+**Why this is worth a page.** The failure is invisible in exactly the wrong way. There
+is no error, the update says it succeeded, and the only symptom is old behaviour from a
+component you were told was current. It cost an evening once and would have cost
+another every time somebody changed the demo tooling.
+
+**The general shape, which is the second time this project has hit it.** A tool that
+quietly *excludes* things by default will exclude them from operations you did not have
+in mind when you set it up. Optional at run time was intended; optional at build time
+came along for free and unannounced.
+
+---
+
 ## The thing everybody hits once
 
 **Changing the Wi-Fi password disconnects every device in the gym**, immediately —

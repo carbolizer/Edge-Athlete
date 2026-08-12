@@ -995,6 +995,75 @@ def _token_digest_for_test(token):
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
 
+class RackScreenReleaseTests(APITestCase):
+    """Sending a tablet back to the waiting list — the fix for T8.
+
+    The deadlock: nothing cleared a screen's rack_number, and the coach's waiting
+    list only shows screens without one. A tablet sent to setup kept its old rack,
+    so it never reappeared and could not be reassigned. Clearing browser data
+    "fixed" it only by making the tablet a different device.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="release-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.screen = RackScreen.objects.create(device_id="screen-a", rack_number=3)
+
+    def test_a_tablet_can_be_released_back_to_the_waiting_list(self):
+        res = self.client.patch(
+            f"/api/racks/{self.screen.device_id}/", {"rack_number": None}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen.refresh_from_db()
+        self.assertIsNone(self.screen.rack_number)
+
+        waiting = self.client.get("/api/racks/unassigned/")
+        self.assertIn(
+            "screen-a", [s["device_id"] for s in waiting.data],
+            "a released tablet must reappear in the coach's waiting list",
+        )
+
+    def test_a_released_tablet_can_go_back_to_the_SAME_rack(self):
+        """The half of the deadlock that is easy to miss.
+
+        Reassigning to a different rack was never the hard case. Putting a tablet
+        back on the rack it came from is what people actually do when sorting out a
+        mislabelled room, and it has to work.
+        """
+        self.client.patch(f"/api/racks/{self.screen.device_id}/", {"rack_number": None}, format="json")
+        res = self.client.patch(f"/api/racks/{self.screen.device_id}/", {"rack_number": 3}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3)
+
+    def test_omitting_the_field_is_still_an_error(self):
+        """null means release; ABSENT still means you forgot something."""
+        res = self.client.patch(f"/api/racks/{self.screen.device_id}/", {}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3, "a malformed request must change nothing")
+
+    def test_a_tablet_cannot_be_released_mid_set(self):
+        """Same guard that already blocked moving one. Releasing is a move."""
+        node = Node.objects.create(node_id="n-a", rack_number=3)
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Test Lifter")
+        exercise = Exercise.objects.create(name="Squat")
+        Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=node,
+            set_number=1, ended_at=None,
+        )
+
+        res = self.client.patch(
+            f"/api/racks/{self.screen.device_id}/", {"rack_number": None}, format="json",
+        )
+        self.assertEqual(res.status_code, 409, res.data)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3)
+
+
 class NodeRegistrationTests(APITestCase):
     """A sensor announcing itself — the MQTT counterpart of racks/register/.
 

@@ -344,14 +344,30 @@ def racks_unassigned(request):
 @api_view(["PATCH"])
 @permission_classes([IsActiveStaff])
 def rack_assign(request, device_id):
-    """Coach-only: give a waiting tablet its rack number. Body: { rack_number }."""
-    rack_number = request.data.get("rack_number")
-    if rack_number is None:
+    """Coach-only: give a waiting tablet its rack number, or release it.
+
+    Body: { rack_number: 3 } to assign, { rack_number: null } to release.
+
+    RELEASING IS THE FIX FOR A REAL DEADLOCK. Nothing used to clear this field, and
+    the coach's "waiting tablets" list only shows screens whose rack is empty. So a
+    tablet sent back to setup kept its old rack number, never reappeared in that
+    list, and could not be reassigned — from the coach's side it had vanished.
+
+    Clearing the browser's site data appeared to fix it, which sent people down the
+    wrong path entirely: that works only because it throws away the tablet's stored
+    identity, so it comes back as a device the server has never seen. You were not
+    repairing the tablet, you were replacing it — and silently orphaning the old row.
+    """
+    # `in` rather than `.get()`, because null is now a MEANINGFUL value and .get()
+    # cannot tell "release this tablet" from "you forgot the field".
+    if "rack_number" not in request.data:
         return Response({"error": "rack_number is required"}, status=400)
-    try:
-        rack_number = int(rack_number)
-    except (TypeError, ValueError):
-        return Response({"error": "rack_number must be an integer"}, status=400)
+    rack_number = request.data["rack_number"]
+    if rack_number is not None:
+        try:
+            rack_number = int(rack_number)
+        except (TypeError, ValueError):
+            return Response({"error": "rack_number must be an integer or null"}, status=400)
     with transaction.atomic():
         screen = RackScreen.objects.select_for_update().filter(device_id=device_id).first()
         if screen is None:
@@ -365,6 +381,10 @@ def rack_assign(request, device_id):
             }, status=409)
         screen.rack_number = rack_number
         screen.save(update_fields=["rack_number"])
+        # Tell the room. Screens refetch when told something changed, and moving a
+        # tablet between racks is about as room-visible as a change gets — this was
+        # missing, the same way starting a session was.
+        MonitoringEvent.objects.create(reason="rack_state_changed")
     return Response(RackScreenSerializer(screen).data)
 
 
