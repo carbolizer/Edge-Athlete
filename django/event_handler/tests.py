@@ -714,6 +714,67 @@ class RackControllerEndpointTests(APITestCase):
         self.assertEqual(response.data, {"status": "unavailable"})
         self.assertEqual((runtime.state_version, runtime.selected_athlete_id), before)
 
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_accepts_forwarded_tag_id_without_consuming(self, consume):
+        """The per-rack-laptop path: the browser read the tap from its own local
+        reader and forwards the raw tag. Resolution must happen server-side and
+        the socket must not be consumed."""
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Braydon Callender", nfc_tag_id="04A1B2C3D4E5F6")
+        session.athletes.add(athlete)
+        acquired = self._acquire()
+
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04A1B2C3D4E5F6"},
+            format="json", headers=self._headers(acquired),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "status": "recognized",
+            "athlete": {"athlete_id": athlete.id, "name": "Braydon Callender"},
+        })
+        consume.assert_not_called()
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_forwarded_unknown_and_off_roster_tags(self, consume):
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        Athlete.objects.create(name="Off Roster", nfc_tag_id="04A1B2C3D4E5F6")
+        acquired = self._acquire()
+
+        off_roster = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04A1B2C3D4E5F6"},
+            format="json", headers=self._headers(acquired),
+        )
+        unknown = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04AAAAAAAAAAAA"},
+            format="json", headers=self._headers(acquired),
+        )
+        self.assertEqual(off_roster.data, {"status": "unknown"})
+        self.assertEqual(unknown.data, {"status": "unknown"})
+        consume.assert_not_called()
+
+    def test_nfc_tap_rejects_bad_tag_id_shape(self):
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        acquired = self._acquire()
+        for bad in ["", "zzzzzzzzzzzz", "04:4D", 42, "x" * 33]:
+            response = self.client.post(
+                "/api/racks/1/nfc-tap/", {"tag_id": bad},
+                format="json", headers=self._headers(acquired),
+            )
+            self.assertEqual(response.status_code, 400, f"{bad!r} should be refused")
+            self.assertEqual(response.data["code"], "invalid_nfc_request")
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_forwarded_tag_requires_controller(self, consume):
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04A1B2C3D4E5F6"}, format="json",
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_controller_required")
+        consume.assert_not_called()
+
     def test_athlete_serializer_never_emits_nfc_tag(self):
         athlete = Athlete.objects.create(name="Private Tag", nfc_tag_id="04A1B2C3D4E5F6")
         self.assertNotIn("nfc_tag_id", AthleteSerializer(athlete).data)
@@ -1112,6 +1173,65 @@ class NodeRegistrationTests(APITestCase):
             self.assertEqual(res.status_code, 400, f"{bad!r} should be refused")
         self.assertEqual(Node.objects.count(), 0)
 
+
+class PerLaptopNodeFlowTests(APITestCase):
+    """The per-rack-laptop topology: the rack screen runs the WT901 agent, which
+    registers itself as an ordinary MQTT node. That is the whole shortcut — an
+    MQTT-kind node skips the verified-BLE-enrollment block, needs no freshness
+    gate, and the rack screen treats it like any MQTT sensor. These tests pin the
+    fast path so nobody re-welds it to wt901_ble and breaks the laptop build."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="rack-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        self.athlete = Athlete.objects.create(name="Jordan")
+        self.session.athletes.add(self.athlete)
+        self.exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+
+    def test_mqtt_kind_node_register_assign_and_start_set(self):
+        # 1. the laptop agent announces itself (open endpoint, idempotent)
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_1"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        node = Node.objects.get(node_id="rack_1")
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT,
+                         "a per-laptop agent registers as an MQTT node")
+
+        # 2. a coach links it to the rack (must not hit the wt901 verification block)
+        self.client.force_authenticate(self.staff)
+        screen = RackScreen.objects.create(device_id="rack-screen-1", rack_number=1)
+        res = self.client.put("/api/racks/node-assignment/", {
+            "device_id": screen.device_id, "node_id": "rack_1",
+        }, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        node.refresh_from_db()
+        self.assertEqual(node.rack_number, 1)
+
+        # 3. the rack screen starts a sensor-backed set — no freshness gate blocks it
+        _, controller_headers = acquire_controller(self.client, 1, device_id=screen.device_id)
+        payload = {
+            "session": self.session.id,
+            "athlete": self.athlete.id,
+            "node": node.id,
+            "rack_number": 1,
+            "exercise": self.exercise.id,
+            "set_number": 1,
+            "weight_lbs": 225,
+            "expected_state_version": RackRuntime.objects.get(rack_number=1).state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        res = self.client.post("/api/sets/", payload, format="json", headers=controller_headers)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(Set.objects.count(), 1)
+        self.assertEqual(Set.objects.get().node.node_id, "rack_1")
+
+    def test_agent_node_registers_open_without_a_coach(self):
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_2"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        node = Node.objects.get(node_id="rack_2")
+        self.assertIsNone(node.rack_number, "registration never hands out a rack")
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT)
 
 class RackNodeAssignmentTests(APITestCase):
     def setUp(self):

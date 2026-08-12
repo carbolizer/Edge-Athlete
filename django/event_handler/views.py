@@ -1180,8 +1180,28 @@ def rack_checkins(request, rack_number):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def rack_nfc_tap(request, rack_number):
-    if request.query_params or request.data != {}:
-        return Response({"code": "invalid_nfc_request", "detail": "empty JSON body required"}, status=400)
+    """Consume one NFC tap and resolve it to an athlete in the active session.
+
+    Two ways in, one resolution path:
+    - Empty body {}: the rack's own reader agent (a Unix socket on this host).
+    - {tag_id: "..."}: the rack screen read the tap from its LOCAL reader over
+      loopback HTTP and forwarded the raw tag here. Resolution stays server-side
+      either way — the tag is matched against Athlete.nfc_tag_id and the athlete
+      must be in the active session before they're recognized.
+    """
+    if request.query_params:
+        return Response({"code": "invalid_nfc_request", "detail": "query parameters are not allowed"}, status=400)
+    tag_id = request.data.get("tag_id") if isinstance(request.data, dict) else None
+    if request.data == {}:
+        tag_id = None
+    elif set(request.data) == {"tag_id"} and isinstance(tag_id, str):
+        if nfc_agent.TAG_PATTERN.fullmatch(tag_id) is None:
+            return Response({"code": "invalid_nfc_request", "detail": "tag_id must match ^[0-9A-F]{8,32}$"}, status=400)
+    else:
+        return Response({
+            "code": "invalid_nfc_request",
+            "detail": "empty body or {tag_id} required",
+        }, status=400)
     runtime = RackRuntime.objects.select_related("controller_screen").filter(rack_number=rack_number).first()
     if runtime is None:
         return Response({"code": "rack_controller_required", "detail": "rack has no controller"}, status=409)
@@ -1191,17 +1211,19 @@ def rack_nfc_tap(request, rack_number):
     session = _active_session()
     if session is None:
         return Response({"status": "none"})
-    try:
-        tap = nfc_agent.consume(rack_number)
-    except nfc_agent.NFCAgentUnavailable:
-        response = Response({"status": "unavailable"})
-        response["Cache-Control"] = "no-store"
-        return response
-    if tap["status"] == "none":
-        response = Response({"status": "none"})
-        response["Cache-Control"] = "no-store"
-        return response
-    athlete = Athlete.objects.filter(nfc_tag_id=tap["tag_id"]).first()
+    if tag_id is None:
+        try:
+            tap = nfc_agent.consume(rack_number)
+        except nfc_agent.NFCAgentUnavailable:
+            response = Response({"status": "unavailable"})
+            response["Cache-Control"] = "no-store"
+            return response
+        if tap["status"] == "none":
+            response = Response({"status": "none"})
+            response["Cache-Control"] = "no-store"
+            return response
+        tag_id = tap["tag_id"]
+    athlete = Athlete.objects.filter(nfc_tag_id=tag_id).first()
     if athlete is None or not session.athletes.filter(id=athlete.id).exists():
         body = {"status": "unknown"}
     else:

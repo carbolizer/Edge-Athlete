@@ -32,7 +32,7 @@ import WeightPad from './WeightPad.jsx'
 import { controllerCommand } from './controller.js'
 import { T } from '../theme.js'
 import { useRackAgentStatus } from './rackAgent.js'
-import { handleNfcPollResult } from './nfc.js'
+import { handleNfcPollResult, pollLocalNfcTap } from './nfc.js'
 
 const REST_SECONDS = 120 // default rest between sets (real behaviour lands in Step 5)
 
@@ -331,6 +331,12 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
 
   // Poll while the check-in list is visible — the idle check-in screen OR the rest
   // screen (where the next lifter can tap in).
+  //
+  // The rack screen reads taps from its OWN local reader (loopback HTTP, same
+  // laptop) and forwards the raw tag to Django for athlete resolution. If the
+  // local agent is unreachable we fall back to asking Django, which talks to a
+  // reader attached to the base station — so a rack with no local reader still
+  // works.
   const showCheckInList = (phase === 'idle' && !selectedAthlete) || phase === 'rest'
   useEffect(() => {
     if (!showCheckInList || !controller.canControl) {
@@ -342,7 +348,18 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
     async function poll() {
       let delay = 500
       try {
-        const result = await controller.runControlled((capability) => consumeNfcTap(rackNumber, capability))
+        const local = await pollLocalNfcTap()
+        if (cancelled) return
+        let result
+        if (local.status === 'tap') {
+          result = await controller.runControlled(
+            (capability) => consumeNfcTap(rackNumber, capability, local.tag_id),
+          )
+        } else if (local.status === 'unavailable') {
+          result = await controller.runControlled((capability) => consumeNfcTap(rackNumber, capability))
+        } else {
+          result = { status: 'none' }
+        }
         if (cancelled) return
         const outcome = await handleNfcPollResult(result, selectAthlete)
         if (cancelled) return

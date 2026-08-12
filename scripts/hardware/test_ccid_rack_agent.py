@@ -201,5 +201,72 @@ class SocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"400 Bad Request", response)
 
 
+class HttpEndpointTests(unittest.IsolatedAsyncioTestCase):
+    """The rack browser's loopback front door to the reader."""
+
+    async def asyncSetUp(self):
+        self.tap = agent.TapAgent(FakeReader())
+        self.server = await agent.serve_http(
+            self.tap, "127.0.0.1", 0, "http://basestation,http://localhost",
+        )
+        self.port = self.server.sockets[0].getsockname()[1]
+
+    async def asyncTearDown(self):
+        self.server.close()
+        await self.server.wait_closed()
+
+    async def request(self, method="GET", path="/v1/taps/consume", origin="http://basestation"):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        headers = [f"{method} {path} HTTP/1.1", "Host: localhost"]
+        if origin is not None:
+            headers.append(f"Origin: {origin}")
+        writer.write(("\r\n".join(headers) + "\r\n\r\n").encode())
+        await writer.drain()
+        response = await reader.read()
+        writer.close()
+        await writer.wait_closed()
+        return response.decode()
+
+    def test_loopback_only_binding(self):
+        self.assertTrue(agent.is_loopback_bind("127.0.0.1"))
+        self.assertTrue(agent.is_loopback_bind("localhost"))
+        self.assertFalse(agent.is_loopback_bind("0.0.0.0"))
+        self.assertFalse(agent.is_loopback_bind("192.168.1.10"))
+
+    def test_http_rejects_non_loopback_bind(self):
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            asyncio.get_event_loop().run_until_complete(
+                agent.serve_http(self.tap, "0.0.0.0", 8766, "http://basestation"),
+            )
+
+    async def test_returns_none_when_no_tap(self):
+        response = await self.request()
+        self.assertIn("200 OK", response)
+        self.assertIn('"status":"none"', response)
+        self.assertIn("Access-Control-Allow-Origin: http://basestation", response)
+
+    async def test_returns_tag_when_tap_pending(self):
+        self.tap._reader.tag = "044DF23A1F1D91"
+        self.tap.poll()
+        response = await self.request()
+        self.assertIn("200 OK", response)
+        self.assertIn('"status":"tap"', response)
+        self.assertIn("044DF23A1F1D91", response)
+
+    async def test_cors_rejects_unknown_origin(self):
+        response = await self.request(origin="http://evil.example")
+        self.assertIn("403 Forbidden", response)
+        self.assertIn("origin_not_allowed", response)
+
+    async def test_cors_preflight_is_allowed(self):
+        response = await self.request(method="OPTIONS")
+        self.assertIn("204 No Content", response)
+        self.assertIn("Access-Control-Allow-Methods: GET, OPTIONS", response)
+
+    async def test_unknown_path_is_404(self):
+        response = await self.request(path="/v1/other")
+        self.assertIn("404 Not Found", response)
+
+
 if __name__ == "__main__":
     unittest.main()

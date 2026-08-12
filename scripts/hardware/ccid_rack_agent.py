@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import os
 import re
@@ -22,6 +23,11 @@ MAX_HEADER_BYTES = 4096
 MAX_CONNECTIONS = 8
 REQUEST_TIMEOUT_SECONDS = 2
 TAG_PATTERN = re.compile(r"^[0-9A-F]{8,32}$")
+DEFAULT_HTTP_PORT = 8766
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost,http://127.0.0.1,"
+    "http://basestation,http://192.168.4.1"
+)
 
 
 class ApiError(Exception):
@@ -210,6 +216,15 @@ async def handle_connection(agent, reader, writer):
     await writer.wait_closed()
 
 
+def is_loopback_bind(host):
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 async def serve(agent, socket_path):
     try:
         existing = os.stat(socket_path)
@@ -234,6 +249,73 @@ async def serve(agent, socket_path):
     return server
 
 
+async def serve_http(agent, host, port, allowed_origins):
+    """The rack browser's front door to the reader.
+
+    The rack screen lives on the same laptop as the NFC reader, so it reads taps
+    directly from this loopback endpoint instead of going through the base
+    station's Django. That keeps the reader local to the rack while Django still
+    resolves the tag to an athlete (server-authoritative). The Unix socket above
+    stays for a reader attached to the base station itself.
+    """
+    if not is_loopback_bind(host):
+        raise ValueError("NFC Agent HTTP must bind to a loopback address")
+    origins = {origin.strip() for origin in allowed_origins.split(",") if origin.strip()}
+
+    async def handle(reader, writer):
+        try:
+            request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=2)
+            if len(request) > MAX_HEADER_BYTES:
+                raise ApiError(431, "headers_too_large")
+            lines = request.decode("latin-1").split("\r\n")
+            method, path, _version = lines[0].split(" ", 2)
+            headers = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers[key.lower()] = value.strip()
+            origin = headers.get("origin")
+            allowed = origin is None or origin in origins
+            if not allowed:
+                status, payload = 403, {"code": "origin_not_allowed"}
+            elif method == "OPTIONS":
+                status, payload = 204, None
+            elif method == "GET" and path == "/v1/taps/consume":
+                try:
+                    tap = agent.consume(agent._rack_number)
+                except ApiError as error:
+                    status, payload = error.status, {"code": error.code}
+                else:
+                    status, payload = 200, tap
+            else:
+                status, payload = 404, {"code": "not_found"}
+            encoded = b"" if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            reason = {200: "OK", 204: "No Content", 403: "Forbidden", 404: "Not Found", 431: "Request Header Fields Too Large"}[status]
+            response_headers = [
+                f"HTTP/1.1 {status} {reason}",
+                "Content-Type: application/json",
+                f"Content-Length: {len(encoded)}",
+                "Cache-Control: no-store",
+                "Connection: close",
+            ]
+            if origin and allowed:
+                response_headers.extend([
+                    f"Access-Control-Allow-Origin: {origin}",
+                    "Vary: Origin",
+                    "Access-Control-Allow-Methods: GET, OPTIONS",
+                    "Access-Control-Allow-Headers: Content-Type",
+                ])
+            writer.write(("\r\n".join(response_headers) + "\r\n\r\n").encode() + encoded)
+            await writer.drain()
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError):
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    return await asyncio.start_server(handle, host, port)
+
+
 async def run_poll_cycle(agent, reader, poll_seconds, clock=time.monotonic, sleep=asyncio.sleep):
     started_at = clock()
     if await asyncio.to_thread(reader.wait_for_change, poll_seconds):
@@ -245,10 +327,13 @@ async def run(options):
     reader = DirectCcidReader()
     agent = TapAgent(reader, rack_number=options.rack_number, tap_ttl_seconds=options.tap_ttl_seconds)
     server = await serve(agent, options.socket_path)
+    http_server = await serve_http(
+        agent, options.http_host, options.http_port, options.allowed_origins,
+    )
     last_error_type = None
     reconnect_at = 0.0
     try:
-        async with server:
+        async with server, http_server:
             while True:
                 if reader is None:
                     if time.monotonic() < reconnect_at:
@@ -298,9 +383,16 @@ def parse_args(args=None):
     parser.add_argument("--rack-number", type=int, default=1)
     parser.add_argument("--poll-seconds", type=float, default=0.2)
     parser.add_argument("--tap-ttl-seconds", type=float, default=5)
+    parser.add_argument("--http-host", default="127.0.0.1")
+    parser.add_argument("--http-port", type=int, default=DEFAULT_HTTP_PORT)
+    parser.add_argument("--allowed-origins", default=DEFAULT_ALLOWED_ORIGINS)
     options = parser.parse_args(args)
     if options.rack_number < 1 or options.poll_seconds <= 0 or options.tap_ttl_seconds <= 0:
         parser.error("rack number and timing values must be positive")
+    if not is_loopback_bind(options.http_host):
+        parser.error("--http-host must be a loopback address")
+    if options.http_port <= 0 or options.http_port > 65535:
+        parser.error("--http-port must be a valid TCP port")
     return options
 
 

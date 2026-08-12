@@ -106,6 +106,24 @@ class AgentContractTests(unittest.TestCase):
         moving = agent.decode_frame(frame(acceleration=(0, 0, 4096)))
         self.assertAlmostEqual(estimator.update(moving), 0.99)
 
+    def test_movement_estimator_reanchors_to_gravity_after_bad_calibration(self):
+        """A baseline captured while the sensor was being handled leaves resting
+        magnitudes reporting ~0.12g of permanent motion. Once the sensor sits at
+        true rest (magnitude near 1.0g for the anchor window), the baseline must
+        recover so stillness reads ~0 again."""
+        moving_frame = agent.decode_frame(frame(acceleration=(0, 0, 5120)))
+        rest_frame = agent.decode_frame(frame())
+        estimator = agent.MovementEstimator(calibration_samples=10, rest_anchor_window=10)
+
+        for _ in range(10):
+            estimator.update(moving_frame)      # polluted calibration (~2.5g)
+        resting_readout = None
+        for _ in range(30):                     # 30 samples at rest
+            resting_readout = estimator.update(rest_frame)
+        self.assertIsNotNone(resting_readout)
+        self.assertLess(resting_readout, 0.03,
+                        "a truly resting sensor should read near zero after re-anchor")
+
     def test_rejects_unsafe_node_id(self):
         with self.assertRaises(ValueError):
             agent.validate_node_id("rack/+/one")
@@ -145,6 +163,141 @@ class AgentContractTests(unittest.TestCase):
         self.assertEqual(options.mqtt_host, agent.DEFAULT_MQTT_HOST)
         self.assertEqual(options.mqtt_port, agent.DEFAULT_MQTT_PORT)
         self.assertFalse(options.enable_provisional_reps)
+        self.assertEqual(options.base_url, agent.DEFAULT_BASE_URL)
+        self.assertIsNone(options.capture_path)
+        self.assertEqual(options.pulse_interval, agent.DEFAULT_PULSE_INTERVAL_SECONDS)
+
+    def test_scan_mode_is_standalone(self):
+        options = agent.parse_args(["--scan"])
+        self.assertTrue(options.scan)
+
+    def test_hz_argument_defaults_and_wires_through(self):
+        options = agent.parse_args(["--address", "private", "--node-id", "rack_1"])
+        self.assertEqual(options.hz, 50.0)
+
+        higher = agent.parse_args(["--address", "private", "--node-id", "rack_1", "--hz", "100"])
+        self.assertEqual(higher.hz, 100.0)
+
+        with self.assertRaises(SystemExit):
+            agent.parse_args(["--address", "private", "--node-id", "rack_1", "--hz", "0"])
+        with self.assertRaises(SystemExit):
+            agent.parse_args(["--address", "private", "--node-id", "rack_1", "--hz", "-5"])
+
+    def test_detector_integrates_at_a_configurable_sample_rate(self):
+        """Velocity integration divides the bar path by the per-sample step, so a
+        100Hz stream must integrate with a 10ms step, not the 50Hz default."""
+        detector = agent.ProvisionalRepDetector(sample_interval_seconds=1.0 / 100.0)
+        self.assertEqual(detector._sample_interval, 0.01)
+
+    def test_scan_rejects_legacy_combination(self):
+        with self.assertRaises(SystemExit):
+            agent.parse_args(["--scan", "--address", "private"])
+
+    def test_capture_path_requires_legacy_mode(self):
+        with self.assertRaises(SystemExit):
+            agent.parse_args(["--capture-path", "/tmp/capture.jsonl"])
+
+    def test_base_url_requires_http_scheme(self):
+        with self.assertRaises(SystemExit):
+            agent.parse_args(["--address", "private", "--node-id", "rack_1",
+                              "--base-url", "basestation"])
+
+    def test_pulse_payload_matches_broker_contract(self):
+        published = []
+
+        class FakeMqttClient:
+            def connect(self, host, port, keepalive):
+                pass
+
+            def loop_start(self):
+                pass
+
+            def publish(self, topic, payload, qos):
+                published.append((topic, json.loads(payload), qos))
+
+            def loop_stop(self):
+                pass
+
+            def disconnect(self):
+                pass
+
+        with mock.patch.dict("sys.modules", {
+            "paho": SimpleNamespace(mqtt=SimpleNamespace(client=SimpleNamespace(Client=FakeMqttClient))),
+            "paho.mqtt": SimpleNamespace(client=SimpleNamespace(Client=FakeMqttClient)),
+            "paho.mqtt.client": SimpleNamespace(Client=FakeMqttClient),
+        }):
+            publisher = agent.MqttRepPublisher("broker", 1884)
+            result = publisher.publish_pulse("rack_1")
+            publisher.close()
+
+        self.assertTrue(result)
+        topic, payload, qos = published[0]
+        self.assertEqual(topic, "edgeathlete/node/rack_1/pulse")
+        self.assertEqual(qos, 1)
+        self.assertEqual(payload["node_id"], "rack_1")
+        self.assertEqual(payload["event_type"], "pulse")
+        self.assertIsNone(payload["battery_level"])
+        self.assertIsNone(payload["signal_strength"])
+        self.assertEqual(payload["firmware_version"], "wt901-agent-1")
+        self.assertIn("timestamp", payload)
+
+    def test_register_node_posts_to_register_endpoint(self):
+        requests = []
+
+        class FakeResponse:
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        def fake_urlopen(request, timeout):
+            requests.append((request.full_url, request.data, request.get_header("Content-type")))
+            return FakeResponse()
+
+        with mock.patch.object(agent.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = agent.register_node("http://basestation", "rack_1")
+
+        self.assertTrue(result)
+        self.assertEqual(len(requests), 1)
+        url, body, content_type = requests[0]
+        self.assertEqual(url, "http://basestation/api/nodes/register/")
+        self.assertEqual(json.loads(body), {"node_id": "rack_1"})
+        self.assertEqual(content_type, "application/json")
+
+    def test_register_node_keeps_trying_then_gives_up(self):
+        with mock.patch.object(
+            agent.urllib.request, "urlopen", side_effect=OSError("base station not reachable yet"),
+        ), mock.patch.object(agent.time, "sleep"):
+            result = agent.register_node("http://basestation", "rack_1")
+
+        self.assertFalse(result)
+
+    def test_capture_sample_contains_only_decoded_values(self):
+        sample = agent.ImuSample(
+            (0.1, 0.2, 0.3), (10.0, 20.0, 30.0), (1.0, 2.0, 3.0),
+        )
+        record = agent.capture_sample(sample, 0.25, 0.3, {"state": "idle"}, now=1234.5)
+        self.assertEqual(record["kind"], "sample")
+        self.assertEqual(record["t_ms"], 1234500)
+        self.assertEqual(record["movement_g"], 0.25)
+        self.assertEqual(record["activity_score"], 0.3)
+        self.assertEqual(record["ax"], 0.1)
+        self.assertEqual(record["gz"], 30.0)
+        self.assertEqual(record["rz"], 3.0)
+        self.assertEqual(record["detector"], {"state": "idle"})
+        self.assertEqual(
+            set(record),
+            {"kind", "t_ms", "movement_g", "activity_score", "ax", "ay", "az",
+             "gx", "gy", "gz", "rx", "ry", "rz", "detector"},
+        )
+
+    def test_manual_rep_marker_shape(self):
+        record = agent.manual_rep_marker(3, now=100.0)
+        self.assertEqual(record, {"kind": "manual_rep", "n": 3, "t_ms": 100000})
 
     @staticmethod
     def detector_sample(acceleration_x=0.0, gyro_x=0.0, angle_x=0.0):
