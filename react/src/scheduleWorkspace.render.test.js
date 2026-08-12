@@ -38,4 +38,8 @@ describe("ScheduleWorkspace renders", () => {
   it("survives being given no refresh callback", () => {
     expect(render({ refresh: undefined })).toContain("Scheduled days");
   });
+
+  it("labels a filtered program as a deployment calendar", () => {
+    expect(render({ trainingProgramId: 12, compact: true })).toContain("Deployment calendar");
+  });
 });

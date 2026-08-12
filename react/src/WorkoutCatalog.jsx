@@ -31,7 +31,8 @@
 // server renumbers a list at once — see moveInList.
 
 import { useEffect, useState } from "react";
-import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
+import ScheduleWorkspace from "./ScheduleWorkspace.jsx";
+import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, deploymentsForBlock, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
 
 const TRAINING_BLOCKS_URL = "/api/training-blocks/";
 // The catalog is shared by the whole department, so it opens on the coach's own
@@ -134,6 +135,9 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [rawErrors, setRawErrors] = useState([]);
   // template editing: which day is open, what is being typed, and what failed
   const [openDayId, setOpenDayId] = useState(null);
+  const [selectedBlockId, setSelectedBlockId] = useState(null);
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState("");
+  const [blockDraft, setBlockDraft] = useState({});
   const [rowDrafts, setRowDrafts] = useState({});
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState("");
@@ -321,6 +325,15 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     } catch (errors) {
       setCategoryErrors(Array.isArray(errors) ? errors : [{ detail: "The labels could not be saved." }]);
     }
+  }
+
+  async function saveBlock(block) {
+    const payload = {};
+    if (blockDraft.name?.trim() && blockDraft.name.trim() !== block.name) payload.name = blockDraft.name.trim();
+    if (blockDraft.duration_weeks !== undefined) payload.duration_weeks = blockDraft.duration_weeks === "" ? null : Number(blockDraft.duration_weeks);
+    if (blockDraft.cadence_days_of_week !== undefined) payload.cadence_days_of_week = blockDraft.cadence_days_of_week;
+    if (!Object.keys(payload).length) return;
+    if (await editRequest(blockDetailUrl(block.id), jsonBody(payload), "The block could not be saved.")) setBlockDraft({});
   }
 
   useEffect(() => {
@@ -526,12 +539,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       if (response.status === 401 || response.status === 403) { onLogout(); return false; }
       if (response.status !== 204 && !response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.detail || failure);
+        throw flattenApiErrors(body, failure);
       }
       await loadPrograms(programUrl);
       return true;
     } catch (problem) {
-      setEditError(problem.message || failure);
+      setEditError(Array.isArray(problem) ? problem.map((item) => item.detail).join(" ") : problem.message || failure);
       return false;
     } finally {
       setEditBusy(false);
@@ -613,6 +626,8 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   // the block it came from — "Day 1" means nothing without it.
   const allDays = programs.flatMap((block) =>
     (block.workouts || []).map((workout) => ({ block, workout })));
+  const selectedBlock = programs.find((block) => Number(block.id) === Number(selectedBlockId)) || null;
+  const selectedDeployments = deploymentsForBlock(deployedPrograms, selectedBlockId);
 
   const repairs = repairableErrors(rawErrors);
   const otherErrors = repairs.length ? csvErrors.filter((error) => !correctionKind(error.code)) : csvErrors;
@@ -693,7 +708,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       {programCatalogState !== "loading" && allDays.length === 0 && <p className="monitor-empty">No days have been added to any block yet.</p>}
       {editError && <p className="training-day-error" role="alert">{editError}</p>}
 
-      {programs.filter((block) => (block.workouts || []).length).map((block) => (
+      {programs.filter((block) => (block.workouts || []).length && (!selectedBlockId || Number(block.id) === Number(selectedBlockId))).map((block) => (
         <div className="workout-block-group" key={block.id}>
           <h4 className="workout-block-heading">{block.name}</h4>
           <div className="workout-card-grid">{(block.workouts || []).map((workout, index, all) => {
@@ -723,9 +738,12 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
                           <legend>{row.position}. {row.exercise_name || row.exercise}</legend>
                           {/* Blank means "leave as it is" — the server only
                               changes the fields it is actually sent. */}
+                          <label>Movement<select value={draft.exercise ?? ""} onChange={(e) => updateRowDraft(row.id, "exercise", e.target.value)} disabled={editBusy}><option value="">{row.exercise_name || "Keep movement"}</option>{movements.filter((movement) => movement.id !== row.exercise).map((movement) => <option value={movement.id} key={movement.id}>{movement.name}</option>)}</select></label>
                           <label>Sets<input type="number" min="1" step="1" placeholder={String(row.sets)} value={draft.sets ?? ""} onChange={(e) => updateRowDraft(row.id, "sets", e.target.value)} disabled={editBusy} /></label>
                           <label>Reps<input type="number" min="1" step="1" placeholder={String(row.reps)} value={draft.reps ?? ""} onChange={(e) => updateRowDraft(row.id, "reps", e.target.value)} disabled={editBusy} /></label>
                           <label>Target (% of max)<input type="number" min={MIN_TARGET_PERCENT} max={MAX_TARGET_PERCENT} step="any" placeholder={String(row.target_percent)} value={draft.target_percent ?? ""} onChange={(e) => updateRowDraft(row.id, "target_percent", e.target.value)} disabled={editBusy} /></label>
+                          <label>Velocity min<input type="number" min="0" max="10" step="any" placeholder={row.velocity_zone_min ?? "None"} value={draft.velocity_zone_min ?? ""} onChange={(e) => updateRowDraft(row.id, "velocity_zone_min", e.target.value)} disabled={editBusy} /><button type="button" className="workout-secondary" onClick={() => updateRowDraft(row.id, "velocity_zone_min", null)} disabled={editBusy || row.velocity_zone_min == null}>Clear min</button></label>
+                          <label>Velocity max<input type="number" min="0" max="10" step="any" placeholder={row.velocity_zone_max ?? "None"} value={draft.velocity_zone_max ?? ""} onChange={(e) => updateRowDraft(row.id, "velocity_zone_max", e.target.value)} disabled={editBusy} /><button type="button" className="workout-secondary" onClick={() => updateRowDraft(row.id, "velocity_zone_max", null)} disabled={editBusy || row.velocity_zone_max == null}>Clear max</button></label>
                           <div className="workout-day-actions">
                             <button type="button" onClick={() => moveRow(block, workout, row, -1)} disabled={editBusy || rowIndex === 0} aria-label="Move earlier">↑</button>
                             <button type="button" onClick={() => moveRow(block, workout, row, 1)} disabled={editBusy || rowIndex === rows.length - 1} aria-label="Move later">↓</button>
@@ -823,7 +841,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
         <ErrorList errors={programCatalogErrors} title="Program catalog unavailable:" />
         {programCatalogState === "error" && <button type="button" className="workout-secondary" onClick={() => loadPrograms(retryProgramUrl)}>Retry page</button>}
         {programCatalogState !== "loading" && programCount === 0 && <p className="monitor-empty">{blockScope === "mine" ? "You haven't created any blocks yet — try All coaches." : "No blocks have been created."}</p>}
-        <div className="program-browser-list">{programs.map((block) => <article key={block.id || block.name}><header><span>{block.workouts?.length || 0} day{block.workouts?.length === 1 ? "" : "s"}{block.duration_weeks ? ` · ${block.duration_weeks} wk` : ""}{block.cadence_days_of_week ? ` · ${block.cadence_days_of_week}` : ""}</span><h4>{block.name}</h4></header>{categories.length > 0 && <div className="block-card-categories" role="group" aria-label={`Categories for ${block.name}`}>{categories.map((category) => <button key={category.id} type="button" className={(block.categories || []).includes(category.id) ? "category-chip is-on" : "category-chip"} aria-pressed={(block.categories || []).includes(category.id)} onClick={() => toggleBlockCategory(block, category.id)}>{category.name}</button>)}</div>}{block.workouts?.length ? <ol>{block.workouts.map((workout, index) => <li key={workout.id || index}><span>{workout.position ?? index + 1}</span><b>{workout.name}</b></li>)}</ol> : <p className="monitor-empty">No days yet — add one with the manual builder.</p>}</article>)}</div>
+        <div className="program-browser-list">{programs.map((block) => <article className={Number(selectedBlockId) === Number(block.id) ? "is-selected" : ""} key={block.id || block.name}><header><span>{block.workouts?.length || 0} day{block.workouts?.length === 1 ? "" : "s"}{block.duration_weeks ? ` · ${block.duration_weeks} wk` : ""}{block.cadence_days_of_week ? ` · ${block.cadence_days_of_week}` : ""}</span><h4>{block.name}</h4></header><button type="button" onClick={() => { setSelectedBlockId(block.id); setSelectedDeploymentId(""); setBlockDraft({}); }}>Edit block & calendar</button>{categories.length > 0 && <div className="block-card-categories" role="group" aria-label={`Categories for ${block.name}`}>{categories.map((category) => <button key={category.id} type="button" className={(block.categories || []).includes(category.id) ? "category-chip is-on" : "category-chip"} aria-pressed={(block.categories || []).includes(category.id)} onClick={() => toggleBlockCategory(block, category.id)}>{category.name}</button>)}</div>}{block.workouts?.length ? <ol>{block.workouts.map((workout, index) => <li key={workout.id || index}><span>{workout.position ?? index + 1}</span><b>{workout.name}</b></li>)}</ol> : <p className="monitor-empty">No days yet — add one with the manual builder.</p>}</article>)}</div>
         <form className="new-category-form" onSubmit={createCategory}>
           <label>New category<input value={newCategoryName} onChange={(event) => setNewCategoryName(event.target.value)} maxLength="60" placeholder="Off-season" /></label>
           <button type="submit" className="workout-secondary" disabled={!newCategoryName.trim()}>Add category</button>
@@ -832,5 +850,6 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
         {(programPagination.previous || programPagination.next || programCount > programs.length) && <nav className="workout-pagination" aria-label="Workout program catalog pages"><button type="button" className="workout-secondary" onClick={() => loadPrograms(programPagination.previous)} disabled={!programPagination.previous || programCatalogState === "loading"}>Previous</button><span role="status">Showing {programs.length} on this page · {programCount} total</span><button type="button" onClick={() => loadPrograms(programPagination.next)} disabled={!programPagination.next || programCatalogState === "loading"}>Next</button></nav>}
       </section>
     </div>
+    {selectedBlock && <section className="workout-panel selected-block-workspace" aria-label={`Edit ${selectedBlock.name}`}><header><span>Selected block</span><h3>{selectedBlock.name}</h3><p>Edit metadata here; the filtered Days by block editor above contains this block's ordered days and full prescriptions.</p></header><div className="selected-block-fields"><label>Name<input value={blockDraft.name ?? selectedBlock.name} onChange={(event) => setBlockDraft((draft) => ({ ...draft, name: event.target.value }))} /></label><label>Duration (weeks)<input type="number" min="1" value={blockDraft.duration_weeks ?? selectedBlock.duration_weeks ?? ""} onChange={(event) => setBlockDraft((draft) => ({ ...draft, duration_weeks: event.target.value }))} /></label><label>Cadence<input value={blockDraft.cadence_days_of_week ?? selectedBlock.cadence_days_of_week ?? ""} onChange={(event) => setBlockDraft((draft) => ({ ...draft, cadence_days_of_week: event.target.value }))} placeholder="Mon,Wed,Fri" /></label><button type="button" onClick={() => saveBlock(selectedBlock)} disabled={editBusy}>Save block</button><button type="button" className="workout-secondary" onClick={() => setSelectedBlockId(null)}>Close</button></div>{categories.length > 0 && <div className="block-card-categories" role="group" aria-label={`Categories for selected ${selectedBlock.name}`}>{categories.map((category) => <button key={category.id} type="button" className={(selectedBlock.categories || []).includes(category.id) ? "category-chip is-on" : "category-chip"} aria-pressed={(selectedBlock.categories || []).includes(category.id)} onClick={() => toggleBlockCategory(selectedBlock, category.id)}>{category.name}</button>)}</div>}<div className="selected-block-calendar"><label>Deployment<select value={selectedDeploymentId} onChange={(event) => setSelectedDeploymentId(event.target.value)}><option value="">Select a deployed calendar</option>{selectedDeployments.map((program) => <option value={program.id} key={program.id}>{program.group_name} · {program.name}</option>)}</select></label>{selectedDeployments.length === 0 ? <p className="monitor-empty">This block has not been deployed, so it has no calendar yet.</p> : selectedDeploymentId ? <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} trainingProgramId={selectedDeploymentId} compact /> : <p className="monitor-empty">Choose a deployment to see its planned, ready, running, and completed days.</p>}</div></section>}
   </div>;
 }

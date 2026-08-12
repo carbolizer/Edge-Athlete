@@ -20,7 +20,7 @@ const OPEN_GETS = [
     what: 'List every lifter in the system.' },
   { key: 'programs', path: '/api/prescriptions/?athlete=2',
     what: "Get one athlete's training plan — the targets plus the speed zone the tablet uses to color reps green / yellow / red." },
-  { key: 'racknumber', path: '/api/racks/racknumber/?device_id=coach_test_dev',
+  { key: 'racknumber', path: '/api/racks/racknumber/', options: { headers: { 'X-Rack-Device-ID': 'coach_test_dev' } },
     what: 'Ask which rack a tablet is assigned to — the poll a waiting tablet runs every few seconds.' },
 ]
 
@@ -258,7 +258,7 @@ function ConnectionTest() {
         <Card title="Try it live — open endpoints" sub="No login needed. Click Run to hit the real API.">
           {OPEN_GETS.map(item => (
             <EndpointRow key={item.key} item={item} disabled={busy[item.key]}
-              onRun={() => run(item.key, item.path)} out={resp[item.key]} />
+              onRun={() => run(item.key, item.path, item.options)} out={resp[item.key]} />
           ))}
         </Card>
 

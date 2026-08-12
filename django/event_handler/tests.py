@@ -2854,6 +2854,24 @@ class TemplateEditingTests(APITestCase):
         self.rows[0].refresh_from_db()
         self.assertEqual(self.rows[0].position, 1)
 
+    def test_invalid_prescription_values_are_rejected_without_mutation(self):
+        url = f"{self._day_url(self.days[0])}exercises/{self.rows[0].id}/"
+        original = (self.rows[0].sets, self.rows[0].velocity_zone_min, self.rows[0].velocity_zone_max)
+        for payload in (
+            {"sets": 0},
+            {"target_percent": 201},
+            {"velocity_zone_min": -1},
+            {"velocity_zone_min": 0.9, "velocity_zone_max": 0.5},
+            {"unknown": 1},
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(self.client.patch(url, payload, format="json").status_code, 400)
+        self.rows[0].refresh_from_db()
+        self.assertEqual(
+            (self.rows[0].sets, self.rows[0].velocity_zone_min, self.rows[0].velocity_zone_max),
+            original,
+        )
+
     # ── "last edited" ────────────────────────────────────────────────────────
 
     def test_editing_a_day_marks_the_BLOCK_as_edited(self):

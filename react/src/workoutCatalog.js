@@ -183,11 +183,20 @@ export function moveInList(ids, id, direction) {
 // `position` is deliberately absent: ordering goes through the whole-list route.
 export function buildRowEdit(draft) {
   const payload = {};
+  if (draft.exercise !== undefined && draft.exercise !== "") payload.exercise = Number(draft.exercise);
   for (const field of ["sets", "reps", "target_percent", "velocity_zone_min", "velocity_zone_max"]) {
+    if ((field === "velocity_zone_min" || field === "velocity_zone_max") && draft[field] === null) {
+      payload[field] = null;
+      continue;
+    }
     if (draft[field] === undefined || draft[field] === "") continue;
     payload[field] = Number(draft[field]);
   }
   return payload;
+}
+
+export function deploymentsForBlock(programs, blockId) {
+  return (programs || []).filter((program) => Number(program.training_block) === Number(blockId));
 }
 
 export function sameOriginPath(value, origin) {

@@ -116,6 +116,11 @@
 .coach-summary-strip strong { font-size:19px; } .coach-summary-strip small { color:var(--muted); font-size:10px; }
 .coach-room-warning { background:rgba(255,182,62,.12); border-bottom:1px solid rgba(255,182,62,.3); color:var(--amber); font-size:11px; padding:9px 24px; }
 .training-day-shell { border-bottom:1px solid var(--line); padding:14px 24px; }
+.training-day-shell.is-compact { align-items:center; display:flex; justify-content:space-between; padding-block:10px; }
+.training-day-shell.is-compact>div { display:grid; gap:2px; }
+.training-day-shell.is-compact strong { font-size:16px; }
+.training-day-shell.is-compact small { color:var(--muted); }
+.training-day-collapse { float:right; }
 .training-day-start,.training-day-active,.training-report { background:var(--panel); border:1px solid var(--line); padding:18px; }
 .training-day-start>header,.training-day-active,.training-report>header { align-items:start; display:flex; gap:20px; justify-content:space-between; }
 .training-day-start>header span,.training-day-active>div>span,.training-report>header span,.training-report-athletes>section>header span,.training-report-prescription>header>span { color:var(--lime); font-size:9px; font-weight:900; letter-spacing:.11em; text-transform:uppercase; }
@@ -214,6 +219,8 @@
 .coach-context-tabs { background:#0a0f12; border-bottom:1px solid var(--line); display:flex; gap:4px; overflow-x:auto; padding:8px 24px; }
 .coach-context-tabs button { background:transparent; border:1px solid transparent; color:var(--muted); cursor:pointer; font-size:10px; font-weight:850; letter-spacing:.08em; padding:9px 16px; text-transform:uppercase; }
 .coach-context-tabs button.active { background:var(--panel); border-color:var(--line); color:var(--lime); }
+.coach-context-tabs button:nth-of-type(5) { border-left-color:var(--line); margin-left:18px; padding-left:28px; position:relative; }
+.coach-context-tabs button:nth-of-type(5)::before { color:var(--muted); content:"Athlete"; font-size:8px; left:-8px; letter-spacing:.08em; position:absolute; top:-8px; }
 .context-tab-content { padding:20px 24px 40px; }
 .context-athlete-hero { background:linear-gradient(120deg,#17241d,var(--panel)); border:1px solid #2b4034; display:grid; gap:30px; grid-template-columns:minmax(230px,.55fr) 1.45fr; padding:28px; }
 .context-athlete-hero>div>span,.context-section>header>span { color:var(--lime); font-size:9px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }
@@ -345,6 +352,12 @@
 .workout-row-editor { display:grid; gap:10px; margin-top:12px; }
 .workout-row-editor fieldset { border:1px solid var(--line); display:grid; gap:8px; padding:12px; }
 .workout-row-editor legend { color:var(--lime); font-size:10px; font-weight:850; letter-spacing:.07em; padding:0 6px; text-transform:uppercase; }
+.selected-block-workspace { border-color:rgba(192,255,0,.35); margin:16px 24px; }
+.selected-block-fields { align-items:end; display:grid; gap:10px; grid-template-columns:minmax(180px,2fr) repeat(2,minmax(120px,1fr)) auto auto; }
+.selected-block-calendar { border-top:1px solid var(--line); margin-top:16px; padding-top:16px; }
+.selected-block-calendar>label { display:grid; gap:6px; max-width:440px; }
+.program-browser-list article.is-selected { border-color:var(--lime); box-shadow:0 0 0 1px rgba(192,255,0,.15); }
+.schedule-workspace.is-compact .workout-catalog-heading { padding-inline:0; }
 
 .workout-panel fieldset.program-draft { border:1px solid var(--line); padding:14px; }
 .workout-panel fieldset.program-draft > div { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
@@ -703,6 +716,7 @@
   .coach-login-screen { grid-template-columns:1fr; } .coach-login-art { display:none; } .coach-login-card { min-height:100vh; padding:36px 28px; }
   .coach-topbar { grid-template-columns:1fr auto auto; } .coach-session-title { grid-column:1/-1; grid-row:2; } .coach-topbar .monitor-connection { grid-column:2; grid-row:1; }
   .coach-summary-strip { grid-template-columns:repeat(5,130px); overflow-x:auto; padding:0 12px; }
+  .selected-block-fields { grid-template-columns:1fr 1fr; }
   .training-day-shell { padding:12px; }
   .training-day-start fieldset>div { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .training-day-active { align-items:start; display:grid; }

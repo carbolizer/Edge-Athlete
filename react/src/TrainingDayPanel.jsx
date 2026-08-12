@@ -90,7 +90,7 @@ export function ConflictPrompt({ conflict, endedAt, onEndedAtChange, newDayLabel
   </div>;
 }
 
-export default function TrainingDayPanel({ roomState, athletes, accessToken, onLogout, refresh }) {
+export default function TrainingDayPanel({ roomState, athletes, accessToken, onLogout, refresh, compact = true }) {
   const [label, setLabel] = useState("");
   const [selectedAthleteIds, setSelectedAthleteIds] = useState([]);
   const [busy, setBusy] = useState("");
@@ -105,6 +105,7 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
   const [conflict, setConflict] = useState(null);
   const [conflictEndedAt, setConflictEndedAt] = useState("");
   const [generatedReport, setGeneratedReport] = useState(null);
+  const [expanded, setExpanded] = useState(!compact);
   const session = roomState.session;
   const staleDay = Boolean(session?.opened_on_a_previous_day);
   const headers = { Accept: "application/json", Authorization: `Bearer ${accessToken}` };
@@ -259,7 +260,10 @@ export default function TrainingDayPanel({ roomState, athletes, accessToken, onL
     }
   }
 
+  if (compact && !expanded) return <section className="training-day-shell is-compact" aria-label="Training day controls"><div><span>{session ? "Active training day" : "Training day"}</span><strong>{session?.label || "No active day"}</strong>{session && <small>{roomState.participants?.length || 0} athletes · started {timestampLabel(session.started_at)}</small>}</div><button type="button" onClick={() => setExpanded(true)}>{session ? "Manage day" : "Open a day"}</button></section>;
+
   return <section className="training-day-shell" aria-label="Training day controls">
+    {compact && <button type="button" className="training-day-collapse workout-secondary" onClick={() => setExpanded(false)}>Collapse</button>}
     {generatedReport && <GeneratedReport report={generatedReport} />}
     {!session ? <form className="training-day-start" onSubmit={startDay}><header><div><span>Training day</span><h3>Open the room</h3><p>Name today’s training and select every participating athlete.</p></div><b>Not active</b></header><label>Training day label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength="255" required disabled={Boolean(busy)} /></label><fieldset><legend>Athletes</legend><div>{athletes.map((athlete) => <label key={athlete.id}><input type="checkbox" checked={selectedAthleteIds.includes(athlete.id)} onChange={() => toggleAthlete(athlete.id)} disabled={Boolean(busy)} /><span>{athlete.name}</span></label>)}</div></fieldset><button type="submit" disabled={!selectedAthleteIds.length || Boolean(busy)}>{busy === "start" ? "Starting..." : "Start training day"}</button>{conflict && <ConflictPrompt conflict={conflict} endedAt={conflictEndedAt} onEndedAtChange={setConflictEndedAt} newDayLabel={label} busy={busy} onCancel={() => { setConflict(null); setConflictEndedAt(""); setError(""); }} onConfirm={endConflictAndStart} />}</form>
       : (session.is_simulated || session.simulated || roomState.meta?.session_is_simulated) ? <div className="training-day-active simulation"><div><span>Simulation active</span><h3>{session.label}</h3><p>The simulator owns this training day. Stop or restart it with the simulation controls rather than generating a real report here.</p></div><b>Simulation</b></div>

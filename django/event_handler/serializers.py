@@ -223,6 +223,23 @@ class TrainingBlockExerciseSerializer(serializers.ModelSerializer):
                   "target_percent", "velocity_zone_min", "velocity_zone_max"]
         read_only_fields = ["id", "exercise_name"]
 
+    def validate(self, attrs):
+        if "sets" in attrs and attrs["sets"] < 1:
+            raise serializers.ValidationError({"sets": "must be at least 1"})
+        if "reps" in attrs and attrs["reps"] < 1:
+            raise serializers.ValidationError({"reps": "must be at least 1"})
+        if "target_percent" in attrs and not 1 <= attrs["target_percent"] <= 200:
+            raise serializers.ValidationError({"target_percent": "must be between 1 and 200"})
+        minimum = attrs.get("velocity_zone_min", getattr(self.instance, "velocity_zone_min", None))
+        maximum = attrs.get("velocity_zone_max", getattr(self.instance, "velocity_zone_max", None))
+        if minimum is not None and not 0 <= minimum <= 10:
+            raise serializers.ValidationError({"velocity_zone_min": "must be between 0 and 10"})
+        if maximum is not None and not 0 <= maximum <= 10:
+            raise serializers.ValidationError({"velocity_zone_max": "must be between 0 and 10"})
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise serializers.ValidationError({"velocity_zone_max": "must be greater than or equal to velocity minimum"})
+        return attrs
+
 
 class TrainingBlockWorkoutSerializer(serializers.ModelSerializer):
     """One day inside a template (e.g. "Day 1 — Lower")."""

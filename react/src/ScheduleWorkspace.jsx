@@ -27,7 +27,7 @@ const STATE_COPY = {
   planned: { label: "Planned", hint: "No session created yet." },
   ready: { label: "Ready", hint: "Set up and waiting — not started." },
   running: { label: "Running", hint: "Open now. The racks are following this day." },
-  done: { label: "Complete", hint: "Ended; its report is frozen." },
+  done: { label: "Completed", hint: "Ended; its report is frozen." },
 };
 
 function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
@@ -67,7 +67,7 @@ function SlotRow({ slot, slots, busy, onCreate, onStart, onMove }) {
   </article>;
 }
 
-export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
+export default function ScheduleWorkspace({ accessToken, onLogout, refresh, trainingProgramId = null, compact = false }) {
   const [slots, setSlots] = useState([]);
   const [state, setState] = useState("loading");
   const [errors, setErrors] = useState([]);
@@ -88,22 +88,23 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
     return body;
   }
 
-  async function load() {
+  async function load(signal) {
     setState("loading");
     setErrors([]);
     try {
-      const response = await fetch(scheduleUrl(scheduleWindow()), { headers });
+      const response = await fetch(scheduleUrl(scheduleWindow(new Date(), { back: 21, forward: 77 }), trainingProgramId), { headers, signal });
       const body = await parseResponse(response, "The schedule could not be loaded.");
       if (body === null) return;
       setSlots(Array.isArray(body) ? body : body.results || []);
       setState("ready");
     } catch (loadErrors) {
+      if (signal?.aborted) return;
       setErrors(Array.isArray(loadErrors) ? loadErrors : [{ detail: "The schedule could not be loaded." }]);
       setState("error");
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { const controller = new AbortController(); load(controller.signal); return () => controller.abort(); }, [trainingProgramId]);
 
   async function act(key, url, options, fallback, describe) {
     setBusy(key);
@@ -154,11 +155,11 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
   const days = groupSlotsByDate(visible);
   const pastCount = slots.length - slots.filter((slot) => !isPastDate(slot.date)).length;
 
-  return <div className="schedule-workspace">
+  return <div className={compact ? "schedule-workspace is-compact" : "schedule-workspace"}>
     <header className="workout-catalog-heading">
       <div>
         <span>Training calendar</span>
-        <h2>Scheduled days</h2>
+        <h2>{trainingProgramId ? "Deployment calendar" : "Scheduled days"}</h2>
         <p>Generated when a block was deployed. Setting a day up creates its session and roster — it does not start it.</p>
       </div>
       <b>{visible.length} day{visible.length === 1 ? "" : "s"}</b>
@@ -175,7 +176,7 @@ export default function ScheduleWorkspace({ accessToken, onLogout, refresh }) {
     {errors.length > 0 && <div className="schedule-errors" role="alert">
       {errors.map((error, index) => <p key={index}>{error.detail || String(error)}</p>)}
     </div>}
-    {state === "error" && <button type="button" className="workout-secondary" onClick={load}>Retry</button>}
+    {state === "error" && <button type="button" className="workout-secondary" onClick={() => load()}>Retry</button>}
     {status && <p className="workout-status" role="status">{status}</p>}
 
     {state === "ready" && days.length === 0 && <p className="monitor-empty">

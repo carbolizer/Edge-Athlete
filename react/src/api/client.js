@@ -50,7 +50,9 @@ export function registerRack(deviceId) {
 // "Which rack am I?" — the one poll in the whole system, run while waiting for a
 // coach to assign this screen. Returns { rack_number } (null until assigned).
 export function getRackNumber(deviceId) {
-  return jsonFetch(`/racks/racknumber/?device_id=${encodeURIComponent(deviceId)}`)
+  return jsonFetch('/racks/racknumber/', {
+    headers: { 'X-Rack-Device-ID': deviceId },
+  })
 }
 
 // The ONE-SHOT startup fetch: the current session's roster, each athlete's

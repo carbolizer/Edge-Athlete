@@ -281,10 +281,13 @@ def rack_register(request):
 @permission_classes([AllowAny])
 def rack_racknumber(request):
     """A waiting tablet asks "which rack am I?" Returns its rack_number (empty
-    until a coach assigns it). Query: ?device_id=..."""
-    device_id = request.query_params.get("device_id")
-    if not device_id:
-        return Response({"error": "device_id is required"}, status=400)
+    until a coach assigns it)."""
+    device_id = request.headers.get("X-Rack-Device-ID")
+    if request.query_params or not _nonempty_bounded_string(device_id):
+        return Response({
+            "code": "invalid_rack_number_request",
+            "detail": "X-Rack-Device-ID header is required and query parameters are not allowed",
+        }, status=400)
     screen = RackScreen.objects.filter(device_id=device_id).first()
     return Response({"rack_number": screen.rack_number if screen else None})
 
@@ -2600,23 +2603,15 @@ def training_block_exercise_detail(request, block_id, workout_id, exercise_id):
     # Only the prescription itself is editable here. `position` is deliberately
     # NOT: reordering is a whole-list operation, and letting it in through the
     # back door is exactly what breaks against the unique constraint.
-    fields = {}
-    for field in ("sets", "reps", "target_percent", "velocity_zone_min", "velocity_zone_max"):
-        if field in request.data:
-            fields[field] = request.data[field]
-    if "exercise" in request.data:
-        if not Exercise.objects.filter(id=request.data["exercise"]).exists():
-            return Response({"error": "exercise not found"}, status=404)
-        fields["exercise_id"] = request.data["exercise"]
-    if not fields:
+    allowed = {"exercise", "sets", "reps", "target_percent", "velocity_zone_min", "velocity_zone_max"}
+    if not request.data or not set(request.data).issubset(allowed):
         return Response({"code": "nothing_to_change",
-                         "detail": "Send at least one field to change."}, status=400)
-
-    for name, value in fields.items():
-        setattr(row, name, value)
-    row.save(update_fields=list(fields))
+                         "detail": "Send at least one supported prescription field."}, status=400)
+    serializer = TrainingBlockExerciseSerializer(row, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
     touch_block(block_id)
-    return Response(TrainingBlockExerciseSerializer(row).data)
+    return Response(serializer.data)
 
 
 @api_view(["PUT"])

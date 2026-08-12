@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, errorLabel, flattenApiErrors, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
+import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, correctionKind, countCorrections, deploymentsForBlock, errorLabel, flattenApiErrors, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
 
 describe("buildWorkoutPayload", () => {
   // The block is in the URL, not the payload — a day cannot exist unattached, and
@@ -235,8 +235,8 @@ describe("editing a template", () => {
   });
 
   it("sends only the fields actually filled in", () => {
-    expect(buildRowEdit({ sets: "4", reps: "", target_percent: "72.5" }))
-      .toEqual({ sets: 4, target_percent: 72.5 });
+    expect(buildRowEdit({ exercise: "9", sets: "4", reps: "", target_percent: "72.5", velocity_zone_min: "0.4" }))
+      .toEqual({ exercise: 9, sets: 4, target_percent: 72.5, velocity_zone_min: 0.4 });
   });
 
   // Ordering goes through the whole-list route; accepting it here is exactly
@@ -248,5 +248,20 @@ describe("editing a template", () => {
   it("treats an untouched row as nothing to save", () => {
     expect(buildRowEdit({})).toEqual({});
     expect(Object.keys(buildRowEdit({ sets: "", reps: "" }))).toHaveLength(0);
+  });
+
+  it("clears optional velocity bounds explicitly", () => {
+    expect(buildRowEdit({ velocity_zone_min: null, velocity_zone_max: null }))
+      .toEqual({ velocity_zone_min: null, velocity_zone_max: null });
+  });
+});
+
+describe("block deployment calendars", () => {
+  it("keeps only deployed programs copied from the selected block", () => {
+    expect(deploymentsForBlock([
+      { id: 1, training_block: 4 },
+      { id: 2, training_block: 8 },
+      { id: 3, training_block: 4 },
+    ], "4").map((program) => program.id)).toEqual([1, 3]);
   });
 });

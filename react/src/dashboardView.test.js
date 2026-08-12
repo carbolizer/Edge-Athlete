@@ -35,6 +35,7 @@ describe("wall snapshot availability", () => {
   });
 });
 
+
 describe("wall movement presentation", () => {
   it("clears rows while waiting instead of retaining a previous movement", () => {
     const view = wallMovementView({ movement: null, leaderboard: [{ athlete: { name: "Stale" } }] });

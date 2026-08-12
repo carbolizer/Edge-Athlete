@@ -32,11 +32,19 @@ function render(props) {
     accessToken: "test-token",
     onLogout: () => {},
     refresh: async () => {},
+    compact: false,
     ...props,
   }));
 }
 
 describe("TrainingDayPanel renders", () => {
+  it("keeps setup detail collapsed in compact coach mode", () => {
+    const html = render({ compact: true });
+    expect(html).toContain("No active day");
+    expect(html).toContain("Open a day");
+    expect(html).not.toContain("Jordan Lee");
+  });
+
   it("shows the start form when no day is running", () => {
     const html = render({});
     expect(html).toContain("Open the room");
