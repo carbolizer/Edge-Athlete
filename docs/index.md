@@ -8,9 +8,11 @@ site exists for the part you cannot: the decisions, the alternatives that were t
 and rejected, and the reasons that are no longer obvious a month later.
 
 :::{note}
-**Being written now.** {doc}`orientation` is complete. The journal, reference and
-guide pages are still placeholders — each one says what it will hold and which
-existing document it is built from.
+**What is still thin.** Everything here is written; two things are knowingly
+incomplete. Most tables in {doc}`journal/database` show their columns but not the
+reasoning behind them, and {doc}`reference/spec` is the original build specification
+kept verbatim rather than rewritten — it describes the plan, and several phases of
+that plan were later rebuilt. {doc}`history` says which ones.
 :::
 
 ## Get productive in an hour

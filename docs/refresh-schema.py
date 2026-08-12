@@ -197,12 +197,26 @@ def full_block(model):
     return (
         f"### `{model['name']}`\n\n"
         f"{what}"
-        f":::::{{dropdown}} Schema and decisions\n\n"
+        f":::::{{dropdown}} Schema\n\n"
         f"<!-- schema:{model['name']}:start -->\n"
         f"{generated_body(model)}\n"
         f"<!-- schema:{model['name']}:end -->\n\n"
-        "**Why it exists.** <!-- your summary -->\n\n"
-        "**Decisions.** <!-- what was chosen here, and what was rejected -->\n\n"
+        # The prompts to the writer live INSIDE the comment, headings and all.
+        #
+        # They used to sit outside it, so a table nobody had written up yet
+        # published as a bold "Why it exists." with dead air under it — a heading
+        # promising a paragraph that was never coming. Eighteen of the twenty-six
+        # tables looked like that on the live site.
+        #
+        # Kept this way round, an unwritten table simply shows its columns, which
+        # is honest, while an author editing the file still sees what to write.
+        # When you fill these in, move them out of the comment AND retitle the
+        # dropdown above to "Schema and decisions".
+        "<!-- TO FILL IN: move these two lines out of this comment, then retitle\n"
+        "     the dropdown above from 'Schema' to 'Schema and decisions'.\n\n"
+        "**Why it exists.** (what this table is for, in one or two sentences)\n\n"
+        "**Decisions.** (what was chosen here, and what was rejected)\n"
+        "-->\n\n"
         ":::::\n"
     )
 

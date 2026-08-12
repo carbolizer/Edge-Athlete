@@ -186,7 +186,13 @@ terminal logs. NFC Agent startup is manual until a supervised host service is ad
 
 :::{dropdown} Firmware flashing
 
-TODO — Phase 9 (ESP32 + MPU-6050 firmware flashing steps).
+**There is no firmware in this repository, and no `firmware/` directory.** The ESP32
+work was planned as Phases 13 and 17 and never landed here, so there is nothing to
+flash and no steps to follow. See {doc}`../history` for where that sits.
+
+This is worth stating plainly rather than leaving as a promise, because every sensor
+you can currently drive is either a **WT901 over Bluetooth** (the dropdown above) or
+the **software simulator** (`ea-sim`). Both work without flashing anything.
 :::
 
 ## Reference
@@ -431,8 +437,78 @@ c.on('message', (t, m) => console.log(t, m.toString()));
 
 :::{dropdown} When something is wrong
 
-TODO — fill in during Sprint 3 (AP not broadcasting, broker unreachable, clock
-skew on a Pi with no RTC / no NTP, batch-POST failures, etc.).
+Every one of these has actually happened. They are ordered by how often.
+
+**`ea-update: command not found`**
+The commands are symlinks in `/usr/local/bin` pointing at `scripts/basestation/ea.sh`.
+If they are missing, the last `setup.sh` did not finish. Re-run the install command —
+it is not one-shot — or call the script directly:
+`sudo /srv/edge-athlete/Edge-Athlete/scripts/basestation/ea.sh update`.
+
+They used to be shell *functions* dropped in `/etc/profile.d`, which only login shells
+read. That is why this used to come back after every reboot. If it still does, you are
+running an old install.
+
+**HTTP 502 on some pages, usually the coach ones**
+Nginx is up and Django is not. Almost always a container that failed to restart after
+an update:
+
+```bash
+cd /srv/edge-athlete/Edge-Athlete
+sudo docker compose ps          # anything not "running"?
+sudo docker compose logs django --tail 50
+```
+
+**The demo runs, but no reps arrive**
+A node that has not registered is rejected, and the rejection is quiet. `ea-sim`
+registers its node on startup; anything older did not. Check the simulator is actually
+saying something:
+
+```bash
+ea-sim-log
+```
+
+Then confirm the node shows up unassigned on the coach admin page and link it to a
+rack. A sensor publishing into a rack it was never linked to looks perfectly healthy
+in its own log.
+
+**A rebuild "succeeded" but behaviour did not change**
+Two separate traps, both silent:
+
+- The Django image **bakes the source in**. There is no volume mount, so editing a
+  file changes nothing until `sudo docker compose build django`.
+- `docker compose build` **skips profile-gated services**. The seeder and the
+  simulator sit behind `--profile seed` and `--profile demo`, so a plain build leaves
+  them on whatever code they were last built with — which can be months old. `ea-seed`
+  and `ea-sim` now build their own image first; a hand-run `docker compose` will not.
+
+**The box takes about two minutes to boot**
+It is waiting on a network service that manages nothing here. `setup.sh` masks
+`systemd-networkd-wait-online` for this reason. If a machine still stalls:
+
+```bash
+systemd-analyze blame | head
+```
+
+**No EdgeAthlete Wi-Fi network**
+The adapter cannot do AP mode, which cannot be scripted around. The app still comes up
+over a cable — the startup log says so plainly rather than failing silently:
+
+```bash
+sudo journalctl -u edgeathlete.service -e
+```
+
+**Works on the base station's own screen, broken on a rack**
+Check the address bar before anything else. The local launchers use `localhost`, which
+browsers treat as a trusted origin; rack screens use `http://basestation`, which they
+do not. The offline cache, app install and Bluetooth are all switched off on the second
+one. This difference is a real cause of "it only breaks in the gym", not a coincidence
+— {doc}`../journal/rack-tablet` has the full reasoning.
+
+**The wall display sits on stale numbers**
+It refetches when the server announces a change, and backs that up with a poll every
+twenty seconds. If it is stuck for longer than that, the browser lost the broker
+rather than the data being wrong. Reload it.
 :::
 
 :::{dropdown} Install reference: paths, service, first-boot flags
@@ -569,6 +645,44 @@ sudo journalctl -u edgeathlete.service -e
 
 :::{dropdown} Architecture diagram
 
-TODO — Sprint 3 handoff (Mermaid diagram: nodes → broker → Django/Postgres, and
-broker → browser clients over WebSockets).
+Everything in the dashed box is one Docker stack on the one machine.
+
+```mermaid
+flowchart TB
+    N["Sensor node<br/>(WT901 over BLE, or ea-sim)"]
+
+    subgraph BOX ["the base station — one machine, one Docker stack"]
+        direction TB
+        M["Mosquitto<br/>broker"]
+        D["Django"]
+        P[("PostgreSQL")]
+        X["Nginx :80"]
+        M -->|"heartbeats ONLY"| D
+        D --> P
+        X -->|"/api"| D
+        M -.->|"MQTT over WebSockets :9001"| X
+    end
+
+    R["Rack screen"]
+    W["Wall display"]
+    C["Coach tablet"]
+
+    N -->|"one message per rep, :1883"| M
+    M ==>|"reps"| R
+    R ==>|"the whole set, in one POST"| X
+    X --> W
+    X --> C
+```
+
+Two things in that picture do most of the explaining:
+
+**Reps never reach the server one at a time.** Follow the thick line: a rep goes from
+the node to the broker to the rack screen and stops there. The screen writes it to
+browser storage as it arrives, and only when the set ends does it POST the whole set
+in a single request. The database gets **one write per set**, not one per rep — and a
+Wi-Fi drop mid-set loses nothing.
+
+**Django is not in the live path.** The only node traffic it listens to is heartbeats.
+The screens talk to the broker directly, and there is no WebSocket layer in Django;
+adding one was considered and rejected. {doc}`../journal/real-time` covers why.
 :::
