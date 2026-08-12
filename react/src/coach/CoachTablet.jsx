@@ -342,6 +342,14 @@ function RoomLayout({ token, onAuthLost }) {
   const [screenSlot, setScreenSlot] = useState('')
   const [busyScreen, setBusyScreen] = useState(false)
   const [screenBySlot, setScreenBySlot] = useState({})
+  const [nodeId, setNodeId] = useState('')
+  const [nodeSlot, setNodeSlot] = useState('')
+  const [busyNode, setBusyNode] = useState(false)
+  // rack number -> the device id of the screen registered to it. Assigning a sensor
+  // is addressed by SCREEN, not by rack number, so this is what makes the row below
+  // possible. It comes from room-state rather than screenBySlot because that only
+  // remembers assignments made in the current browser session.
+  const [screenIdBySlot, setScreenIdBySlot] = useState({})
 
   // `silent` is for the background poll below: refresh the lists without flipping
   // the loading spinner, clearing the coach's message, or otherwise disturbing a
@@ -350,12 +358,18 @@ function RoomLayout({ token, onAuthLost }) {
     if (!silent) setLoading(true)
     if (clearMessage) setMsg({ text: '', kind: '' })
     try {
-      const [unassigned, allNodes] = await Promise.all([
+      const [unassigned, allNodes, room] = await Promise.all([
         coachFetch('/api/racks/unassigned/', { token }),
         coachFetch('/api/nodes/', { token }),
+        coachFetch('/api/room-state/?details=true', { token }),
       ])
       setScreens(Array.isArray(unassigned) ? unassigned : [])
       setNodes(Array.isArray(allNodes) ? allNodes : [])
+      const bySlot = {}
+      for (const r of room?.racks || []) {
+        if (r.screen_device_id) bySlot[r.rack_number] = r.screen_device_id
+      }
+      setScreenIdBySlot(bySlot)
     } catch (err) {
       const text = err.message || 'failed to load room state'
       if (/401|403|credential|token|authentication/i.test(text)) {
@@ -421,7 +435,51 @@ function RoomLayout({ token, onAuthLost }) {
     }
   }
 
+  // Link a sensor to a rack. This row came back after being removed with the BLE
+  // work: sensor selection moved to the physical rack because an anonymous nearby
+  // RADIO cannot be identified from across the room. True for Bluetooth — but an
+  // MQTT sensor announced its own name, so there is nothing to verify, and removing
+  // both left no way to link one anywhere.
+  //
+  // The endpoint enforces the difference rather than this screen guessing at it: an
+  // unassigned Bluetooth sensor is refused here and must be verified at the rack.
+  // It also unassigns whatever sensor the rack already had, in the same transaction,
+  // so a rack can never end up on Bluetooth and Wi-Fi at once.
+  async function assignNode() {
+    if (!nodeId || nodeSlot === '') return
+    const rack = Number(nodeSlot)
+    const deviceId = screenIdBySlot[rack]
+    if (!deviceId) {
+      setMsg({ text: `Assign a screen to rack ${rack} first — sensors are linked by screen.`, kind: 'err' })
+      return
+    }
+    setBusyNode(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      const result = await coachFetch('/api/racks/node-assignment/', {
+        token,
+        method: 'PUT',
+        body: { device_id: deviceId, node_id: nodeId },
+      })
+      setMsg({ text: `Sensor ${result.node?.node_id ?? nodeId} → rack ${result.rack_number}`, kind: 'ok' })
+      setNodeId('')
+      setNodeSlot('')
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'assign failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyNode(false)
+    }
+  }
+
   const screenOptions = screens.map((s) => ({ key: s.device_id, ...s }))
+  // Offer sensors this rack can actually take: unassigned, or already on the chosen
+  // rack. One owned by a different rack is left out rather than shown and refused.
+  const nodeOptions = nodes
+    .filter((n) => !n.is_simulated && (n.rack_number == null || String(n.rack_number) === String(nodeSlot)))
+    .map((n) => ({ key: n.node_id, ...n }))
 
   return (
     <section className="coach-card">
@@ -437,12 +495,15 @@ function RoomLayout({ token, onAuthLost }) {
         </button>
       </div>
       <p className="coach-card-sub">
-        Assign waiting screens to rack slots here. Sensor selection happens at the
-        physical rack before athlete check-in.
+        Assign waiting screens to rack slots, and link a sensor to a rack.
         Waiting tablets pick up a new rack number within about three seconds.
+        Bluetooth sensors that have never been linked must be verified standing at
+        the rack — you cannot tell anonymous nearby radios apart from here.
       </p>
       <p className="coach-hint">
         Screens: <code>{'PATCH /api/racks/{device_id}/'}</code>
+        {' · '}
+        Sensors: <code>{'PUT /api/racks/node-assignment/'}</code>
       </p>
 
       {loading && screens.length === 0 && nodes.length === 0 ? (
@@ -460,6 +521,26 @@ function RoomLayout({ token, onAuthLost }) {
             onSlotChange={setScreenSlot}
             onAssign={assignScreen}
             busy={busyScreen}
+          />
+
+          <AssignRow
+            label="Link sensor to rack"
+            entityLabel="Sensor"
+            entities={nodeOptions}
+            entityValue={nodeId}
+            onEntityChange={setNodeId}
+            getOptionLabel={(n) =>
+              `${n.node_id}${n.acquisition_kind === 'wt901_ble' ? ' · Bluetooth' : ' · Wi-Fi'}`
+            }
+            slotValue={nodeSlot}
+            onSlotChange={setNodeSlot}
+            onAssign={assignNode}
+            busy={busyNode}
+            disabledReason={
+              nodeSlot !== '' && !screenIdBySlot[Number(nodeSlot)]
+                ? `Rack ${nodeSlot} has no screen registered yet — assign one above first.`
+                : undefined
+            }
           />
 
         </>
