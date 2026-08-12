@@ -4,6 +4,24 @@
 # works there too. Versions are pinned to a minimum rather than an exact number:
 # loose enough to pick up fixes, tight enough that a major release can't silently
 # change the output.
+#
+# ⚠️ THIS FILE AND THE `extensions` LIST IN conf.py MUST STAY IN STEP.
+# Every name in that list is imported by Sphinx at startup. If one of them is not
+# installed here, the build does not degrade gracefully — it dies on the first
+# line with `Could not import extension ...` and publishes nothing.
+#
+# That is exactly what happened, and it is worth knowing what it looks like,
+# because the failure is close to invisible:
+#
+#   Read the Docs keeps serving the LAST BUILD THAT SUCCEEDED. The site stays up,
+#   every URL still resolves, and nothing on the page says it is old. Two
+#   extensions were added to conf.py without being added here, and for four
+#   commits of documentation work the published site quietly stayed frozen on the
+#   first version ever built — still advertising pages that had since been
+#   renamed, still carrying a banner saying the journal was unwritten.
+#
+# So: adding an extension to conf.py is a TWO-file change. If you only make one of
+# them, the site will not tell you.
 
 sphinx>=8.1                # the documentation builder itself
 myst-parser[linkify]>=4.0  # lets Sphinx read Markdown (without this, nothing builds).
@@ -11,3 +29,12 @@ myst-parser[linkify]>=4.0  # lets Sphinx read Markdown (without this, nothing bu
                            # "linkify" setting in conf.py needs. Without the extra the
                            # build crashes outright, so keep them in step.
 furo>=2024.8.6             # the page theme — see html_theme in conf.py
+sphinxcontrib-mermaid>=1.0 # draws the ```mermaid fences as real diagrams.
+                           # Used by reference/database.md for the table map.
+                           # NOTE the name: the PyPI package is spelled with a
+                           # HYPHEN (sphinxcontrib-mermaid), the import in conf.py
+                           # with a DOT (sphinxcontrib.mermaid). They are the same
+                           # thing; pip will not find the dotted spelling.
+sphinx-design>=0.6         # the :::{dropdown} collapsible blocks. The base station
+                           # guide is built almost entirely out of these — without
+                           # this the guide is not just unstyled, the build fails.
