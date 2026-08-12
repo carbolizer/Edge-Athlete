@@ -1,0 +1,48 @@
+# .mailmap — one person, one name, in every git report.
+#
+# WHY THIS FILE EXISTS. Everyone here has committed under more than one identity:
+# a laptop with a different git config, a GitHub web edit using a noreply address,
+# a name typed differently on a second machine. Git treats each combination as a
+# separate human, so `git shortlog`, `git log --author`, and GitHub's contributor
+# view all split one person's work several ways.
+#
+# This file fixes the DISPLAY only. It rewrites nothing, changes no commit, and is
+# safe to add at any time — git just reads it when it prints an author.
+#
+# FORMAT:  Proper Name <proper@email>  Committed Name <committed@email>
+# The right-hand pair is what is recorded in a commit; the left is what to show.
+#
+# Adding yourself: add a line, do not edit history. If you are about to commit from
+# a new machine, `git config user.name` and `git config user.email` first — that is
+# cheaper than a line here.
+
+# ── Devin Walton — three spellings, one address ────────────────────────────────
+Devin Walton <devi.walto@gmail.com> <devi.walto@gmail.com>
+Devin Walton <devi.walto@gmail.com> Devin M Walton <devi.walto@gmail.com>
+Devin Walton <devi.walto@gmail.com> devi-walto <devi.walto@gmail.com>
+
+# ── Braydon — four identities, the most split of anyone ───────────────────────
+# Two names (Braydon / brayd-n / Brayd-n) across a university address, a personal
+# one, and two different GitHub noreply addresses.
+Braydon <145294349+Brayd-n@users.noreply.github.com> <145294349+Brayd-n@users.noreply.github.com>
+Braydon <145294349+Brayd-n@users.noreply.github.com> <brayd-n@users.noreply.github.com>
+Braydon <145294349+Brayd-n@users.noreply.github.com> <blc034@email.latech.edu>
+Braydon <145294349+Brayd-n@users.noreply.github.com> <blc0523@outlook.com>
+
+# ── Carl Coleman ──────────────────────────────────────────────────────────────
+Carl Coleman <carbolizer3@gmail.com> <carbolizer3@gmail.com>
+Carl Coleman <carbolizer3@gmail.com> <carbolizer@users.noreply.github.com>
+
+# ── Derrilon Young ────────────────────────────────────────────────────────────
+# Her git `user.name` was accidentally set to a whole shell command — two commands
+# pasted as one — so every commit she has made is authored by a name containing
+# `git config --global user.email ...`. This maps it back to her name.
+#
+# The address stays as the one she actually committed with rather than the one she
+# meant to set, because that is the true record; changing it here would only make
+# the mapping wrong in a new way. She should fix her local config so future commits
+# do not need this line:
+#   git config --global user.name "Derrilon Young"
+#   git config --global user.email "ddy006@latech.edu"
+# and once she does, add the new address to this block.
+Derrilon Young <derrilondoriea@gmail.com> <derrilondoriea@gmail.com>
