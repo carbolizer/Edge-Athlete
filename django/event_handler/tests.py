@@ -1009,6 +1009,38 @@ class RackNodeAssignmentTests(APITestCase):
             "node_id": node_id or self.node.node_id,
         }, format="json")
 
+    def test_a_rack_cannot_hold_a_wifi_and_a_bluetooth_sensor_at_once(self):
+        """One rack, one sensor — whichever transport it speaks.
+
+        This is the property the UI depends on rather than re-implements. Both the
+        coach console and the rack screen let you pick a sensor, and neither checks
+        what is already there: assigning is expected to REPLACE. If that ever stops
+        being true, a rack ends up listening to a Wi-Fi sensor and a Bluetooth one
+        simultaneously, which shows up as doubled reps and is very hard to read
+        back to a cause.
+        """
+        self._authenticate_staff()
+        wifi = Node.objects.create(node_id="mqtt-a", acquisition_kind=Node.ACQUISITION_MQTT)
+        ble = Node.objects.create(
+            node_id="wt901-b",
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            rack_number=1,
+            last_seen=timezone.now(),
+        )
+
+        # rack 1 starts on the Bluetooth sensor; link the Wi-Fi one over the top
+        response = self._assign(node_id=wifi.node_id)
+        self.assertEqual(response.status_code, 200, response.data)
+
+        wifi.refresh_from_db()
+        ble.refresh_from_db()
+        self.assertEqual(wifi.rack_number, 1)
+        self.assertIsNone(ble.rack_number, "the previous sensor must be released, not kept")
+        self.assertEqual(
+            Node.objects.filter(rack_number=1).count(), 1,
+            "a rack must never hold more than one sensor",
+        )
+
     def _authenticate_staff(self):
         self.client.force_authenticate(self.staff)
 

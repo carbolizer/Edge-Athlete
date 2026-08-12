@@ -163,6 +163,7 @@ def _target_zone_for(zones, athlete_id, exercise_id):
 
 def _rack_body(
     rack_number, athlete, latest_set, reps, include_details, nodes_by_rack, zones, runtime,
+    screen=None,
 ):
     """One rack's tile on the dashboard."""
     status = _set_status(latest_set)
@@ -222,10 +223,17 @@ def _rack_body(
         node = nodes_by_rack.get(rack_number)
         body["node"] = None if node is None else {
             "node_id": node.node_id,
+            # Which transport this sensor speaks. The coach console shows it and
+            # uses it: an MQTT sensor can be linked from across the room, a
+            # Bluetooth one has to be verified standing at the rack.
+            "acquisition_kind": node.acquisition_kind,
             "battery_level": node.battery_level,
             "signal_strength": node.signal_strength,
             "is_stale": node.last_seen is None or node.last_seen < timezone.now() - NODE_STALE_AFTER,
         }
+        # Coach-only, like everything else under include_details. This is what the
+        # sensor-linking control addresses when it assigns a node to this rack.
+        body["screen_device_id"] = None if screen is None else screen.device_id
 
     return body
 
@@ -352,9 +360,17 @@ def room_state_snapshot(include_details):
             reps_by_set.setdefault(rep.set_id, []).append(rep)
 
     nodes_by_rack = {}
+    screens_by_rack = {}
     if include_details:
         for node in Node.objects.filter(rack_number__in=rack_numbers).order_by("rack_number", "node_id"):
             nodes_by_rack.setdefault(node.rack_number, node)
+        # The coach needs the SCREEN's device id, not just the rack number, because
+        # assigning a sensor is addressed by screen (PUT /api/racks/node-assignment/).
+        # Without it the coach console can see which sensor a rack has and has no way
+        # to change it — which is exactly the hole that opened when the old
+        # coach-side node endpoint was removed.
+        for screen in RackScreen.objects.filter(rack_number__in=rack_numbers).order_by("rack_number", "id"):
+            screens_by_rack.setdefault(screen.rack_number, screen)
 
     runtimes_by_rack = {
         runtime.rack_number: runtime
@@ -371,7 +387,8 @@ def room_state_snapshot(include_details):
         racks.append(_rack_body(rack_number, athlete, latest_set,
                                 reps_by_set.get(latest_set.id, []) if latest_set else [],
                                 include_details, nodes_by_rack, zones,
-                                runtimes_by_rack.get(rack_number)))
+                                runtimes_by_rack.get(rack_number),
+                                screens_by_rack.get(rack_number)))
 
     exercise_id, movement = _selected_movement(shown_sets, include_details, zones)
     leaderboard, leaderboard_truncated = _leaderboard(session, exercise_id, include_details)

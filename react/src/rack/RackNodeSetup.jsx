@@ -39,6 +39,11 @@ export default function RackNodeSetup({ rackNumber, onReady, onObserve }) {
   const [selectedCandidate, setSelectedCandidate] = useState(null)
   const [verification, setVerification] = useState(null)
   const [error, setError] = useState('')
+  // Wi-Fi sensors this rack could take. Bluetooth has to be discovered by
+  // scanning; an MQTT sensor already announced its own name, so it is just a
+  // list — which is the whole reason the two paths look different below.
+  const [wifiNodes, setWifiNodes] = useState([])
+  const [linkingNodeId, setLinkingNodeId] = useState(null)
   const agent = useRackAgentStatus(currentNode, rackNumber)
   const deviceId = getDeviceId()
 
@@ -55,6 +60,11 @@ export default function RackNodeSetup({ rackNumber, onReady, onObserve }) {
       }
       const assigned = assignedNodeForRack(allNodes, rackNumber)
       setCurrentNode(assigned)
+      setWifiNodes((allNodes || []).filter(
+        (n) => n.acquisition_kind !== 'wt901_ble'
+          && !n.is_simulated
+          && (n.rack_number == null || n.rack_number === rackNumber),
+      ))
       setStatus(assigned ? 'ready' : 'login')
     } catch {
       setError('The base station could not confirm this rack setup.')
@@ -84,6 +94,28 @@ export default function RackNodeSetup({ rackNumber, onReady, onObserve }) {
       setPassword('')
       setError(err.message || 'Coach authentication failed.')
       setStatus('login')
+    }
+  }
+
+  // Link a Wi-Fi sensor. Same endpoint the coach console uses, and the same one
+  // the Bluetooth flow lands on after verification — so all three routes end at one
+  // place that enforces the rules. Notably it UNASSIGNS whatever sensor this rack
+  // had first, in the same transaction, which is what stops a rack from holding a
+  // Bluetooth sensor and a Wi-Fi one at once.
+  async function linkWifiNode(nodeId) {
+    setLinkingNodeId(nodeId)
+    setError('')
+    try {
+      await coachFetch('/api/racks/node-assignment/', {
+        token: coachToken,
+        method: 'PUT',
+        body: { device_id: deviceId, node_id: nodeId },
+      })
+      await load()
+    } catch (err) {
+      setError(bleSetupError(err, 'The sensor could not be linked. Try again.'))
+    } finally {
+      setLinkingNodeId(null)
     }
   }
 
@@ -262,25 +294,62 @@ export default function RackNodeSetup({ rackNumber, onReady, onObserve }) {
     <Centered>
       <section aria-labelledby="ble-setup-heading" style={{ width: 'min(480px, calc(100vw - 40px))' }}>
         <div style={{ color: T.lime, fontSize: 11, fontWeight: 900, letterSpacing: '.14em', textTransform: 'uppercase' }}>
-          Rack {rackNumber} BLE setup
+          Rack {rackNumber} sensor setup
         </div>
         <h2 id="ble-setup-heading" style={{ margin: '10px 0 8px' }}>
-          {status === 'verified' || status === 'assigning' ? 'Confirm sensor assignment' : 'Scan nearby sensors'}
+          {status === 'verified' || status === 'assigning' ? 'Confirm sensor assignment' : 'Choose this rack\'s sensor'}
         </h2>
         <p style={{ color: T.muted, margin: '0 0 20px' }}>
            {status === 'verified' || status === 'assigning'
              ? 'Confirm the movement below came from the sensor mounted at this rack.'
              : status === 'candidates' || status === 'verifying'
                ? 'Move the sensor mounted at this rack while verification runs, then choose Verify.'
-               : 'Only advertised BLE labels and temporary scan handles are shown.'}
+               : 'Bluetooth sensors must be verified at the rack. Wi-Fi sensors can be linked directly.'}
         </p>
 
         {error && <div role="alert" style={{ color: '#ff8b8b', fontSize: 13, marginBottom: 14 }}>{error}</div>}
 
         {(status === 'scan-ready' || status === 'scanning') && (
-          <button onClick={scan} disabled={status === 'scanning'} style={{ ...buttonStyle, width: '100%', opacity: status === 'scanning' ? .45 : 1 }}>
-            {status === 'scanning' ? 'Scanning...' : 'Scan nearby sensors'}
-          </button>
+          <>
+            <button onClick={scan} disabled={status === 'scanning'} style={{ ...buttonStyle, width: '100%', opacity: status === 'scanning' ? .45 : 1 }}>
+              {status === 'scanning' ? 'Scanning...' : 'Scan nearby Bluetooth sensors'}
+            </button>
+
+            {/* The Wi-Fi path. Deliberately a plain list with no verify step: an
+                MQTT sensor told the base station its own name, so there is nothing
+                to confirm by watching it move. Bluetooth needs that step because
+                nearby radios are anonymous until you prove which one is yours.
+                Linking either kind replaces whatever this rack already had. */}
+            <div style={{ marginTop: 22 }}>
+              <div style={{ color: T.muted, fontSize: 11, fontWeight: 900, letterSpacing: '.14em', textTransform: 'uppercase', marginBottom: 10 }}>
+                Or link a Wi-Fi sensor
+              </div>
+              {wifiNodes.length === 0 ? (
+                <p style={{ color: T.muted, fontSize: 13, margin: 0 }}>
+                  No Wi-Fi sensors are registered and free. One appears here once it
+                  has reported to the base station.
+                </p>
+              ) : (
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {wifiNodes.map((n) => (
+                    <div key={n.node_id} style={{ padding: 14, borderRadius: 10, border: `1px solid ${T.line}`, background: T.panel }}>
+                      <div style={{ fontWeight: 800 }}>{n.node_id}</div>
+                      <div style={{ color: T.muted, fontSize: 12, margin: '5px 0 12px' }}>
+                        {n.rack_number === rackNumber ? 'Already on this rack' : 'Wi-Fi · unassigned'}
+                      </div>
+                      <button
+                        onClick={() => linkWifiNode(n.node_id)}
+                        disabled={linkingNodeId != null || n.rack_number === rackNumber}
+                        aria-label={`Link ${n.node_id} to rack ${rackNumber}`}
+                        style={{ ...buttonStyle, padding: '10px 14px', opacity: (linkingNodeId != null || n.rack_number === rackNumber) ? .45 : 1 }}>
+                        {linkingNodeId === n.node_id ? 'Linking...' : 'Link'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         {(status === 'candidates' || status === 'verifying') && (
