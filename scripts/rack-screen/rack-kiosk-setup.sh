@@ -235,6 +235,28 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=$NFC_AGENT_CONF
+# Creates /run/edgeathlete before the agent starts, and again after every reboot.
+#
+# WITHOUT THIS THE AGENT CANNOT START AT ALL. It binds a Unix socket at
+# \$NFC_SOCKET_PATH, and asyncio.start_unix_server() raises FileNotFoundError when
+# the parent directory is missing. /run is a tmpfs, so the directory does not
+# survive a reboot and creating it by hand fixes nothing past the next power cycle.
+#
+# The failure is quiet and looks like a hardware fault. serve() runs BEFORE
+# serve_http(), so the crash happens before the HTTP endpoint the rack browser
+# polls ever opens — and with Restart=always below, the agent simply respawns
+# every 5 seconds while the screen shows "Card reader unavailable". Check
+# \`journalctl -u edgeathlete-nfc-agent\` before suspecting the reader.
+#
+# The manual instructions in guides/base-station.md do this with
+# \`install -d /run/edgeathlete\`, which is why running the agent by hand works
+# and provisioning it did not.
+#
+# Preserve=yes so the directory outlives a restart of this unit, and is still
+# there if the WT901 agent is later given a socket in the same place.
+RuntimeDirectory=edgeathlete
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/ccid_rack_agent.py \\
     --socket-path \$NFC_SOCKET_PATH \\
     --rack-number \${RACK_NUMBER:-1} \\
