@@ -102,8 +102,6 @@ reading the coach code needs to know which one they are looking at.
 
 ---
 
----
-
 ## Shipped change: the eight tabs, grouped
 
 The three-state redesign above lives on a branch. On `main`, the eight tabs remain
