@@ -69,10 +69,17 @@ exclude_patterns = [
     "_HANDOFF.md",
     "_PATCH_NOTES.md",
     "_NAMING_CHANGES.md",
-    # Braydon's design docs for the BLE rack agent, merged 2026-08-07. Excluded for
-    # now so the build stays green; they are worth folding into the journal (the
-    # ADR in particular explains why the agent owns the radio instead of the
-    # browser), which is a follow-up, not a discard.
+    # Braydon's design docs for the BLE rack agent, merged 2026-08-07.
+    #
+    # The ADR's REASONING now lives in journal/rack-tablet.md, rewritten in that
+    # page's voice: why a host program owns the radio instead of the browser, why
+    # each sensor carries its own transport so the two coexist, why sensors are
+    # chosen at the rack, and why broadcasts carry a revision number rather than
+    # state. These three files stay out of the build because they are working
+    # design documents — formal, dense, and written for the person implementing
+    # them, which is a different job from the journal's. They remain the reference
+    # for exact thresholds, message shapes and the validation checklist, and the
+    # journal points here for that.
     "_ADR_RACK_BLE_LIVE_WORKFLOW.md",
     "_RACK_BLE_LIVE_WORKFLOW_SPEC.md",
     "_LIVE_ROOM_INVALIDATIONS_SPEC.md",

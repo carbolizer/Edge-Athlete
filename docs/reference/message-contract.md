@@ -49,10 +49,11 @@ document is otherwise unchanged from v1.
   "timestamp": "2026-07-07T07:23:55Z"
 }
 ```
-- **Published by:** the node firmware (Phase 13), Derrilon's `simulate_node`, and
-  the central WT901 Agent when provisional rep publishing is explicitly enabled
-  for demo/qualification. WT901 raw IMU frames and BLE addresses never appear in
-  this payload.
+- **Published by:** the node firmware (Phase 13), Derrilon's `simulate_node`, the
+  central WT901 Agent when provisional rep publishing is explicitly enabled for
+  demo/qualification, **and — in the per-rack-laptop deployment — the WT901 agent
+  that runs on each rack screen** (registered as an ordinary `mqtt`-kind node).
+  WT901 raw IMU frames and BLE addresses never appear in this payload.
 - **Consumed by:** the rack tablet, subscribed to *its own linked node's* rep topic.
 - **Not here:** `velocity_color`. The tablet computes that (see Derived values).
 
@@ -67,7 +68,9 @@ document is otherwise unchanged from v1.
   "timestamp": "2026-07-07T07:23:55Z"
 }
 ```
-- **Published by:** node firmware + `simulate_node`.
+- **Published by:** node firmware + `simulate_node`, **and — in the per-rack-laptop
+  deployment — the WT901 agent on each rack screen**, which publishes the same
+  heartbeat with `battery_level`/`signal_strength` null (a WT901 has neither).
 - **Consumed by:** Django's MQTT subscriber, which listens to `edgeathlete/node/+/pulse`
   **only** and updates the matching `Node` row. Reps never reach Django this way.
 
@@ -202,6 +205,22 @@ Each session athlete's current status + when it started, so the rack's rest/chec
 - **The tablet turns `since` into a live timer** (ticks locally every second; the endpoint is polled, not the clock).
 - `rack_number` = the athlete's newest check-in rack (or `null`). No active session → `{ "session_id": null, "athletes": [] }`.
 
+### `DELETE /api/racks/{rack_number}/` — force-clear a wedged rack (coach)
+
+The escape hatch for a rack whose screen is physically gone: ends any open set on
+the rack as a **false set**, resets the rack runtime to idle (controller lease
+released, receipts dropped), and sends its `RackScreen` back to the waiting list.
+The sensor/node stays on the rack — a fresh screen on the same rack reuses it.
+Returns `200`:
+
+```json5
+{ "rack_number": 1, "cleared": true }
+```
+
+The normal release (`PATCH /api/racks/{device_id}/` with `{ "rack_number": null }`)
+refuses while a set is open; this is the deliberate "kill the rack state" lever a
+coach pulls when nobody can finish that set because the screen is unreachable.
+
 ### `POST /api/racks/{rack_number}/checkin/` — record an athlete signing in at a rack (open)
 Body: `{ "athlete": 4 }`. Writes an append-only `RackCheckIn`, making THIS rack the athlete's current one for the session (newest-wins). Returns `201`:
 ```json5
@@ -220,10 +239,18 @@ The athletes this rack currently "owns" — those whose NEWEST `RackCheckIn` thi
 - **Derived** from `RackCheckIn` (newest-wins per athlete); session-scoped; nothing new stored. Polled (~5s) alongside the roster while the check-in screen is up.
 - No active session → `{ "session_id": null, "rack_number": 3, "athletes": [] }`.
 
-### `POST /api/racks/{rack_number}/nfc-tap/` — consume a local wristband tap
+### `POST /api/racks/{rack_number}/nfc-tap/` — consume a wristband tap
 
-The controlling rack browser polls with the four controller headers and exact body
-`{}` only while its check-in list is visible. Responses contain no tag ID:
+The controlling rack browser polls with the four controller headers while its
+check-in list is visible. Two body shapes:
+
+- `{}` — the rack's reader agent is attached to the same host as Django; Django
+  consumes from the private Unix-socket NFC Agent.
+- `{ "tag_id": "044DF23A1F1D91" }` — the rack screen read the tap from ITS OWN
+  local reader (loopback HTTP on the laptop, see below) and forwarded the raw
+  tag for server-side resolution. This is the per-rack-laptop deployment.
+
+Responses contain no tag ID except where the client supplied it in the request:
 
 ```json5
 { "status": "none" }
@@ -238,6 +265,13 @@ The controlling rack browser polls with the four controller headers and exact bo
 - The browser passes a recognized athlete into the existing fenced check-in call;
   this endpoint does not create a `RackCheckIn` itself.
 - Raw tag IDs never enter browser responses, URLs, MQTT, or normal logs.
+
+**Per-rack-laptop NFC reader:** in the per-laptop deployment the reader agent
+(`ccid_rack_agent.py`) also serves a loopback HTTP endpoint
+`GET http://localhost:8766/v1/taps/consume` (CORS-gated to `basestation` /
+`192.168.4.1` / localhost origins). The rack screen polls it and forwards the
+`tag_id` in the body above. The Unix socket remains for a reader attached to the
+base station.
 
 ### `POST /api/sets/` — start a set (create) (open)
 Called when a set STARTS (Phase 11 Step 3). The server returns the created `Set` incl. its `id`, kept for the complete POST at set end.

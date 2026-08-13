@@ -45,6 +45,20 @@ AP_PASSWORD="${AP_PASSWORD:-ChangeMe123!}" # base station's WiFi password
 KIOSK_HOST="${KIOSK_HOST:-basestation}"    # `localhost` if this IS the base station
 KIOSK_ROOT="/var/lib/edge-athlete/kiosk"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+AGENT_CONF="/etc/edgeathlete/rack-agent.conf"
+AGENT_SERVICE="/etc/systemd/system/edgeathlete-rack-agent.service"
+# BLE address of this rack's WT901 sensor. Empty until you have run
+# `python3 wt901_rack_agent.py --scan` and filled it in.
+BLE_ADDRESS="${BLE_ADDRESS:-}"
+NODE_ID="${NODE_ID:-}"
+MQTT_HOST="${MQTT_HOST:-$KIOSK_HOST}"
+MQTT_PORT="${MQTT_PORT:-1883}"
+# WT901 output rate (samples/second). MUST match the sensor's configured rate:
+# set it on the sensor with WitMotion's config tool, then mirror it here.
+SENSOR_HZ="${SENSOR_HZ:-50}"
+AGENT_VENV="/opt/edgeathlete/rack-agent-venv"
 
 AUTOSTART_FILE=/etc/xdg/autostart/edgeathlete-kiosk.desktop
 COACH_ICON=/usr/share/applications/edgeathlete-coach.desktop
@@ -114,6 +128,128 @@ apt update
 # it they print a cheerful message and do nothing, which is worse than failing.
 apt install -y network-manager x11-xserver-utils unclutter curl procps
 apt install -y chromium-browser || apt install -y chromium
+
+# ── the rack sensor agent ──────────────────────────────────────────────────────
+# A rack screen owns the WT901 sensor bolted to its rack. The agent reads the
+# sensor over BLE, detects reps, and publishes them (plus a heartbeat) to the
+# base station's Mosquitto. It runs as a systemd service so it survives the
+# browser, reboots, and Wi-Fi drops.
+#
+# NODE_ID defaults to the rack's role suffix when we are provisioning a rack.
+# The BLE address has to come from a live scan (`wt901_rack_agent.py --scan`),
+# so it is never guessable here; leave BLE_ADDRESS empty and the service stays
+# disabled until you fill in /etc/edgeathlete/rack-agent.conf.
+if [ "$ROLE" = "rack" ]; then
+    echo "[1b] installing the WT901 rack sensor agent..."
+
+    if [ -z "${NODE_ID:-}" ]; then
+        echo "    NODE_ID not set — using 'rack_1' (override with NODE_ID=rack_N)"
+        NODE_ID="rack_1"
+    fi
+
+    # A venv keeps the hardware deps (bleak, paho-mqtt) off the system Python.
+    if [ ! -x "$AGENT_VENV/bin/python" ]; then
+        apt install -y python3 python3-venv
+        python3 -m venv "$AGENT_VENV"
+    fi
+    "$AGENT_VENV/bin/pip" install --quiet --upgrade pip
+    "$AGENT_VENV/bin/pip" install --quiet -r "$PROJECT_DIR/scripts/hardware/requirements.txt"
+
+    # Machine-owned config, outside git, written once and never overwritten —
+    # the same pattern as basestation.conf. BLE_ADDRESS is the part only a
+    # physical scan can fill in.
+    mkdir -p /etc/edgeathlete
+    if [ ! -f "$AGENT_CONF" ]; then
+        cat > "$AGENT_CONF" <<EOF
+NODE_ID=$NODE_ID
+BLE_ADDRESS=$BLE_ADDRESS
+MQTT_HOST=$MQTT_HOST
+MQTT_PORT=$MQTT_PORT
+SENSOR_HZ=$SENSOR_HZ
+EOF
+        chmod 600 "$AGENT_CONF"
+        echo "    wrote $AGENT_CONF"
+    else
+        echo "    $AGENT_CONF already exists — left alone"
+        # shellcheck source=/dev/null
+        . "$AGENT_CONF"
+    fi
+
+    cat > "$AGENT_SERVICE" <<EOF
+[Unit]
+Description=Edge Athlete WT901 rack sensor agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$AGENT_CONF
+ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/wt901_rack_agent.py \\
+    --address \$BLE_ADDRESS --node-id \$NODE_ID \\
+    --mqtt-host \$MQTT_HOST --mqtt-port \$MQTT_PORT \\
+    --base-url http://\$MQTT_HOST \\
+    --hz \${SENSOR_HZ:-50}
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    if [ -n "${BLE_ADDRESS:-}" ]; then
+        systemctl enable --now "$(basename "$AGENT_SERVICE")"
+        echo "    rack sensor agent enabled (BLE_ADDRESS set)"
+    else
+        systemctl disable "$(basename "$AGENT_SERVICE")" >/dev/null 2>&1 || true
+        echo "    rack sensor agent NOT enabled — run"
+        echo "      python3 $PROJECT_DIR/scripts/hardware/wt901_rack_agent.py --scan"
+        echo "    then set BLE_ADDRESS in $AGENT_CONF and: systemctl enable --now edgeathlete-rack-agent"
+    fi
+
+    # ── the NFC reader agent ───────────────────────────────────────────────────
+    # Reads the rack's NFC wristband reader and exposes one-time taps on the same
+    # /run/edgeathlete socket Django talks to. Needs the pyusb dep already
+    # installed above and the reader plugged in at boot; without the reader the
+    # service stays alive and retries.
+    echo "    installing the NFC reader agent..."
+    NFC_RACK_NUMBER="$(printf '%s' "$NODE_ID" | sed 's/.*[^0-9]\([0-9]*\)$/\1/')"
+    [ -n "$NFC_RACK_NUMBER" ] || NFC_RACK_NUMBER=1
+    NFC_AGENT_CONF="/etc/edgeathlete/nfc-agent.conf"
+    NFC_AGENT_SERVICE="/etc/systemd/system/edgeathlete-nfc-agent.service"
+    if [ ! -f "$NFC_AGENT_CONF" ]; then
+        cat > "$NFC_AGENT_CONF" <<EOF
+RACK_NUMBER=$NFC_RACK_NUMBER
+NFC_SOCKET_PATH=/run/edgeathlete/nfc-agent.sock
+EOF
+        chmod 600 "$NFC_AGENT_CONF"
+        echo "    wrote $NFC_AGENT_CONF"
+    fi
+
+    cat > "$NFC_AGENT_SERVICE" <<EOF
+[Unit]
+Description=Edge Athlete NFC rack reader agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$NFC_AGENT_CONF
+ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/ccid_rack_agent.py \\
+    --socket-path \$NFC_SOCKET_PATH \\
+    --rack-number \${RACK_NUMBER:-1} \\
+    --http-port 8766 \\
+    --allowed-origins http://basestation,http://192.168.4.1,http://localhost,http://127.0.0.1
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable --now "$(basename "$NFC_AGENT_SERVICE")"
+    echo "    NFC reader agent enabled"
+fi
 
 echo "[2] joining the '$AP_SSID' WiFi as a client..."
 systemctl enable --now NetworkManager

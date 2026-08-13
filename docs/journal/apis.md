@@ -92,7 +92,7 @@ the outage you built it for.
 
 Rack screens, and the sensors on them.
 
-:::::{dropdown} 18 routes
+:::::{dropdown} 19 routes
 
 <!-- routes:the-room:start -->
 | Route | Methods | Access | What it does | Handler |
@@ -113,8 +113,9 @@ Rack screens, and the sensors on them.
 | `/api/racks/<int:rack_number>/checkins/` | `GET` | open | The rack's HOT LIST: athletes this rack currently 'owns' — those whose NEWEST check-in this session is this rack | `rack_checkins` |
 | `/api/racks/<int:rack_number>/nfc-tap/` | `POST` | open | — | `rack_nfc_tap` |
 | `/api/nodes/` | `GET` | open | Open: list every sensor node and its latest status | `nodes_list` |
+| `/api/nodes/register/` | `POST` | open | A sensor announces itself | `node_register` |
 | `/api/nodes/<str:node_id>/acquisition-kind/` | `PUT` | open | Provision the transport trusted to supply one registered node's health | `node_acquisition_kind` |
-| `/api/racks/<str:device_id>/` | `PATCH` | open | Coach-only: give a waiting tablet its rack number | `rack_assign` |
+| `/api/racks/<str:device_id>/` | `PATCH` | open | Coach-only: give a waiting tablet its rack number, or release it | `rack_assign` |
 <!-- routes:the-room:end -->
 
 :::::

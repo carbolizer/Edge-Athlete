@@ -102,11 +102,35 @@ reading the coach code needs to know which one they are looking at.
 
 ---
 
+---
+
+## Shipped change: the eight tabs, grouped
+
+The three-state redesign above lives on a branch. On `main`, the eight tabs remain
+— but they are now visually split into **Room** and **Athlete** groups, with a
+divider between them.
+
+**What forced it.** Eight flat tabs mix room-level views (room, workouts,
+schedule, reports) with per-athlete ones (athlete, history, programs, notes).
+Those two kinds are not peers: a per-athlete view is meaningless until a coach
+picks an athlete, and a flat row gave them equal weight with no hint of that.
+
+**What we chose.** Two groups separated by a divider. Per-athlete
+tabs are **dimmed until an athlete is selected** — clicking one before that shows
+"Select an athlete to open their view." The room group is always live. The logic
+is pure and tested in `react/src/coachTabs.js` (`tabDisabled`, `tabGroup`).
+
+**Why this and not the three-state redesign.** The grouping is the low-risk,
+mainline increment that directly answers "per-athlete views are mixed in with
+room-level ones with no visual cue." It changes no routes and no data. The
+three-state redesign remains the larger future shape.
+
+---
+
 ## Spreadsheet upload
 
 **What forced it.** Coaches already keep everything in spreadsheets. Making them
 retype a season's training into a new app is how a new app gets abandoned.
-
 **What we chose.** Take the file they already have. Three kinds of sheet are
 supported — a **roster** (a list of people), a **max sheet** (what each person can
 lift), and a **plan** (the workouts as percentages).

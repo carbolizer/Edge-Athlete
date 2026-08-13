@@ -714,6 +714,67 @@ class RackControllerEndpointTests(APITestCase):
         self.assertEqual(response.data, {"status": "unavailable"})
         self.assertEqual((runtime.state_version, runtime.selected_athlete_id), before)
 
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_accepts_forwarded_tag_id_without_consuming(self, consume):
+        """The per-rack-laptop path: the browser read the tap from its own local
+        reader and forwards the raw tag. Resolution must happen server-side and
+        the socket must not be consumed."""
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Braydon Callender", nfc_tag_id="04A1B2C3D4E5F6")
+        session.athletes.add(athlete)
+        acquired = self._acquire()
+
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04A1B2C3D4E5F6"},
+            format="json", headers=self._headers(acquired),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {
+            "status": "recognized",
+            "athlete": {"athlete_id": athlete.id, "name": "Braydon Callender"},
+        })
+        consume.assert_not_called()
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_forwarded_unknown_and_off_roster_tags(self, consume):
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        Athlete.objects.create(name="Off Roster", nfc_tag_id="04A1B2C3D4E5F6")
+        acquired = self._acquire()
+
+        off_roster = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04A1B2C3D4E5F6"},
+            format="json", headers=self._headers(acquired),
+        )
+        unknown = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04AAAAAAAAAAAA"},
+            format="json", headers=self._headers(acquired),
+        )
+        self.assertEqual(off_roster.data, {"status": "unknown"})
+        self.assertEqual(unknown.data, {"status": "unknown"})
+        consume.assert_not_called()
+
+    def test_nfc_tap_rejects_bad_tag_id_shape(self):
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        acquired = self._acquire()
+        for bad in ["", "zzzzzzzzzzzz", "04:4D", 42, "x" * 33]:
+            response = self.client.post(
+                "/api/racks/1/nfc-tap/", {"tag_id": bad},
+                format="json", headers=self._headers(acquired),
+            )
+            self.assertEqual(response.status_code, 400, f"{bad!r} should be refused")
+            self.assertEqual(response.data["code"], "invalid_nfc_request")
+
+    @patch("event_handler.views.nfc_agent.consume")
+    def test_nfc_tap_forwarded_tag_requires_controller(self, consume):
+        TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        response = self.client.post(
+            "/api/racks/1/nfc-tap/", {"tag_id": "04A1B2C3D4E5F6"}, format="json",
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "rack_controller_required")
+        consume.assert_not_called()
+
     def test_athlete_serializer_never_emits_nfc_tag(self):
         athlete = Athlete.objects.create(name="Private Tag", nfc_tag_id="04A1B2C3D4E5F6")
         self.assertNotIn("nfc_tag_id", AthleteSerializer(athlete).data)
@@ -995,6 +1056,259 @@ def _token_digest_for_test(token):
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
 
+class RackScreenReleaseTests(APITestCase):
+    """Sending a tablet back to the waiting list — the fix for T8.
+
+    The deadlock: nothing cleared a screen's rack_number, and the coach's waiting
+    list only shows screens without one. A tablet sent to setup kept its old rack,
+    so it never reappeared and could not be reassigned. Clearing browser data
+    "fixed" it only by making the tablet a different device.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="release-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.screen = RackScreen.objects.create(device_id="screen-a", rack_number=3)
+
+    def test_a_tablet_can_be_released_back_to_the_waiting_list(self):
+        res = self.client.patch(
+            f"/api/racks/{self.screen.device_id}/", {"rack_number": None}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen.refresh_from_db()
+        self.assertIsNone(self.screen.rack_number)
+
+        waiting = self.client.get("/api/racks/unassigned/")
+        self.assertIn(
+            "screen-a", [s["device_id"] for s in waiting.data],
+            "a released tablet must reappear in the coach's waiting list",
+        )
+
+    def test_a_released_tablet_can_go_back_to_the_SAME_rack(self):
+        """The half of the deadlock that is easy to miss.
+
+        Reassigning to a different rack was never the hard case. Putting a tablet
+        back on the rack it came from is what people actually do when sorting out a
+        mislabelled room, and it has to work.
+        """
+        self.client.patch(f"/api/racks/{self.screen.device_id}/", {"rack_number": None}, format="json")
+        res = self.client.patch(f"/api/racks/{self.screen.device_id}/", {"rack_number": 3}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3)
+
+    def test_omitting_the_field_is_still_an_error(self):
+        """null means release; ABSENT still means you forgot something."""
+        res = self.client.patch(f"/api/racks/{self.screen.device_id}/", {}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3, "a malformed request must change nothing")
+
+    def test_a_tablet_cannot_be_released_mid_set(self):
+        """Same guard that already blocked moving one. Releasing is a move."""
+        node = Node.objects.create(node_id="n-a", rack_number=3)
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Test Lifter")
+        exercise = Exercise.objects.create(name="Squat")
+        Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=node,
+            set_number=1, ended_at=None,
+        )
+
+        res = self.client.patch(
+            f"/api/racks/{self.screen.device_id}/", {"rack_number": None}, format="json",
+        )
+        self.assertEqual(res.status_code, 409, res.data)
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3)
+
+
+class RackRemoveTests(APITestCase):
+    """The coach's escape hatch for a wedged rack: force-clear it so a fresh
+    screen can take it over, even when an unreachable screen left an open set.
+
+    The normal release refuses while a set is open. This is the deliberate
+    "kill the rack state" lever for the case where nobody can finish that set
+    because the screen is physically gone.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="remove-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.node = Node.objects.create(node_id="n-a", rack_number=1)
+        self.screen = RackScreen.objects.create(device_id="screen-a", rack_number=1)
+
+    def _acquire(self):
+        return self.client.post("/api/racks/1/controller/acquire/", {
+            "device_id": "screen-a",
+            "client_instance_id": "tab-a",
+            "controller_token": controller_token(),
+        }, format="json")
+
+    def test_clears_a_wedged_rack_with_an_open_set(self):
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Stuck Lifter")
+        exercise = Exercise.objects.create(name="Squat")
+        stuck = Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=self.node,
+            set_number=1, ended_at=None,
+        )
+        self._acquire()
+        runtime = RackRuntime.objects.get(rack_number=1)
+        runtime.phase = RackRuntime.PHASE_RECOVERY_REQUIRED
+        runtime.current_set = stuck
+        runtime.selected_athlete = athlete
+        runtime.save()
+
+        res = self.client.delete("/api/racks/1/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data["cleared"])
+
+        stuck.refresh_from_db()
+        self.assertIsNotNone(stuck.ended_at, "the stuck open set must be closed")
+        self.assertTrue(stuck.is_false_set, "an abandoned set is a false set")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.selected_athlete)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.lease_expires_at)
+
+        self.screen.refresh_from_db()
+        self.assertIsNone(self.screen.rack_number, "the wedged screen goes back to the waiting list")
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 1, "the sensor stays on the rack for a new screen")
+
+    def test_requires_staff(self):
+        ordinary = User.objects.create_user(username="athlete", password="pw")
+        self.client.force_authenticate(ordinary)
+        res = self.client.delete("/api/racks/1/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_removing_an_empty_rack_is_clean_and_idempotent(self):
+        res1 = self.client.delete("/api/racks/1/")
+        res2 = self.client.delete("/api/racks/1/")
+        self.assertEqual(res1.status_code, 200, res1.data)
+        self.assertEqual(res2.status_code, 200, res2.data)
+        self.assertEqual(RackRuntime.objects.filter(rack_number=1).count(), 0)
+        self.screen.refresh_from_db()
+        self.assertIsNone(self.screen.rack_number)
+
+
+class NodeRegistrationTests(APITestCase):
+    """A sensor announcing itself — the MQTT counterpart of racks/register/.
+
+    Nothing could create an MQTT node before this: the seeder made exactly one, BLE
+    nodes came from verified enrollment, and pulses from anything unknown were
+    rejected. That is fine with one simulated rack and impossible with eight real
+    ones.
+    """
+
+    def test_an_unknown_sensor_can_announce_itself(self):
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_7"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertTrue(res.data["created"])
+        node = Node.objects.get(node_id="rack_7")
+        self.assertIsNone(node.rack_number, "registering must not hand out a rack")
+
+    def test_registering_is_idempotent_because_firmware_reboots(self):
+        self.client.post("/api/nodes/register/", {"node_id": "rack_7"}, format="json")
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_7"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["created"])
+        self.assertEqual(Node.objects.filter(node_id="rack_7").count(), 1)
+
+    def test_registering_never_alters_a_sensor_that_already_exists(self):
+        """The one that would be a security hole if it regressed.
+
+        A BLE sensor is enrolled by a coach standing at the rack and verifying it
+        moves. If a POST could overwrite that row, anything on the gym network could
+        re-register a verified sensor as something else and inherit its rack.
+        """
+        Node.objects.create(
+            node_id="wt901-real",
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            rack_number=4,
+        )
+        res = self.client.post("/api/nodes/register/", {"node_id": "wt901-real"}, format="json")
+        self.assertEqual(res.status_code, 200)
+
+        node = Node.objects.get(node_id="wt901-real")
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_WT901_BLE)
+        self.assertEqual(node.rack_number, 4, "an existing sensor must keep its rack")
+
+    def test_a_junk_node_id_is_refused(self):
+        for bad in ["", "has space", "semi;colon", "x" * 65, None, 7]:
+            res = self.client.post("/api/nodes/register/", {"node_id": bad}, format="json")
+            self.assertEqual(res.status_code, 400, f"{bad!r} should be refused")
+        self.assertEqual(Node.objects.count(), 0)
+
+
+class PerLaptopNodeFlowTests(APITestCase):
+    """The per-rack-laptop topology: the rack screen runs the WT901 agent, which
+    registers itself as an ordinary MQTT node. That is the whole shortcut — an
+    MQTT-kind node skips the verified-BLE-enrollment block, needs no freshness
+    gate, and the rack screen treats it like any MQTT sensor. These tests pin the
+    fast path so nobody re-welds it to wt901_ble and breaks the laptop build."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="rack-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        self.athlete = Athlete.objects.create(name="Jordan")
+        self.session.athletes.add(self.athlete)
+        self.exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+
+    def test_mqtt_kind_node_register_assign_and_start_set(self):
+        # 1. the laptop agent announces itself (open endpoint, idempotent)
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_1"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        node = Node.objects.get(node_id="rack_1")
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT,
+                         "a per-laptop agent registers as an MQTT node")
+
+        # 2. a coach links it to the rack (must not hit the wt901 verification block)
+        self.client.force_authenticate(self.staff)
+        screen = RackScreen.objects.create(device_id="rack-screen-1", rack_number=1)
+        res = self.client.put("/api/racks/node-assignment/", {
+            "device_id": screen.device_id, "node_id": "rack_1",
+        }, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        node.refresh_from_db()
+        self.assertEqual(node.rack_number, 1)
+
+        # 3. the rack screen starts a sensor-backed set — no freshness gate blocks it
+        _, controller_headers = acquire_controller(self.client, 1, device_id=screen.device_id)
+        payload = {
+            "session": self.session.id,
+            "athlete": self.athlete.id,
+            "node": node.id,
+            "rack_number": 1,
+            "exercise": self.exercise.id,
+            "set_number": 1,
+            "weight_lbs": 225,
+            "expected_state_version": RackRuntime.objects.get(rack_number=1).state_version,
+            "command_id": str(uuid.uuid4()),
+        }
+        res = self.client.post("/api/sets/", payload, format="json", headers=controller_headers)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(Set.objects.count(), 1)
+        self.assertEqual(Set.objects.get().node.node_id, "rack_1")
+
+    def test_agent_node_registers_open_without_a_coach(self):
+        res = self.client.post("/api/nodes/register/", {"node_id": "rack_2"}, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        node = Node.objects.get(node_id="rack_2")
+        self.assertIsNone(node.rack_number, "registration never hands out a rack")
+        self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT)
+
 class RackNodeAssignmentTests(APITestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
@@ -1008,6 +1322,38 @@ class RackNodeAssignmentTests(APITestCase):
             "device_id": device_id or self.screen.device_id,
             "node_id": node_id or self.node.node_id,
         }, format="json")
+
+    def test_a_rack_cannot_hold_a_wifi_and_a_bluetooth_sensor_at_once(self):
+        """One rack, one sensor — whichever transport it speaks.
+
+        This is the property the UI depends on rather than re-implements. Both the
+        coach console and the rack screen let you pick a sensor, and neither checks
+        what is already there: assigning is expected to REPLACE. If that ever stops
+        being true, a rack ends up listening to a Wi-Fi sensor and a Bluetooth one
+        simultaneously, which shows up as doubled reps and is very hard to read
+        back to a cause.
+        """
+        self._authenticate_staff()
+        wifi = Node.objects.create(node_id="mqtt-a", acquisition_kind=Node.ACQUISITION_MQTT)
+        ble = Node.objects.create(
+            node_id="wt901-b",
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+            rack_number=1,
+            last_seen=timezone.now(),
+        )
+
+        # rack 1 starts on the Bluetooth sensor; link the Wi-Fi one over the top
+        response = self._assign(node_id=wifi.node_id)
+        self.assertEqual(response.status_code, 200, response.data)
+
+        wifi.refresh_from_db()
+        ble.refresh_from_db()
+        self.assertEqual(wifi.rack_number, 1)
+        self.assertIsNone(ble.rack_number, "the previous sensor must be released, not kept")
+        self.assertEqual(
+            Node.objects.filter(rack_number=1).count(), 1,
+            "a rack must never hold more than one sensor",
+        )
 
     def _authenticate_staff(self):
         self.client.force_authenticate(self.staff)
@@ -4106,6 +4452,26 @@ class ScheduleRouteTests(APITestCase):
         self.assertIsNotNone(res.data["started_at"])
         self.assertEqual(self.client.get("/api/sessions/active/").data["session_id"],
                          session_id)
+
+    def test_starting_a_day_tells_the_room_about_it(self):
+        """Starting a session must emit an invalidation, like ending one does.
+
+        Screens do not poll — they refetch when told something changed. Ending a day
+        already announced itself and starting did not, so the wall display sat on
+        "no active session" until somebody reloaded it by hand. The bug looked like a
+        flaky display rather than a missing emitter, which is exactly why it is worth
+        a test: the failure mode is correct-looking stale data, not an error.
+        """
+        before = MonitoringEvent.objects.filter(reason="session_started").count()
+        session_id = self._create_session(self.slots[0])
+        res = self.client.post(f"/api/sessions/{session_id}/start/", format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(
+            MonitoringEvent.objects.filter(reason="session_started").count(),
+            before + 1,
+            "starting a training day must emit a session_started invalidation",
+        )
 
     def test_starting_a_second_day_is_refused_while_one_runs(self):
         first = self._create_session(self.slots[0])

@@ -342,6 +342,14 @@ function RoomLayout({ token, onAuthLost }) {
   const [screenSlot, setScreenSlot] = useState('')
   const [busyScreen, setBusyScreen] = useState(false)
   const [screenBySlot, setScreenBySlot] = useState({})
+  const [nodeId, setNodeId] = useState('')
+  const [nodeSlot, setNodeSlot] = useState('')
+  const [busyNode, setBusyNode] = useState(false)
+  // rack number -> the device id of the screen registered to it. Assigning a sensor
+  // is addressed by SCREEN, not by rack number, so this is what makes the row below
+  // possible. It comes from room-state rather than screenBySlot because that only
+  // remembers assignments made in the current browser session.
+  const [screenIdBySlot, setScreenIdBySlot] = useState({})
 
   // `silent` is for the background poll below: refresh the lists without flipping
   // the loading spinner, clearing the coach's message, or otherwise disturbing a
@@ -350,12 +358,18 @@ function RoomLayout({ token, onAuthLost }) {
     if (!silent) setLoading(true)
     if (clearMessage) setMsg({ text: '', kind: '' })
     try {
-      const [unassigned, allNodes] = await Promise.all([
+      const [unassigned, allNodes, room] = await Promise.all([
         coachFetch('/api/racks/unassigned/', { token }),
         coachFetch('/api/nodes/', { token }),
+        coachFetch('/api/room-state/?details=true', { token }),
       ])
       setScreens(Array.isArray(unassigned) ? unassigned : [])
       setNodes(Array.isArray(allNodes) ? allNodes : [])
+      const bySlot = {}
+      for (const r of room?.racks || []) {
+        if (r.screen_device_id) bySlot[r.rack_number] = r.screen_device_id
+      }
+      setScreenIdBySlot(bySlot)
     } catch (err) {
       const text = err.message || 'failed to load room state'
       if (/401|403|credential|token|authentication/i.test(text)) {
@@ -379,7 +393,10 @@ function RoomLayout({ token, onAuthLost }) {
   }, [load])
 
   const occupancyBySlot = {}
-  for (const n of RACK_SLOTS) occupancyBySlot[n] = { screenId: screenBySlot[n] || null, node: null }
+  // screenIdBySlot comes from room-state and knows every rack, not just the ones
+  // assigned in this browser session — which is what makes Release usable on a
+  // tablet somebody else assigned last week.
+  for (const n of RACK_SLOTS) occupancyBySlot[n] = { screenId: screenIdBySlot[n] || screenBySlot[n] || null, node: null }
   for (const n of nodes) {
     if (n.rack_number != null && occupancyBySlot[n.rack_number]) {
       occupancyBySlot[n.rack_number].node = n
@@ -421,7 +438,116 @@ function RoomLayout({ token, onAuthLost }) {
     }
   }
 
+  // Link a sensor to a rack. This row came back after being removed with the BLE
+  // work: sensor selection moved to the physical rack because an anonymous nearby
+  // RADIO cannot be identified from across the room. True for Bluetooth — but an
+  // MQTT sensor announced its own name, so there is nothing to verify, and removing
+  // both left no way to link one anywhere.
+  //
+  // The endpoint enforces the difference rather than this screen guessing at it: an
+  // unassigned Bluetooth sensor is refused here and must be verified at the rack.
+  // It also unassigns whatever sensor the rack already had, in the same transaction,
+  // so a rack can never end up on Bluetooth and Wi-Fi at once.
+  async function assignNode() {
+    if (!nodeId || nodeSlot === '') return
+    const rack = Number(nodeSlot)
+    const deviceId = screenIdBySlot[rack]
+    if (!deviceId) {
+      setMsg({ text: `Assign a screen to rack ${rack} first — sensors are linked by screen.`, kind: 'err' })
+      return
+    }
+    setBusyNode(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      const result = await coachFetch('/api/racks/node-assignment/', {
+        token,
+        method: 'PUT',
+        body: { device_id: deviceId, node_id: nodeId },
+      })
+      setMsg({ text: `Sensor ${result.node?.node_id ?? nodeId} → rack ${result.rack_number}`, kind: 'ok' })
+      setNodeId('')
+      setNodeSlot('')
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'assign failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyNode(false)
+    }
+  }
+
+  // Send a tablet back to the waiting list.
+  //
+  // This is the escape from a deadlock, not a convenience. Nothing used to clear a
+  // screen's rack number, and the "unassigned" list only shows screens without one —
+  // so a tablet sent to setup mode kept its old rack, never reappeared for the
+  // coach, and could not be reassigned. The only known workaround was wiping the
+  // tablet's browser data, which does not fix it so much as replace the device.
+  async function releaseScreen(deviceId, rack) {
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${encodeURIComponent(deviceId)}/`, {
+        token,
+        method: 'PATCH',
+        body: { rack_number: null },
+      })
+      setScreenBySlot((prev) => {
+        const next = { ...prev }
+        delete next[rack]
+        return next
+      })
+      setMsg({ text: `Screen ${shortId(deviceId)} released from rack ${rack}`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'release failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
+  // Force-clear a rack so a fresh screen can take it over. This is the escape
+  // hatch for a wedged rack: an open set nobody can finish because the screen
+  // that started it is gone, a lease stuck in recovery_required, a tablet
+  // reassigned while it still held the rack. The normal Release refuses while a
+  // set is open — this is the deliberate "kill it" lever. It ends open sets as
+  // false sets, resets the runtime to idle, and sends any screen back to the
+  // waiting list, but leaves the sensor on the rack (a new screen should reuse it).
+  async function removeRack(rack) {
+    if (!window.confirm(
+      `Remove rack ${rack}? This ends any open set as a false set, clears the ` +
+      `controller, and releases its screen back to the waiting list. The sensor stays ` +
+      `on the rack. Do it?`,
+    )) return
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${rack}/`, { token, method: 'DELETE' })
+      setScreenBySlot((prev) => {
+        const next = { ...prev }
+        delete next[rack]
+        return next
+      })
+      setMsg({ text: `Rack ${rack} cleared — a new screen can take it`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'remove failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
   const screenOptions = screens.map((s) => ({ key: s.device_id, ...s }))
+  // Offer sensors this rack can actually take: unassigned, or already on the chosen
+  // rack. One owned by a different rack is left out rather than shown and refused.
+  const nodeOptions = nodes
+    .filter((n) => n.rack_number == null || String(n.rack_number) === String(nodeSlot))
+    .map((n) => ({ key: n.node_id, ...n }))
 
   return (
     <section className="coach-card">
@@ -437,12 +563,15 @@ function RoomLayout({ token, onAuthLost }) {
         </button>
       </div>
       <p className="coach-card-sub">
-        Assign waiting screens to rack slots here. Sensor selection happens at the
-        physical rack before athlete check-in.
+        Assign waiting screens to rack slots, and link a sensor to a rack.
         Waiting tablets pick up a new rack number within about three seconds.
+        Bluetooth sensors that have never been linked must be verified standing at
+        the rack — you cannot tell anonymous nearby radios apart from here.
       </p>
       <p className="coach-hint">
         Screens: <code>{'PATCH /api/racks/{device_id}/'}</code>
+        {' · '}
+        Sensors: <code>{'PUT /api/racks/node-assignment/'}</code>
       </p>
 
       {loading && screens.length === 0 && nodes.length === 0 ? (
@@ -460,6 +589,26 @@ function RoomLayout({ token, onAuthLost }) {
             onSlotChange={setScreenSlot}
             onAssign={assignScreen}
             busy={busyScreen}
+          />
+
+          <AssignRow
+            label="Link sensor to rack"
+            entityLabel="Sensor"
+            entities={nodeOptions}
+            entityValue={nodeId}
+            onEntityChange={setNodeId}
+            getOptionLabel={(n) =>
+              `${n.node_id}${n.acquisition_kind === 'wt901_ble' ? ' · Bluetooth' : ' · Wi-Fi'}`
+            }
+            slotValue={nodeSlot}
+            onSlotChange={setNodeSlot}
+            onAssign={assignNode}
+            busy={busyNode}
+            disabledReason={
+              nodeSlot !== '' && !screenIdBySlot[Number(nodeSlot)]
+                ? `Rack ${nodeSlot} has no screen registered yet — assign one above first.`
+                : undefined
+            }
           />
 
         </>
@@ -495,6 +644,28 @@ function RoomLayout({ token, onAuthLost }) {
                   <div className="coach-slot-line">
                     Node <strong>{slot.node ? slot.node.node_id : '—'}</strong>
                   </div>
+                  {slot.screenId && (
+                    <button
+                      type="button"
+                      className="coach-btn coach-btn-ghost"
+                      style={{ marginTop: 6, fontSize: 12 }}
+                      disabled={busyScreen}
+                      onClick={() => releaseScreen(slot.screenId, n)}
+                      title="Send this tablet back to the waiting list so it can be reassigned"
+                    >
+                      Release screen
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="coach-btn coach-btn-ghost"
+                    style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
+                    disabled={busyScreen}
+                    onClick={() => removeRack(n)}
+                    title="Force-clear this rack: end open sets as false, reset the controller, release its screen. For a rack whose screen is gone."
+                  >
+                    Remove rack
+                  </button>
                 </>
               )}
             </div>

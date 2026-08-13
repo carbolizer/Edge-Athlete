@@ -52,9 +52,13 @@ urlpatterns = [
     path('racks/<int:rack_number>/checkin/', views.rack_checkin, name='rack_checkin'),
     path('racks/<int:rack_number>/checkins/', views.rack_checkins, name='rack_checkins'),
     path('racks/<int:rack_number>/nfc-tap/', views.rack_nfc_tap, name='rack_nfc_tap'),
+    path('racks/<int:rack_number>/', views.rack_remove, name='rack_remove'),
 
     # nodes
     path('nodes/', views.nodes_list, name='nodes_list'),
+    # A sensor announces itself, the way a rack tablet already does at
+    # racks/register/. Creates it unassigned; a coach links it to a rack.
+    path('nodes/register/', views.node_register, name='node_register'),
     path('nodes/<str:node_id>/acquisition-kind/', views.node_acquisition_kind,
          name='node_acquisition_kind'),
 

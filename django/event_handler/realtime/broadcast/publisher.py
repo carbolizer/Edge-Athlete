@@ -116,7 +116,7 @@ def publish_pending_event(client):
             qos=1,
             retain=True,
         )
-        result.wait_for_publish(timeout=10)
+        result.wait_for_publish(timeout=2)
         if not result.is_published():
             raise RuntimeError("broker did not acknowledge monitoring event")
     except Exception as error:

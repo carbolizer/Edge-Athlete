@@ -41,3 +41,7 @@ yarn-error.log*
 docs/_build/
 
 .obsidian/
+
+# dev-only: run the stack on a machine that already has an edgeathlete install
+# (renames containers + moves nginx to 8082 to avoid clashing with a real stack)
+docker-compose.demo.yml

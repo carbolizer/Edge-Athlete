@@ -15,9 +15,13 @@ import secrets
 import signal
 import stat
 import struct
+import sys
 import tempfile
+import threading
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 
 
 SERVICE_UUID = "0000ffe5-0000-1000-8000-00805f9a34fb"
@@ -43,6 +47,8 @@ VERIFICATION_MOVEMENT_THRESHOLD_G = 0.05
 GENERATED_NODE_ID_PATTERN = re.compile(r"^wt901_[0-9a-f]{24}$")
 DEFAULT_MQTT_HOST = "127.0.0.1"
 DEFAULT_MQTT_PORT = 1883
+DEFAULT_BASE_URL = "http://basestation"
+DEFAULT_PULSE_INTERVAL_SECONDS = 5.0
 REP_START_MOVEMENT_G = 0.07
 REP_END_MOVEMENT_G = 0.05
 REP_MIN_DURATION_SECONDS = 0.60
@@ -108,9 +114,20 @@ def decode_frame(frame):
 
 
 class MovementEstimator:
-    """Remove stationary gravity magnitude and report diagnostic acceleration."""
+    """Remove stationary gravity magnitude and report diagnostic acceleration.
 
-    def __init__(self, calibration_samples=50, deadband_g=0.01):
+    The baseline is the average magnitude over the first `calibration_samples`.
+    If the sensor is being handled during that window the baseline lands wrong
+    (e.g. 0.89g instead of 1.0), and resting afterwards reads as ~0.12g of
+    permanent "motion" — which no rep detector can ever qualify. So once the
+    sensor is sustained at true rest (magnitude within `rest_tolerance_g` of
+    gravity for `rest_anchor_window` consecutive samples) the baseline re-anchors
+    to the observed magnitude. During a real rep the magnitude leaves ~1.0g, so
+    this never fires mid-set.
+    """
+
+    def __init__(self, calibration_samples=50, deadband_g=0.01,
+                 rest_anchor_window=25, rest_tolerance_g=0.10):
         if calibration_samples < 1:
             raise ValueError("calibration_samples must be positive")
         self._required = calibration_samples
@@ -118,6 +135,9 @@ class MovementEstimator:
         self._total = 0.0
         self._count = 0
         self._baseline = None
+        self._rest_window = []
+        self._rest_anchor_window = rest_anchor_window
+        self._rest_tolerance = rest_tolerance_g
 
     def update(self, sample):
         magnitude = math.sqrt(sum(axis * axis for axis in sample.acceleration_g))
@@ -133,6 +153,13 @@ class MovementEstimator:
         difference = abs(magnitude - self._baseline)
         if difference < 0.03:
             self._baseline = self._baseline * 0.99 + magnitude * 0.01
+        if abs(magnitude - 1.0) <= self._rest_tolerance:
+            self._rest_window.append(magnitude)
+            if len(self._rest_window) >= self._rest_anchor_window:
+                self._baseline = sum(self._rest_window) / len(self._rest_window)
+                self._rest_window.clear()
+        else:
+            self._rest_window.clear()
         return round(min(MAX_MOVEMENT_G, max(0.0, difference - self._deadband)), 4)
 
 
@@ -147,6 +174,7 @@ class ProvisionalRepDetector:
         min_duration_seconds=REP_MIN_DURATION_SECONDS,
         max_duration_seconds=REP_MAX_DURATION_SECONDS,
         refractory_seconds=REP_REFRACTORY_SECONDS,
+        sample_interval_seconds=SAMPLE_INTERVAL_SECONDS,
     ):
         self._clock = clock
         self._start_threshold = start_threshold_g
@@ -154,6 +182,7 @@ class ProvisionalRepDetector:
         self._min_duration = min_duration_seconds
         self._max_duration = max_duration_seconds
         self._refractory = refractory_seconds
+        self._sample_interval = sample_interval_seconds
         self._state = "idle"
         self._onset_samples = 0
         self._settle_samples = 0
@@ -207,8 +236,8 @@ class ProvisionalRepDetector:
             projected_acceleration = sum(
                 component * axis for component, axis in zip(linear, self._axis)
             ) * 9.80665
-            self._velocity += projected_acceleration * SAMPLE_INTERVAL_SECONDS
-            self._displacement += self._velocity * SAMPLE_INTERVAL_SECONDS
+            self._velocity += projected_acceleration * self._sample_interval
+            self._displacement += self._velocity * self._sample_interval
             self._peak_velocity = max(self._peak_velocity, abs(self._velocity))
             self._velocity_total += abs(self._velocity)
             self._velocity_samples += 1
@@ -218,7 +247,7 @@ class ProvisionalRepDetector:
         if self._peak_excursion >= REP_MIN_EXCURSION_METERS and excursion <= return_tolerance:
             self._returned = True
 
-        duration = self._sample_count * SAMPLE_INTERVAL_SECONDS
+        duration = self._sample_count * self._sample_interval
         if (
             duration >= self._min_duration
             and self._returned
@@ -280,7 +309,7 @@ class ProvisionalRepDetector:
 
     def _reset_cycle(self, refractory=False):
         self._state = "refractory" if refractory else "idle"
-        self._refractory_samples = math.ceil(self._refractory / SAMPLE_INTERVAL_SECONDS) if refractory else 0
+        self._refractory_samples = math.ceil(self._refractory / self._sample_interval) if refractory else 0
         self._onset_samples = 0
         self._settle_samples = 0
         self._axis = None
@@ -367,6 +396,32 @@ class MqttRepPublisher:
         try:
             result = self._client.publish(
                 f"edgeathlete/node/{node_id}/rep",
+                json.dumps(payload, separators=(",", ":")),
+                qos=1,
+            )
+        except Exception:
+            self._connected = False
+            return False
+        if self._return_code(result) != 0:
+            self._connected = False
+            return False
+        return True
+
+    def publish_pulse(self, node_id):
+        node_id = validate_node_id(node_id)
+        if not self._ensure_connected():
+            return False
+        payload = {
+            "node_id": node_id,
+            "event_type": "pulse",
+            "battery_level": None,
+            "signal_strength": None,
+            "firmware_version": "wt901-agent-1",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        try:
+            result = self._client.publish(
+                f"edgeathlete/node/{node_id}/pulse",
                 json.dumps(payload, separators=(",", ":")),
                 qos=1,
             )
@@ -467,6 +522,65 @@ def is_loopback_bind(host):
         return False
 
 
+def register_node(base_url, node_id):
+    """Announce this node to the base station. Best-effort and idempotent: a
+    network blip during a laptop boot must not kill the agent. The server's
+    register endpoint is open and get_or_create'd, exactly like a rack screen."""
+    node_id = validate_node_id(node_id)
+    url = base_url.rstrip("/") + "/api/nodes/register/"
+    body = json.dumps({"node_id": node_id}).encode("utf-8")
+    for attempt in range(1, 4):
+        try:
+            request = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                response.read()
+            print(f"[*] registered node {node_id} at {url}", flush=True)
+            return True
+        except (urllib.error.URLError, OSError) as error:
+            delay = 2.0 * attempt
+            print(
+                f"[!] node registration attempt {attempt} failed ({type(error).__name__}); "
+                f"retrying in {delay:.0f}s",
+                flush=True,
+            )
+            time.sleep(delay)
+    print(f"[!] giving up on node registration until the agent restarts", flush=True)
+    return False
+
+
+def capture_sample(sample, movement_g, activity_score, diagnostics, now=None):
+    """One privacy-safe decoded sample for offline detector qualification.
+
+    This is the one place the agent writes sensor data to disk. It is opt-in
+    (--capture-path), contains only decoded IMU values and derived movement —
+    never raw bytes, never athlete data, never a BLE address — and exists solely
+    so the provisional detector can be qualified against real lifts."""
+    now = time.monotonic() if now is None else now
+    return {
+        "kind": "sample",
+        "t_ms": round(now * 1000),
+        "movement_g": movement_g,
+        "activity_score": activity_score,
+        "ax": round(sample.acceleration_g[0], 4),
+        "ay": round(sample.acceleration_g[1], 4),
+        "az": round(sample.acceleration_g[2], 4),
+        "gx": round(sample.angular_velocity_dps[0], 2),
+        "gy": round(sample.angular_velocity_dps[1], 2),
+        "gz": round(sample.angular_velocity_dps[2], 2),
+        "rx": round(sample.angle_degrees[0], 2),
+        "ry": round(sample.angle_degrees[1], 2),
+        "rz": round(sample.angle_degrees[2], 2),
+        "detector": diagnostics,
+    }
+
+
+def manual_rep_marker(count, now=None):
+    now = time.monotonic() if now is None else now
+    return {"kind": "manual_rep", "n": count, "t_ms": round(now * 1000)}
+
+
 def sanitize_label(label):
     if not isinstance(label, str):
         return "WT901"
@@ -519,6 +633,7 @@ class EnrollmentAgent:
         scan_seconds=DEFAULT_SCAN_SECONDS, handle_ttl_seconds=DEFAULT_HANDLE_TTL_SECONDS,
         verification_ttl_seconds=DEFAULT_VERIFICATION_TTL_SECONDS,
         verification_timeout_seconds=5, calibration_samples=50,
+        sample_interval_seconds=SAMPLE_INTERVAL_SECONDS,
         sleep=asyncio.sleep, rep_publisher_factory=None,
     ):
         self._scanner = scanner
@@ -530,6 +645,7 @@ class EnrollmentAgent:
         self._verification_ttl = verification_ttl_seconds
         self._verification_timeout = verification_timeout_seconds
         self._calibration_samples = calibration_samples
+        self._sample_interval = sample_interval_seconds
         self._sleep = sleep
         self._handles = {}
         self._verifications = {}
@@ -604,7 +720,9 @@ class EnrollmentAgent:
                         raise RuntimeError("bound device lacks WT901 notify service")
                     decoder = WT901FrameDecoder()
                     estimator = MovementEstimator(self._calibration_samples)
-                    detector = ProvisionalRepDetector()
+                    detector = ProvisionalRepDetector(
+                        sample_interval_seconds=self._sample_interval,
+                    )
                     await client.start_notify(NOTIFY_UUID, on_notification)
                     retry_seconds = 1.0
                     last_notification = time.monotonic()
@@ -1188,59 +1306,128 @@ async def run_agent(options):
     server = await serve_status(status, options.bind, options.port, origins)
     retry_seconds = 1.0
 
-    async with server:
+    # Registration is best-effort and does NOT block the sensor. Retrying a dead
+    # base station can take ~12s; the user is at the bar and the sensor should be
+    # connected and calibrating during that window, not waiting for a server that
+    # may not be powered on yet.
+    threading.Thread(
+        target=register_node, args=(options.base_url, node_id), daemon=True,
+    ).start()
+
+    publisher = MqttRepPublisher(options.mqtt_host, options.mqtt_port)
+    capture_file = None
+    marker_counter = {"n": 0}
+    if options.capture_path:
+        capture_file = open(options.capture_path, "a", encoding="utf-8")
+
+    def write_record(record):
+        if capture_file is not None:
+            capture_file.write(json.dumps(record, separators=(",", ":")) + "\n")
+            capture_file.flush()
+
+    async def pulse_loop():
         while True:
-            notifications = asyncio.Queue(maxsize=32)
-            disconnected = asyncio.Event()
-            loop = asyncio.get_running_loop()
+            publisher.publish_pulse(node_id)
+            await asyncio.sleep(options.pulse_interval)
 
-            def on_disconnect(_client):
-                loop.call_soon_threadsafe(disconnected.set)
+    async def marker_loop():
+        while True:
+            line = await asyncio.to_thread(sys.stdin.readline)
+            if line == "":
+                return
+            if not line.strip():
+                continue
+            marker_counter["n"] += 1
+            write_record(manual_rep_marker(marker_counter["n"]))
+            print(f"[*] marked manual rep {marker_counter['n']}", flush=True)
 
-            def on_notification(_characteristic, data):
-                chunk = bytes(data)
-                if notifications.full():
-                    try:
-                        notifications.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                notifications.put_nowait(chunk)
+    pulse_task = asyncio.create_task(pulse_loop())
+    marker_task = asyncio.create_task(marker_loop()) if capture_file is not None else None
 
-            try:
-                status.state = "connecting"
-                async with BleakClient(
-                    options.address, timeout=15, disconnected_callback=on_disconnect,
-                ) as client:
-                    service = client.services.get_service(SERVICE_UUID)
-                    if service is None or service.get_characteristic(NOTIFY_UUID) is None:
-                        raise RuntimeError("configured device lacks the WT901BLE notify service")
-                    decoder = WT901FrameDecoder()
-                    estimator = MovementEstimator(options.calibration_samples)
-                    status.state = "calibrating"
-                    await client.start_notify(NOTIFY_UUID, on_notification)
-                    retry_seconds = 1.0
-                    last_notification = time.monotonic()
-                    while not disconnected.is_set():
+    try:
+        async with server:
+            while True:
+                notifications = asyncio.Queue(maxsize=32)
+                disconnected = asyncio.Event()
+                loop = asyncio.get_running_loop()
+
+                def on_disconnect(_client):
+                    loop.call_soon_threadsafe(disconnected.set)
+
+                def on_notification(_characteristic, data):
+                    chunk = bytes(data)
+                    if notifications.full():
                         try:
-                            chunk = await asyncio.wait_for(notifications.get(), timeout=1)
-                        except asyncio.TimeoutError:
-                            if time.monotonic() - last_notification > 2:
-                                raise RuntimeError("WT901BLE notification stream stalled")
-                            continue
+                            notifications.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                    notifications.put_nowait(chunk)
+
+                try:
+                    status.state = "connecting"
+                    async with BleakClient(
+                        options.address, timeout=15, disconnected_callback=on_disconnect,
+                    ) as client:
+                        service = client.services.get_service(SERVICE_UUID)
+                        if service is None or service.get_characteristic(NOTIFY_UUID) is None:
+                            raise RuntimeError("configured device lacks the WT901BLE notify service")
+                        decoder = WT901FrameDecoder()
+                        estimator = MovementEstimator(options.calibration_samples)
+                        detector = ProvisionalRepDetector(
+                            sample_interval_seconds=1.0 / options.hz,
+                        )
+                        status.state = "calibrating"
+                        await client.start_notify(NOTIFY_UUID, on_notification)
+                        retry_seconds = 1.0
                         last_notification = time.monotonic()
-                        for sample in decoder.feed(chunk):
-                            movement = estimator.update(sample)
-                            if movement is not None:
-                                status.sample(movement)
+                        while not disconnected.is_set():
+                            try:
+                                chunk = await asyncio.wait_for(notifications.get(), timeout=1)
+                            except asyncio.TimeoutError:
+                                if time.monotonic() - last_notification > 2:
+                                    raise RuntimeError("WT901BLE notification stream stalled")
+                                continue
+                            last_notification = time.monotonic()
+                            for sample in decoder.feed(chunk):
+                                movement = estimator.update(sample)
+                                if movement is not None:
+                                    activity_score = detector.activity_score(movement, sample)
+                                    rep = detector.update(
+                                        movement, sample, activity_score=activity_score,
+                                    )
+                                    status.sample(
+                                        movement, activity_score, detector.diagnostics(),
+                                    )
+                                    write_record(capture_sample(
+                                        sample, movement, activity_score,
+                                        detector.diagnostics(),
+                                    ))
+                                    if rep is not None and publisher.publish(node_id, rep):
+                                        status.accepted_rep()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    status.state = "retrying"
+                    status.movement_g = None
+                    print(f"WT901BLE unavailable ({type(error).__name__}); retrying.", flush=True)
+                    delay = retry_seconds + random.uniform(0, min(1.0, retry_seconds / 4))
+                    await asyncio.sleep(delay)
+                    retry_seconds = min(30.0, retry_seconds * 2)
+    finally:
+        pulse_task.cancel()
+        try:
+            await pulse_task
+        except asyncio.CancelledError:
+            pass
+        if marker_task is not None:
+            marker_task.cancel()
+            try:
+                await marker_task
             except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                status.state = "retrying"
-                status.movement_g = None
-                print(f"WT901BLE unavailable ({type(error).__name__}); retrying.", flush=True)
-                delay = retry_seconds + random.uniform(0, min(1.0, retry_seconds / 4))
-                await asyncio.sleep(delay)
-                retry_seconds = min(30.0, retry_seconds * 2)
+                pass
+        publisher.close()
+        if capture_file is not None:
+            capture_file.close()
 
 
 async def run_central_agent(options):
@@ -1252,6 +1439,7 @@ async def run_central_agent(options):
         state_path=options.state_path,
         scan_seconds=options.scan_seconds,
         calibration_samples=options.calibration_samples,
+        sample_interval_seconds=1.0 / options.hz,
         rep_publisher_factory=(
             (lambda: MqttRepPublisher(options.mqtt_host, options.mqtt_port))
             if options.enable_provisional_reps else None
@@ -1273,12 +1461,46 @@ async def run_central_agent(options):
                 pass
 
 
+async def run_scan(options):
+    """Find nearby WT901BLE sensors and print their BLE addresses.
+
+    BLE connections need a MAC address, which an interactive enrollment scan
+    deliberately hides behind opaque handles. For a per-rack laptop there is no
+    second machine in the loop, so discovery can show the real address once and
+    a config file can remember it forever."""
+    from bleak import BleakScanner
+
+    devices = await BleakScanner.discover(timeout=options.scan_seconds)
+    found = []
+    for device in devices:
+        if is_wt901_label(getattr(device, "name", None)):
+            found.append(device)
+    if not found:
+        print("no WT901BLE sensors discovered; is one powered on and advertising?", flush=True)
+        return
+    for device in found:
+        label = sanitize_label(device.name)
+        print(
+            f"{label}  address={device.address}  "
+            f"rssi={getattr(device, 'rssi', None)}",
+            flush=True,
+        )
+    print(f"discovered {len(found)} sensor(s); put the address in the rack config.", flush=True)
+
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--address", help="BLE address selected during physical enrollment")
     parser.add_argument("--node-id", help="logical node ID, never the BLE address")
     parser.add_argument("--socket-path", help="run central enrollment API on this Unix socket")
     parser.add_argument("--state-path", help="private central binding state file")
+    parser.add_argument("--scan", action="store_true",
+                        help="discover WT901BLE sensors and print their BLE addresses")
+    parser.add_argument("--base-url", default=os.getenv("BASE_URL", DEFAULT_BASE_URL),
+                        help="base station origin for node registration")
+    parser.add_argument("--capture-path", default=None,
+                        help="append decoded IMU samples + manual rep markers to this JSONL file")
+    parser.add_argument("--pulse-interval", type=float, default=DEFAULT_PULSE_INTERVAL_SECONDS)
     parser.add_argument("--scan-seconds", type=float, default=DEFAULT_SCAN_SECONDS)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -1287,6 +1509,10 @@ def parse_args(args=None):
         default="http://127.0.0.1,http://localhost,http://basestation,http://192.168.4.1,http://127.0.0.1:8081,http://localhost:8081",
     )
     parser.add_argument("--calibration-samples", type=int, default=50)
+    parser.add_argument("--hz", type=float, default=50.0,
+                        help="WT901 output rate in samples/second; the detector integrates "
+                             "velocity with a 1/Hz step, so this MUST match the sensor's "
+                             "configured output rate")
     parser.add_argument("--mqtt-host", default=os.getenv("MQTT_HOST", DEFAULT_MQTT_HOST))
     parser.add_argument("--mqtt-port", type=int, default=int(os.getenv("MQTT_PORT", str(DEFAULT_MQTT_PORT))))
     parser.add_argument(
@@ -1296,23 +1522,35 @@ def parse_args(args=None):
     )
     options = parser.parse_args(args)
     legacy = options.address is not None or options.node_id is not None
-    if legacy and (options.address is None or options.node_id is None):
+    if options.scan:
+        if legacy or options.socket_path or options.capture_path:
+            parser.error("--scan is standalone; it cannot be combined with address/node/socket/capture")
+    elif legacy and (options.address is None or options.node_id is None):
         parser.error("--address and --node-id must be supplied together")
-    if legacy and options.socket_path:
+    elif legacy and options.socket_path:
         parser.error("legacy BLE mode and --socket-path are separate launch modes")
-    if not legacy and not options.socket_path:
-        parser.error("supply --address/--node-id or --socket-path")
+    elif not legacy and not options.socket_path:
+        parser.error("supply --address/--node-id, --socket-path, or --scan")
     if options.state_path and not options.socket_path:
         parser.error("--state-path requires --socket-path")
     if options.scan_seconds <= 0 or options.scan_seconds > 30:
         parser.error("--scan-seconds must be greater than zero and at most 30")
+    if options.hz <= 0 or options.hz > 2000:
+        parser.error("--hz must be a positive sample rate at most 2000")
+    if options.pulse_interval <= 0 or options.pulse_interval > 3600:
+        parser.error("--pulse-interval must be positive and at most one hour")
     if options.mqtt_port <= 0 or options.mqtt_port > 65535:
         parser.error("--mqtt-port must be a valid TCP port")
+    if not options.base_url.startswith(("http://", "https://")):
+        parser.error("--base-url must start with http:// or https://")
     return options
 
 
 async def run_until_stopped(options):
-    target = run_central_agent if options.socket_path else run_agent
+    if options.scan:
+        target = run_scan
+    else:
+        target = run_central_agent if options.socket_path else run_agent
     task = asyncio.create_task(target(options))
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):

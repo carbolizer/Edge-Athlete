@@ -2,7 +2,16 @@
 
 - Date: 2026-08-05
 - Status: Accepted for logical assignment and central WT901 discovery/acquisition;
-  detector/ingestion and eight-device capacity remain proposed
+  detector/ingestion and eight-device capacity remain proposed. **Deployed topology
+  note (2026-08-12):** the first real deployment uses a per-rack-laptop WT901 agent
+  (`wt901_rack_agent.py --address ... --node-id rack_N`) instead of one central agent.
+  Each rack screen owns its own sensor and publishes reps + pulses to the base
+  station broker as an ordinary `mqtt`-kind node; this deliberately bypasses the
+  central Unix-socket health path and its 2-second freshness gate. The NFC reader
+  also lives at the rack in this topology: `ccid_rack_agent.py` exposes a loopback
+  HTTP tap endpoint (`localhost:8766`) the rack browser polls, forwarding the raw
+  `tag_id` to Django for athlete resolution; the Unix socket is kept for a
+  base-station-attached reader.
 - Related spec: `docs/_RACK_BLE_LIVE_WORKFLOW_SPEC.md`
 
 ## Context

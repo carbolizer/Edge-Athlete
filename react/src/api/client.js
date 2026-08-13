@@ -82,8 +82,12 @@ export function checkInAthlete(rackNumber, athleteId, command, capability) {
   })
 }
 
-export function consumeNfcTap(rackNumber, capability) {
-  return jsonFetch(`/racks/${rackNumber}/nfc-tap/`, controlledJson('POST', {}, capability))
+export function consumeNfcTap(rackNumber, capability, tagId = null) {
+  return jsonFetch(`/racks/${rackNumber}/nfc-tap/`, controlledJson(
+    'POST',
+    tagId ? { tag_id: tagId } : {},
+    capability,
+  ))
 }
 
 // This rack's HOT LIST: the athletes it currently "owns" (checked in here, not

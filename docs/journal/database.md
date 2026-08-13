@@ -71,9 +71,23 @@ An ESP32 + sensor unit on a rack. Identified by node_id; a coach links it to a p
 - `constraints = [models.CheckConstraint(condition=models.Q(rack_number__isnull=True) | models.Q(node_id__regex='^[A-Za-z0-9_-]{1,64}$'), name='assigned_node_id_is_mqtt_safe'), models.UniqueConstraint(fields=['rack_number'], condition=models.Q(rack_number__isnull=False), name='node_one_per_assigned_rack')]`
 <!-- schema:Node:end -->
 
-**Why it exists.**  <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** `allowed_exercises` is a **hardware fact, not a schedule** — what this
+sensor's rack is physically able to run. It **filters** what the tablet offers and is
+never enforced by rejecting a set, so a mislabelled rack cannot block an athlete
+mid-session (merge canon D9). Empty means unrestricted, so it costs a normal rack
+nothing.
+
+Two constraints carry weight. `node_one_per_assigned_rack` is what makes
+one-rack-one-sensor structural rather than a rule the API remembers to apply, and it is
+scoped to non-null rack numbers so any number of nodes can sit unassigned on the shelf.
+`assigned_node_id_is_mqtt_safe` only bites **once a node is assigned** — an id becomes
+part of an MQTT topic at that point, so it has to be topic-safe, but an unassigned node
+imported from anywhere is left alone.
+
+`acquisition_kind` lives **per node**, not as a global setting. That is what lets MQTT
+sensors and WT901 Bluetooth sensors run in the same room at the same time; a system-wide
+switch would have forced a gym to choose one transport for every rack.
 
 :::::
 
@@ -91,9 +105,19 @@ A tablet PWA standing at a rack. Its device_id is generated in the browser on fi
 | `last_seen` | date + time | set on save |
 <!-- schema:RackScreen:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** The screen and its sensor are **not linked in the database**, and an FK
+between them was rejected. The only thing tying them together is that a coach gave both
+the same `rack_number`, assigned independently.
+
+This is the single most common source of confusion in the schema, so it is worth saying
+plainly: "Rack 3" is *whatever sensor a coach called Rack 3* plus *whatever tablet a
+coach called Rack 3*. The reason to keep them apart is that they fail apart — a tablet
+can be swapped without touching the sensor, and a dead sensor can be replaced without
+re-provisioning the tablet.
+
+`device_id` is generated **in the browser** on first setup rather than issued by the
+server, so a screen has an identity before anyone has assigned it anything.
 
 :::::
 
@@ -117,9 +141,20 @@ A record that an athlete signed in ("checked in") at a rack during a session. AD
 - `indexes = [models.Index(fields=['session', 'athlete', '-checked_in_at'], name='checkin_session_athlete_idx')]`
 <!-- schema:RackCheckIn:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Add-only, newest-wins — the same shape as `AthleteReferenceMax`. A
+"current rack" column that got updated in place was rejected: it would answer today's
+question and destroy the history behind it.
+
+Because a newer row supersedes the older one, an athlete is **only ever owned by one
+rack**, and that falls out of the shape instead of being enforced. Moving racks is just
+a newer row, and they leave the old rack's list automatically. The assumption underneath
+is that nobody lifts at two racks at once.
+
+A rack's **hot list** and the room's live "lifting / resting / ready" view are both just
+questions asked of this sheet plus the set times — **nothing extra is stored** for
+either. The index matches the only lookup that is ever done: this athlete's newest row
+for this session.
 
 :::::
 
@@ -151,9 +186,20 @@ The server-owned controller lease and transient presentation state for one rack.
 | `updated_at` | date + time | set on save |
 <!-- schema:RackRuntime:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** The **server** owns the controller lease, not the tablet. One screen
+holds `controller_screen` plus a token digest and an expiry, so a second tablet opening
+the same rack cannot start issuing commands — and a tablet that dies simply lets its
+lease lapse rather than locking the rack forever.
+
+`state_version` and `controller_epoch` are monotonic counters so a client can tell a
+stale message from a current one. Broadcasts carry the revision rather than the state
+itself, which is what keeps this table off the live path.
+
+Deliberately holds **transient presentation state only** — the current phase, what is
+selected, the latest velocity read. Completed training stays in `Set` and `Rep`, and no
+raw sensor data is written here at all. Losing this table would cost the room its
+current screen, not its history.
 
 :::::
 
@@ -182,9 +228,19 @@ A durable accepted controller-command result, preventing retry duplication.
 - `constraints = [models.UniqueConstraint(fields=['runtime', 'command_id'], name='rack_command_once_per_runtime')]`
 <!-- schema:RackCommandReceipt:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Exists solely so a **retried command cannot happen twice**. The unique
+constraint on `(runtime, command_id)` is the whole mechanism: a repeat arrives, collides,
+and the stored `response_status` and `response_body` are replayed instead of the command
+running again.
+
+Storing the full response rather than just a "seen it" marker is the point — a retry
+after a dropped connection gets the *same answer as the original*, not a bare
+acknowledgement it has to interpret.
+
+This is the durable half of a pattern the rest of the system does in memory, and it is
+durable here because a command that fires twice on a rack is visible to an athlete
+mid-lift.
 
 :::::
 
@@ -209,9 +265,18 @@ A lifter. Optionally carries an NFC tag id for tap-to-identify at a rack.
 | `training_groups` | many-to-many → | → `TrainingGroup`, reverse: `athletes` |
 <!-- schema:Athlete:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Group membership is **many-to-many and current-state only**. A football
+player can also sit in a speed group, each running its own program, and which one applies
+on a given day is answered by the session — whichever of their groups is participating
+in it.
+
+Adding or removing a group **never rewrites history**, because past sessions and sets
+stay attached to whatever they were created under. That is why membership can be edited
+freely without a coach worrying about damaging last month's records.
+
+`nfc_tag_id` is optional and unique. Tap-to-identify is a convenience at the rack, not
+the identity itself — an athlete without a tag is a complete athlete.
 
 :::::
 
@@ -245,6 +310,19 @@ This is a **named subset** of athletes, **not the list of everyone**. Every regi
 person lives in `Athlete`; a group is a slice of them. Reading it as "the roster" is the
 most common first misunderstanding of this schema.
 
+
+**Decisions.** Carries **no dates and no workouts**. It is "who trains together", not a
+schedule — a group outlives many blocks and programs, and giving it a date range would
+have forced a new group every season.
+
+The staff who run it live in `TrainingGroupCoach`, not in a field here. This replaced a
+single `coach` FK, which could not express what a real weight room does every day:
+*Sarah and Mike both run Varsity.*
+
+`head_coach` remains as a convenience property for display and for anything needing one
+name. It is **not a permission check and not the only coach** — read `coaches` when the
+question is "who may run this".
+
 :::::
 
 ### `TrainingGroupCoach`
@@ -266,9 +344,22 @@ Which staff run a TrainingGroup, and in what capacity. A join table rather than 
 - `constraints = [models.UniqueConstraint(fields=['training_group', 'coach'], name='one_row_per_coach_per_group')]`
 <!-- schema:TrainingGroupCoach:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** A join table rather than a field, because a single FK can only ever name
+one person and real groups have a head coach plus assistants. The old FK's value was
+carried over as the head coach of each group it named, so nothing was lost in the
+change.
+
+⚠️ **Being listed here is a statement, not a permission.** Nothing in the API asks this
+table whether a write is allowed — `IsCoach` still means "is authenticated". The canon
+calls this **filter-not-fence**, and it is deliberate: recording who runs what is useful
+on its own, and a real boundary can be added on top later without undoing any of this.
+Do not read a row here as authorization until something actually enforces it.
+
+`PROTECT` on the coach FK matches what it replaced: deleting a user who still runs a
+group fails loudly rather than quietly orphaning the group's staff. The unique
+constraint stops the same coach being added twice and silently doubling every staff
+list.
 
 :::::
 
@@ -291,9 +382,19 @@ The catalog entry for one movement — the single official identity that every t
 | `created_at` | date + time | set on create |
 <!-- schema:Exercise:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** One official identity per movement, pointed at by every plan, benchmark
+and set, instead of each one storing the name as text. Without it, one coach typing
+"Back Squat" and another typing "back squat" would quietly split an athlete's history in
+half — and the split would be invisible until someone noticed a chart was missing
+months.
+
+`name` is globally unique, which is what makes that guarantee hold.
+
+`is_stub` marks a row auto-created from an unrecognized import that a coach has not
+confirmed yet. An import that hit an unknown movement could have been rejected outright;
+creating a stub instead means the import completes and the cleanup is a separate, calmer
+job.
 
 :::::
 
@@ -309,9 +410,15 @@ A label for grouping movements (e.g. 'lower', 'push'). Just a name for now; a co
 | `name` | text | **unique**, max 100 |
 <!-- schema:Tag:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Just a name, deliberately. There is no colour, no ordering and no
+hierarchy, because none of that is needed to filter a movement list and each one would
+have to be maintained forever.
+
+Kept **separate from `BlockCategory`** even though both are "a name you hang on
+something" — see that table for the reasoning. The short version: `Tag`'s vocabulary is
+movement labels and its `name` is globally unique, so merging the two namespaces would
+make a word like "Upper" ambiguous.
 
 :::::
 
@@ -332,9 +439,19 @@ A label for finding things in the shared block catalog — "Off-season", "Footba
 - `verbose_name_plural = 'block categories'`
 <!-- schema:BlockCategory:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Deliberately **not** the existing `Tag` model. `Tag`'s vocabulary is
+movement labels for exercises ("lower", "push") and its `name` is globally unique, so
+reusing it would put two unrelated vocabularies in one namespace and make a word like
+"Upper" mean a body region or a grade level depending on what it hangs off. **Two small
+tables are cheaper than one ambiguous one.**
+
+A block has **many** of these, not one, because real categories sit on different axes: a
+block is honestly both "Off-season" *and* "Football", and those are not competing answers
+to the same question. Forcing a single category would mean inventing combination rows
+("Off-season Football"), which multiplies badly.
+
+Filtering is any-of, so a block tagged both turns up under either.
 
 :::::
 
@@ -388,6 +505,26 @@ produces a confidently wrong mental model of the whole schema — the most likel
 misread this database.
 :::
 
+
+**Decisions.** No group and no dates — those exist only once a `TrainingProgram`
+instantiates it. That absence is the whole point of the table: it is what makes a block
+redeployable next season instead of a record of one season.
+
+⚠️ The name is intentionally the **opposite** of its old, retired meaning. "Block" used
+to be a dated phase owned by a group; here it is purely the template. Older documents
+using the old sense are wrong, not subtly different.
+
+`duration_weeks` and `cadence_days_of_week` were written long before anything read them
+— they existed to keep the door open for a calendar generator without inventing more
+structure than the day needed. `ScheduledSession` is the feature that finally reads
+them.
+
+⚠️ `updated_at` is a trap worth knowing. `auto_now` only fires when **this** row is
+saved, and most edits are to a day or a prescription row inside the block. Those are
+still edits to the template, so every write touching a descendant has to call
+`touch_block()` in `services/planning.py` — or the "recently edited" sort quietly
+lies.
+
 :::::
 
 ### `TrainingBlockWorkout`
@@ -409,9 +546,14 @@ One ordered workout inside a block's template (e.g. "Day 1: Squat").
 - `constraints = [models.UniqueConstraint(fields=['training_block', 'position'], name='block_workout_unique_position')]`
 <!-- schema:TrainingBlockWorkout:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Ordering is an explicit `position` column with a unique constraint per
+block, not an implicit sort by id or name. Days get reordered and inserted between
+others, and an id order cannot express that without rewriting rows.
+
+The unique constraint means two days cannot claim the same slot — which also makes
+**swapping two days a two-step operation**, the same trade `ScheduledSession` makes for
+dates.
 
 :::::
 
@@ -439,9 +581,17 @@ One prescription row inside a block workout — the MASTER copy a program snapsh
 - `constraints = [models.UniqueConstraint(fields=['training_block_workout', 'position'], name='block_exercise_unique_position')]`
 <!-- schema:TrainingBlockExercise:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Always a **percent** of the athlete's reference max plus a velocity zone,
+**never an absolute weight**. This is the rule the whole schema is built around: one
+prescription serves thirty athletes, and each one's bar is resolved when the row is
+read.
+
+If you go looking for a target-weight column here and cannot find one, that is the design
+working, not a gap.
+
+This is the **master copy**. A program snapshot-copies from it at instantiation rather
+than pointing at it — see `TrainingProgram` for why.
 
 :::::
 
@@ -468,7 +618,26 @@ A scheduled INSTANCE for a group, placed in time. Usually instantiated from a Tr
 
 **Why it exists.** A block placed in time for a specific group. The dated thing.
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+
+**Decisions.** Deploying **copies** every day and prescription row down into the
+program's own tables rather than pointing at the block's. That keeps the two independent:
+editing a deployed program changes only that group's plan, and editing the template
+changes only *future* deployments. Neither can reach back and rewrite the other — which
+is what stops a coach tidying a template from silently altering a season already in
+progress.
+
+`training_block` is **nullable** on purpose. A standalone one-off program with its own
+prescription and no template behind it is a first-class path, not a migration shim.
+
+⚠️ **A correction worth reading, because the wrong version was repeated in several
+places before anyone checked.** This docstring used to claim that promoting a one-off into
+a reusable template was "just adding a `TrainingBlock` row and pointing this FK at it".
+**That was false.** Setting `training_block` records where a program *came from*; it
+copies nothing. Pointing it at a fresh block would produce a block claiming to be the
+source of this program while containing zero days — and deploying that block would hand a
+group an empty plan. Real promotion is `instantiate_block()` run backwards: create the
+block, copy every day and row **up** into it, and only then point the FK. That is
+`promote_program_to_block()` in `services/planning.py`.
 
 :::::
 
@@ -491,9 +660,12 @@ The editable copy of a TrainingBlockWorkout, living on this program instance. Ed
 - `constraints = [models.UniqueConstraint(fields=['training_program', 'position'], name='program_workout_unique_position')]`
 <!-- schema:TrainingProgramWorkout:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** The editable copy of a block day. Editing it affects **only this
+program**; editing the block affects only instances deployed later.
+
+Same explicit `position` and unique constraint as its template counterpart, for the same
+reason — a copied plan has to survive being reordered.
 
 :::::
 
@@ -529,6 +701,18 @@ A coach prescribes "Back Squat 5×3 at 80%" once, for a whole group. There is no
 target-weight column anywhere in the database. The actual number on the bar is worked
 out *when the screen asks for it*, against that athlete's own current max.
 
+
+**Decisions.** The absolute target is **derived at read time** — `target_percent` ×
+the athlete's *current* reference max — and never stored here as a fixed number.
+
+That matters more than it looks. The reference max keeps moving as new session data
+arrives, so a stored target would be correct at the moment it was written and slowly
+wrong afterwards, with nothing to indicate it had drifted. Deriving costs a lookup and
+is always right.
+
+It also means prescribed weights follow an athlete **down** as well as up, which is the
+intended behaviour and the thing most people try to "fix" first.
+
 :::::
 
 ### `AthleteWorkoutExerciseOverride`
@@ -552,9 +736,19 @@ A coach-set per-athlete EXCEPTION for one prescription row — for the rare outl
 - `constraints = [models.UniqueConstraint(fields=['athlete', 'training_program_exercise'], name='athlete_override_unique_per_exercise'), models.CheckConstraint(check=models.Q(target_percent__isnull=False) | models.Q(sets__isnull=False) | models.Q(reps__isnull=False), name='athlete_override_at_least_one_field')]`
 <!-- schema:AthleteWorkoutExerciseOverride:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Overrides the **percent**, never a static weight. The derivation still
+multiplies whatever is overridden here against the athlete's current reference max, so an
+overridden athlete's bar stays dynamic instead of being frozen at a number — the one
+property the whole percent-based design exists to protect.
+
+A check constraint requires **at least one** of percent, sets or reps to be set, so an
+override row cannot exist while overriding nothing. Unique per athlete per prescription
+row, so there is never a question of which override wins.
+
+Most athletes have none of these. It is a thin escape hatch, and it was kept thin on
+purpose — a general per-athlete plan editor would have made the group prescription
+meaningless.
 
 :::::
 
@@ -579,9 +773,31 @@ One planned training slot: this program's day N, on this date. WHAT THIS IS FOR,
 - `constraints = [models.UniqueConstraint(fields=['training_program', 'date'], name='one_slot_per_program_per_day')]`
 <!-- schema:ScheduledSession:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** ⚠️ **The slot is a plan; the session is the real thing.** `session` is
+nullable and stays null until a coach actually creates that day. This separation is why
+the feature was small: no model is asked to mean two things, and a `TrainingSession`
+still only exists when someone means to run it.
+
+`SET_NULL` rather than `CASCADE` on that FK — deleting a session leaves its slot on the
+calendar as an **unrun plan**, rather than erasing the fact that training was scheduled
+at all.
+
+**`CASCADE`, not `PROTECT`, on the program day, and the first instinct was wrong.**
+`PROTECT` looked right — "don't let a day the calendar points at disappear" — but it
+protected nothing and broke something: no route deletes a program day directly, while
+`PROTECT` here made the whole **program** undeletable, because deleting it cascades to
+its days and the slots then blocked their own parent's cleanup. A slot for a day that no
+longer exists is meaningless, so it goes with it.
+
+⚠️ **Slots are frozen once generated.** Editing the block's cadence afterwards moves
+nothing that already exists — the same independence rule a deployed program follows. A
+coach wanting a new cadence deploys again.
+
+One slot per program per day stops a double-run of the generator quietly doubling a
+calendar. ⚠️ It also means moving a slot **onto** an occupied date is refused rather than
+stacking two days on one date — the intended answer, but it makes **swapping** two slots
+a two-step operation.
 
 :::::
 
@@ -617,6 +833,22 @@ share one timeslot**.
 Adding a group foreign key here would look like a tidy-up and would quietly break the
 shared-session case.
 
+
+**Decisions.** ⚠️ `started_at` is **nullable**, and that single change is what lets a
+session exist before it runs — Thursday's session, set up on Tuesday. It is filled in
+when a coach actually starts the day, which is why it is not `auto_now_add`.
+
+Because of that, **"the active session" means started and not ended**, never merely
+existing. A future session that could quietly capture check-ins is exactly the failure
+this shape prevents — structurally, rather than by remembering to guard against it.
+
+⚠️ **Never order sessions by `-started_at` without excluding nulls.** Postgres sorts
+NULLs *first* descending, so an unstarted future session comes back as the newest thing
+in the room.
+
+The session belongs to **nobody**: several groups share one, each through its own
+participation row.
+
 :::::
 
 ### `SessionParticipation`
@@ -640,7 +872,16 @@ The join between a shared session and one group's program — this is what lets 
 
 **Why it exists.** The join that lets several groups share one session — and the reason `TrainingSession` itself needs no group column.
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+
+**Decisions.** Deliberately carries **no snapshot blob**. What was actually performed
+already lives in `Set` and `Rep`, and what was prescribed gets frozen for the whole
+session by `DailyReport` at end of day. Storing a third copy here would be two write
+paths for one guarantee (merge canon D14) — and two write paths eventually disagree.
+
+`PROTECT` on the program, so a program that a session has actually run cannot be deleted
+out from under it.
+
+Unique per session per program, so a group cannot join the same session twice.
 
 :::::
 
@@ -680,7 +921,29 @@ One set an athlete performed. Created when the set starts; its summary fields (r
 
 **Why it exists.** One performed set — this is weight **(c)**, the load that was actually on the bar. It is written once, when the rack tablet submits the finished set in a single batch.
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+
+**Decisions.** **`PROTECT` on the session, not `CASCADE`.** A set is the only permanent
+record that an athlete actually did something, and deleting the session it happened in
+used to take every set and rep inside it with no warning and no way back. The delete is
+now refused while any lifting exists, which turns a silent, unrecoverable loss into an
+error message. Ending a day is `ended_at`, not a delete.
+
+`SET_NULL` on the node, going the other way: retiring a dead sensor should not take the
+training it measured with it. Those sets survive and simply forget which sensor read
+them.
+
+⚠️ **`is_coach_adjustment` is the flag most likely to produce a wrong number.** It marks
+a row a *coach* wrote to change an athlete's carried-forward working weight, not a real
+lift. It has to be a completed set — `ended_at` and `weight_lbs` — to move that weight,
+but that same shape would otherwise count as genuine work. So every read over `Set` rows
+must consciously include or exclude it: these feed `last_weight_lbs` **only**, and are
+excluded from set counts, "resting" status, analytics, `has_data`/`is_makeup`, and
+reports. Merge canon D15 has the exhaustive list. **Do not add a `Set` read without
+deciding this.**
+
+`weight_lbs` is stored here — unlike the plan, which stores only a percent — because this
+is the load that was actually on the bar. It is a fact, not a prescription, and it is what
+makes weight PRs and load-velocity analysis possible.
 
 :::::
 
@@ -706,9 +969,18 @@ One completed rep inside a set. Written only in bulk by the set-complete endpoin
 - `ordering = ['rep_number']`
 <!-- schema:Rep:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** Written **only in bulk**, by the set-complete endpoint, never one at a
+time as reps happen.
+
+This is the second big surprise in the system and it is deliberate. While an athlete is
+lifting, reps are held on the tablet in browser storage; the whole batch is saved in one
+request when the set ends. The database gets **one write per set**, not one per rep, and
+a Wi-Fi drop mid-set loses nothing — the tablet still holds everything.
+
+The cost accepted in exchange: a set that is never finished is never persisted at all.
+See {doc}`rack-tablet` for the reasoning and the failure this design accepts on
+purpose.
 
 :::::
 
@@ -792,6 +1064,27 @@ keeps one missing number from breaking a whole rack's session.
 weight for any athlete whose max was recorded at more than one rep.
 
 
+**Decisions.** **Add-only.** Every recorded reference writes a new row, and an athlete's
+current reference for a movement is simply their **newest** row for it. Old rows are
+never edited or deleted. Progression over time is graphable for free, a live session reads
+a stable snapshot, and a value entered mid-session just becomes the newest row and applies
+forward.
+
+⚠️ **This is not a lifetime personal best, and a newer lower number legitimately
+supersedes an older higher one.** It tracks what the athlete can do *now*, so a rough
+patch should pull prescribed weights back — that is the feature. Lifetime bests are a
+separate idea, already derivable from `Set` history via the `is_weight_pr` /
+`is_velocity_pr` flags. **Do not conflate the two.**
+
+`source` tells a coach-entered number from a system estimate, both living in the same
+table so you can graph how close the estimate lands to the manual value. `rep_basis`
+keeps the honest original fact — a 3-rep effort is not a 1-rep effort — and targets
+convert to a common basis when computed.
+
+`source_session` links an estimate back to the session that produced it, so a later
+re-publish can trace and supersede its own estimates **without mutating history**.
+`SET_NULL`, so the reference survives if that session is ever deleted.
+
 :::::
 
 ### `DailyReport`
@@ -815,9 +1108,27 @@ The permanent record of one finished training day — written once, never edited
 - `constraints = [models.CheckConstraint(check=models.Q(schema_version__gte=1), name='daily_report_positive_schema_version')]`
 <!-- schema:DailyReport:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** **Stored, not derived — the one deliberate exception to this codebase's
+derive-don't-store rule.** A report has to keep saying what was true on the day it was
+generated. Recomputed on demand, a coach editing next week's program — or an athlete's
+max drifting — would silently rewrite last month's history. **Immutability is the
+feature**, so the whole day is frozen into `snapshot` the moment the session ends.
+
+`snapshot` holds the entire report as JSON — roster, each athlete's sets and reps, racks
+used, room totals — so reading a report never depends on the live tables it came from.
+`schema_version` lets an older stored snapshot still be read correctly after the shape
+evolves.
+
+⚠️ **A daily report and a reference max are not the same thing**, and they are easy to
+confuse: the report freezes *a day*, the reference max tracks *a person's strength over
+time*. Ending a day writes a report **and** may add new reference-max rows — two separate
+outputs of one action.
+
+The GIN index exists because "which reports mention this athlete?" is the main way
+reports get browsed, and the answer lives inside the JSON rather than in a column. It is
+**Postgres-only**, which is fine here — the base station always runs Postgres. The query
+works without it, just slower.
 
 :::::
 
@@ -843,14 +1154,24 @@ A durable record that "something changed" — written the instant it happens; a 
 | `is_simulated` | true/false | default `False` |
 <!-- schema:MonitoringEvent:end -->
 
-**Why it exists.** <!-- your summary -->
 
-**Decisions.** <!-- what was chosen here, and what was rejected -->
+**Decisions.** A durable row written the instant something changes, with a separate
+publisher loop delivering it afterward and marking it published — rather than publishing
+to MQTT directly at the moment of the change.
+
+A fire-and-forget publish was rejected because a dropped broker connection loses the
+update outright and nothing notices. Here the row simply stays unpublished until the next
+attempt, and `publish_attempts` and `last_error` say what went wrong.
+
+Adopted from Braydon's `realtime/` layer. The broadcast carries a **revision number, not
+the state itself** — clients refetch when they hear the number moved, which keeps
+privacy-sensitive detail off the broker entirely. See {doc}`real-time`.
+
+⚠️ Its absence is a real failure mode, not a theoretical one: the wall display once sat
+on stale numbers for an entire session because `session_start` never wrote one of
+these.
 
 :::::
 
-
-
 <!-- SCHEMA SECTION END -->
-
 

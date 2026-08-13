@@ -277,6 +277,50 @@ def rack_register(request):
     return Response({"device_id": screen.device_id, "rack_number": screen.rack_number})
 
 
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def node_register(request):
+    """A sensor announces itself. Body: { node_id }.
+
+    THE HOLE THIS FILLS. Until now nothing could create an MQTT sensor row. The
+    seeder made exactly one, BLE sensors got theirs through verified enrollment, and
+    a pulse from anything else was rejected with "node is not registered" — so a
+    second simulated rack published into the void, and eight real ESP32s would have
+    had to be typed into the database by hand.
+
+    IT DELIBERATELY MIRRORS rack_register, a few lines above. A rack tablet already
+    announces itself and waits for a coach to give it a rack number; sensors were the
+    one device type without that story, and there was no reason for the asymmetry.
+
+    Registering does NOT give a sensor a rack. It creates a row with rack_number
+    empty, which shows up in the coach's list and does nothing until a coach links
+    it. That is what keeps this safe to leave open: an unknown device on the gym
+    network can make a row nobody has claimed, exactly as it can already make an
+    unclaimed rack screen.
+
+    Idempotent, because firmware will call it on every boot.
+    """
+    node_id = request.data.get("node_id")
+    # Same shape the assignment endpoint enforces, so a node_id that registers is
+    # always one that can later be assigned.
+    if not isinstance(node_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id) is None:
+        return Response({
+            "code": "invalid_node_id",
+            "detail": "node_id may contain only letters, numbers, underscores, and hyphens",
+        }, status=400)
+
+    node, created = Node.objects.get_or_create(node_id=node_id)
+    # Registering must never change an EXISTING sensor. A BLE node that was enrolled
+    # by standing at the rack must not be able to re-register itself as something
+    # else by sending one POST.
+    return Response({
+        "node_id": node.node_id,
+        "rack_number": node.rack_number,
+        "acquisition_kind": node.acquisition_kind,
+        "created": created,
+    }, status=201 if created else 200)
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def rack_racknumber(request):
@@ -300,14 +344,30 @@ def racks_unassigned(request):
 @api_view(["PATCH"])
 @permission_classes([IsActiveStaff])
 def rack_assign(request, device_id):
-    """Coach-only: give a waiting tablet its rack number. Body: { rack_number }."""
-    rack_number = request.data.get("rack_number")
-    if rack_number is None:
+    """Coach-only: give a waiting tablet its rack number, or release it.
+
+    Body: { rack_number: 3 } to assign, { rack_number: null } to release.
+
+    RELEASING IS THE FIX FOR A REAL DEADLOCK. Nothing used to clear this field, and
+    the coach's "waiting tablets" list only shows screens whose rack is empty. So a
+    tablet sent back to setup kept its old rack number, never reappeared in that
+    list, and could not be reassigned — from the coach's side it had vanished.
+
+    Clearing the browser's site data appeared to fix it, which sent people down the
+    wrong path entirely: that works only because it throws away the tablet's stored
+    identity, so it comes back as a device the server has never seen. You were not
+    repairing the tablet, you were replacing it — and silently orphaning the old row.
+    """
+    # `in` rather than `.get()`, because null is now a MEANINGFUL value and .get()
+    # cannot tell "release this tablet" from "you forgot the field".
+    if "rack_number" not in request.data:
         return Response({"error": "rack_number is required"}, status=400)
-    try:
-        rack_number = int(rack_number)
-    except (TypeError, ValueError):
-        return Response({"error": "rack_number must be an integer"}, status=400)
+    rack_number = request.data["rack_number"]
+    if rack_number is not None:
+        try:
+            rack_number = int(rack_number)
+        except (TypeError, ValueError):
+            return Response({"error": "rack_number must be an integer or null"}, status=400)
     with transaction.atomic():
         screen = RackScreen.objects.select_for_update().filter(device_id=device_id).first()
         if screen is None:
@@ -321,7 +381,77 @@ def rack_assign(request, device_id):
             }, status=409)
         screen.rack_number = rack_number
         screen.save(update_fields=["rack_number"])
+        # Tell the room. Screens refetch when told something changed, and moving a
+        # tablet between racks is about as room-visible as a change gets — this was
+        # missing, the same way starting a session was.
+        MonitoringEvent.objects.create(reason="rack_state_changed")
     return Response(RackScreenSerializer(screen).data)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsActiveStaff])
+def rack_remove(request, rack_number):
+    """Coach-only: FORCE-CLEAR a rack so a fresh screen can take it over.
+
+    This is the escape hatch for a rack that is wedged — an open set nobody can
+    finish because the screen that started it is gone, a controller lease stuck
+    in recovery_required, a tablet that was reassigned while it still held the
+    rack. The normal release (PATCH /api/racks/{device_id}/ with null) refuses
+    while a set is open; this is the deliberate "kill the rack state" lever a
+    coach pulls when the screen is physically unreachable.
+
+    WHAT IT CLEARS, AND WHAT IT DOES NOT:
+    - Ends any open set on the rack as a FALSE set (is_false_set, ended now).
+      A set nobody finished is exactly a false set — it never happened.
+    - Releases the rack's controller lease and resets the runtime to idle.
+    - Releases any RackScreen from this rack back to the waiting list.
+    - Does NOT unassign the node/sensor: the sensor is still bolted to this
+      rack, so a new screen on this rack should keep using it.
+    - Does NOT touch check-in history or completed sets.
+    """
+    with transaction.atomic():
+        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+        # End open sets as false sets. PROTECT on Set.session means we never
+        # delete; ending is the only legal way to close work, and false is the
+        # honest label for work that was started and abandoned. A set is "on this
+        # rack" when its node is assigned here — that's the physical truth, and
+        # the sensor is what ties a set to a rack.
+        open_sets = Set.objects.select_for_update().filter(
+            ended_at=None,
+            node__rack_number=rack_number,
+        )
+        for s in open_sets:
+            s.ended_at = timezone.now()
+            s.is_false_set = True
+            s.reps_completed = 0
+            s.avg_velocity = None
+            s.peak_velocity = None
+            s.save(update_fields=[
+                "ended_at", "is_false_set", "reps_completed",
+                "avg_velocity", "peak_velocity",
+            ])
+        if runtime is not None:
+            runtime.controller_screen = None
+            runtime.client_instance_id = ""
+            runtime.controller_token_digest = ""
+            runtime.controller_epoch += 1
+            runtime.lease_expires_at = None
+            runtime.phase = RackRuntime.PHASE_IDLE
+            runtime.selected_athlete = None
+            runtime.selected_exercise = None
+            runtime.current_set = None
+            runtime.rep_count = 0
+            runtime.latest_mean_velocity = None
+            runtime.latest_peak_velocity = None
+            runtime.latest_color = ""
+            runtime.phase_started_at = None
+            runtime.state_version += 1
+            runtime.save()
+            # Stale command receipts for the old controller are dead weight now.
+            runtime.command_receipts.all().delete()
+        RackScreen.objects.filter(rack_number=rack_number).update(rack_number=None)
+        MonitoringEvent.objects.create(reason="rack_state_changed")
+    return Response({"rack_number": rack_number, "cleared": True})
 
 
 @api_view(["PUT"])
@@ -1116,8 +1246,28 @@ def rack_checkins(request, rack_number):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def rack_nfc_tap(request, rack_number):
-    if request.query_params or request.data != {}:
-        return Response({"code": "invalid_nfc_request", "detail": "empty JSON body required"}, status=400)
+    """Consume one NFC tap and resolve it to an athlete in the active session.
+
+    Two ways in, one resolution path:
+    - Empty body {}: the rack's own reader agent (a Unix socket on this host).
+    - {tag_id: "..."}: the rack screen read the tap from its LOCAL reader over
+      loopback HTTP and forwarded the raw tag here. Resolution stays server-side
+      either way — the tag is matched against Athlete.nfc_tag_id and the athlete
+      must be in the active session before they're recognized.
+    """
+    if request.query_params:
+        return Response({"code": "invalid_nfc_request", "detail": "query parameters are not allowed"}, status=400)
+    tag_id = request.data.get("tag_id") if isinstance(request.data, dict) else None
+    if request.data == {}:
+        tag_id = None
+    elif set(request.data) == {"tag_id"} and isinstance(tag_id, str):
+        if nfc_agent.TAG_PATTERN.fullmatch(tag_id) is None:
+            return Response({"code": "invalid_nfc_request", "detail": "tag_id must match ^[0-9A-F]{8,32}$"}, status=400)
+    else:
+        return Response({
+            "code": "invalid_nfc_request",
+            "detail": "empty body or {tag_id} required",
+        }, status=400)
     runtime = RackRuntime.objects.select_related("controller_screen").filter(rack_number=rack_number).first()
     if runtime is None:
         return Response({"code": "rack_controller_required", "detail": "rack has no controller"}, status=409)
@@ -1127,17 +1277,19 @@ def rack_nfc_tap(request, rack_number):
     session = _active_session()
     if session is None:
         return Response({"status": "none"})
-    try:
-        tap = nfc_agent.consume(rack_number)
-    except nfc_agent.NFCAgentUnavailable:
-        response = Response({"status": "unavailable"})
-        response["Cache-Control"] = "no-store"
-        return response
-    if tap["status"] == "none":
-        response = Response({"status": "none"})
-        response["Cache-Control"] = "no-store"
-        return response
-    athlete = Athlete.objects.filter(nfc_tag_id=tap["tag_id"]).first()
+    if tag_id is None:
+        try:
+            tap = nfc_agent.consume(rack_number)
+        except nfc_agent.NFCAgentUnavailable:
+            response = Response({"status": "unavailable"})
+            response["Cache-Control"] = "no-store"
+            return response
+        if tap["status"] == "none":
+            response = Response({"status": "none"})
+            response["Cache-Control"] = "no-store"
+            return response
+        tag_id = tap["tag_id"]
+    athlete = Athlete.objects.filter(nfc_tag_id=tag_id).first()
     if athlete is None or not session.athletes.filter(id=athlete.id).exists():
         body = {"status": "unknown"}
     else:
@@ -2923,6 +3075,23 @@ def session_start(request, session_id):
 
     session.started_at = timezone.now()
     session.save(update_fields=["started_at"])
+    # Tell the room a day has begun.
+    #
+    # THIS WAS MISSING, and the symptom was completely unlike the cause: the wall
+    # display stayed on "no active session" after a coach started one, and only a
+    # manual reload fixed it. Ending a day already emitted an event, so ending
+    # worked and starting did not — which reads like the display being flaky rather
+    # than a mutation that never announced itself.
+    #
+    # Screens do not poll; they refetch when told something changed (see the
+    # invalidation decision in docs/journal/rack-tablet.md). That design is only as
+    # complete as its emitters, and it fails silently by showing correct-looking
+    # stale data. Any mutation the room can see needs one of these, in the same
+    # transaction as the change.
+    MonitoringEvent.objects.create(
+        reason="session_started",
+        is_simulated=session.is_simulated,
+    )
     return Response(TrainingSessionSerializer(session).data)
 
 
