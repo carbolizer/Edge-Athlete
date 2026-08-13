@@ -1,0 +1,20 @@
+# Dependencies for the WT901 Bluetooth sensor agent (wt901_rack_agent.py) ONLY.
+#
+# ⚠️ bleak 2.x and 3.x REQUIRE PYTHON 3.10+. Raspberry Pi OS Bullseye ships
+# Python 3.9, so nothing in this file installs there and that machine cannot run
+# the BLE agent at all. Bookworm ships 3.11 and is fine.
+#
+# That is why these are split from the NFC agent's requirements. They used to
+# share one file and one install, so this unsatisfiable pin aborted the whole
+# provisioning run on a Bullseye Pi — no Chromium, no kiosk, and no NFC reader
+# either, even though the NFC agent never imports bleak. A Bluetooth library was
+# blocking a USB card reader.
+#
+# If you need BLE on an older machine, reimage to Bookworm rather than loosening
+# the pin below. bleak 1.x does expose the BleakClient/BleakScanner calls this
+# agent uses, but the pin is deliberate and the rep detector has been qualified
+# against 3.0.2 — quietly dropping three major versions under it is not a
+# provisioning decision.
+
+bleak==3.0.2       # BLE transport (BlueZ on Linux) — needs Python >= 3.10
+paho-mqtt==1.6.1   # publishes detected reps to the base station's broker

@@ -147,13 +147,50 @@ if [ "$ROLE" = "rack" ]; then
         NODE_ID="rack_1"
     fi
 
-    # A venv keeps the hardware deps (bleak, paho-mqtt) off the system Python.
+    # A venv keeps the hardware deps off the system Python.
+    #
+    # ── WHY THE TWO AGENTS INSTALL SEPARATELY, AND WHY NEITHER IS FATAL ─────────
+    # These used to be one `pip install -r requirements.txt`, unguarded, under
+    # `set -e`. On Raspberry Pi OS Bullseye (Python 3.9) the bleak pin needs 3.10+,
+    # so pip exited non-zero and took the ENTIRE provisioning run with it: no
+    # Chromium, no kiosk launcher, no autostart — and no NFC reader either, even
+    # though that agent talks to USB through pyusb and never imports bleak.
+    #
+    # A rack screen's first job is to be a screen. Losing a sensor it may not even
+    # have attached must not cost you the browser. And the script already treats
+    # the WT901 as optional further down (the service stays disabled without a
+    # BLE_ADDRESS), so making its dependencies mandatory was inconsistent anyway.
+    #
+    # Each install now records its own outcome and only gates its own service.
+    BLE_DEPS_OK=1
+    NFC_DEPS_OK=1
+
     if [ ! -x "$AGENT_VENV/bin/python" ]; then
         apt install -y python3 python3-venv
-        python3 -m venv "$AGENT_VENV"
+        # If the venv itself cannot be built, neither agent is possible — but the
+        # kiosk still is, so record it and carry on rather than aborting.
+        python3 -m venv "$AGENT_VENV" || { BLE_DEPS_OK=0; NFC_DEPS_OK=0; }
     fi
-    "$AGENT_VENV/bin/pip" install --quiet --upgrade pip
-    "$AGENT_VENV/bin/pip" install --quiet -r "$PROJECT_DIR/scripts/hardware/requirements.txt"
+
+    if [ -x "$AGENT_VENV/bin/python" ]; then
+        PYVER="$("$AGENT_VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)"
+        # A failed pip self-upgrade (usually no route to PyPI) is not a reason to
+        # stop; the pinned installs below will report the real problem.
+        "$AGENT_VENV/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+
+        "$AGENT_VENV/bin/pip" install --quiet -r "$PROJECT_DIR/scripts/hardware/requirements-nfc.txt" \
+            || NFC_DEPS_OK=0
+        "$AGENT_VENV/bin/pip" install --quiet -r "$PROJECT_DIR/scripts/hardware/requirements-ble.txt" \
+            || BLE_DEPS_OK=0
+
+        [ "$NFC_DEPS_OK" = 1 ] || echo "[!] NFC reader dependencies failed to install — the reader will be skipped"
+        if [ "$BLE_DEPS_OK" != 1 ]; then
+            echo "[!] WT901 sensor dependencies failed to install — the BLE agent will be skipped"
+            echo "    this machine runs Python $PYVER; bleak needs 3.10 or newer."
+            echo "    Raspberry Pi OS Bullseye ships 3.9 — reimage to Bookworm for BLE."
+            echo "    everything else (kiosk, NFC, MQTT nodes) still works on this machine."
+        fi
+    fi
 
     # Machine-owned config, outside git, written once and never overwritten —
     # the same pattern as basestation.conf. BLE_ADDRESS is the part only a
@@ -197,7 +234,14 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-    if [ -n "${BLE_ADDRESS:-}" ]; then
+    # Two independent reasons not to start it: no sensor address yet, or no bleak.
+    # Starting it without either just produces a crash loop that reads like broken
+    # hardware, so say which one it is instead.
+    if [ "$BLE_DEPS_OK" != 1 ]; then
+        systemctl disable "$(basename "$AGENT_SERVICE")" >/dev/null 2>&1 || true
+        echo "    rack sensor agent NOT enabled — bleak is not installed on this machine"
+        echo "    the unit was still written, so it will start once the deps are available"
+    elif [ -n "${BLE_ADDRESS:-}" ]; then
         systemctl enable --now "$(basename "$AGENT_SERVICE")"
         echo "    rack sensor agent enabled (BLE_ADDRESS set)"
     else
@@ -269,8 +313,16 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl enable --now "$(basename "$NFC_AGENT_SERVICE")"
-    echo "    NFC reader agent enabled"
+    # Gated on ITS OWN dependencies only. pyusb has no Python floor, so this
+    # normally succeeds even where the BLE agent above could not be installed —
+    # which is the whole reason the two requirement files are separate.
+    if [ "$NFC_DEPS_OK" = 1 ]; then
+        systemctl enable --now "$(basename "$NFC_AGENT_SERVICE")"
+        echo "    NFC reader agent enabled"
+    else
+        systemctl disable "$(basename "$NFC_AGENT_SERVICE")" >/dev/null 2>&1 || true
+        echo "    NFC reader agent NOT enabled — pyusb is not installed on this machine"
+    fi
 fi
 
 echo "[2] joining the '$AP_SSID' WiFi as a client..."
