@@ -462,7 +462,7 @@ echo "[11] installing the short commands..."
 #
 # Symlinks rather than copies, so `ea-update` refreshes the commands themselves.
 mkdir -p /usr/local/bin
-for cmd in ea ea-update ea-seed ea-sim ea-sim-log ea-sim-stop ea-kiosk-exit ea-help; do
+for cmd in ea ea-update ea-seed ea-sim ea-sim-log ea-sim-stop ea-reset ea-reset-hard ea-kiosk-exit ea-help; do
     ln -sfn "$PROJECT_DIR/scripts/basestation/ea.sh" "/usr/local/bin/$cmd"
 done
 chmod +x "$PROJECT_DIR/scripts/basestation/ea.sh"

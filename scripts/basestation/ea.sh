@@ -6,6 +6,8 @@
 #   ea-sim [node_id]     start the fake rack sensor
 #   ea-sim-log           follow the simulator's decisions
 #   ea-sim-stop          stop it
+#   ea-reset             full rebuild: down, update, up (keeps the database)
+#   ea-reset-hard        same, and wipes the database too (then re-seed)
 #   ea-kiosk-exit        leave the wall display for the desktop (Ctrl+Alt+K)
 #   ea-help              the list
 #
@@ -57,6 +59,8 @@ Edge Athlete — base station commands
   ea-sim [node_id]     start the fake rack sensor          (default: rack_1)
   ea-sim-log           follow the simulator's decisions
   ea-sim-stop          stop it
+  ea-reset             full rebuild: down, update, up       (keeps database)
+  ea-reset-hard        same, but wipes the database too
   ea-kiosk-exit        leave the wall display for the desktop (Ctrl+Alt+K)
 
 The install lives at $EDGE_DIR
@@ -72,6 +76,47 @@ ea-update)
     echo "==> updating from branch '$branch' (this rebuilds — several minutes)"
     curl -fsSL "${EDGE_REPO_RAW}/${branch}/scripts/basestation/bootstrap.sh" \
         | sudo EDGE_BRANCH="$branch" bash
+    ;;
+
+ea-reset|ea-reset-hard)
+    # THE "JUST MAKE IT WORK AGAIN" COMMAND.
+    #
+    # The trap that keeps biting: `ea-update` rebuilds the images but never touches
+    # the containers ALREADY RUNNING, so stale broken code keeps running after a
+    # perfectly good rebuild. The reset tears the running stack down first, then
+    # updates, then starts fresh containers from the freshly built images.
+    #
+    # WHY THE ORDER IS LOAD-BEARING:
+    #   down first  — removes the running (possibly stale) containers
+    #   ea-update   — pulls latest code + rebuilds every image
+    #   up -d       — starts brand-new containers from those images
+    #
+    # ea-reset keeps the postgres volume (demo session, athletes, NFC tags
+    # survive). ea-reset-hard deletes the volume too — the database is rebuilt
+    # from the seeder, which does NOT assign NFC tags, so re-set Braydon's
+    # wristband afterwards.
+    branch="${1:-main}"
+    if [ "$CMD" = "ea-reset-hard" ]; then
+        echo "==> FULL reset: containers AND database volume (re-seed after)"
+        DOWN_FLAGS="-v"
+    else
+        echo "==> reset: containers only (database preserved)"
+        DOWN_FLAGS=""
+    fi
+    cd "$EDGE_DIR" || exit 1
+    sudo docker compose down $DOWN_FLAGS
+    # Same update path as ea-update: pull latest code and rebuild. The bootstrap
+    # is deliberately re-runnable — this is exactly what a first install runs.
+    echo "==> pulling latest code + rebuilding (several minutes)"
+    curl -fsSL "${EDGE_REPO_RAW}/${branch}/scripts/basestation/bootstrap.sh" \
+        | sudo EDGE_BRANCH="$branch" bash
+    sudo docker compose up -d
+    if [ "$CMD" = "ea-reset-hard" ]; then
+        echo "==> re-seeding demo data"
+        sudo docker compose --profile seed build seed
+        sudo docker compose run --rm seed
+    fi
+    echo "==> done. open http://basestation"
     ;;
 
 ea-seed)

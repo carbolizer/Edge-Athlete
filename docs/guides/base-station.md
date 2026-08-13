@@ -51,8 +51,17 @@ On the box, from any shell. No sourcing, no re-login.
 | `ea-update` | pull latest code and rebuild |
 | `ea-seed` | load the demo session, athletes and coach |
 | `ea-sim` | start the fake rack sensor |
+| `ea-reset` | tear the stack down, update, and bring it back up (database kept) |
+| `ea-reset-hard` | same, and wipe the database too (then re-seed) |
 | `ea-kiosk-exit` | leave a full-screen screen for the desktop |
 | `ea-help` | the full list |
+
+`ea-reset` is the "just make it work again" command: it removes the running
+containers (the step `ea-update` deliberately skips — a rebuilt image does not
+restart a running container), pulls latest code, and starts fresh containers
+from the freshly built images. `ea-reset-hard` adds `-v` to the compose down, so
+the postgres volume is deleted too and the demo data is re-seeded — which means
+re-assigning any NFC wristbands afterwards (the seeder does not set them).
 
 Rack screens get their own smaller set — `ea-update`, `ea-restart`, `ea-kiosk-log`.
 Same names, different device, different behaviour. See {doc}`../journal/scripts`.
