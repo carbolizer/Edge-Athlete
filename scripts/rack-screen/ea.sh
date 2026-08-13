@@ -4,6 +4,7 @@
 #
 #   ea-update [branch]   pull latest code and re-provision this screen
 #   ea-restart           restart the browser, keeping this screen's identity
+#   ea-rotate-<dir>      turn the screen (left|right|normal|inverted), now and at boot
 #   ea-kiosk-log [n]     the last n lines the launcher printed
 #   ea-help              the list
 #
@@ -47,8 +48,12 @@ Edge Athlete — screen commands (this is a SCREEN, not the base station)
 
   ea-update [branch]   pull latest code and re-provision   (default: main)
   ea-restart           restart the browser, keep the identity
+  ea-rotate-<dir>      turn the screen: left|right|normal|inverted
   ea-kiosk-log [n]     last n lines the launcher printed   (default: 40)
   ea-kiosk-exit        leave the kiosk for the desktop (Ctrl+Alt+K)
+
+ea-rotate takes effect now AND survives a reboot. left and right are both
+portrait; which one depends on how the tablet is mounted.
 
 The install lives at $EDGE_DIR
 EOF
@@ -82,6 +87,42 @@ ea-kiosk-exit)
     echo "==> leaving the kiosk"
     touch "${EDGE_KIOSK_STOP:-/tmp/edgeathlete-kiosk.stop}"
     pkill -f 'chromium.*--user-data-dir' || echo "    nothing running"
+    ;;
+
+ea-rotate|ea-rotate-*)
+    # `ea rotate-left`, `ea rotate-right`, `ea rotate-normal`, `ea rotate-inverted`.
+    # `ea-rotate left` works too — same thing, whichever you type first.
+    #
+    # Does BOTH halves, because doing one is a trap either way: rotating only the
+    # live screen looks fixed until the next reboot, and only writing the file
+    # leaves you staring at a screen that did not move wondering if it worked.
+    DIR="${CMD#ea-rotate}"; DIR="${DIR#-}"     # ea-rotate-left -> left
+    [ -n "$DIR" ] || DIR="${1:-}"              # ea-rotate left -> left
+    case "$DIR" in
+        normal|left|right|inverted) ;;
+        *)
+            echo "usage: ea rotate-left | rotate-right | rotate-normal | rotate-inverted"
+            echo
+            echo "  left and right are both PORTRAIT — which one depends on how the"
+            echo "  tablet is mounted. try one, and use the other if it is upside down."
+            exit 1
+            ;;
+    esac
+
+    # Save first, apply second. The save is what survives a reboot, and it is the
+    # half that can fail (it needs root); doing it first means a screen that turns
+    # is a screen that will still be turned tomorrow, rather than one that looks
+    # right until the next power cycle.
+    #
+    # ⚠️ The two halves run as DIFFERENT USERS on purpose. Writing to /etc needs
+    # root; talking to the display needs the desktop session's own user and its
+    # DISPLAY. Running the xrandr half under sudo would rotate root's non-existent
+    # screen and report success.
+    echo "==> saving rotation '$DIR' for the next boot"
+    sudo mkdir -p /etc/edgeathlete
+    printf 'SCREEN_ROTATE=%s\n' "$DIR" | sudo tee /etc/edgeathlete/screen.conf >/dev/null
+
+    "$(dirname "$(readlink -f "$0")")/rotate.sh" "$DIR"
     ;;
 
 ea-kiosk-log)

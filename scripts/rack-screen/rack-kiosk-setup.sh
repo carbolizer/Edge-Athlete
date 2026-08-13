@@ -51,8 +51,12 @@ esac
 #
 # `left` and `right` are both portrait — which one depends on the way the tablet
 # is mounted, so try one and flip it if the picture is upside down. Touch input is
-# remapped to match; see the rotation block in kiosk.sh for why that matters.
-SCREEN_ROTATE="${SCREEN_ROTATE:-normal}"
+# remapped to match; see rotate.sh for why that matters.
+#
+# Or just say so on the screen itself, which is easier than re-provisioning:
+#   ea rotate-left
+SCREEN_ROTATE="${SCREEN_ROTATE:-}"
+SCREEN_CONF="/etc/edgeathlete/screen.conf"
 
 AP_SSID="${AP_SSID:-EdgeAthlete}"          # base station's WiFi name (startup.sh AP_NAME)
 AP_PASSWORD="${AP_PASSWORD:-ChangeMe123!}" # base station's WiFi password
@@ -129,7 +133,7 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete Kiosk ($ROLE)
-Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk $SCREEN_ROTATE
+Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk
 X-GNOME-Autostart-enabled=true
 EOF
     fi
@@ -377,6 +381,24 @@ chmod 1777 "$KIOSK_ROOT"
 echo "[5] installing the launcher..."
 install_launcher
 
+# The device's saved orientation, read by kiosk.sh at every login and rewritten by
+# `ea rotate-left`.
+#
+# ⚠️ AN EXISTING FILE IS LEFT ALONE unless SCREEN_ROTATE was explicitly passed.
+# That is the whole reason this is a file and not a value baked into the autostart
+# line: someone who turns a screen with `ea rotate-left` must not have it silently
+# revert on the next `ea-update`. Same rule as rack-agent.conf — machine-owned
+# config, outside git, provisioning does not stomp it.
+mkdir -p /etc/edgeathlete
+if [ -n "$SCREEN_ROTATE" ]; then
+    printf 'SCREEN_ROTATE=%s\n' "$SCREEN_ROTATE" > "$SCREEN_CONF"
+    echo "    rotation set to '$SCREEN_ROTATE'"
+elif [ ! -f "$SCREEN_CONF" ]; then
+    printf 'SCREEN_ROTATE=normal\n' > "$SCREEN_CONF"
+else
+    echo "    $SCREEN_CONF already exists — left alone (change it with: ea rotate-<dir>)"
+fi
+
 echo "[5b] installing the short commands..."
 # Real executables on PATH, one symlink per name. NOT sourced from /etc/profile.d,
 # which only login shells read — that version was missing from desktop terminals,
@@ -388,7 +410,10 @@ echo "[5b] installing the short commands..."
 # Linking the wrong one here would give a rack tablet a command that installs Docker
 # and stands up a competing WiFi access point.
 mkdir -p /usr/local/bin
-for cmd in ea ea-update ea-restart ea-kiosk-log ea-kiosk-exit ea-help; do
+# ea-rotate is here as the bare name; the DIRECTION is a subcommand rather than a
+# symlink per direction, so `ea rotate-left` and `ea-rotate left` both work without
+# four more links in /usr/local/bin.
+for cmd in ea ea-update ea-restart ea-rotate ea-kiosk-log ea-kiosk-exit ea-help; do
     ln -sfn "$SCRIPT_DIR/ea.sh" "/usr/local/bin/$cmd"
 done
 chmod +x "$SCRIPT_DIR/ea.sh"

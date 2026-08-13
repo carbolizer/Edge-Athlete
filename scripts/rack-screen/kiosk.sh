@@ -88,7 +88,24 @@ MODE="${3:-kiosk}"          # kiosk | once | windowed
 # tablet, AND the base station's own three desktop launchers. Rotating for one of
 # them would turn the others sideways, so rotation is opt-in per device and never
 # assumed from the role.
-ROTATE="${4:-${EDGE_SCREEN_ROTATE:-normal}}"
+#
+# ── WHERE THE VALUE COMES FROM, IN ORDER ──────────────────────────────────────
+#   1. a 4th argument      — a one-off, for trying an orientation by hand
+#   2. /etc/edgeathlete/screen.conf — the device's SAVED answer
+#   3. EDGE_SCREEN_ROTATE  — the environment
+#   4. normal
+#
+# The saved file is what `ea rotate-left` writes, and it is deliberately NOT in
+# the autostart line: putting it there meant the answer lived in a file that
+# provisioning rewrites, so changing rotation later would silently revert on the
+# next `ea-update`. Config outside git, written once, read at every login — the
+# same shape as rack-agent.conf.
+SCREEN_CONF="${EDGE_SCREEN_CONF:-/etc/edgeathlete/screen.conf}"
+if [ -f "$SCREEN_CONF" ]; then
+    # shellcheck source=/dev/null
+    . "$SCREEN_CONF"
+fi
+ROTATE="${4:-${SCREEN_ROTATE:-${EDGE_SCREEN_ROTATE:-normal}}}"
 
 # Keep a log, but only when nobody is watching.
 #
@@ -186,35 +203,11 @@ xset s noblank  2>/dev/null || true
 #
 #     X11 only. Under Wayland (Bookworm's labwc) xrandr is not the mechanism and
 #     this quietly does nothing — rotate in the compositor's config there instead.
+#     The work itself lives in rotate.sh, because `ea rotate-left` needs exactly
+#     the same thing on a screen that is already running — and two copies of a
+#     transformation matrix would drift.
 if [ "$ROTATE" != "normal" ]; then
-    case "$ROTATE" in
-        left)     MATRIX="0 -1 1 1 0 0 0 0 1" ;;
-        right)    MATRIX="0 1 0 -1 0 1 0 0 1" ;;
-        inverted) MATRIX="-1 0 1 0 -1 1 0 0 1" ;;
-        *)        echo "[!] unknown rotation '$ROTATE' — expected normal|left|right|inverted"
-                  MATRIX="" ;;
-    esac
-
-    if [ -n "$MATRIX" ] && command -v xrandr >/dev/null 2>&1; then
-        # Whichever output is actually plugged in — the name differs per device
-        # (HDMI-1, HDMI-A-1, DSI-1 for the official touch display), so asking is
-        # the only thing that works across all of them.
-        OUTPUT="$(xrandr --query 2>/dev/null | awk '/ connected/{print $1; exit}')"
-        if [ -n "$OUTPUT" ]; then
-            echo "==> rotating $OUTPUT $ROTATE"
-            xrandr --output "$OUTPUT" --rotate "$ROTATE" 2>/dev/null || true
-            # Every pointer/touch device, not just the first: a rack tablet often
-            # shows up as several (touch, plus a stylus or a mouse emulation node).
-            if command -v xinput >/dev/null 2>&1; then
-                xinput list --name-only 2>/dev/null | while IFS= read -r DEV; do
-                    xinput set-prop "$DEV" 'Coordinate Transformation Matrix' \
-                        $MATRIX 2>/dev/null || true
-                done
-            fi
-        else
-            echo "[!] no connected display found — skipping rotation"
-        fi
-    fi
+    "$(dirname "$0")/rotate.sh" "$ROTATE" || true
 fi
 
 # The xset calls above are X11-only, and modern desktops ignore them — so on
