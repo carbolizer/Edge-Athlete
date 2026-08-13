@@ -42,21 +42,35 @@ esac
 # ── settings — the WiFi values MUST match the base station's startup.sh ─────────
 # Display rotation for THIS device: normal | left | right | inverted.
 #
-# Defaults to normal and stays that way unless you ask, because the same script
-# provisions a rack tablet bolted vertically to a rack, a coach's tablet held in
-# landscape, and (via kiosk.sh) the base station's own monitor. There is no safe
-# blanket answer, so it is per-device:
-#
-#   curl ... | sudo SCREEN_ROTATE=left bash
+# A RACK tablet is bolted to its rack in PORTRAIT, so `rack` defaults to `right`.
+# A coach's tablet is hand-held in landscape and is forced back to `normal`. The
+# default is keyed on ROLE because this one script provisions both.
 #
 # `left` and `right` are both portrait — which one depends on the way the tablet
-# is mounted, so try one and flip it if the picture is upside down. Touch input is
-# remapped to match; see rotate.sh for why that matters.
+# is mounted. If the picture is upside down, flip it with `ea rotate-left`; no
+# re-provisioning needed. Touch input is remapped to match, see rotate.sh.
 #
-# Or just say so on the screen itself, which is easier than re-provisioning:
-#   ea rotate-left
-SCREEN_ROTATE="${SCREEN_ROTATE:-}"
+# Override at install time with:  curl ... | sudo SCREEN_ROTATE=normal bash
+#
+# ── WHY RACK ONLY DEFAULTS ON A FIRST INSTALL ─────────────────────────────────
+# If /etc/edgeathlete/screen.conf already exists, a rack install leaves it alone.
+# Someone who turned a screen with `ea rotate-left` must not have it silently
+# reset to `right` by the next `ea-update` — that is the same trap the autostart
+# line had before rotation moved into this file.
+#
+# Coach and dashboard are the opposite: they FORCE normal, even over an existing
+# file. Re-provisioning a rack tablet as a coach tablet has to undo the rack's
+# portrait, or you get a sideways hand-held tablet. install_launcher() already
+# treats a role change this way — each branch deletes the other's artifact — and
+# rotation follows the same rule.
 SCREEN_CONF="/etc/edgeathlete/screen.conf"
+if [ -z "${SCREEN_ROTATE:-}" ]; then
+    if [ "$ROLE" = "rack" ]; then
+        [ -f "$SCREEN_CONF" ] || SCREEN_ROTATE="right"
+    else
+        SCREEN_ROTATE="normal"
+    fi
+fi
 
 AP_SSID="${AP_SSID:-EdgeAthlete}"          # base station's WiFi name (startup.sh AP_NAME)
 AP_PASSWORD="${AP_PASSWORD:-ChangeMe123!}" # base station's WiFi password
