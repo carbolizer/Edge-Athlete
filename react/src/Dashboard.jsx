@@ -36,6 +36,7 @@ import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import ScheduleWorkspace from "./ScheduleWorkspace.jsx";
 import { sameOriginPath } from "./workoutCatalog.js";
 import { coachRackView, measuredInsights, rackMetrics, wallDisplayState, wallMovementView } from "./dashboardView.js";
+import { ATHLETE_TABS, ROOM_TABS, tabDisabled } from "./coachTabs.js";
 import { roleIconSrc } from "./roleIcon.js";
 
 function velocity(value) {
@@ -603,7 +604,19 @@ function CoachView({ monitor, accessToken, onLogout }) {
       <button className="coach-logout" onClick={onLogout}>Log out</button>
       <button className="coach-logout" onClick={changeDeviceRole}>Change device</button>
     </div>
-  </header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{["room","workouts","schedule","reports","athlete","history","programs","notes"].map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}</nav><div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
+  </header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">
+    <span className="coach-tab-group" aria-hidden="true">Room</span>
+    {ROOM_TABS.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}
+    <span className="coach-tab-divider" aria-hidden="true" />
+    <span className="coach-tab-group" aria-hidden="true">Athlete</span>
+    {ATHLETE_TABS.map(t=>{
+      const disabled = tabDisabled(t, selectedAthleteId);
+      return <button className={(activeTab===t?"active":"")+(disabled?" needs-athlete":"")}
+        aria-selected={activeTab===t} role="tab" aria-disabled={disabled}
+        title={disabled?"Select an athlete first to see their view":undefined}
+        onClick={()=>{if(disabled&&activeTab!==t){setError("Select an athlete to open their view.");return;}chooseTab(t);}} key={t}>{t}</button>
+    })}
+  </nav><div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
 }
 
 export default function Dashboard({ mode = "wall" }) {
