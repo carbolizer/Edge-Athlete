@@ -19,10 +19,12 @@ class Command(BaseCommand):
             if not cursor.fetchone()[0]:
                 raise CommandError("Another monitoring publisher already holds the singleton lock.")
         client = mqtt.Client(client_id="edgeathlete-monitoring-publisher")
-        # Reconnect fast and keep trying: the broker comes and goes during an
-        # update, and a publisher that wedges on a dead socket stops the room
-        # updating until someone restarts it. That is exactly the failure this
-        # worker exists to survive.
+        # The broker comes and goes during an update. paho's background loop
+        # thread (loop_start) owns reconnection: it retries on this schedule and
+        # restores the session on its own. The main thread MUST NOT call
+        # connect()/reconnect() while that thread is running — two threads
+        # racing to connect with the same client id makes the broker kick one,
+        # and the ACK for any in-flight publish never lands.
         client.reconnect_delay_set(min_delay=1, max_delay=10)
         client.connect(settings.MQTT_HOST, settings.MQTT_PORT, 60)
         client.loop_start()
@@ -30,14 +32,12 @@ class Command(BaseCommand):
         try:
             while True:
                 try:
-                    # If the connection dropped (broker restart, network blip),
-                    # reconnect before doing anything. publish_pending_event
-                    # raises "connection already closed" on a dead socket, and
-                    # without this the worker would sleep-and-retry forever,
-                    # draining nothing and stalling the room.
+                    # Wait, never reconnect from here. The loop thread reconnects
+                    # on its own schedule; publishing into a dead socket is what
+                    # produced "connection already closed" forever before.
                     if not client.is_connected():
-                        self.stderr.write("Monitoring broker connection lost — reconnecting.")
-                        client.reconnect()
+                        time.sleep(1)
+                        continue
                     # Drain EVERY pending event this wake, not just one. A set
                     # produces a burst of rep-state events; draining one per
                     # 1s-idle-sleep means the dashboard lags by however many

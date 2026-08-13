@@ -426,8 +426,22 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
         createSet(body, controllerCommand({}, version), capability)
       ))
       setSetId(createdSet.id)
-    } catch {
-      setSetStartError('The set could not start. Confirm the rack sensor assignment and try again.')
+    } catch (err) {
+      const code = err?.code
+      const detail = err?.detail
+      if (code === 'rack_state_changed' || code === 'rack_controller_stale') {
+        setSetStartError('The rack changed underneath this screen. Reload to pick up the current state, then try again.')
+      } else if (code === 'rack_sensor_required') {
+        setSetStartError('The rack sensor is not ready. Confirm the sensor is linked and showing live, then try again.')
+      } else if (code === 'open_set_exists') {
+        setSetStartError('A set is already open at this rack. Finish it before starting another.')
+      } else if (code === 'node_assignment_changed') {
+        setSetStartError('The sensor was moved to another rack. Confirm the rack sensor assignment and try again.')
+      } else if (detail && typeof detail === 'string') {
+        setSetStartError(detail)
+      } else {
+        setSetStartError('The set could not start. Confirm the rack sensor assignment and try again.')
+      }
       if (controller.canControl) controller.updateState({ phase: 'idle' }).catch(() => {})
     }
   }
