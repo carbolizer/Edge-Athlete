@@ -323,6 +323,7 @@ function CoachHardware({ rack, nodes, token, onLinked }) {
   const node = rack.node;
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [linking, setLinking] = useState(false);
+  const [releasing, setReleasing] = useState(false);
   const [linkError, setLinkError] = useState("");
 
   // Offer only what this rack can actually take: sensors with no rack, or the one
@@ -333,6 +334,24 @@ function CoachHardware({ rack, nodes, token, onLinked }) {
     (n) => n.rack_number == null || n.rack_number === rack.rack_number,
   );
   const canLink = rack.screen_device_id != null;
+
+  async function releaseNode() {
+    if (!node) return;
+    setReleasing(true);
+    setLinkError("");
+    try {
+      await coachFetch(`/api/nodes/${encodeURIComponent(node.node_id)}/rack/`, {
+        token,
+        method: "PATCH",
+        body: { rack_number: null },
+      });
+      onLinked?.({ rack_number: rack.rack_number, node: null });
+    } catch (err) {
+      setLinkError(err.message || "The sensor could not be released.");
+    } finally {
+      setReleasing(false);
+    }
+  }
 
   async function linkNode() {
     if (!selectedNodeId) return;
@@ -369,6 +388,11 @@ function CoachHardware({ rack, nodes, token, onLinked }) {
           <span><strong>{node.node_id}</strong><small>{node.is_stale ? "Pulse overdue" : "Reporting"}</small></span>
           <b>{node.battery_level ?? "--"}%</b>
         </div>
+      )}
+      {node && (
+        <button type="button" onClick={releaseNode} disabled={releasing}>
+          {releasing ? "Releasing..." : "Release node"}
+        </button>
       )}
 
       <div className="coach-hardware-link">

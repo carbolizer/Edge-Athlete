@@ -1342,6 +1342,47 @@ def node_acquisition_kind(request, node_id):
     return Response(NodeSerializer(node).data)
 
 
+@api_view(["PATCH"])
+@permission_classes([IsActiveStaff])
+def node_rack(request, node_id):
+    """Release a sensor from its rack. Body: { "rack_number": null }.
+
+    This is the counterpart of releasing a tablet. PUT /api/racks/node-assignment/
+    can replace one sensor with another, but it cannot leave a rack with none —
+    and Remove screen deliberately keeps the sensor. A coach sorting a rack needs
+    a way to unassign the node without putting another one on.
+
+    Only null is accepted. Setting a rack number here is the retired generic
+    node PATCH; assignment still requires a registered screen.
+    """
+    if set(request.data) != {"rack_number"}:
+        return Response({
+            "code": "invalid_node_rack_request",
+            "detail": "exactly rack_number is required",
+        }, status=400)
+    if request.data.get("rack_number") is not None:
+        return Response({
+            "code": "node_assign_retired",
+            "detail": "assign a sensor with PUT /api/racks/node-assignment/; this route only releases",
+        }, status=400)
+
+    with transaction.atomic():
+        node = Node.objects.select_for_update().filter(node_id=node_id).first()
+        if node is None:
+            return Response({"code": "node_not_found", "detail": "node not found"}, status=404)
+        if node.rack_number is None:
+            return Response(NodeSerializer(node).data)
+        if Set.objects.select_for_update().filter(node=node, ended_at=None).exists():
+            return Response({
+                "code": "node_assignment_has_open_set",
+                "detail": "finish the open set before changing this sensor assignment",
+            }, status=409)
+        node.rack_number = None
+        node.save(update_fields=["rack_number"])
+        MonitoringEvent.objects.create(reason="node_assignment_changed")
+    return Response(NodeSerializer(node).data)
+
+
 # ─────────────────────────── athletes ───────────────────────────
 
 @api_view(["GET", "POST"])

@@ -311,6 +311,21 @@ already have a rack number. Node IDs use `[A-Za-z0-9_-]{1,64}`. Returns `200`:
 - Replacement at the same rack atomically unassigns the prior node. One non-null
   node mapping per rack is also enforced by the database.
 
+### `PATCH /api/nodes/{node_id}/rack/` — release a sensor from its rack (active staff)
+
+Exact body: `{ "rack_number": null }`. Returns the node with `rack_number` null.
+This is how a coach unassigns a sensor without putting another one on — assigning
+can only replace, and `DELETE /api/racks/{n}/` (Remove screen) deliberately
+leaves the sensor.
+
+- Extra or missing fields return `400 invalid_node_rack_request`.
+- A non-null `rack_number` returns `400 node_assign_retired` — assignment still
+  goes through `PUT /api/racks/node-assignment/` and needs a registered screen.
+- An open set on that node returns `409 node_assignment_has_open_set`.
+- Already unassigned is idempotent `200` and creates no `MonitoringEvent`.
+- A real release creates one `MonitoringEvent` with reason `node_assignment_changed`.
+- Unknown `node_id` returns `404 node_not_found`.
+
 ### `PUT /api/nodes/{node_id}/acquisition-kind/` — provision node transport (active staff)
 
 Exact body: `{ "acquisition_kind": "mqtt" }` or

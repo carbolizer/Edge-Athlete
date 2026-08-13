@@ -1569,6 +1569,74 @@ class RackNodeAssignmentTests(APITestCase):
         self.assertEqual(self.node.rack_number, 1)
         self.assertEqual(MonitoringEvent.objects.get().reason, "node_assignment_changed")
 
+    def test_staff_can_release_a_node_without_putting_another_on(self):
+        """Assigning only replaces. This is how a rack ends up with no sensor."""
+        self._authenticate_staff()
+        self.node.rack_number = 1
+        self.node.save(update_fields=["rack_number"])
+
+        response = self.client.patch(
+            f"/api/nodes/{self.node.node_id}/rack/", {"rack_number": None}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(response.data["rack_number"])
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+        self.assertEqual(MonitoringEvent.objects.get().reason, "node_assignment_changed")
+
+    def test_releasing_an_already_free_node_is_idempotent(self):
+        self._authenticate_staff()
+
+        response = self.client.patch(
+            f"/api/nodes/{self.node.node_id}/rack/", {"rack_number": None}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(self.node.rack_number)
+        self.assertEqual(MonitoringEvent.objects.count(), 0)
+
+    def test_release_is_blocked_during_an_open_set(self):
+        self._authenticate_staff()
+        self.node.rack_number = 1
+        self.node.save(update_fields=["rack_number"])
+        self._open_set(self.node)
+
+        response = self.client.patch(
+            f"/api/nodes/{self.node.node_id}/rack/", {"rack_number": None}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "node_assignment_has_open_set")
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 1)
+
+    def test_this_route_cannot_assign_a_rack_number(self):
+        self._authenticate_staff()
+
+        response = self.client.patch(
+            f"/api/nodes/{self.node.node_id}/rack/", {"rack_number": 2}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "node_assign_retired")
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_release_requires_active_staff(self):
+        self.node.rack_number = 1
+        self.node.save(update_fields=["rack_number"])
+        ordinary = User.objects.create_user(username="athlete", password="pw")
+        self.client.force_authenticate(ordinary)
+
+        response = self.client.patch(
+            f"/api/nodes/{self.node.node_id}/rack/", {"rack_number": None}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 1)
+
     def test_assignment_is_idempotent_without_another_invalidation(self):
         self._authenticate_staff()
         self.assertEqual(self._assign().status_code, 200)

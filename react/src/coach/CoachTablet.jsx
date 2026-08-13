@@ -510,6 +510,29 @@ function RoomLayout({ token, onAuthLost }) {
     }
   }
 
+  // Take a sensor off a rack without putting another one on. Assigning can only
+  // replace; Remove screen deliberately leaves the sensor. This is how a coach
+  // actually unassigns a node — including on a rack whose tablet is already gone.
+  async function releaseNode(node, rack) {
+    setBusyNode(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/nodes/${encodeURIComponent(node.node_id)}/rack/`, {
+        token,
+        method: 'PATCH',
+        body: { rack_number: null },
+      })
+      setMsg({ text: `Sensor ${node.node_id} released from rack ${rack}`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'release failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyNode(false)
+    }
+  }
+
   // Force-clear a rack so a fresh screen can take it over. This is the escape
   // hatch for a wedged rack: an open set nobody can finish because the screen
   // that started it is gone, a lease stuck in recovery_required, a tablet
@@ -621,6 +644,8 @@ function RoomLayout({ token, onAuthLost }) {
         Screens: <code>{'PATCH /api/racks/{device_id}/'}</code>
         {' · '}
         Sensors: <code>{'PUT /api/racks/node-assignment/'}</code>
+        {' · '}
+        Release sensor: <code>{'PATCH /api/nodes/{node_id}/rack/'}</code>
       </p>
 
       {loading && screens.length === 0 && nodes.length === 0 ? (
@@ -703,6 +728,18 @@ function RoomLayout({ token, onAuthLost }) {
                       title="Send this tablet back to the waiting list so it can be reassigned"
                     >
                       Release screen
+                    </button>
+                  )}
+                  {slot.node && (
+                    <button
+                      type="button"
+                      className="coach-btn coach-btn-ghost"
+                      style={{ marginTop: 6, fontSize: 12 }}
+                      disabled={busyNode}
+                      onClick={() => releaseNode(slot.node, n)}
+                      title="Unassign this sensor so the rack has no node"
+                    >
+                      Release node
                     </button>
                   )}
                   <button

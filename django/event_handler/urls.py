@@ -61,6 +61,10 @@ urlpatterns = [
     path('nodes/register/', views.node_register, name='node_register'),
     path('nodes/<str:node_id>/acquisition-kind/', views.node_acquisition_kind,
          name='node_acquisition_kind'),
+    # Release only. Assigning still goes through PUT racks/node-assignment/,
+    # which needs a screen; this is how a coach takes a sensor off a rack
+    # after Remove screen left it there.
+    path('nodes/<str:node_id>/rack/', views.node_rack, name='node_rack'),
 
     # live room picture (derived; no room-state table). ONE route for both the
     # wall display and the coach tablet — `?details=true` switches to the
