@@ -10,6 +10,10 @@ the journal page that explains *why*.
 **{doc}`database`**
 : A plain-English tour of every table and how they connect.
 
+**{doc}`versioning`**
+: What our version numbers mean, when each part moves, and what `1.0.0` would
+  require. Short.
+
 **{doc}`spec`**
 : The original specification, kept verbatim while it is rewritten. Governing rules and
   constraints up top; the historical Phase 1–18 build prompts below them.
@@ -20,6 +24,7 @@ the journal page that explains *why*.
 
 message-contract
 database
+versioning
 spec
 ```
 
