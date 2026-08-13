@@ -605,10 +605,8 @@ function CoachView({ monitor, accessToken, onLogout }) {
       <button className="coach-logout" onClick={changeDeviceRole}>Change device</button>
     </div>
   </header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">
-    <span className="coach-tab-group" aria-hidden="true">Room</span>
     {ROOM_TABS.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}
     <span className="coach-tab-divider" aria-hidden="true" />
-    <span className="coach-tab-group" aria-hidden="true">Athlete</span>
     {ATHLETE_TABS.map(t=>{
       const disabled = tabDisabled(t, selectedAthleteId);
       return <button className={(activeTab===t?"active":"")+(disabled?" needs-athlete":"")}

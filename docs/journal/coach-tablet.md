@@ -115,7 +115,7 @@ schedule, reports) with per-athlete ones (athlete, history, programs, notes).
 Those two kinds are not peers: a per-athlete view is meaningless until a coach
 picks an athlete, and a flat row gave them equal weight with no hint of that.
 
-**What we chose.** Two groups with a divider and a small group label. Per-athlete
+**What we chose.** Two groups separated by a divider. Per-athlete
 tabs are **dimmed until an athlete is selected** — clicking one before that shows
 "Select an athlete to open their view." The room group is always live. The logic
 is pure and tested in `react/src/coachTabs.js` (`tabDisabled`, `tabGroup`).

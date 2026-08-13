@@ -20,6 +20,15 @@ describe("generated report presentation", () => {
     expect(reportValue(0, " reps")).toBe("0 reps");
   });
 
+  it("rounds measurements to two decimal places without decorating whole numbers", () => {
+    expect(reportValue(0.7166666666666667, " m/s")).toBe("0.72 m/s");
+    expect(reportValue(0.85714, " m/s")).toBe("0.86 m/s");
+    expect(reportValue(225, " lbs")).toBe("225 lbs");
+    expect(reportValue(700, " ms")).toBe("700 ms");
+    expect(reportValue(1.5)).toBe("1.5");
+    expect(reportValue("not a number", " x")).toBe("not a number x");
+  });
+
   it("orders effective prescriptions and supports the report athlete envelope", () => {
     const athlete = { effective_prescriptions: [{ position: 2, exercise: "Press" }, { position: 1, exercise: "Squat" }] };
     expect(orderedReportPrescriptions(athlete).map((item) => item.exercise)).toEqual(["Squat", "Press"]);

@@ -11,7 +11,11 @@ export function unfinishedRackNumbers(body) {
 }
 
 export function reportValue(value, suffix = "") {
-  return value === null || value === undefined ? "--" : `${value}${suffix}`;
+  if (value === null || value === undefined) return "--";
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${Number(value.toFixed(2))}${suffix}`;
+  }
+  return `${value}${suffix}`;
 }
 
 export function orderedReportPrescriptions(athlete) {
