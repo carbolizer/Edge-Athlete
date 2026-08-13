@@ -16,6 +16,7 @@ import {
   setCoachToken,
   shortId,
 } from './api.js'
+import { getRackState } from '../api/client.js'
 import './CoachTablet.css'
 
 /** Demo room size — slots are UI numbers, not a DB model. */
@@ -521,7 +522,51 @@ function RoomLayout({ token, onAuthLost }) {
   // assigned on purpose. What a coach is actually doing is taking the SCREEN off
   // it, so the label says that.
   async function removeScreen(rack) {
+    // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
+    // Reps are held in the TABLET's buffer and only sent as one batch when the
+    // set finishes. Force-clearing ends any open set as a false set with its
+    // counts zeroed, so pressing this mid-set throws away everything the athlete
+    // has done in that set — silently, with nothing left to say reps existed.
+    //
+    // The server does track the COUNT live: the tablet pushes rep_count on every
+    // rep. So we can at least tell a coach what they are about to destroy. Asked
+    // at click time rather than read from render state, because this is a
+    // destructive decision and a number from thirty seconds ago is not good
+    // enough to base it on.
+    //
+    // ⚠️ THE COUNT IS A FLOOR, NOT AN EXACT NUMBER, which is why the text says
+    // "at least". Each rep's push is fire-and-forget (the tablet swallows the
+    // error so a blip never interrupts a lift), so a tablet that has lost contact
+    // keeps buffering reps the server never hears about. The stored count then
+    // UNDER-reports — the dangerous direction. `controller_active` false while
+    // the phase is live is the tell, and the message says so.
+    let live = null
+    try {
+      live = await getRackState(rack)
+    } catch {
+      // Can't reach it — fall through to the generic warning rather than
+      // blocking a coach from clearing a rack that may be wedged precisely
+      // because something is unreachable.
+    }
+
+    const midSet = live && ['active', 'countdown', 'recovery_required'].includes(live.phase)
+    const reps = live?.rep_count ?? 0
+    const who = live?.selected_athlete?.name
+    let warning = ''
+    if (midSet && reps > 0) {
+      warning =
+        `⚠️ Rack ${rack} is MID-SET${who ? ` — ${who}` : ''}.\n\n` +
+        `At least ${reps} rep${reps === 1 ? '' : 's'} are recorded on the tablet and ` +
+        `have NOT been saved. Removing the screen discards them permanently.\n\n` +
+        (live.controller_active === false
+          ? `The tablet has stopped reporting, so there may be more than ${reps}.\n\n`
+          : `Finishing the set on the tablet saves them.\n\n`)
+    } else if (midSet) {
+      warning = `⚠️ Rack ${rack} has a set open${who ? ` — ${who}` : ''}. It will be ended as a false set.\n\n`
+    }
+
     if (!window.confirm(
+      warning +
       `Remove the screen from rack ${rack}? It goes back to the waiting list and ` +
       `can be reassigned. This also ends any open set as a false set and resets ` +
       `the controller. The sensor stays on the rack. Do it?`,
