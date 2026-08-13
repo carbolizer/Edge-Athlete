@@ -71,7 +71,7 @@ describe("RoomLayout renders", () => {
   it("shows the rack slots and the release-all control", () => {
     const html = render();
     expect(html).toContain("Rack slots");
-    expect(html).toContain("Release all racks");
+    expect(html).toContain("Release all screens");
   });
 
   it("renders a slot for every rack in the room", () => {

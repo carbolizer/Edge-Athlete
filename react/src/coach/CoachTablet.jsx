@@ -625,7 +625,7 @@ export function RoomLayout({ token, onAuthLost }) {
     )
     if (bluetooth.length > 0) {
       window.alert(
-        `Cannot release all racks: Bluetooth sensors are linked on ` +
+        `Cannot release all screens: Bluetooth sensors are linked on ` +
         `rack${bluetooth.length === 1 ? '' : 's'} ${bluetooth.join(', ')}.\n\n` +
         `Unlink those sensors first. Re-linking a Bluetooth sensor has to be done ` +
         `standing at the rack, so it is not something to trigger in bulk.`,
@@ -666,10 +666,10 @@ export function RoomLayout({ token, onAuthLost }) {
       const result = await coachFetch('/api/racks/release-all/', { token, method: 'POST' })
       setScreenBySlot({})
       const cleared = result?.cleared ?? []
-      setMsg({ text: `Released ${cleared.length} rack${cleared.length === 1 ? '' : 's'} — every screen is back in the waiting list`, kind: 'ok' })
+      setMsg({ text: `Released ${cleared.length} screen${cleared.length === 1 ? '' : 's'} — all back in the waiting list`, kind: 'ok' })
       await load({ clearMessage: false })
     } catch (err) {
-      const text = err.message || 'release all failed'
+      const text = err.message || 'release all screens failed'
       if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
       else setMsg({ text, kind: 'err' })
     } finally {
@@ -758,9 +758,12 @@ export function RoomLayout({ token, onAuthLost }) {
       <hr className="coach-divider" />
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
         <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 700 }}>Rack slots</h3>
-        {/* The end-of-session reset. Top right because it acts on the whole grid
-            below it, not on any one slot — and separated from the per-rack
-            buttons so it is never the one you hit by accident. */}
+        {/* The end-of-session reset. "Release all screens", matching the per-slot
+            "Release screen" — it is the same action, applied to every rack at
+            once, and calling it "racks" implied it removed something a rack
+            keeps. Top right because it acts on the whole grid below it rather
+            than any one slot, and away from the per-rack buttons so it is never
+            the one you hit by accident. */}
         <button
           type="button"
           className="coach-btn coach-btn-ghost"
@@ -769,7 +772,7 @@ export function RoomLayout({ token, onAuthLost }) {
           onClick={releaseAllRacks}
           title="Send EVERY screen back to the waiting list and to its setup screen. Ends any open sets as false. Sensors stay on their racks."
         >
-          Release all racks
+          Release all screens
         </button>
       </div>
       <p className="coach-hint" style={{ marginBottom: 8 }}>
