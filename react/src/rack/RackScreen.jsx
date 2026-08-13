@@ -274,12 +274,36 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
 
   // When an athlete checks in, fetch their day view; default the "up now" movement
   // to the server's suggested current (first not-complete), else the first movement.
+  //
+  // ⚠️ KEYED ON THE ATHLETE'S ID, NOT THE OBJECT. This must fire when a DIFFERENT
+  // ATHLETE arrives, and never merely because a new object describing the same
+  // athlete did. The effect above rebuilds `selectedAthlete` from every snapshot,
+  // and when that athlete is not in `roster` it falls back to constructing a fresh
+  // object literal — a new identity on each snapshot, for the same person.
+  //
+  // With the object as the dependency that produced a loop you could not escape:
+  //
+  //   tap a different movement -> pushed to the server -> new snapshot
+  //     -> the effect above builds a NEW athlete object
+  //     -> this effect re-runs, thinking the lifter changed
+  //     -> it resets the movement to the server's suggested current_exercise_id
+  //     -> the sync effect below sees local != snapshot and pushes THAT back
+  //     -> new snapshot -> round again
+  //
+  // On screen: the selection flickers to the new movement and snaps back, forever,
+  // so the switch never takes. It only bit when the athlete was missing from the
+  // roster — an NFC/makeup lifter, or a roster fetch that failed at mount — which
+  // is why it looked intermittent.
+  //
+  // Keying on the id also stops `weightOverrides` being wiped on every snapshot,
+  // which was silently discarding on-the-fly weights entered at the rack.
+  const selectedAthleteId = selectedAthlete?.athlete_id ?? null
   useEffect(() => {
     setWeightOverrides({})   // a new athlete brings their own prescriptions
-    if (!selectedAthlete) { setProgress(null); setSelectedExerciseId(null); return }
+    if (selectedAthleteId == null) { setProgress(null); setSelectedExerciseId(null); return }
     let cancelled = false
     setProgressLoading(true)
-    getAthleteProgress(selectedAthlete.athlete_id)
+    getAthleteProgress(selectedAthleteId)
       .then((d) => {
         if (cancelled) return
         setProgress(d)
@@ -288,7 +312,7 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
       .catch(() => { if (!cancelled) setProgress({ movements: [] }) })
       .finally(() => { if (!cancelled) setProgressLoading(false) })
     return () => { cancelled = true }
-  }, [selectedAthlete])
+  }, [selectedAthleteId])
 
   useEffect(() => {
     if (phase !== 'idle' || selectedExerciseId == null || !controller.canControl) return
