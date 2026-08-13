@@ -52,6 +52,29 @@ export default function RackNodeSetup({ rackNumber, onReady, onObserve }) {
     setError('')
     try {
       const [allNodes, assignment] = await Promise.all([getNodes(), getRackNumber(deviceId)])
+
+      // RELEASED: this screen is assigned to no rack at all. Back to the waiting
+      // list, which is the whole point of a coach pressing Remove screen.
+      //
+      // This has to be checked BEFORE the mismatch branch below, because the two
+      // look identical to a `!==` test and want opposite outcomes. Released used
+      // to fall through to that branch, and since the force-clear deliberately
+      // LEAVES THE SENSOR on the rack, `assignedNodeForRack` still found a node —
+      // so the tablet flipped to the read-only observer view for a rack it no
+      // longer belonged to, and sat there cycling. A coach releasing a screen got
+      // a screen that looked broken instead of one waiting to be reassigned.
+      //
+      // Clearing rack_number matters as much as navigating: Home() reads it on
+      // every cold boot and would send the tablet straight back to /rack/N.
+      if (assignment.rack_number == null) {
+        localStorage.removeItem('rack_number')
+        navigate('/rack/setup')
+        return
+      }
+
+      // MISMATCH: still assigned, but to a DIFFERENT rack — someone else's screen
+      // owns this one. Observing is the right answer here; there is a live rack in
+      // front of you that this tablet may not drive.
       if (assignment.rack_number !== rackNumber) {
         const assigned = assignedNodeForRack(allNodes, rackNumber)
         if (assigned) onObserve(assigned)

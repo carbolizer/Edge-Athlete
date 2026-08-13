@@ -516,11 +516,15 @@ function RoomLayout({ token, onAuthLost }) {
   // set is open — this is the deliberate "kill it" lever. It ends open sets as
   // false sets, resets the runtime to idle, and sends any screen back to the
   // waiting list, but leaves the sensor on the rack (a new screen should reuse it).
-  async function removeRack(rack) {
+  // Called "Remove screen" in the UI, not "Remove rack". Nothing here removes a
+  // rack — the rack is a physical thing bolted to the floor, and its sensor stays
+  // assigned on purpose. What a coach is actually doing is taking the SCREEN off
+  // it, so the label says that.
+  async function removeScreen(rack) {
     if (!window.confirm(
-      `Remove rack ${rack}? This ends any open set as a false set, clears the ` +
-      `controller, and releases its screen back to the waiting list. The sensor stays ` +
-      `on the rack. Do it?`,
+      `Remove the screen from rack ${rack}? It goes back to the waiting list and ` +
+      `can be reassigned. This also ends any open set as a false set and resets ` +
+      `the controller. The sensor stays on the rack. Do it?`,
     )) return
     setBusyScreen(true)
     setMsg({ text: '', kind: '' })
@@ -531,7 +535,7 @@ function RoomLayout({ token, onAuthLost }) {
         delete next[rack]
         return next
       })
-      setMsg({ text: `Rack ${rack} cleared — a new screen can take it`, kind: 'ok' })
+      setMsg({ text: `Screen removed from rack ${rack} — it is back in the waiting list`, kind: 'ok' })
       await load({ clearMessage: false })
     } catch (err) {
       const text = err.message || 'remove failed'
@@ -661,10 +665,10 @@ function RoomLayout({ token, onAuthLost }) {
                     className="coach-btn coach-btn-ghost"
                     style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
                     disabled={busyScreen}
-                    onClick={() => removeRack(n)}
-                    title="Force-clear this rack: end open sets as false, reset the controller, release its screen. For a rack whose screen is gone."
+                    onClick={() => removeScreen(n)}
+                    title="Send this rack's screen back to the waiting list: ends open sets as false, resets the controller, leaves the sensor on the rack."
                   >
-                    Remove rack
+                    Remove screen
                   </button>
                 </>
               )}
