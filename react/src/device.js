@@ -73,3 +73,37 @@ export function getDeviceId() {
   if (!id) { id = crypto.randomUUID(); localStorage.setItem('device_id', id) }
   return id
 }
+
+// This TAB's id. Stable for the life of the tab, different in every other tab.
+//
+// ── WHY THIS IS NOT getDeviceId() ────────────────────────────────────────────
+// MQTT requires every client id connected to a broker to be UNIQUE, and it does
+// not fail politely when they collide: a second connection arriving with an id
+// that is already in use causes the broker to DISCONNECT THE FIRST ONE. Both
+// sides then reconnect, evict each other again, and keep doing that.
+//
+// getDeviceId() lives in localStorage, which is shared by every tab on the same
+// browser profile and origin. So two tabs of the same screen hand the broker the
+// same id and knock each other offline in a loop. Opening a second tab to check
+// something is a completely normal thing to do, which is what makes this worth
+// guarding against rather than documenting.
+//
+// ── WHY sessionStorage, AND NOT JUST A RANDOM VALUE ──────────────────────────
+// sessionStorage is scoped per TAB, which is the uniqueness we need. The part
+// that matters just as much is that it SURVIVES A RELOAD of that tab — a plain
+// random id regenerated on every load would be unique, but it would also
+// abandon the broker-side session on every refresh.
+//
+// That session is the whole point of the feature: mqtt/client.js connects with
+// clean:false so the broker holds QoS 1 messages for us while we are away, and
+// it files them under this exact id. A new id per reload means reconnecting as
+// a stranger with an empty queue, silently undoing what the persistent session
+// was added to do.
+//
+// The three kiosk launchers each run in their own Chromium profile, so they were
+// never at risk from this. Hand-opened tabs are.
+export function getTabId() {
+  let id = sessionStorage.getItem('tab_id')
+  if (!id) { id = crypto.randomUUID().slice(0, 8); sessionStorage.setItem('tab_id', id) }
+  return id
+}
