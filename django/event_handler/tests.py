@@ -1377,6 +1377,66 @@ class RackReleaseAllTests(APITestCase):
         self.assertIn(res.status_code, (401, 403))
 
 
+class RackClearBluetoothGuardTests(APITestCase):
+    """A rack holding a WT901 cannot be cleared until the sensor is unlinked.
+
+    Not because clearing would corrupt anything — it never touches the node — but
+    because re-linking an unlinked WT901 requires verified BLE enrollment,
+    physically at the rack. A coach clearing racks from across the gym cannot
+    undo it from where they are standing.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="ble-guard-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.ble = Node.objects.create(
+            node_id="wt901-guard", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+        self.mqtt = Node.objects.create(node_id="mqtt-guard", rack_number=2)
+        self.screen1 = RackScreen.objects.create(device_id="ble-s1", rack_number=1)
+        self.screen2 = RackScreen.objects.create(device_id="ble-s2", rack_number=2)
+
+    def test_single_rack_clear_is_refused_while_a_bluetooth_sensor_is_linked(self):
+        res = self.client.delete("/api/racks/1/")
+
+        self.assertEqual(res.status_code, 409, res.data)
+        self.assertEqual(res.data["code"], "rack_has_bluetooth_sensor")
+        self.screen1.refresh_from_db()
+        self.assertEqual(self.screen1.rack_number, 1, "nothing was cleared")
+
+    def test_an_mqtt_rack_is_unaffected(self):
+        # The guard is about Bluetooth specifically — a Wi-Fi sensor can be
+        # re-linked from the coach console, so there is nothing to protect.
+        res = self.client.delete("/api/racks/2/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen2.refresh_from_db()
+        self.assertIsNone(self.screen2.rack_number)
+
+    def test_release_all_is_refused_and_names_the_blocked_racks(self):
+        res = self.client.post("/api/racks/release-all/")
+
+        self.assertEqual(res.status_code, 409, res.data)
+        self.assertEqual(res.data["code"], "rack_has_bluetooth_sensor")
+        self.assertEqual(res.data["rack_numbers"], [1])
+        # NOTHING was released, including the racks that were not blocked — a
+        # partial sweep would be worse than none.
+        self.screen2.refresh_from_db()
+        self.assertEqual(self.screen2.rack_number, 2)
+
+    def test_clearing_works_once_the_sensor_is_unlinked(self):
+        self.assertEqual(self.client.delete("/api/racks/1/node/").status_code, 200)
+
+        res = self.client.delete("/api/racks/1/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen1.refresh_from_db()
+        self.assertIsNone(self.screen1.rack_number)
+
+
 class RackNodeUnlinkTests(APITestCase):
     """Taking a sensor OFF a rack.
 

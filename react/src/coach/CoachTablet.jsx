@@ -532,6 +532,19 @@ function RoomLayout({ token, onAuthLost }) {
       return
     }
 
+    const bluetooth = RACK_SLOTS.filter(
+      (n) => occupancyBySlot[n]?.node?.acquisition_kind === 'wt901_ble',
+    )
+    if (bluetooth.length > 0) {
+      window.alert(
+        `Cannot release all racks: Bluetooth sensors are linked on ` +
+        `rack${bluetooth.length === 1 ? '' : 's'} ${bluetooth.join(', ')}.\n\n` +
+        `Unlink those sensors first. Re-linking a Bluetooth sensor has to be done ` +
+        `standing at the rack, so it is not something to trigger in bulk.`,
+      )
+      return
+    }
+
     const states = await Promise.all(occupied.map(
       (n) => getRackState(n).then((s) => [n, s]).catch(() => [n, null]),
     ))
@@ -594,6 +607,22 @@ function RoomLayout({ token, onAuthLost }) {
     // keeps buffering reps the server never hears about. The stored count then
     // UNDER-reports — the dangerous direction. `controller_active` false while
     // the phase is live is the tell, and the message says so.
+    // ⚠️ A Bluetooth sensor blocks this outright, and the block is deliberate.
+    // Re-linking an unlinked WT901 needs verified BLE enrollment — physically at
+    // the rack, moving the sensor to prove which one it is. A coach clearing
+    // racks from across the gym cannot undo it from where they are standing, so
+    // this asks them to unlink on purpose rather than discover it after.
+    if (occupancyBySlot[rack]?.node?.acquisition_kind === 'wt901_ble') {
+      window.alert(
+        `Rack ${rack} has a Bluetooth sensor linked ` +
+        `(${occupancyBySlot[rack].node.node_id}).\n\n` +
+        `Unlink the sensor first, then release the screen.\n\n` +
+        `Re-linking a Bluetooth sensor has to be done standing at the rack, so ` +
+        `this is not something to trigger by accident from here.`,
+      )
+      return
+    }
+
     let live = null
     try {
       live = await getRackState(rack)

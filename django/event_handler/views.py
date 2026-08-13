@@ -411,6 +411,13 @@ def rack_remove(request, rack_number):
       rack, so a new screen on this rack should keep using it.
     - Does NOT touch check-in history or completed sets.
     """
+    if _bluetooth_rack_numbers([rack_number]):
+        return Response({
+            "code": "rack_has_bluetooth_sensor",
+            "detail": "unlink the Bluetooth sensor before clearing this rack",
+            "rack_numbers": [rack_number],
+        }, status=409)
+
     with transaction.atomic():
         _force_clear_rack(rack_number)
     # AFTER the commit, not inside it: a tablet that acts on this must not arrive
@@ -437,6 +444,14 @@ def racks_release_all(request):
     Sensors stay on their racks, exactly as with a single clear — the hardware
     has not moved, only the screens are being sent back to the waiting list.
     """
+    blocked = _bluetooth_rack_numbers()
+    if blocked:
+        return Response({
+            "code": "rack_has_bluetooth_sensor",
+            "detail": "unlink the Bluetooth sensors on these racks before releasing them",
+            "rack_numbers": blocked,
+        }, status=409)
+
     with transaction.atomic():
         # Only racks with something to clear: a runtime, or a screen sitting on
         # one. Empty slots are skipped rather than having a runtime invented.
@@ -454,6 +469,29 @@ def racks_release_all(request):
     # accepts "all" precisely so a sweep does not need eight messages.
     publish_enter_setup("all")
     return Response({"cleared": rack_numbers})
+
+
+def _bluetooth_rack_numbers(rack_numbers=None):
+    """Racks holding a WT901 Bluetooth sensor.
+
+    ⚠️ WHY CLEARING THESE IS BLOCKED RATHER THAN WARNED ABOUT. Unlinking a WT901
+    is not symmetrical with linking one: an unassigned WT901 can only be
+    re-selected through verified BLE enrollment (see wt901_verification_required
+    in _assign_node_to_rack), which means physically standing at the rack and
+    moving the sensor to prove which one it is. A coach clearing racks from the
+    other side of the gym cannot undo it from where they are standing.
+
+    Clearing does not touch the node, so nothing is corrupted either way — this
+    is about not handing someone a cross-the-room walk they did not ask for,
+    mid-session, from a button whose other uses are instant and reversible.
+    """
+    query = Node.objects.filter(
+        acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        rack_number__isnull=False,
+    )
+    if rack_numbers is not None:
+        query = query.filter(rack_number__in=rack_numbers)
+    return sorted(query.values_list("rack_number", flat=True))
 
 
 def _force_clear_rack(rack_number, *, emit_event=True):
