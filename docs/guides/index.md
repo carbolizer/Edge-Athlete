@@ -3,9 +3,13 @@
 How to do a specific thing.
 
 **{doc}`base-station`**
-: Install one from a clean Linux machine, then run it day to day — starting and
-  stopping, seeding demo data, running a demo without hardware, and where the config
-  lives.
+: The server: install one from a clean Linux machine, then run it day to day —
+  starting and stopping, seeding demo data, running a demo without hardware, and
+  where the config lives.
+
+**{doc}`rack-screen`**
+: The tablet at each rack: install it, turn it portrait, and wire up its Bluetooth
+  sensor and NFC wristband reader. A screen is a client — it runs no server.
 
 **{doc}`migrations`**
 : Change the database without breaking a running gym, and roll back when it goes wrong.
@@ -18,6 +22,7 @@ How to do a specific thing.
 :hidden:
 
 base-station
+rack-screen
 migrations
 importing-spreadsheets
 ```
