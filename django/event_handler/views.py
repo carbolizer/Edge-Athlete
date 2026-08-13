@@ -1423,7 +1423,7 @@ def prescriptions_view(request):
     return Response({
         "code": "endpoint_retired",
         "detail": ("Per-athlete plans have been replaced by group plans. Build a "
-                   "template at POST /api/workout-programs/, deploy it with "
+                   "template at POST /api/training-blocks/, deploy it with "
                    "POST /api/training-programs/, and put athletes in the group "
                    "with POST /api/training-groups/{id}/athletes/."),
     }, status=410)
@@ -2362,9 +2362,8 @@ def report_pdf_view(request, report_id):
 
 # ─────────────────────────── planning: TrainingGroups, templates, plans ───────────────────────────
 #
-# Route names here match what the coach front end already calls, even where our
-# model names differ (its "workout-programs" are our reusable TrainingBlocks).
-# Bending the URLs to the existing client is deliberate — canon §3.3.
+# Route names match the models they serve (P9). A TrainingBlock is
+# /training-blocks/, a day inside one is /training-blocks/{id}/workouts/.
 
 @api_view(["GET", "POST"])
 @permission_classes([IsCoach])

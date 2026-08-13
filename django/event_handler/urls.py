@@ -87,10 +87,8 @@ urlpatterns = [
     path('sessions/<int:session_id>/', views.session_detail, name='session_detail'),
 
     # planning — TrainingGroups, reusable templates, and templates deployed for a TrainingGroup.
-    # Route names follow what the coach front end already calls: its
-    # "workout-programs" are our reusable TrainingBlocks, and its "workouts" are
-    # the days inside one. We bend the URLs to the existing client rather than
-    # reshaping its code (canon §3.3).
+    # Route names match the models (P9): training-blocks, training-programs,
+    # training-groups. A "workout" here is one day inside a block.
     path('training-groups/', views.training_groups_view, name='training_groups'),
     path('training-groups/<int:group_id>/athletes/', views.training_group_athletes_view,
          name='training_group_athletes'),
