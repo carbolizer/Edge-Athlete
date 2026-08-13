@@ -12,7 +12,8 @@ How to do a specific thing.
   sensor and NFC wristband reader. A screen is a client — it runs no server.
 
 **{doc}`migrations`**
-: Change the database without breaking a running gym, and roll back when it goes wrong.
+: Changing the database: the handful of commands, and the traps in the cases that
+  are not just "add a field".
 
 **{doc}`importing-spreadsheets`**
 : Written for coaches: how to shape a sheet so it imports cleanly.

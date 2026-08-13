@@ -1,155 +1,138 @@
 <!--
-this guide — how to change the database safely in this repo.
-Written as a handoff so schema changes aren't blocked on any one person. If you
-are about to touch django/event_handler/models.py, read this first.
+this guide — changing the database, on one screen.
+
+It used to be a 155-line playbook that opened with a wall of caveats about type
+changes and index cascades. All still true, all still here, but folded into
+dropdowns: 90% of migrations are "add a field", and that person should not have to
+scroll past the 10% case to find the two commands they need. Same rule as the base
+station guide — if you add to this file, add inside a dropdown.
 -->
 
-# Migration Playbook
+# Changing the database
 
 :::{note}
-Changing the schema safely. For what the schema means and the rules that govern it,
-see {doc}`../journal/database`.
+The commands. For what the schema means and the rules behind it, see
+{doc}`../journal/database`.
 :::
 
+**Django owns the schema.** You edit `django/event_handler/models.py`, Django works
+out what changed, and writes a numbered migration file. You never write SQL, and
+you never edit the database by hand — if the models and the migrations disagree,
+the models are the intent and the migrations are the record.
 
-Django migrations are how every schema change (new table, new column, changed
-column) gets applied to the database. This repo runs Django in Docker, which adds
-one non-obvious step. Read the **first section** before your first migration — it's
-the thing most likely to trip you up.
+## The commands
 
----
+Everything runs inside the `django` container, so every command is prefixed
+`docker exec edgeathlete-django python manage.py`. Shortened to `manage.py` below.
 
-## ⚠️ The one gotcha: the container bakes the code
+| To do this | Run |
+|---|---|
+| **Generate** a migration after editing models | `manage.py makemigrations event_handler` |
+| **Apply** it | `manage.py migrate event_handler` |
+| **See** what is applied | `manage.py showmigrations event_handler` |
+| **Rewind** to a migration (undoes everything after it) | `manage.py migrate event_handler 0004_tag_exercise` |
+| **Check** models and migrations agree | `manage.py makemigrations event_handler --check --dry-run` |
+| **Wipe and rebuild** the dev database | `docker compose down -v && docker compose up -d --build django` |
+| **Same, on a base station** | `ea-reset-hard` |
 
-The `django` service has **no source-code volume mount** — its Dockerfile *copies*
-the code in at build time. Two consequences:
+`--check --dry-run` printing **"No changes detected"** is the one to remember. It
+means the models and the migration files agree, which is the whole contract.
 
-1. **Editing a file on your machine does not change the running container** until
-   you either rebuild the image or copy the file in. (During dev you can copy a
-   file in fast: `docker cp <hostpath> edgeathlete-django:/backend_container/<same path>`.)
-2. **A migration file that `makemigrations` generates is written *inside the
-   container*, not on your machine.** If you don't copy it back to the repo, it
-   vanishes the next time the image rebuilds — and any later migration that
-   depends on it breaks the whole migration graph. This has already bitten us once.
+There are no separate "down" files. Each migration reverses itself, so you rewind
+by naming the migration you want to *land on*.
 
-**So every time you generate a migration, copy it back to the repo and commit it.**
+:::{danger}
+**A migration you generate is written INSIDE the container, and the container bakes
+the code.** The `django` service copies the source in at build time — there is no
+volume mount — so a new migration file does not exist on your machine until you
+copy it out, and it vanishes on the next rebuild. Any later migration that depends
+on it then breaks the whole graph. This has already happened once.
 
 ```bash
-# after makemigrations, find the new file name inside the container, then:
 docker cp edgeathlete-django:/backend_container/event_handler/migrations/<NNNN_name>.py \
           django/event_handler/migrations/<NNNN_name>.py
-git add django/event_handler/migrations/<NNNN_name>.py
 ```
 
----
+Commit it **with** the model change, never after.
+:::
 
-## The everyday case: add a model, or add a field
+## The everyday case
 
-This is 90% of migrations and it's easy.
+:::{dropdown} Add a model, or add a field — 90% of migrations
 
-1. Edit `django/event_handler/models.py`. Give any new model/file a WHY comment.
-2. Sync + generate + apply:
+1. Edit `django/event_handler/models.py`. Give any new model a WHY comment.
+2. Copy it in, generate, apply:
    ```bash
    docker cp django/event_handler/models.py edgeathlete-django:/backend_container/event_handler/models.py
    docker exec edgeathlete-django python manage.py makemigrations event_handler
    docker exec edgeathlete-django python manage.py migrate event_handler
    ```
-3. **Copy the new migration file back to the repo** (see the gotcha above) and commit it with the model change.
-4. Sanity check — this must print "No changes detected":
-   ```bash
-   docker exec edgeathlete-django python manage.py makemigrations event_handler --check --dry-run
-   ```
+3. Copy the migration back out (see the warning above) and commit both together.
+4. Confirm `makemigrations --check --dry-run` says "No changes detected".
 
 **Adding a non-null field to a table that already has rows?** Django will ask for a
-default. Give one (`default=...`), or add the field as `null=True` first and
-backfill — otherwise the migration can't fill existing rows.
+default. Give one, or add it as `null=True` and backfill — otherwise there is
+nothing to put in the existing rows.
+:::
 
----
+:::{dropdown} Rewinding, and when a migration will not reverse
 
-## Rolling back
+*Schema* changes reverse automatically — adding or dropping a table or column is
+mechanical.
 
-There are **no separate "down" files** — each migration reverses itself. Roll back
-by migrating to the migration you want to *land on*; Django undoes everything after
-it.
+A *data* migration only reverses if you wrote the reverse yourself. Always pass
+both directions: `migrations.RunPython(forward, reverse)`. If a step genuinely
+cannot be undone, pass `migrations.RunPython.noop` and say why in a comment, so the
+next person knows it was a decision rather than an oversight.
+:::
 
-```bash
-# undo everything after 0004 (i.e. unapply 0005):
-docker exec edgeathlete-django python manage.py migrate event_handler 0004_tag_exercise
-# see what's applied
-docker exec edgeathlete-django python manage.py showmigrations event_handler
-```
+## The hard cases
 
-**Reversibility rule:** *schema* changes (add/drop table or column) reverse
-automatically. A *data* migration (`RunPython`, e.g. backfilling rows) only
-reverses if you wrote its reverse function. Always pass both directions:
-`migrations.RunPython(forward, reverse)`. If a data step truly can't be reversed,
-pass `migrations.RunPython.noop` for the reverse and say so in a comment.
+:::{dropdown} Changing a column's type (text → foreign key)
 
----
+You cannot flip a `CharField` to a `ForeignKey` — the old text cannot be cast to a
+link, so the data would be dropped. `0005_link_models_to_exercise_catalog.py` is
+the worked example; read it alongside this.
 
-## The hard case: changing a column's type (e.g. text → foreign key)
+1. Make the old column nullable, so the reverse can re-add it cleanly.
+2. Add the new FK column, nullable.
+3. `RunPython` to backfill — copy each old value across, `get_or_create` the target
+   rows. Write the reverse too.
+4. Drop the old column.
+5. `RenameField` the temp column into the real name.
+6. `AlterField` it to non-null, now that every row is filled.
 
-You can't just flip a `CharField` to a `ForeignKey` — the old text can't be cast to
-a link, so data would be lost. The safe recipe (this is exactly what
-`0005_link_models_to_exercise_catalog.py` does — read it as the worked example):
+**Watch the indexes.** If the column is part of an index, dropping it
+cascade-drops the index out from under Django's migration state, and a later
+auto-generated "rename index" migration fails because the index is already gone.
+`RemoveIndex` before the drop, `AddIndex` after the column is in final form, and
+give the index an explicit `name=` in `Meta` so Django never tries to rename it
+again.
 
-1. **Make the old column nullable** first (`AlterField ... null=True`) so the reverse
-   can re-add it cleanly later.
-2. **Add a temporary new column** (the FK), nullable.
-3. **`RunPython` to backfill** — copy each old value into the new column, creating
-   the target rows as needed (`get_or_create`). Write the reverse too (copy the
-   name back).
-4. **Drop the old column.**
-5. **Rename the temp column** into the real name (`RenameField`).
-6. **Make the new column non-null** (`AlterField`) now that every row is filled.
+**Hand-write this kind of migration.** `makemigrations` guesses, and a guess at a
+multi-step data-preserving conversion is not something to find out about later.
+:::
 
-**Watch the indexes.** If the changed column is part of a DB index, dropping the
-column *cascade-drops the index* out from under Django's migration state, and a
-later auto-generated "rename index" migration will fail because the index no longer
-exists. Handle it explicitly in the same migration: `RemoveIndex` the old one
-*before* dropping the column, and `AddIndex` the new one *after* the column is in
-final form. Give the index an **explicit `name=`** in the model's `Meta` so Django
-never tries to auto-rename it again.
+:::{dropdown} Testing a non-trivial migration both ways
 
-**Hand-write this kind of migration** rather than trusting `makemigrations` to
-guess a multi-step, data-preserving conversion — then test it both ways (below).
-
----
-
-## Always test a non-trivial migration both directions
-
-On a database that has real (seeded) rows:
+On a database with real (seeded) rows, not an empty one:
 
 ```bash
-# forward is implicit on boot; to test the round trip:
 docker exec edgeathlete-django python manage.py migrate event_handler <previous>   # reverse
-#   -> verify the data came back the way it should (raw SQL is fine here)
 docker exec edgeathlete-django python manage.py migrate event_handler              # forward again
-#   -> verify the new shape is restored
 ```
 
-If reverse errors or loses data, the migration isn't done yet.
+Check the data came back correctly after the reverse, and that the new shape is
+restored after the second forward. If reverse errors or loses rows, the migration
+is not finished.
+:::
 
----
+:::{dropdown} Before you merge
 
-## Before you merge — checklist
-
-- [ ] Migration file(s) copied back into `django/event_handler/migrations/` and committed *with* the model change.
-- [ ] `makemigrations --check --dry-run` prints "No changes detected" (model and migrations agree).
-- [ ] `migrate` applies cleanly **from scratch** (test with a wiped DB: `docker compose down -v && docker compose up -d --build django`).
-- [ ] Data migrations have a working reverse (or an explicit noop + comment).
-- [ ] For a type change: tested forward → reverse → forward on seeded data with no loss.
-- [ ] `manage.py check` is clean; the test suite passes.
-
----
-
-## Nuking and rebuilding the dev database
-
-When the dev DB gets into a weird state, the fastest clean reset (destroys all dev
-data — you'll re-seed):
-
-```bash
-docker compose down -v                       # wipe the postgres volume
-docker compose up -d --build django          # fresh DB, migrations run on boot
-docker exec edgeathlete-django python manage.py seed_active_session --reset
-```
+- [ ] Migration file(s) copied into `django/event_handler/migrations/` and committed **with** the model change
+- [ ] `makemigrations --check --dry-run` prints "No changes detected"
+- [ ] `migrate` applies cleanly **from scratch** on a wiped database
+- [ ] Data migrations have a working reverse, or an explicit noop and a comment
+- [ ] A type change was tested forward → reverse → forward on seeded data, with no loss
+- [ ] `manage.py check` is clean and the test suite passes
+:::
