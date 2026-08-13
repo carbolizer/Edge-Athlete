@@ -25,8 +25,15 @@ class Command(BaseCommand):
         try:
             while True:
                 try:
-                    published = publish_pending_event(client)
-                    if not published:
+                    # Drain EVERY pending event this wake, not just one. A set
+                    # produces a burst of rep-state events; draining one per
+                    # 1s-idle-sleep means the dashboard lags by however many
+                    # events queued behind the last one it saw. When there is
+                    # nothing left, sleep and wait for the next burst.
+                    drained_any = False
+                    while publish_pending_event(client):
+                        drained_any = True
+                    if not drained_any:
                         time.sleep(1)
                 except Exception as error:
                     self.stderr.write(f"Monitoring publish failed: {error}")
