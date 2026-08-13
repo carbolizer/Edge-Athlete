@@ -332,6 +332,18 @@ if ! nmcli connection up "EdgeAthlete-client" 2>/dev/null; then
       || echo "[!] couldn't join '$AP_SSID' right now (is the base station powered on?) — NetworkManager will keep retrying"
 fi
 nmcli connection modify "EdgeAthlete-client" connection.autoconnect yes 2>/dev/null || true
+# ⚠️ PRIORITY, not just autoconnect. Every NetworkManager connection defaults to
+# priority 0, so "autoconnect yes" only means "this is eligible" — it does not mean
+# "prefer this". A tablet that has ever joined a home or campus network has that
+# saved too, equally eligible, and NetworkManager will cheerfully pick it instead.
+# The screen then boots, looks connected, and cannot reach the base station at all.
+#
+# 100 is far above the default, so EdgeAthlete wins whenever it is in range.
+#
+# The other networks are deliberately LEFT ENABLED as a fallback. Disabling them
+# would guarantee the right network in the gym and strand the tablet anywhere else
+# — including on the bench where you need to ssh in and fix it.
+nmcli connection modify "EdgeAthlete-client" connection.autoconnect-priority 100 2>/dev/null || true
 
 echo "[3] enabling boot-to-desktop with autologin..."
 if command -v raspi-config >/dev/null 2>&1; then
