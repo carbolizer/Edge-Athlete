@@ -388,6 +388,72 @@ def rack_assign(request, device_id):
     return Response(RackScreenSerializer(screen).data)
 
 
+@api_view(["DELETE"])
+@permission_classes([IsActiveStaff])
+def rack_remove(request, rack_number):
+    """Coach-only: FORCE-CLEAR a rack so a fresh screen can take it over.
+
+    This is the escape hatch for a rack that is wedged — an open set nobody can
+    finish because the screen that started it is gone, a controller lease stuck
+    in recovery_required, a tablet that was reassigned while it still held the
+    rack. The normal release (PATCH /api/racks/{device_id}/ with null) refuses
+    while a set is open; this is the deliberate "kill the rack state" lever a
+    coach pulls when the screen is physically unreachable.
+
+    WHAT IT CLEARS, AND WHAT IT DOES NOT:
+    - Ends any open set on the rack as a FALSE set (is_false_set, ended now).
+      A set nobody finished is exactly a false set — it never happened.
+    - Releases the rack's controller lease and resets the runtime to idle.
+    - Releases any RackScreen from this rack back to the waiting list.
+    - Does NOT unassign the node/sensor: the sensor is still bolted to this
+      rack, so a new screen on this rack should keep using it.
+    - Does NOT touch check-in history or completed sets.
+    """
+    with transaction.atomic():
+        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+        # End open sets as false sets. PROTECT on Set.session means we never
+        # delete; ending is the only legal way to close work, and false is the
+        # honest label for work that was started and abandoned. A set is "on this
+        # rack" when its node is assigned here — that's the physical truth, and
+        # the sensor is what ties a set to a rack.
+        open_sets = Set.objects.select_for_update().filter(
+            ended_at=None,
+            node__rack_number=rack_number,
+        )
+        for s in open_sets:
+            s.ended_at = timezone.now()
+            s.is_false_set = True
+            s.reps_completed = 0
+            s.avg_velocity = None
+            s.peak_velocity = None
+            s.save(update_fields=[
+                "ended_at", "is_false_set", "reps_completed",
+                "avg_velocity", "peak_velocity",
+            ])
+        if runtime is not None:
+            runtime.controller_screen = None
+            runtime.client_instance_id = ""
+            runtime.controller_token_digest = ""
+            runtime.controller_epoch += 1
+            runtime.lease_expires_at = None
+            runtime.phase = RackRuntime.PHASE_IDLE
+            runtime.selected_athlete = None
+            runtime.selected_exercise = None
+            runtime.current_set = None
+            runtime.rep_count = 0
+            runtime.latest_mean_velocity = None
+            runtime.latest_peak_velocity = None
+            runtime.latest_color = ""
+            runtime.phase_started_at = None
+            runtime.state_version += 1
+            runtime.save()
+            # Stale command receipts for the old controller are dead weight now.
+            runtime.command_receipts.all().delete()
+        RackScreen.objects.filter(rack_number=rack_number).update(rack_number=None)
+        MonitoringEvent.objects.create(reason="rack_state_changed")
+    return Response({"rack_number": rack_number, "cleared": True})
+
+
 @api_view(["PUT"])
 @permission_classes([IsActiveStaff])
 def rack_node_assignment(request):

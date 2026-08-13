@@ -1125,6 +1125,82 @@ class RackScreenReleaseTests(APITestCase):
         self.assertEqual(self.screen.rack_number, 3)
 
 
+class RackRemoveTests(APITestCase):
+    """The coach's escape hatch for a wedged rack: force-clear it so a fresh
+    screen can take it over, even when an unreachable screen left an open set.
+
+    The normal release refuses while a set is open. This is the deliberate
+    "kill the rack state" lever for the case where nobody can finish that set
+    because the screen is physically gone.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="remove-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.node = Node.objects.create(node_id="n-a", rack_number=1)
+        self.screen = RackScreen.objects.create(device_id="screen-a", rack_number=1)
+
+    def _acquire(self):
+        return self.client.post("/api/racks/1/controller/acquire/", {
+            "device_id": "screen-a",
+            "client_instance_id": "tab-a",
+            "controller_token": controller_token(),
+        }, format="json")
+
+    def test_clears_a_wedged_rack_with_an_open_set(self):
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Stuck Lifter")
+        exercise = Exercise.objects.create(name="Squat")
+        stuck = Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=self.node,
+            set_number=1, ended_at=None,
+        )
+        self._acquire()
+        runtime = RackRuntime.objects.get(rack_number=1)
+        runtime.phase = RackRuntime.PHASE_RECOVERY_REQUIRED
+        runtime.current_set = stuck
+        runtime.selected_athlete = athlete
+        runtime.save()
+
+        res = self.client.delete("/api/racks/1/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data["cleared"])
+
+        stuck.refresh_from_db()
+        self.assertIsNotNone(stuck.ended_at, "the stuck open set must be closed")
+        self.assertTrue(stuck.is_false_set, "an abandoned set is a false set")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.selected_athlete)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.lease_expires_at)
+
+        self.screen.refresh_from_db()
+        self.assertIsNone(self.screen.rack_number, "the wedged screen goes back to the waiting list")
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 1, "the sensor stays on the rack for a new screen")
+
+    def test_requires_staff(self):
+        ordinary = User.objects.create_user(username="athlete", password="pw")
+        self.client.force_authenticate(ordinary)
+        res = self.client.delete("/api/racks/1/")
+        self.assertEqual(res.status_code, 403)
+
+    def test_removing_an_empty_rack_is_clean_and_idempotent(self):
+        res1 = self.client.delete("/api/racks/1/")
+        res2 = self.client.delete("/api/racks/1/")
+        self.assertEqual(res1.status_code, 200, res1.data)
+        self.assertEqual(res2.status_code, 200, res2.data)
+        self.assertEqual(RackRuntime.objects.filter(rack_number=1).count(), 0)
+        self.screen.refresh_from_db()
+        self.assertIsNone(self.screen.rack_number)
+
+
 class NodeRegistrationTests(APITestCase):
     """A sensor announcing itself — the MQTT counterpart of racks/register/.
 

@@ -509,6 +509,39 @@ function RoomLayout({ token, onAuthLost }) {
     }
   }
 
+  // Force-clear a rack so a fresh screen can take it over. This is the escape
+  // hatch for a wedged rack: an open set nobody can finish because the screen
+  // that started it is gone, a lease stuck in recovery_required, a tablet
+  // reassigned while it still held the rack. The normal Release refuses while a
+  // set is open — this is the deliberate "kill it" lever. It ends open sets as
+  // false sets, resets the runtime to idle, and sends any screen back to the
+  // waiting list, but leaves the sensor on the rack (a new screen should reuse it).
+  async function removeRack(rack) {
+    if (!window.confirm(
+      `Remove rack ${rack}? This ends any open set as a false set, clears the ` +
+      `controller, and releases its screen back to the waiting list. The sensor stays ` +
+      `on the rack. Do it?`,
+    )) return
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${rack}/`, { token, method: 'DELETE' })
+      setScreenBySlot((prev) => {
+        const next = { ...prev }
+        delete next[rack]
+        return next
+      })
+      setMsg({ text: `Rack ${rack} cleared — a new screen can take it`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'remove failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
   const screenOptions = screens.map((s) => ({ key: s.device_id, ...s }))
   // Offer sensors this rack can actually take: unassigned, or already on the chosen
   // rack. One owned by a different rack is left out rather than shown and refused.
@@ -623,6 +656,16 @@ function RoomLayout({ token, onAuthLost }) {
                       Release screen
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="coach-btn coach-btn-ghost"
+                    style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
+                    disabled={busyScreen}
+                    onClick={() => removeRack(n)}
+                    title="Force-clear this rack: end open sets as false, reset the controller, release its screen. For a rack whose screen is gone."
+                  >
+                    Remove rack
+                  </button>
                 </>
               )}
             </div>

@@ -205,6 +205,22 @@ Each session athlete's current status + when it started, so the rack's rest/chec
 - **The tablet turns `since` into a live timer** (ticks locally every second; the endpoint is polled, not the clock).
 - `rack_number` = the athlete's newest check-in rack (or `null`). No active session → `{ "session_id": null, "athletes": [] }`.
 
+### `DELETE /api/racks/{rack_number}/` — force-clear a wedged rack (coach)
+
+The escape hatch for a rack whose screen is physically gone: ends any open set on
+the rack as a **false set**, resets the rack runtime to idle (controller lease
+released, receipts dropped), and sends its `RackScreen` back to the waiting list.
+The sensor/node stays on the rack — a fresh screen on the same rack reuses it.
+Returns `200`:
+
+```json5
+{ "rack_number": 1, "cleared": true }
+```
+
+The normal release (`PATCH /api/racks/{device_id}/` with `{ "rack_number": null }`)
+refuses while a set is open; this is the deliberate "kill the rack state" lever a
+coach pulls when nobody can finish that set because the screen is unreachable.
+
 ### `POST /api/racks/{rack_number}/checkin/` — record an athlete signing in at a rack (open)
 Body: `{ "athlete": 4 }`. Writes an append-only `RackCheckIn`, making THIS rack the athlete's current one for the session (newest-wins). Returns `201`:
 ```json5
