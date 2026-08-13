@@ -70,6 +70,30 @@ def publish_coach_state(payload: dict) -> None:
     _publish("edgeathlete/coach/state", payload)
 
 
+def publish_enter_setup(target) -> None:
+    """Tell tablets to go back to the setup screen.
+
+    `target` is "all", a rack NUMBER, or a screen's device id — the listener in
+    App.jsx checks all three, so one command shape covers "this rack", "this
+    tablet" and "the whole room".
+
+    ⚠️ THE RECEIVING HALF HAS EXISTED SINCE THE RACK SCREEN WAS BUILT and nothing
+    ever sent this. RackCommandListener has been subscribed to
+    edgeathlete/rack/command from boot, on every tablet, waiting for a message no
+    code published. This is that message.
+
+    It matters because a released screen has no other way to find out. The server
+    clears its rack_number, but the tablet is sitting in a live screen it has no
+    reason to re-check — so it kept showing a rack it no longer owned until
+    somebody walked over and reloaded it.
+
+    Fire-and-forget, like every other broadcast here: a tablet that is off or off
+    the network misses it and picks the change up the next time it asks the server
+    who it belongs to. This is the fast path, not the only one.
+    """
+    _publish("edgeathlete/rack/command", {"type": "enter_setup", "target": target})
+
+
 def publish_wifi_change(new_password: str) -> None:
     """Warn every connected screen that the Wi-Fi password is about to change,
     and hand it the new one so it can show it after it drops off the network.

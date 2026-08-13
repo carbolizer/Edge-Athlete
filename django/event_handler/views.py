@@ -61,7 +61,9 @@ from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerial
                           TrainingBlockExerciseSerializer, TrainingProgramSerializer,
                           BlockCategorySerializer, TrainingGroupCoachSerializer,
                           ScheduledSessionSerializer)
-from .realtime.broadcast.publisher import publish_rack_state, publish_dashboard_state
+from .realtime.broadcast.publisher import (
+    publish_rack_state, publish_dashboard_state, publish_enter_setup,
+)
 from .services.active_session import active_session, open_sessions
 from .services.athlete_analytics import athlete_analytics
 from .services.room_state import room_state_snapshot
@@ -410,54 +412,111 @@ def rack_remove(request, rack_number):
     - Does NOT touch check-in history or completed sets.
     """
     with transaction.atomic():
-        runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
-        # End open sets as false sets. PROTECT on Set.session means we never
-        # delete; ending is the only legal way to close work, and false is the
-        # honest label for work that was started and abandoned. A set is "on this
-        # rack" when its node is assigned here — that's the physical truth, and
-        # the sensor is what ties a set to a rack.
-        open_sets = Set.objects.select_for_update().filter(
-            ended_at=None,
-            node__rack_number=rack_number,
-        )
-        for s in open_sets:
-            s.ended_at = timezone.now()
-            s.is_false_set = True
-            s.reps_completed = 0
-            s.avg_velocity = None
-            s.peak_velocity = None
-            s.save(update_fields=[
-                "ended_at", "is_false_set", "reps_completed",
-                "avg_velocity", "peak_velocity",
-            ])
-        if runtime is not None:
-            runtime.controller_screen = None
-            runtime.client_instance_id = ""
-            runtime.controller_token_digest = ""
-            runtime.controller_epoch += 1
-            runtime.lease_expires_at = None
-            runtime.phase = RackRuntime.PHASE_IDLE
-            runtime.selected_athlete = None
-            runtime.selected_exercise = None
-            runtime.current_set = None
-            runtime.rep_count = 0
-            runtime.latest_mean_velocity = None
-            runtime.latest_peak_velocity = None
-            runtime.latest_color = ""
-            runtime.phase_started_at = None
-            runtime.state_version += 1
-            runtime.save()
-            # Stale command receipts for the old controller are dead weight now.
-            runtime.command_receipts.all().delete()
-        RackScreen.objects.filter(rack_number=rack_number).update(rack_number=None)
-        MonitoringEvent.objects.create(reason="rack_state_changed")
+        _force_clear_rack(rack_number)
+    # AFTER the commit, not inside it: a tablet that acts on this must not arrive
+    # at a server that has not finished clearing. Fire-and-forget, so a screen
+    # that is off simply learns the same thing next time it asks who it belongs to.
+    publish_enter_setup(rack_number)
     return Response({"rack_number": rack_number, "cleared": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsActiveStaff])
+def racks_release_all(request):
+    """Coach-only: force-clear EVERY rack in one go — the end-of-session reset.
+
+    Doing this rack by rack is the same click eight times, and the racks a coach
+    most wants cleared are exactly the ones whose screens are unreachable, so the
+    per-rack button is the slowest route to what they actually want.
+
+    ⚠️ Same clearing as the single-rack version, which means the same data loss
+    EIGHT TIMES OVER: every open set becomes a false set, and whatever reps are
+    still buffered on those tablets are gone. Reps live on the tablet until the
+    set completes. The console asks first and says how many racks are mid-set.
+
+    Sensors stay on their racks, exactly as with a single clear — the hardware
+    has not moved, only the screens are being sent back to the waiting list.
+    """
+    with transaction.atomic():
+        # Only racks with something to clear: a runtime, or a screen sitting on
+        # one. Empty slots are skipped rather than having a runtime invented.
+        rack_numbers = sorted(
+            set(RackRuntime.objects.values_list("rack_number", flat=True))
+            | set(RackScreen.objects.exclude(rack_number=None).values_list("rack_number", flat=True))
+        )
+        for rack_number in rack_numbers:
+            _force_clear_rack(rack_number, emit_event=False)
+        # ONE event for the whole sweep, not one per rack. The dashboard only
+        # needs telling once that the room changed, and eight broadcasts would
+        # make eight refetches of the same state.
+        MonitoringEvent.objects.create(reason="rack_state_changed")
+    # One broadcast to the whole room rather than one per rack — the listener
+    # accepts "all" precisely so a sweep does not need eight messages.
+    publish_enter_setup("all")
+    return Response({"cleared": rack_numbers})
+
+
+def _force_clear_rack(rack_number, *, emit_event=True):
+    """The clearing itself, shared by rack_remove and racks_release_all.
+
+    The CALLER owns the transaction — both paths need it, and the bulk one needs
+    all eight racks to land or none of them. `emit_event=False` lets the sweep
+    publish a single broadcast at the end instead of one per rack.
+    """
+    runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+    # End open sets as false sets. PROTECT on Set.session means we never
+    # delete; ending is the only legal way to close work, and false is the
+    # honest label for work that was started and abandoned. A set is "on this
+    # rack" when its node is assigned here — that's the physical truth, and
+    # the sensor is what ties a set to a rack.
+    open_sets = Set.objects.select_for_update().filter(
+        ended_at=None,
+        node__rack_number=rack_number,
+    )
+    for s in open_sets:
+        s.ended_at = timezone.now()
+        s.is_false_set = True
+        s.reps_completed = 0
+        s.avg_velocity = None
+        s.peak_velocity = None
+        s.save(update_fields=[
+            "ended_at", "is_false_set", "reps_completed",
+            "avg_velocity", "peak_velocity",
+        ])
+    if runtime is not None:
+        runtime.controller_screen = None
+        runtime.client_instance_id = ""
+        runtime.controller_token_digest = ""
+        runtime.controller_epoch += 1
+        runtime.lease_expires_at = None
+        runtime.phase = RackRuntime.PHASE_IDLE
+        runtime.selected_athlete = None
+        runtime.selected_exercise = None
+        runtime.current_set = None
+        runtime.rep_count = 0
+        runtime.latest_mean_velocity = None
+        runtime.latest_peak_velocity = None
+        runtime.latest_color = ""
+        runtime.phase_started_at = None
+        runtime.state_version += 1
+        runtime.save()
+        # Stale command receipts for the old controller are dead weight now.
+        runtime.command_receipts.all().delete()
+    RackScreen.objects.filter(rack_number=rack_number).update(rack_number=None)
+    if emit_event:
+        MonitoringEvent.objects.create(reason="rack_state_changed")
+
 
 
 @api_view(["PUT"])
 @permission_classes([IsActiveStaff])
 def rack_node_assignment(request):
-    """Select this physical rack's registered node. Body: {device_id, node_id}."""
+    """Select this physical rack's registered node. Body: {device_id, node_id}.
+
+    To take a sensor OFF a rack, see rack_node_unlink — that is addressed by
+    RACK NUMBER rather than by a screen, because the rack usually has no screen
+    at the moment you want to do it.
+    """
     allowed_fields = {"device_id", "node_id"}
     if set(request.data) != allowed_fields:
         return Response({
@@ -469,6 +528,7 @@ def rack_node_assignment(request):
     node_id = request.data.get("node_id")
     if not isinstance(device_id, str) or not device_id.strip():
         return Response({"code": "invalid_device_id", "detail": "device_id must be a non-empty string"}, status=400)
+
     if not isinstance(node_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id) is None:
         return Response({
             "code": "invalid_node_id",
@@ -482,6 +542,59 @@ def rack_node_assignment(request):
             "code": "node_assignment_conflict",
             "detail": "another sensor assignment changed this rack; refresh and try again",
         }, status=409)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsActiveStaff])
+@transaction.atomic
+def rack_node_unlink(request, rack_number):
+    """Coach-only: take whatever sensor is on this rack OFF it.
+
+    UNLINKING USED TO BE IMPOSSIBLE. rack_node_assignment requires a node_id
+    matching [A-Za-z0-9_-]{1,64}, so a coach could swap a sensor for a different
+    sensor but never remove one. A rack whose sensor had been moved to another
+    bay, or unplugged for the season, kept claiming a node that was not there
+    with no way to correct it.
+
+    ⚠️ ADDRESSED BY RACK NUMBER, NOT BY SCREEN, and that is the whole point.
+    The obvious shape — reuse the assignment endpoint with a null node_id — was
+    wrong, because that one is addressed by a screen's device_id and needs the
+    screen to still hold the rack. The state where you most want to unlink a
+    sensor is a rack that has a node and NO screen, which is exactly what a
+    force-clear leaves behind. Addressing by screen cannot express it.
+
+    Refuses while a set is open on that sensor, same as assignment does: reps in
+    flight are attributed to the node, and pulling it mid-set would leave a set
+    whose sensor no longer belongs to the rack it was performed at. Force-clearing
+    the rack is the lever for when that set can never finish.
+    """
+    node = Node.objects.select_for_update().filter(rack_number=rack_number).first()
+    # Idempotent: unlinking nothing is a no-op, not an error. A coach who presses
+    # it twice, or races another coach, should not get a failure.
+    if node is None:
+        return Response({"rack_number": rack_number, "node": None})
+
+    if Set.objects.select_for_update().filter(node=node, ended_at=None).exists():
+        return Response({
+            "code": "node_assignment_has_open_set",
+            "detail": "finish the open set before unlinking this sensor",
+        }, status=409)
+
+    node.rack_number = None
+    node.save(update_fields=["rack_number"])
+    MonitoringEvent.objects.create(reason="node_assignment_changed")
+    return Response({"rack_number": rack_number, "node": None})
+
+    if Set.objects.select_for_update().filter(node=node, ended_at=None).exists():
+        return Response({
+            "code": "node_assignment_has_open_set",
+            "detail": "finish the open set before unlinking this sensor",
+        }, status=409)
+
+    node.rack_number = None
+    node.save(update_fields=["rack_number"])
+    MonitoringEvent.objects.create(reason="node_assignment_changed")
+    return Response({"rack_number": screen.rack_number, "node": None})
 
 
 @transaction.atomic

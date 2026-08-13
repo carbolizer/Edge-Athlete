@@ -36,6 +36,10 @@ urlpatterns = [
     path('racks/racknumber/', views.rack_racknumber, name='rack_racknumber'),
     path('racks/unassigned/', views.racks_unassigned, name='racks_unassigned'),
     path('racks/node-assignment/', views.rack_node_assignment, name='rack_node_assignment'),
+    # Literal path, so it MUST stay above the catch-all racks/<device_id>/ at the
+    # bottom of this file — otherwise "release-all" is read as a device id.
+    path('racks/release-all/', views.racks_release_all, name='racks_release_all'),
+    path('racks/<int:rack_number>/node/', views.rack_node_unlink, name='rack_node_unlink'),
     path('ble/scans/', views.ble_scans, name='ble_scans'),
     path('ble/verifications/', views.ble_verifications, name='ble_verifications'),
     path('racks/<int:rack_number>/ble-selection/', views.rack_ble_selection,

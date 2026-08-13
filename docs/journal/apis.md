@@ -92,7 +92,7 @@ the outage you built it for.
 
 Rack screens, and the sensors on them.
 
-:::::{dropdown} 19 routes
+:::::{dropdown} 22 routes
 
 <!-- routes:the-room:start -->
 | Route | Methods | Access | What it does | Handler |
@@ -101,6 +101,8 @@ Rack screens, and the sensors on them.
 | `/api/racks/racknumber/` | `GET` | open | A waiting tablet asks "which rack am I?" Returns its rack_number (empty until a coach assigns it) | `rack_racknumber` |
 | `/api/racks/unassigned/` | `GET` | 🔒 coach | Coach-only: list every tablet still waiting for a rack (rack_number empty) | `racks_unassigned` |
 | `/api/racks/node-assignment/` | `PUT` | open | Select this physical rack's registered node | `rack_node_assignment` |
+| `/api/racks/release-all/` | `POST` | open | Coach-only: force-clear EVERY rack in one go — the end-of-session reset | `racks_release_all` |
+| `/api/racks/<int:rack_number>/node/` | `DELETE` | open | Coach-only: take whatever sensor is on this rack OFF it | `rack_node_unlink` |
 | `/api/ble/scans/` | `POST` | open | — | `ble_scans` |
 | `/api/ble/verifications/` | `POST` | open | — | `ble_verifications` |
 | `/api/racks/<int:rack_number>/ble-selection/` | `PUT` | open | — | `rack_ble_selection` |
@@ -111,7 +113,8 @@ Rack screens, and the sensors on them.
 | `/api/racks/<int:rack_number>/controller/release/` | `POST` | open | Release a quiet rack without allowing an open set to lose its owner | `rack_controller_release` |
 | `/api/racks/<int:rack_number>/checkin/` | `POST` | open | Record that an athlete signed in at this rack (Phase 11 Step 2) | `rack_checkin` |
 | `/api/racks/<int:rack_number>/checkins/` | `GET` | open | The rack's HOT LIST: athletes this rack currently 'owns' — those whose NEWEST check-in this session is this rack | `rack_checkins` |
-| `/api/racks/<int:rack_number>/nfc-tap/` | `POST` | open | — | `rack_nfc_tap` |
+| `/api/racks/<int:rack_number>/nfc-tap/` | `POST` | open | Consume one NFC tap and resolve it to an athlete in the active session | `rack_nfc_tap` |
+| `/api/racks/<int:rack_number>/` | `DELETE` | open | Coach-only: FORCE-CLEAR a rack so a fresh screen can take it over | `rack_remove` |
 | `/api/nodes/` | `GET` | open | Open: list every sensor node and its latest status | `nodes_list` |
 | `/api/nodes/register/` | `POST` | open | A sensor announces itself | `node_register` |
 | `/api/nodes/<str:node_id>/acquisition-kind/` | `PUT` | open | Provision the transport trusted to supply one registered node's health | `node_acquisition_kind` |

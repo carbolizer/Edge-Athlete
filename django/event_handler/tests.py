@@ -1309,6 +1309,150 @@ class PerLaptopNodeFlowTests(APITestCase):
         self.assertIsNone(node.rack_number, "registration never hands out a rack")
         self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT)
 
+class RackReleaseAllTests(APITestCase):
+    """The end-of-session reset: clear every rack in one call.
+
+    Doing this rack by rack is the same click eight times, and the racks a coach
+    most wants cleared are exactly the ones whose screens are unreachable.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="sweep-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.node1 = Node.objects.create(node_id="sweep-n1", rack_number=1)
+        self.node2 = Node.objects.create(node_id="sweep-n2", rack_number=2)
+        self.screen1 = RackScreen.objects.create(device_id="sweep-s1", rack_number=1)
+        self.screen2 = RackScreen.objects.create(device_id="sweep-s2", rack_number=2)
+
+    def test_clears_every_rack_and_releases_every_screen(self):
+        res = self.client.post("/api/racks/release-all/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["cleared"], [1, 2])
+
+        self.screen1.refresh_from_db()
+        self.screen2.refresh_from_db()
+        self.assertIsNone(self.screen1.rack_number, "every screen goes back to the waiting list")
+        self.assertIsNone(self.screen2.rack_number)
+
+    def test_leaves_the_sensors_on_their_racks(self):
+        # The hardware has not moved. Only the screens are being sent back, so a
+        # fresh screen on rack 1 should still find its sensor there.
+        self.client.post("/api/racks/release-all/")
+
+        self.node1.refresh_from_db()
+        self.node2.refresh_from_db()
+        self.assertEqual(self.node1.rack_number, 1)
+        self.assertEqual(self.node2.rack_number, 2)
+
+    def test_ends_open_sets_across_all_racks_as_false_sets(self):
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Sweep Lifter")
+        exercise = Exercise.objects.create(name="Sweep Squat")
+        open_sets = [
+            Set.objects.create(session=session, athlete=athlete, exercise=exercise,
+                               node=node, set_number=1, ended_at=None)
+            for node in (self.node1, self.node2)
+        ]
+
+        self.client.post("/api/racks/release-all/")
+
+        for s in open_sets:
+            s.refresh_from_db()
+            self.assertIsNotNone(s.ended_at, "an abandoned set must be closed")
+            self.assertTrue(s.is_false_set, "work started and abandoned is a false set")
+
+    def test_skips_racks_that_have_nothing_on_them(self):
+        # Rack 7 has no screen and no runtime. It should not appear in the sweep
+        # rather than having a runtime invented for it.
+        res = self.client.post("/api/racks/release-all/")
+        self.assertNotIn(7, res.data["cleared"])
+        self.assertFalse(RackRuntime.objects.filter(rack_number=7).exists())
+
+    def test_requires_a_coach(self):
+        self.client.force_authenticate(None)
+        res = self.client.post("/api/racks/release-all/")
+        self.assertIn(res.status_code, (401, 403))
+
+
+class RackNodeUnlinkTests(APITestCase):
+    """Taking a sensor OFF a rack.
+
+    This was impossible: node_id had to match [A-Za-z0-9_-]{1,64}, so a coach
+    could swap a sensor for another sensor but never remove one. A rack whose
+    sensor had been moved kept claiming a node that was not there.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="unlink-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.node = Node.objects.create(node_id="unlink-n1", rack_number=3)
+        self.screen = RackScreen.objects.create(device_id="unlink-s1", rack_number=3)
+
+    def _unlink(self, rack_number=3):
+        return self.client.delete(f"/api/racks/{rack_number}/node/")
+
+    def test_unlinks_the_sensor(self):
+        res = self._unlink()
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIsNone(res.data["node"])
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number, "the sensor comes off the rack")
+
+    def test_the_screen_keeps_its_rack(self):
+        # Unlinking a sensor is not releasing a screen. The tablet stays where it is.
+        self._unlink()
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3)
+
+    def test_unlinking_twice_is_not_an_error(self):
+        # A coach who presses it twice, or races another coach, gets a no-op
+        # rather than a failure.
+        self._unlink()
+        res = self._unlink()
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIsNone(res.data["node"])
+
+    def test_refuses_while_a_set_is_open_on_that_sensor(self):
+        # Reps in flight are attributed to the node. Pulling it mid-set would
+        # leave a set whose sensor no longer belongs to the rack it happened at.
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Unlink Lifter")
+        exercise = Exercise.objects.create(name="Unlink Squat")
+        Set.objects.create(session=session, athlete=athlete, exercise=exercise,
+                           node=self.node, set_number=1, ended_at=None)
+
+        res = self._unlink()
+
+        self.assertEqual(res.status_code, 409, res.data)
+        self.assertEqual(res.data["code"], "node_assignment_has_open_set")
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 3, "the sensor stays put")
+
+    def test_works_on_a_rack_with_no_screen(self):
+        # The case the obvious design could not express. A force-clear releases
+        # the screen and LEAVES the sensor, so this is the exact state a coach is
+        # in when they want to unlink one.
+        self.screen.rack_number = None
+        self.screen.save(update_fields=["rack_number"])
+
+        res = self._unlink()
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_requires_a_coach(self):
+        self.client.force_authenticate(None)
+        res = self._unlink()
+        self.assertIn(res.status_code, (401, 403))
+
+
 class RackNodeAssignmentTests(APITestCase):
     def setUp(self):
         self.staff = User.objects.create_user(

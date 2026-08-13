@@ -485,30 +485,6 @@ function RoomLayout({ token, onAuthLost }) {
   // so a tablet sent to setup mode kept its old rack, never reappeared for the
   // coach, and could not be reassigned. The only known workaround was wiping the
   // tablet's browser data, which does not fix it so much as replace the device.
-  async function releaseScreen(deviceId, rack) {
-    setBusyScreen(true)
-    setMsg({ text: '', kind: '' })
-    try {
-      await coachFetch(`/api/racks/${encodeURIComponent(deviceId)}/`, {
-        token,
-        method: 'PATCH',
-        body: { rack_number: null },
-      })
-      setScreenBySlot((prev) => {
-        const next = { ...prev }
-        delete next[rack]
-        return next
-      })
-      setMsg({ text: `Screen ${shortId(deviceId)} released from rack ${rack}`, kind: 'ok' })
-      await load({ clearMessage: false })
-    } catch (err) {
-      const text = err.message || 'release failed'
-      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
-      else setMsg({ text, kind: 'err' })
-    } finally {
-      setBusyScreen(false)
-    }
-  }
 
   // Force-clear a rack so a fresh screen can take it over. This is the escape
   // hatch for a wedged rack: an open set nobody can finish because the screen
@@ -522,7 +498,85 @@ function RoomLayout({ token, onAuthLost }) {
   // assigned on purpose. What a coach is actually doing is taking the SCREEN off
   // it, so the label says that.
   async function removeScreen(rack) {
-    // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
+    // Take the sensor off a rack. Addressed by RACK, not by screen — the state
+  // where you most want this is a rack that has a node and no screen, which is
+  // exactly what a force-clear leaves behind.
+  async function unlinkNode(rack, nodeId) {
+    if (!window.confirm(
+      `Unlink sensor ${nodeId} from rack ${rack}?\n\n` +
+      `The rack keeps its screen; only the sensor comes off. Reps cannot be ` +
+      `recorded at this rack until another sensor is linked. Do it?`,
+    )) return
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${rack}/node/`, { token, method: 'DELETE' })
+      setMsg({ text: `Sensor ${nodeId} unlinked from rack ${rack}`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'unlink failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
+  // The end-of-session reset. Same clearing as one rack, times however many are
+  // occupied — so the same data loss, multiplied. Counts the mid-set racks first
+  // so the warning is specific rather than a vague "this may lose data".
+  async function releaseAllRacks() {
+    const occupied = RACK_SLOTS.filter((n) => occupancyBySlot[n]?.screenId)
+    if (occupied.length === 0) {
+      setMsg({ text: 'No screens are assigned to any rack', kind: 'ok' })
+      return
+    }
+
+    const states = await Promise.all(occupied.map(
+      (n) => getRackState(n).then((s) => [n, s]).catch(() => [n, null]),
+    ))
+    const midSet = states.filter(
+      ([, s]) => s && ['active', 'countdown', 'recovery_required'].includes(s.phase),
+    )
+    const bufferedReps = midSet.reduce((sum, [, s]) => sum + (s.rep_count ?? 0), 0)
+
+    let warning = ''
+    if (midSet.length > 0) {
+      warning =
+        `⚠️ ${midSet.length} rack${midSet.length === 1 ? ' is' : 's are'} MID-SET ` +
+        `(${midSet.map(([n]) => n).join(', ')}).\n\n` +
+        (bufferedReps > 0
+          ? `At least ${bufferedReps} rep${bufferedReps === 1 ? '' : 's'} across those tablets ` +
+            `have NOT been saved and will be lost.\n\n`
+          : `Those sets will be ended as false sets.\n\n`)
+    }
+
+    if (!window.confirm(
+      warning +
+      `Release all ${occupied.length} screen${occupied.length === 1 ? '' : 's'} ` +
+      `(rack${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')})?\n\n` +
+      `Every screen goes back to the waiting list and returns to its setup ` +
+      `screen. Sensors stay on their racks. Do it?`,
+    )) return
+
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      const result = await coachFetch('/api/racks/release-all/', { token, method: 'POST' })
+      setScreenBySlot({})
+      const cleared = result?.cleared ?? []
+      setMsg({ text: `Released ${cleared.length} rack${cleared.length === 1 ? '' : 's'} — every screen is back in the waiting list`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'release all failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
+  // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
     // Reps are held in the TABLET's buffer and only sent as one batch when the
     // set finishes. Force-clearing ends any open set as a false set with its
     // counts zeroed, so pressing this mid-set throws away everything the athlete
@@ -670,7 +724,22 @@ function RoomLayout({ token, onAuthLost }) {
       )}
 
       <hr className="coach-divider" />
-      <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 700 }}>Rack slots</h3>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+        <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 700 }}>Rack slots</h3>
+        {/* The end-of-session reset. Top right because it acts on the whole grid
+            below it, not on any one slot — and separated from the per-rack
+            buttons so it is never the one you hit by accident. */}
+        <button
+          type="button"
+          className="coach-btn coach-btn-ghost"
+          style={{ fontSize: 12, color: '#c0392b' }}
+          disabled={busyScreen}
+          onClick={releaseAllRacks}
+          title="Send EVERY screen back to the waiting list and to its setup screen. Ends any open sets as false. Sensors stay on their racks."
+        >
+          Release all racks
+        </button>
+      </div>
       <p className="coach-hint" style={{ marginBottom: 8 }}>
         Nodes refresh from the API. Screen labels stick after an assign in this
         session (there is no list-all-screens endpoint yet).
@@ -693,28 +762,39 @@ function RoomLayout({ token, onAuthLost }) {
                   <div className="coach-slot-line">
                     Node <strong>{slot.node ? slot.node.node_id : '—'}</strong>
                   </div>
+                  {/* ONE screen button, not two. There used to be a "Release
+                      screen" (PATCH rack_number null) beside a "Remove screen"
+                      (DELETE), which read as two parallel options for the same
+                      job — with the quieter-looking one refusing whenever a set
+                      was open. The DELETE does everything the PATCH did and
+                      copes with a wedged rack, so it is the only path now, and
+                      it warns first when reps are about to be lost. */}
                   {slot.screenId && (
+                    <button
+                      type="button"
+                      className="coach-btn coach-btn-ghost"
+                      style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
+                      disabled={busyScreen}
+                      onClick={() => removeScreen(n)}
+                      title="Send this tablet back to the waiting list and to its setup screen. Ends any open set as false and resets the controller. The sensor stays on the rack."
+                    >
+                      Release screen
+                    </button>
+                  )}
+                  {/* Separate from the screen: a rack keeps its sensor when the
+                      screen leaves, so removing one must not imply the other. */}
+                  {slot.node && (
                     <button
                       type="button"
                       className="coach-btn coach-btn-ghost"
                       style={{ marginTop: 6, fontSize: 12 }}
                       disabled={busyScreen}
-                      onClick={() => releaseScreen(slot.screenId, n)}
-                      title="Send this tablet back to the waiting list so it can be reassigned"
+                      onClick={() => unlinkNode(n, slot.node.node_id)}
+                      title="Take this sensor off the rack. The screen stays. Refused while a set is open."
                     >
-                      Release screen
+                      Unlink sensor
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="coach-btn coach-btn-ghost"
-                    style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
-                    disabled={busyScreen}
-                    onClick={() => removeScreen(n)}
-                    title="Send this rack's screen back to the waiting list: ends open sets as false, resets the controller, leaves the sensor on the rack."
-                  >
-                    Remove screen
-                  </button>
                 </>
               )}
             </div>
