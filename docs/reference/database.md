@@ -27,6 +27,19 @@ which carries the full reasoning in comments. This is the readable version.
 
 ---
 
+## A picture of how it all connects
+
+```{include} ../_erd.md
+:parser: myst
+```
+
+Plain-English version: **a block** is a template; deploying it makes **a program** for
+**a group** of **athletes**; a program has **days**, each with **prescription rows**;
+running a day creates **a session**, which holds the **sets** athletes actually did, each
+made of **reps**; when the day ends it is frozen into **a daily report**.
+
+---
+
 ## The 30-second big picture
 
 There are four worlds in this system, and the tables split along them:
@@ -53,38 +66,6 @@ anyone edited the plan.
 
 This is why you will not find a "target weight" column anywhere. If you go looking for one
 and can't find it, that's the design working.
-
----
-
-## A picture of how it all connects
-
-```mermaid
-erDiagram
-    TRAINING_BLOCK ||--o{ TRAINING_PROGRAM : "is deployed as"
-    TRAINING_GROUP ||--o{ TRAINING_PROGRAM : "trains"
-    ATHLETE }o--o{ TRAINING_GROUP : "belongs to"
-    TRAINING_GROUP ||--o{ TRAINING_GROUP_COACH : "is run by"
-
-    TRAINING_PROGRAM ||--o{ TRAINING_PROGRAM_WORKOUT : "has days"
-    TRAINING_PROGRAM_WORKOUT ||--o{ TRAINING_PROGRAM_EXERCISE : "has rows"
-    TRAINING_PROGRAM ||--o{ SCHEDULED_SESSION : "is placed on a calendar as"
-
-    TRAINING_SESSION ||--o{ SESSION_PARTICIPATION : "hosts"
-    TRAINING_PROGRAM ||--o{ SESSION_PARTICIPATION : "is run in"
-    TRAINING_SESSION ||--o{ SET : "contains"
-    TRAINING_SESSION ||--|| DAILY_REPORT : "is frozen into"
-    SET ||--o{ REP : "is made of"
-
-    ATHLETE ||--o{ SET : "performs"
-    ATHLETE ||--o{ ATHLETE_REFERENCE_MAX : "has benchmarks in"
-    EXERCISE ||--o{ SET : "is performed as"
-    NODE ||--o{ SET : "measured"
-```
-
-Plain-English version: **a block** is a template; deploying it makes **a program** for
-**a group** of **athletes**; a program has **days**, each with **prescription rows**;
-running a day creates **a session**, which holds the **sets** athletes actually did, each
-made of **reps**; when the day ends it is frozen into **a daily report**.
 
 ---
 

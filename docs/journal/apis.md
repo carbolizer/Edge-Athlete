@@ -5,6 +5,17 @@ touches — the summary is visible, the detail is one click away.
 
 The few things at the top cut across all of them.
 
+## What the routes act on
+
+Most endpoints below are a verb on one of these. Worth a glance before reading the
+tables — half the route names only make sense once you can see what owns what.
+
+```{include} ../_erd.md
+:parser: myst
+```
+
+Full detail in {doc}`../reference/database`; the reasoning in {doc}`database`.
+
 ## The permission rule
 
 **Anything a rack tablet must do is open. Anything that changes the plan or the room

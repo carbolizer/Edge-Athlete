@@ -7,6 +7,15 @@ numbers a coach then trains people against.
 the decisions attached to it — open the ones you need. The only thing kept out here is
 the tuning file, because it is not a table.
 
+## How it all connects
+
+Every table below sits somewhere on this. For a plain-English tour of each one, see
+{doc}`../reference/database`.
+
+```{include} ../_erd.md
+:parser: myst
+```
+
 ## Where the training numbers live
 
 Every value a coach or sports scientist might argue with sits in **one file** —
