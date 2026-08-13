@@ -1,0 +1,21 @@
+# Everything both hardware agents need — kept as the "install the lot" file so the
+# manual instructions in docs/guides/base-station.md still work unchanged.
+#
+# THE REAL LISTS ARE THE TWO FILES BELOW, and provisioning installs them
+# SEPARATELY on purpose. Each agent's dependencies can fail without taking the
+# other down:
+#
+#   requirements-ble.txt   bleak + paho-mqtt   the WT901 sensor.  Needs Python 3.10+
+#   requirements-nfc.txt   pyusb               the wristband reader. Any Python
+#
+# Installing THIS file is all-or-nothing, which is what caused the problem the
+# split exists to fix: on Raspberry Pi OS Bullseye (Python 3.9) the bleak pin is
+# unsatisfiable, pip exits non-zero, and under `set -e` the whole rack
+# provisioning run died — no browser, no kiosk, and no card reader either, even
+# though the NFC agent never imports bleak.
+#
+# So prefer the specific file when you only need one agent, and expect this one to
+# fail as a unit on any machine that cannot satisfy every pin.
+
+-r requirements-ble.txt
+-r requirements-nfc.txt

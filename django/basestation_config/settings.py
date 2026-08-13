@@ -15,7 +15,7 @@ Works with:
   - basestation_config/urls.py — ROOT_URLCONF points Django to the router
   - postgres container — DATABASES connects Django to PostgreSQL
   - mosquitto container — MQTT settings tell Django where the broker is
-  - ntfy container — NTFY settings tell Django where to send notifications
+  - monitoring-publisher container — drains the MonitoringEvent outbox to MQTT
 
 For more information on this file, see
 https://docs.djangoproject.com/en/5.1/topics/settings/
@@ -27,18 +27,38 @@ from pathlib import Path
 from datetime import timedelta
 import os
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # BASE_DIR points to the /django folder — the root of the Django project
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-# SECURITY WARNING: keep the secret key used in production secret!
-# Read from .env — never hardcode this value
-SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # .env sets DEBUG=True for development, DEBUG=False for production
 # The '== True' converts the string from .env into an actual boolean
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# Read from .env — never hardcode this value.
+#
+# ⚠️ THE KEY IN .env.example IS PUBLIC. It is committed, so every clone of this
+# repo has it, and it signs the JWTs a coach logs in with. A real base station
+# gets its own generated key — setup.sh writes one into .env at provision time.
+#
+# Missing key + DEBUG off is refused rather than defaulted. A base station that
+# quietly ran on a placeholder would look completely healthy while every session
+# token in the building was forgeable.
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = 'django-insecure-fallback-for-local-development-only'
+    else:
+        raise ImproperlyConfigured(
+            "SECRET_KEY is not set and DEBUG is off. Generate one:\n"
+            "  python -c \"from django.core.management.utils import get_random_secret_key;"
+            " print(get_random_secret_key())\"\n"
+            "then put it in .env as SECRET_KEY=..."
+        )
 
 # Hosts that Django will respond to — read from .env as a comma separated list
 # Example: ALLOWED_HOSTS=localhost,127.0.0.1
@@ -68,6 +88,10 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware', # Must be first - handles CORS before anything else
     'django.middleware.security.SecurityMiddleware',
+    # Directly after SecurityMiddleware, which is where WhiteNoise must sit.
+    # It is what serves the admin and DRF stylesheets now that gunicorn runs the
+    # app — see the STATIC_ROOT note below for why nothing served them before.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -123,12 +147,15 @@ DATABASES = {
 MQTT_HOST = os.environ.get('MQTT_HOST', 'mosquitto')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', 1883))
 
-# Ntfy Configuration
-# Ntfy is the push notification service Django posts to when motion is detected
-# NTFY_URL and NTFY_TOPIC are read from .env
-# Django sends HTTP POST requests to NTFY_URL/NTFY_TOPIC when an event comes in
-NTFY_URL = os.getenv("NTFY_URL", "http://ntfy:80")
-NTFY_TOPIC = os.getenv("NTFY_TOPIC", "edgeathlete-alerts")
+# The host Agent is reachable only through this provisioned local socket. This is
+# intentionally not configurable by a request or environment-provided URL.
+BLE_AGENT_SOCKET_PATH = "/run/edgeathlete/ble-agent.sock"
+NFC_AGENT_SOCKET_PATH = "/run/edgeathlete/nfc-agent.sock"
+
+# (Ntfy settings removed in merge phase P2 / D5 — the motion-alert notification
+# path was inherited from this project's fork parent and never served Edge
+# Athlete. Real-time delivery now goes through the MonitoringEvent outbox in
+# event_handler/realtime/. Nothing reads NTFY_* anymore.)
 
 # Password validation rules for user accounts
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
@@ -148,7 +175,38 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
+#
+# ⚠️ THIS IS NOT THE REACT APP. The front end is built by its own container and
+# served by Nginx; nothing here touches it. These are the stylesheets for the
+# Django ADMIN and the DRF browsable API — the two pages a coach never sees but
+# whoever is debugging at 7am absolutely does.
+#
+# WHY STATIC_ROOT HAD TO BE ADDED. There was none, so `collectstatic` had
+# nowhere to write, and nothing served these files except `runserver`'s
+# development hook — which only works while DEBUG is on. That made two unrelated
+# things silently load-bearing on DEBUG=True: turning debug off, or moving to a
+# real web server, would have left admin and DRF rendering as unstyled HTML with
+# nothing in the log to explain it.
+#
+# Now collectstatic runs at image build and WhiteNoise serves the result, so
+# both work under gunicorn, with DEBUG on or off. Nginx keeps proxying
+# /static/admin/ and /static/rest_framework/ to Django exactly as before — it
+# just gets a real answer now.
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        # Compresses, and no manifest. ManifestStaticFilesStorage would hash every
+        # filename for cache-busting, which buys nothing on a closed network with
+        # two admin pages — and turns any stylesheet referencing a missing file
+        # into a hard build failure.
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 # Default primary key type for database models
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

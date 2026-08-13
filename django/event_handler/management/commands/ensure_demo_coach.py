@@ -1,7 +1,7 @@
 """
 ensure_demo_coach — create the demo coach login if it is missing.
 
-ConnectionTest and /coach both use username=coach / password=coachpass.
+/coach uses username=coach / password=coachpass.
 Without this account, JWT login returns "No active account found…".
 Safe to re-run: updates the password if the user already exists.
 """

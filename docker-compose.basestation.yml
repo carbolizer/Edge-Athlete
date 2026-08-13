@@ -1,0 +1,20 @@
+# docker-compose.basestation.yml — overlay used ONLY on a real base station.
+#
+# THE "WORK-ORDER SLIP" HANDSHAKE (this file is one of six that share it).
+# Picture the base station as a building. The coach app (a front-desk clerk in a
+# container) can't touch the electrical panel — the network — so to change the
+# Wi-Fi it writes a work-order slip and drops it in an inbox tray, and a
+# maintenance worker on the host picks it up. THIS FILE IS THE SHARED ROOM the
+# tray sits in: the one folder (/var/lib/edgeathlete) that both the clerk (the
+# django container) and the worker (the host) can reach.
+#
+# startup.sh adds this overlay with a second `-f` on a real base station. It is
+# deliberately NOT part of a plain `docker compose up`: it bind-mounts a host
+# path that exists on a provisioned base station but not on a dev laptop, and
+# there is no AP to change in dev anyway. The clerk still never runs nmcli — it
+# only leaves a slip in this room. See wifi_config.py and apply-wifi.sh.
+services:
+  django:
+    volumes:
+      - /var/lib/edgeathlete:/var/lib/edgeathlete
+      - /run/edgeathlete:/run/edgeathlete

@@ -3,6 +3,7 @@
 ._*
 .env
 
+
 # django
 venv/
 __pycache__/
@@ -22,6 +23,10 @@ db.sqlite3
 
 # -- production
 /build
+# The React container builds its own bundle at image build time (see the `react`
+# service in docker-compose.yml), so a committed dist is never the thing that
+# gets served — it was only ever diff noise that churned on every build.
+react/dist/
 
 # -- misc
 .DS_Store
@@ -33,3 +38,10 @@ Sprint 1.html
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+docs/_build/
+
+.obsidian/
+
+# dev-only: run the stack on a machine that already has an edgeathlete install
+# (renames containers + moves nginx to 8082 to avoid clashing with a real stack)
+docker-compose.demo.yml

@@ -1,5 +1,8 @@
 # this part dynamically builds react files
-FROM node:20-alpine AS build
+# Pinned to 22 LTS: Vite 8 / rolldown require Node ^20.19.0 || >=22.12.0. The old
+# floating `node:20-alpine` tag could resolve to a cached pre-20.19 Node on some
+# machines, crashing `vite build` with "node:util has no export 'styleText'".
+FROM node:22-alpine AS build
 
 # create and copy working folder inside container
 WORKDIR /frontend_container

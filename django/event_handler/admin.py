@@ -10,13 +10,12 @@ Access needs a superuser: python manage.py createsuperuser
 """
 from django.contrib import admin
 
-from .models import Node, RackScreen, Athlete, Program, Session, Set, Rep
+from .models import Node, RackScreen, Athlete, TrainingSession, Set, Rep
 
 # Registering each model makes it visible and editable in the admin panel.
 admin.site.register(Node)
 admin.site.register(RackScreen)
 admin.site.register(Athlete)
-admin.site.register(Program)
-admin.site.register(Session)
+admin.site.register(TrainingSession)
 admin.site.register(Set)
 admin.site.register(Rep)

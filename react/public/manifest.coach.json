@@ -1,19 +1,18 @@
 {
   "name": "Edge Athlete — Coach",
+  "_comment_id": "See manifest.rack.json for why `id` exists. start_url is /coach so launching the installed app lands on the coach screen directly instead of bouncing through the role picker.",
+  "id": "/app/coach",
   "short_name": "EA Coach",
-  "description": "Coach tablet: assign rack screens and nodes to rack slots for Edge Athlete.",
-  "start_url": "/coach",
-  "scope": "/coach",
+  "description": "Coach admin tablet for Edge Athlete.",
   "display": "standalone",
-  "orientation": "any",
-  "background_color": "#0f131b",
-  "theme_color": "#0f131b",
+  "start_url": "/coach",
+  "scope": "/",
+  "orientation": "portrait",
+  "background_color": "#070b0e",
+  "theme_color": "#070b0e",
   "icons": [
-    {
-      "src": "/coach-icon.svg",
-      "type": "image/svg+xml",
-      "sizes": "any",
-      "purpose": "any maskable"
-    }
+    { "src": "/icon-coach-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-coach-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-coach-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

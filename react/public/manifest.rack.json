@@ -1,0 +1,19 @@
+{
+  "name": "Edge Athlete — Rack",
+  "_comment_id": "Chrome identifies an installed app by `id`, falling back to `start_url` when it is absent. All three manifests used to share start_url '/', so all three were the SAME app to the browser — installing the coach app just renamed the rack one in place. A distinct `id` is what makes them three separate installs. It is an identity string only: it is never navigated to and does not need to be a real route.",
+  "id": "/app/rack",
+  "short_name": "EA Rack",
+  "description": "Rack tablet for live barbell velocity tracking.",
+  "display": "fullscreen",
+  "_comment_start_url": "Stays '/' on purpose, unlike coach and dashboard. A rack's number is not known at install time, so it launches into the dispatcher at '/' and lets Home redirect to /rack/N from the stored rack_number. Identity comes from `id` above, so sharing '/' with nothing else costs nothing.",
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "portrait",
+  "background_color": "#070b0e",
+  "theme_color": "#070b0e",
+  "icons": [
+    { "src": "/icon-rack-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-rack-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-rack-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

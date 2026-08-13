@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#
+# pre-commit — keep the generated parts of the docs honest without anyone remembering.
+#
+# WHAT IT DOES
+# Two generated sections exist in the docs, and each is tied to the file it describes:
+#
+#   models.py / migrations   ->  the table-by-table schema in journal/database.md
+#   urls.py / the view files ->  the route list in journal/apis.md
+#
+# If a commit touches either source, the matching section is refreshed and staged into
+# the same commit. Code and docs therefore change together, always, in one commit.
+#
+# WHAT IT DOES NOT TOUCH
+# Only the generated blocks between the HTML comment markers. Every word anyone wrote
+# around them — what a table is for, why a route exists, the decisions — is preserved.
+# See docs/refresh-schema.py and docs/refresh-routes.py.
+#
+# WHY HERE AND NOT IN DOCKER
+# The obvious-looking place is `docker compose`, when migrations run. It is the wrong
+# place: the django container has no view of this repo (its source is baked in at build
+# time), `docker compose` also runs on the base station in the gym where nobody reads
+# docs, and having a container write into a tracked file is exactly the bug that used
+# to make base-station updates fail with a merge conflict. The commit is the moment the
+# code actually changes, and it happens on a machine where the docs live.
+#
+# TO SKIP IT once:  git commit --no-verify
+#
+set -euo pipefail
+
+REPO="$(git rev-parse --show-toplevel)"
+STAGED="$(git diff --cached --name-only)"
+
+# refresher | doc it maintains | regex of source paths that should trigger it
+JOBS=(
+  "docs/refresh-schema.py|docs/journal/database.md|django/event_handler/(models\.py|migrations/)"
+  "docs/refresh-routes.py|docs/journal/apis.md|django/event_handler/(urls\.py|views\.py|health\.py|system_status\.py|wifi_config\.py)"
+)
+
+for job in "${JOBS[@]}"; do
+    IFS='|' read -r script doc pattern <<< "$job"
+
+    echo "$STAGED" | grep -qE "$pattern" || continue
+    [ -x "$REPO/$script" ] || continue   # tooling absent in this checkout; not an error
+
+    echo "[docs] source changed — refreshing $doc"
+
+    # Let the output through, so a NEW table or route is announced rather than
+    # slipped silently into the commit.
+    if ! output=$(python3 "$REPO/$script" 2>&1); then
+        echo "[docs] $script failed:"
+        echo "$output"
+        echo "[docs] commit stopped. Fix the above, or use --no-verify to skip."
+        exit 1
+    fi
+    echo "$output" | sed 's/^/[docs] /'
+
+    # Stage only if it actually changed, so a no-op commit stays a no-op.
+    if ! git diff --quiet -- "$doc"; then
+        git add "$doc"
+        echo "[docs] staged $doc"
+    fi
+
+    # Something brand new arrives with empty prose slots. Say so loudly — the facts
+    # are right, but nobody has explained it yet. The commit still succeeds: blocking
+    # someone's migration over prose is how a hook gets disabled.
+    if echo "$output" | grep -q "^NEW "; then
+        echo "[docs] ^ new entries have empty prose slots. The commit is fine; please fill them in."
+    fi
+done
+
+exit 0

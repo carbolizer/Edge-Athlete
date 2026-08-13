@@ -15,3 +15,15 @@ class IsCoach(BasePermission):
 
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated)
+
+
+class IsActiveStaff(BasePermission):
+    """Require the active staff account used for security-sensitive setup."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.is_active
+            and request.user.is_staff
+        )

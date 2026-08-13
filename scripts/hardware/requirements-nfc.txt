@@ -1,0 +1,11 @@
+# Dependencies for the NFC wristband reader agent (ccid_rack_agent.py) ONLY.
+#
+# Deliberately separate from requirements-ble.txt. This agent talks to a USB CCID
+# reader through PyUSB and never imports bleak, so it has no Python 3.10 floor and
+# installs happily on older images such as Raspberry Pi OS Bullseye.
+#
+# Keeping them apart is the point: when they shared one file, a machine that could
+# not satisfy the BLE pin got no card reader either, for no reason other than the
+# two lines living in the same file.
+
+pyusb==1.3.1   # direct USB access to the CCID contactless reader
