@@ -334,7 +334,10 @@ function AssignRow({
   )
 }
 
-function RoomLayout({ token, onAuthLost }) {
+// Exported for coachTablet.render.test.js — same reason TrainingDayPanel exports
+// ConflictPrompt: this is the subtree that actually holds the rack buttons, and
+// rendering it is what proves their handlers are in scope.
+export function RoomLayout({ token, onAuthLost }) {
   const [screens, setScreens] = useState([])
   const [nodes, setNodes] = useState([])
   const [loading, setLoading] = useState(true)
@@ -498,7 +501,92 @@ function RoomLayout({ token, onAuthLost }) {
   // assigned on purpose. What a coach is actually doing is taking the SCREEN off
   // it, so the label says that.
   async function removeScreen(rack) {
-    // Take the sensor off a rack. Addressed by RACK, not by screen — the state
+  // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
+    // Reps are held in the TABLET's buffer and only sent as one batch when the
+    // set finishes. Force-clearing ends any open set as a false set with its
+    // counts zeroed, so pressing this mid-set throws away everything the athlete
+    // has done in that set — silently, with nothing left to say reps existed.
+    //
+    // The server does track the COUNT live: the tablet pushes rep_count on every
+    // rep. So we can at least tell a coach what they are about to destroy. Asked
+    // at click time rather than read from render state, because this is a
+    // destructive decision and a number from thirty seconds ago is not good
+    // enough to base it on.
+    //
+    // ⚠️ THE COUNT IS A FLOOR, NOT AN EXACT NUMBER, which is why the text says
+    // "at least". Each rep's push is fire-and-forget (the tablet swallows the
+    // error so a blip never interrupts a lift), so a tablet that has lost contact
+    // keeps buffering reps the server never hears about. The stored count then
+    // UNDER-reports — the dangerous direction. `controller_active` false while
+    // the phase is live is the tell, and the message says so.
+    // ⚠️ A Bluetooth sensor blocks this outright, and the block is deliberate.
+    // Re-linking an unlinked WT901 needs verified BLE enrollment — physically at
+    // the rack, moving the sensor to prove which one it is. A coach clearing
+    // racks from across the gym cannot undo it from where they are standing, so
+    // this asks them to unlink on purpose rather than discover it after.
+    if (occupancyBySlot[rack]?.node?.acquisition_kind === 'wt901_ble') {
+      window.alert(
+        `Rack ${rack} has a Bluetooth sensor linked ` +
+        `(${occupancyBySlot[rack].node.node_id}).\n\n` +
+        `Unlink the sensor first, then release the screen.\n\n` +
+        `Re-linking a Bluetooth sensor has to be done standing at the rack, so ` +
+        `this is not something to trigger by accident from here.`,
+      )
+      return
+    }
+
+    let live = null
+    try {
+      live = await getRackState(rack)
+    } catch {
+      // Can't reach it — fall through to the generic warning rather than
+      // blocking a coach from clearing a rack that may be wedged precisely
+      // because something is unreachable.
+    }
+
+    const midSet = live && ['active', 'countdown', 'recovery_required'].includes(live.phase)
+    const reps = live?.rep_count ?? 0
+    const who = live?.selected_athlete?.name
+    let warning = ''
+    if (midSet && reps > 0) {
+      warning =
+        `⚠️ Rack ${rack} is MID-SET${who ? ` — ${who}` : ''}.\n\n` +
+        `At least ${reps} rep${reps === 1 ? '' : 's'} are recorded on the tablet and ` +
+        `have NOT been saved. Removing the screen discards them permanently.\n\n` +
+        (live.controller_active === false
+          ? `The tablet has stopped reporting, so there may be more than ${reps}.\n\n`
+          : `Finishing the set on the tablet saves them.\n\n`)
+    } else if (midSet) {
+      warning = `⚠️ Rack ${rack} has a set open${who ? ` — ${who}` : ''}. It will be ended as a false set.\n\n`
+    }
+
+    if (!window.confirm(
+      warning +
+      `Remove the screen from rack ${rack}? It goes back to the waiting list and ` +
+      `can be reassigned. This also ends any open set as a false set and resets ` +
+      `the controller. The sensor stays on the rack. Do it?`,
+    )) return
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${rack}/`, { token, method: 'DELETE' })
+      setScreenBySlot((prev) => {
+        const next = { ...prev }
+        delete next[rack]
+        return next
+      })
+      setMsg({ text: `Screen removed from rack ${rack} — it is back in the waiting list`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'remove failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
+  // Take the sensor off a rack. Addressed by RACK, not by screen — the state
   // where you most want this is a rack that has a node and no screen, which is
   // exactly what a force-clear leaves behind.
   async function unlinkNode(rack, nodeId) {
@@ -582,91 +670,6 @@ function RoomLayout({ token, onAuthLost }) {
       await load({ clearMessage: false })
     } catch (err) {
       const text = err.message || 'release all failed'
-      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
-      else setMsg({ text, kind: 'err' })
-    } finally {
-      setBusyScreen(false)
-    }
-  }
-
-  // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
-    // Reps are held in the TABLET's buffer and only sent as one batch when the
-    // set finishes. Force-clearing ends any open set as a false set with its
-    // counts zeroed, so pressing this mid-set throws away everything the athlete
-    // has done in that set — silently, with nothing left to say reps existed.
-    //
-    // The server does track the COUNT live: the tablet pushes rep_count on every
-    // rep. So we can at least tell a coach what they are about to destroy. Asked
-    // at click time rather than read from render state, because this is a
-    // destructive decision and a number from thirty seconds ago is not good
-    // enough to base it on.
-    //
-    // ⚠️ THE COUNT IS A FLOOR, NOT AN EXACT NUMBER, which is why the text says
-    // "at least". Each rep's push is fire-and-forget (the tablet swallows the
-    // error so a blip never interrupts a lift), so a tablet that has lost contact
-    // keeps buffering reps the server never hears about. The stored count then
-    // UNDER-reports — the dangerous direction. `controller_active` false while
-    // the phase is live is the tell, and the message says so.
-    // ⚠️ A Bluetooth sensor blocks this outright, and the block is deliberate.
-    // Re-linking an unlinked WT901 needs verified BLE enrollment — physically at
-    // the rack, moving the sensor to prove which one it is. A coach clearing
-    // racks from across the gym cannot undo it from where they are standing, so
-    // this asks them to unlink on purpose rather than discover it after.
-    if (occupancyBySlot[rack]?.node?.acquisition_kind === 'wt901_ble') {
-      window.alert(
-        `Rack ${rack} has a Bluetooth sensor linked ` +
-        `(${occupancyBySlot[rack].node.node_id}).\n\n` +
-        `Unlink the sensor first, then release the screen.\n\n` +
-        `Re-linking a Bluetooth sensor has to be done standing at the rack, so ` +
-        `this is not something to trigger by accident from here.`,
-      )
-      return
-    }
-
-    let live = null
-    try {
-      live = await getRackState(rack)
-    } catch {
-      // Can't reach it — fall through to the generic warning rather than
-      // blocking a coach from clearing a rack that may be wedged precisely
-      // because something is unreachable.
-    }
-
-    const midSet = live && ['active', 'countdown', 'recovery_required'].includes(live.phase)
-    const reps = live?.rep_count ?? 0
-    const who = live?.selected_athlete?.name
-    let warning = ''
-    if (midSet && reps > 0) {
-      warning =
-        `⚠️ Rack ${rack} is MID-SET${who ? ` — ${who}` : ''}.\n\n` +
-        `At least ${reps} rep${reps === 1 ? '' : 's'} are recorded on the tablet and ` +
-        `have NOT been saved. Removing the screen discards them permanently.\n\n` +
-        (live.controller_active === false
-          ? `The tablet has stopped reporting, so there may be more than ${reps}.\n\n`
-          : `Finishing the set on the tablet saves them.\n\n`)
-    } else if (midSet) {
-      warning = `⚠️ Rack ${rack} has a set open${who ? ` — ${who}` : ''}. It will be ended as a false set.\n\n`
-    }
-
-    if (!window.confirm(
-      warning +
-      `Remove the screen from rack ${rack}? It goes back to the waiting list and ` +
-      `can be reassigned. This also ends any open set as a false set and resets ` +
-      `the controller. The sensor stays on the rack. Do it?`,
-    )) return
-    setBusyScreen(true)
-    setMsg({ text: '', kind: '' })
-    try {
-      await coachFetch(`/api/racks/${rack}/`, { token, method: 'DELETE' })
-      setScreenBySlot((prev) => {
-        const next = { ...prev }
-        delete next[rack]
-        return next
-      })
-      setMsg({ text: `Screen removed from rack ${rack} — it is back in the waiting list`, kind: 'ok' })
-      await load({ clearMessage: false })
-    } catch (err) {
-      const text = err.message || 'remove failed'
       if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
       else setMsg({ text, kind: 'err' })
     } finally {
