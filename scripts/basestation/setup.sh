@@ -284,6 +284,50 @@ echo "[6] detecting the Wi-Fi adapter..."
 # The base station BROADCASTS its own network, so it needs a Wi-Fi device that
 # can run in AP mode. A wired-only OptiPlex will fail here, which is the correct
 # outcome: better a clear error now than a box that boots with no gym network.
+#
+# BEFORE looking, handle the common USB Wi-Fi adapters that Ubuntu cannot see
+# out of the box. The TP-Link Archer T4U (and friends) use the Realtek RTL8812AU
+# chipset, which has no driver in the mainline kernel — the adapter literally
+# does not appear in `nmcli device status` until the DKMS driver is installed.
+# Detect the chipset on the bus, install the matching driver, and let udev bring
+# the interface up. Everything else (Intel/MediaTek/Ralink) is in the kernel and
+# needs nothing.
+detect_usb_wifi_driver() {
+    # RTL8812AU USB IDs — TP-Link Archer T4U family + Realtek reference IDs.
+    local ids="2357:0106 2357:0107 2357:0111 2357:0112 2357:0113 2357:0114 0bda:8812 0bda:881a"
+    local id
+    for id in $ids; do
+        if lsusb 2>/dev/null | grep -qi "ID $id "; then
+            echo "$id"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ -z "$(nmcli -t -f DEVICE,TYPE device 2>/dev/null | grep ':wifi$' || true)" ]; then
+    if chipset="$(detect_usb_wifi_driver)"; then
+        echo "    USB Wi-Fi adapter detected ($chipset, Realtek RTL8812AU) — installing the DKMS driver"
+        echo "    (Ubuntu has no mainline driver for this chipset; the adapter is invisible until this installs)"
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y -qq \
+            dkms \
+            build-essential \
+            linux-headers-generic \
+            rtl8812au-dkms || {
+                echo "[!] the rtl8812au-dkms driver could not be installed."
+                echo "[!] This chipset has no mainline driver, so the T4U will not appear as a Wi-Fi"
+                echo "[!] device. On newer Ubuntu kernels the packaged driver sometimes fails to"
+                echo "[!] compile; try the aircrack-ng/morrownr build instead, or a different adapter."
+            }
+        # The DKMS build compiles for the running kernel and udev hot-plugs the
+        # interface; the module may already be loaded, but be explicit about it.
+        modprobe 8812au 2>/dev/null || true
+        sleep 2
+        systemctl restart NetworkManager 2>/dev/null || true
+    fi
+fi
+
 WIFI_IFACE="$(nmcli -t -f DEVICE,TYPE device 2>/dev/null | grep ':wifi$' | cut -d: -f1 | head -n 1 || true)"
 
 if [ -z "$WIFI_IFACE" ]; then
