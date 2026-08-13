@@ -19,12 +19,25 @@ class Command(BaseCommand):
             if not cursor.fetchone()[0]:
                 raise CommandError("Another monitoring publisher already holds the singleton lock.")
         client = mqtt.Client(client_id="edgeathlete-monitoring-publisher")
+        # Reconnect fast and keep trying: the broker comes and goes during an
+        # update, and a publisher that wedges on a dead socket stops the room
+        # updating until someone restarts it. That is exactly the failure this
+        # worker exists to survive.
+        client.reconnect_delay_set(min_delay=1, max_delay=10)
         client.connect(settings.MQTT_HOST, settings.MQTT_PORT, 60)
         client.loop_start()
         self.stdout.write("Monitoring publisher connected.")
         try:
             while True:
                 try:
+                    # If the connection dropped (broker restart, network blip),
+                    # reconnect before doing anything. publish_pending_event
+                    # raises "connection already closed" on a dead socket, and
+                    # without this the worker would sleep-and-retry forever,
+                    # draining nothing and stalling the room.
+                    if not client.is_connected():
+                        self.stderr.write("Monitoring broker connection lost — reconnecting.")
+                        client.reconnect()
                     # Drain EVERY pending event this wake, not just one. A set
                     # produces a burst of rep-state events; draining one per
                     # 1s-idle-sleep means the dashboard lags by however many
