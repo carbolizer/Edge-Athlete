@@ -40,6 +40,20 @@ case "$ROLE" in
 esac
 
 # ── settings — the WiFi values MUST match the base station's startup.sh ─────────
+# Display rotation for THIS device: normal | left | right | inverted.
+#
+# Defaults to normal and stays that way unless you ask, because the same script
+# provisions a rack tablet bolted vertically to a rack, a coach's tablet held in
+# landscape, and (via kiosk.sh) the base station's own monitor. There is no safe
+# blanket answer, so it is per-device:
+#
+#   curl ... | sudo SCREEN_ROTATE=left bash
+#
+# `left` and `right` are both portrait — which one depends on the way the tablet
+# is mounted, so try one and flip it if the picture is upside down. Touch input is
+# remapped to match; see the rotation block in kiosk.sh for why that matters.
+SCREEN_ROTATE="${SCREEN_ROTATE:-normal}"
+
 AP_SSID="${AP_SSID:-EdgeAthlete}"          # base station's WiFi name (startup.sh AP_NAME)
 AP_PASSWORD="${AP_PASSWORD:-ChangeMe123!}" # base station's WiFi password
 KIOSK_HOST="${KIOSK_HOST:-basestation}"    # `localhost` if this IS the base station
@@ -115,7 +129,7 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete Kiosk ($ROLE)
-Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk
+Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk $SCREEN_ROTATE
 X-GNOME-Autostart-enabled=true
 EOF
     fi

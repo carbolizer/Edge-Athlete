@@ -83,6 +83,12 @@ set -u
 ROLE="${1:-rack}"
 HOST="${2:-basestation}"
 MODE="${3:-kiosk}"          # kiosk | once | windowed
+# normal | left | right | inverted. DEFAULTS TO normal, and that default matters:
+# this same launcher drives a rack tablet bolted vertically to a rack, a coach's
+# tablet, AND the base station's own three desktop launchers. Rotating for one of
+# them would turn the others sideways, so rotation is opt-in per device and never
+# assumed from the role.
+ROTATE="${4:-${EDGE_SCREEN_ROTATE:-normal}}"
 
 # Keep a log, but only when nobody is watching.
 #
@@ -165,6 +171,51 @@ done
 xset s off      2>/dev/null || true
 xset -dpms      2>/dev/null || true
 xset s noblank  2>/dev/null || true
+
+# 2b. Rotate the display, if this device asked to be rotated.
+#
+#     A rack tablet is bolted to the rack in PORTRAIT; a coach's tablet and the
+#     base station's monitor are landscape. Same launcher, same script, so this is
+#     opt-in (see ROTATE at the top) and does nothing at all by default.
+#
+#     ⚠️ ROTATING THE PICTURE WITHOUT ROTATING TOUCH IS WORSE THAN NOT ROTATING.
+#     X11 keeps sending touch events in the panel's original coordinate space, so
+#     the display looks right and every tap lands somewhere else — a screen that
+#     appears fine and responds to the wrong button. The matrices below remap each
+#     touch device to match, which is the half people leave out.
+#
+#     X11 only. Under Wayland (Bookworm's labwc) xrandr is not the mechanism and
+#     this quietly does nothing — rotate in the compositor's config there instead.
+if [ "$ROTATE" != "normal" ]; then
+    case "$ROTATE" in
+        left)     MATRIX="0 -1 1 1 0 0 0 0 1" ;;
+        right)    MATRIX="0 1 0 -1 0 1 0 0 1" ;;
+        inverted) MATRIX="-1 0 1 0 -1 1 0 0 1" ;;
+        *)        echo "[!] unknown rotation '$ROTATE' — expected normal|left|right|inverted"
+                  MATRIX="" ;;
+    esac
+
+    if [ -n "$MATRIX" ] && command -v xrandr >/dev/null 2>&1; then
+        # Whichever output is actually plugged in — the name differs per device
+        # (HDMI-1, HDMI-A-1, DSI-1 for the official touch display), so asking is
+        # the only thing that works across all of them.
+        OUTPUT="$(xrandr --query 2>/dev/null | awk '/ connected/{print $1; exit}')"
+        if [ -n "$OUTPUT" ]; then
+            echo "==> rotating $OUTPUT $ROTATE"
+            xrandr --output "$OUTPUT" --rotate "$ROTATE" 2>/dev/null || true
+            # Every pointer/touch device, not just the first: a rack tablet often
+            # shows up as several (touch, plus a stylus or a mouse emulation node).
+            if command -v xinput >/dev/null 2>&1; then
+                xinput list --name-only 2>/dev/null | while IFS= read -r DEV; do
+                    xinput set-prop "$DEV" 'Coordinate Transformation Matrix' \
+                        $MATRIX 2>/dev/null || true
+                done
+            fi
+        else
+            echo "[!] no connected display found — skipping rotation"
+        fi
+    fi
+fi
 
 # The xset calls above are X11-only, and modern desktops ignore them — so on
 # GNOME/Wayland the screen still blanked and then LOCKED, which on the base station
