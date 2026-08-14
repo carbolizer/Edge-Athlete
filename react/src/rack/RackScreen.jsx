@@ -314,11 +314,32 @@ export default function RackScreen({ rackNumber, session, node, controller }) {
     return () => { cancelled = true }
   }, [selectedAthleteId])
 
+  // Tell the server about a movement chosen LOCALLY — the default picked when an
+  // athlete checks in. Tapping a movement does not come through here; that calls
+  // updateState directly.
+  //
+  // ⚠️ `controller.snapshot` IS DELIBERATELY NOT A DEPENDENCY. Having it there was
+  // what made switching movements impossible. Tapping pushes the new movement to the
+  // server WITHOUT setting local state, so local holds the old value until the new
+  // snapshot round-trips back — and with snapshot in the deps, that arriving
+  // snapshot re-ran this effect while local was still stale:
+  //
+  //   tap B -> server B -> snapshot B arrives
+  //     -> the snapshot effect above QUEUES setSelectedExerciseId(B)
+  //     -> this effect runs in the SAME pass, still closed over A
+  //     -> sees snapshot(B) != local(A), pushes A back
+  //     -> server A -> snapshot A -> the tap is undone, every time
+  //
+  // Not a race: React runs effects in declaration order, so this one always saw the
+  // pre-update value. It still READS the snapshot to skip a redundant write, but it
+  // only RUNS when the local value actually moved.
+  //
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (phase !== 'idle' || selectedExerciseId == null || !controller.canControl) return
     if (controller.snapshot?.selected_exercise?.id === selectedExerciseId) return
     controller.updateState({ selected_exercise: selectedExerciseId }).catch(() => {})
-  }, [phase, selectedExerciseId, controller.canControl, controller.snapshot, controller.updateState])
+  }, [phase, selectedExerciseId, controller.canControl, controller.updateState])
 
   // Tapping a name IS the check-in: record it (this rack now owns the athlete),
   // then open their day view. Called from the check-in screen AND the rest screen
