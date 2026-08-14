@@ -1,0 +1,23 @@
+# Keep the HOST's files out of the image.
+#
+# The Dockerfile runs `npm install` and then `COPY . .` — so without this file,
+# a node_modules folder sitting in this directory gets copied straight over the
+# one the container just installed. The image then tries to run macOS binaries
+# on Alpine Linux, and `vite build` dies inside its own config loader with an
+# error that says nothing about any of this.
+#
+# It only bites people who have run npm locally, which is why it can sit here
+# unnoticed: a fresh clone (a base station, CI) has no node_modules to leak.
+node_modules
+dist
+
+# Never bake local secrets or machine state into an image.
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# Not needed to build the app.
+.git
+.gitignore
+coverage
