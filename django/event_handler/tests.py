@@ -1250,6 +1250,36 @@ class NodeRegistrationTests(APITestCase):
         self.assertEqual(Node.objects.count(), 0)
 
 
+class SeederNfcTagTests(APITestCase):
+    """A fresh seed must assign the demo wristband tag, or sign-in silently dies.
+
+    Nothing else in the system assigns tags, and the seeder used to create
+    athletes with nfc_tag_id None — which is exactly how a fresh database lost
+    wristband sign-in until someone set the tag by hand.
+    """
+
+    def test_seed_assigns_braydons_wristband_tag(self):
+        from django.core.management import call_command
+        from event_handler.management.commands.seed_active_session import NFC_TAG_BY_ATHLETE
+
+        call_command("seed_active_session")
+
+        for name, tag in NFC_TAG_BY_ATHLETE.items():
+            athlete = Athlete.objects.get(name=name)
+            self.assertEqual(athlete.nfc_tag_id, tag, f"{name} should be seeded with its tag")
+
+    def test_seed_never_clobbers_a_manually_set_tag(self):
+        from django.core.management import call_command
+
+        Athlete.objects.create(name="Braydon Callender", nfc_tag_id="04FFFFFFFFFFFFFF")
+        call_command("seed_active_session")
+
+        athlete = Athlete.objects.get(name="Braydon Callender")
+        self.assertEqual(
+            athlete.nfc_tag_id, "04FFFFFFFFFFFFFF",
+            "a coach-retagged wristband must survive re-seeding",
+        )
+
 class PerLaptopNodeFlowTests(APITestCase):
     """The per-rack-laptop topology: the rack screen runs the WT901 agent, which
     registers itself as an ordinary MQTT node. That is the whole shortcut — an
