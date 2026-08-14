@@ -1281,6 +1281,67 @@ class SeederNfcTagTests(APITestCase):
             "a coach-retagged wristband must survive re-seeding",
         )
 
+
+class RecoverRacksTests(APITestCase):
+    """The boot recovery command: a power cycle leaves open sets and stale
+    controller state, and the rack screen cannot claim a wedged rack. This runs
+    on every container boot so the base station is boot-and-go."""
+
+    def test_recovery_ends_open_sets_and_resets_runtimes(self):
+        from django.core.management import call_command
+
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Jordan")
+        exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+        node = Node.objects.create(node_id="rack-1", rack_number=1)
+        stuck = Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=node,
+            set_number=1, ended_at=None,
+        )
+        runtime = RackRuntime.objects.create(rack_number=1)
+        runtime.phase = RackRuntime.PHASE_RECOVERY_REQUIRED
+        runtime.current_set = stuck
+        runtime.selected_athlete = athlete
+        runtime.lease_expires_at = timezone.now() + timedelta(seconds=30)
+        runtime.controller_epoch = 3
+        runtime.save()
+        runtime.command_receipts.create(
+            command_id=str(uuid.uuid4()), controller_epoch=3,
+            controller_device_id="screen-1", client_instance_id="tab-a",
+            response_status=200, response_body={},
+        )
+        before_version = runtime.state_version
+
+        call_command("recover_racks")
+
+        stuck.refresh_from_db()
+        self.assertIsNotNone(stuck.ended_at, "the open set must be closed")
+        self.assertTrue(stuck.is_false_set, "abandoned work is a false set")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.selected_athlete)
+        self.assertIsNone(runtime.lease_expires_at)
+        self.assertGreater(runtime.controller_epoch, 3)
+        self.assertGreater(runtime.state_version, before_version)
+        self.assertEqual(runtime.command_receipts.count(), 0,
+                         "stale command receipts from the old epoch must be dropped")
+
+    def test_recovery_is_safe_on_a_clean_rack(self):
+        from django.core.management import call_command
+
+        runtime = RackRuntime.objects.create(rack_number=1)
+
+        call_command("recover_racks")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.lease_expires_at)
+        self.assertEqual(runtime.command_receipts.count(), 0)
+
+
 class PerLaptopNodeFlowTests(APITestCase):
     """The per-rack-laptop topology: the rack screen runs the WT901 agent, which
     registers itself as an ordinary MQTT node. That is the whole shortcut — an
