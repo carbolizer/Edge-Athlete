@@ -277,7 +277,7 @@ ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/wt901_rack_agent.
     --address \$BLE_ADDRESS --node-id \$NODE_ID \\
     --mqtt-host \$MQTT_HOST --mqtt-port \$MQTT_PORT \\
     --base-url http://\$MQTT_HOST \\
-    --hz \${SENSOR_HZ:-50}
+    --hz \$SENSOR_HZ
 Restart=always
 RestartSec=5
 User=root
@@ -355,7 +355,7 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/ccid_rack_agent.py \\
     --socket-path \$NFC_SOCKET_PATH \\
-    --rack-number \${RACK_NUMBER:-1} \\
+    --rack-number \$RACK_NUMBER \\
     --http-port 8766 \\
     --allowed-origins http://basestation,http://192.168.4.1,http://localhost,http://127.0.0.1
 Restart=always
