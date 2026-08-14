@@ -615,10 +615,11 @@ class RackControllerEndpointTests(APITestCase):
     def test_acquire_is_idempotent_for_holder_and_busy_for_an_observer(self):
         first = self._acquire()
         second = self._acquire()
-        RackScreen.objects.create(device_id="screen-observer", rack_number=1)
-        busy = self._acquire(
-            device_id="screen-observer", instance="tab-b", token=controller_token(),
-        )
+        # A competing claimant: the same registered screen, a second browser
+        # tab. One screen owns the rack (one screen per rack is enforced), but
+        # any tab of it can attempt a claim and be refused for lack of the
+        # lease — which is how contention actually happens in the gym.
+        busy = self._acquire(instance="tab-b", token=controller_token())
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.data["controller_epoch"], first.data["controller_epoch"])
@@ -824,10 +825,11 @@ class RackControllerEndpointTests(APITestCase):
         runtime = RackRuntime.objects.get(rack_number=1)
         runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
         runtime.save(update_fields=["lease_expires_at", "updated_at"])
-        RackScreen.objects.create(device_id="screen-b", rack_number=1)
-
+        # A competing claimant: another tab of the same registered screen, with
+        # its own capability. One screen owns the rack; tabs of it contend for
+        # the lease, which is how contention actually happens in the gym.
         second_token = controller_token()
-        claimed = self._acquire(device_id="screen-b", instance="tab-b", token=second_token)
+        claimed = self._acquire(instance="tab-b", token=second_token)
         self.assertEqual(claimed.status_code, 200)
         self.assertEqual(claimed.data["controller_epoch"], first.data["controller_epoch"] + 1)
 
@@ -841,15 +843,14 @@ class RackControllerEndpointTests(APITestCase):
         runtime.current_set = target_set
         runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
         runtime.save(update_fields=["current_set", "lease_expires_at", "updated_at"])
-        RackScreen.objects.create(device_id="screen-c", rack_number=1)
 
-        blocked = self._acquire(device_id="screen-c", instance="tab-c", token=controller_token())
+        blocked = self._acquire(instance="tab-c", token=controller_token())
 
         self.assertEqual(blocked.status_code, 409)
         self.assertEqual(blocked.data["code"], "rack_recovery_required")
         self.assertEqual(blocked.data["snapshot"]["phase"], "recovery_required")
 
-        recovered = self._acquire(device_id="screen-b", instance="tab-b", token=second_token)
+        recovered = self._acquire(instance="tab-b", token=second_token)
         self.assertEqual(recovered.status_code, 200)
         self.assertEqual(recovered.data["controller_epoch"], claimed.data["controller_epoch"] + 1)
 
@@ -1249,6 +1250,36 @@ class NodeRegistrationTests(APITestCase):
             self.assertEqual(res.status_code, 400, f"{bad!r} should be refused")
         self.assertEqual(Node.objects.count(), 0)
 
+
+class SeederNfcTagTests(APITestCase):
+    """A fresh seed must assign the demo wristband tag, or sign-in silently dies.
+
+    Nothing else in the system assigns tags, and the seeder used to create
+    athletes with nfc_tag_id None — which is exactly how a fresh database lost
+    wristband sign-in until someone set the tag by hand.
+    """
+
+    def test_seed_assigns_braydons_wristband_tag(self):
+        from django.core.management import call_command
+        from event_handler.management.commands.seed_active_session import NFC_TAG_BY_ATHLETE
+
+        call_command("seed_active_session")
+
+        for name, tag in NFC_TAG_BY_ATHLETE.items():
+            athlete = Athlete.objects.get(name=name)
+            self.assertEqual(athlete.nfc_tag_id, tag, f"{name} should be seeded with its tag")
+
+    def test_seed_never_clobbers_a_manually_set_tag(self):
+        from django.core.management import call_command
+
+        Athlete.objects.create(name="Braydon Callender", nfc_tag_id="04FFFFFFFFFFFFFF")
+        call_command("seed_active_session")
+
+        athlete = Athlete.objects.get(name="Braydon Callender")
+        self.assertEqual(
+            athlete.nfc_tag_id, "04FFFFFFFFFFFFFF",
+            "a coach-retagged wristband must survive re-seeding",
+        )
 
 class PerLaptopNodeFlowTests(APITestCase):
     """The per-rack-laptop topology: the rack screen runs the WT901 agent, which

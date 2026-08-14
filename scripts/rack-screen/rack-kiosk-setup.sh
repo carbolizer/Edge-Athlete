@@ -36,8 +36,24 @@ fi
 ROLE="${1:-rack}"
 case "$ROLE" in
   rack|coach|dashboard) ;;
-  *) echo "unknown role '$ROLE' — expected rack, coach, or dashboard"; exit 1 ;;
+  --agents-only) ROLE="rack" ;;
+  *) echo "unknown role '$ROLE' — expected rack, coach, dashboard, or --agents-only"; exit 1 ;;
 esac
+
+# ── --agents-only mode ─────────────────────────────────────────────────────────
+# Install ONLY the two hardware agents (the WT901 sensor agent and the NFC reader
+# agent) as boot services, and stop — no Chromium, no Wi-Fi join, no kiosk, no
+# desktop autologin. This is for a machine that is a general-purpose laptop (the
+# rack screen runs in a normal browser) rather than a dedicated kiosk tablet.
+#
+# The agent block below expects to run as ROLE=rack, which we just forced. The
+# deps + services logic is identical either way; only the steps AFTER the agent
+# block are skipped.
+AGENTS_ONLY=0
+if [ "${1:-}" = "--agents-only" ]; then
+  AGENTS_ONLY=1
+  echo "==> agents-only: installing the WT901 + NFC reader boot services, then stopping"
+fi
 
 # ── settings — the WiFi values MUST match the base station's startup.sh ─────────
 # Display rotation for THIS device: normal | left | right | inverted.
@@ -153,13 +169,17 @@ EOF
     fi
 }
 
-echo "[1] installing Chromium + kiosk helpers..."
-apt update
-# Package name differs by image: chromium-browser (older) vs chromium (newer).
-# procps supplies pkill, which ea-restart and ea-kiosk-exit both depend on. Without
-# it they print a cheerful message and do nothing, which is worse than failing.
-apt install -y network-manager x11-xserver-utils unclutter curl procps
-apt install -y chromium-browser || apt install -y chromium
+if [ "$AGENTS_ONLY" = 1 ]; then
+    echo "[1] agents-only — skipping Chromium + kiosk helpers"
+else
+    echo "[1] installing Chromium + kiosk helpers..."
+    apt update
+    # Package name differs by image: chromium-browser (older) vs chromium (newer).
+    # procps supplies pkill, which ea-restart and ea-kiosk-exit both depend on. Without
+    # it they print a cheerful message and do nothing, which is worse than failing.
+    apt install -y network-manager x11-xserver-utils unclutter curl procps
+    apt install -y chromium-browser || apt install -y chromium
+fi
 
 # ── the rack sensor agent ──────────────────────────────────────────────────────
 # A rack screen owns the WT901 sensor bolted to its rack. The agent reads the
@@ -257,7 +277,7 @@ ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/wt901_rack_agent.
     --address \$BLE_ADDRESS --node-id \$NODE_ID \\
     --mqtt-host \$MQTT_HOST --mqtt-port \$MQTT_PORT \\
     --base-url http://\$MQTT_HOST \\
-    --hz \${SENSOR_HZ:-50}
+    --hz \$SENSOR_HZ
 Restart=always
 RestartSec=5
 User=root
@@ -335,7 +355,7 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/ccid_rack_agent.py \\
     --socket-path \$NFC_SOCKET_PATH \\
-    --rack-number \${RACK_NUMBER:-1} \\
+    --rack-number \$RACK_NUMBER \\
     --http-port 8766 \\
     --allowed-origins http://basestation,http://192.168.4.1,http://localhost,http://127.0.0.1
 Restart=always
@@ -355,6 +375,18 @@ EOF
         systemctl disable "$(basename "$NFC_AGENT_SERVICE")" >/dev/null 2>&1 || true
         echo "    NFC reader agent NOT enabled — pyusb is not installed on this machine"
     fi
+fi
+
+if [ "$AGENTS_ONLY" = 1 ]; then
+    echo ""
+    echo "[✔] agents-only setup complete."
+    echo "  WT901 sensor agent  edgeathlete-rack-agent"
+    echo "  NFC reader agent    edgeathlete-nfc-agent"
+    echo ""
+    echo "  Both start on every boot. Check:"
+    echo "    systemctl status edgeathlete-nfc-agent edgeathlete-rack-agent"
+    echo "  Logs: journalctl -u edgeathlete-nfc-agent"
+    exit 0
 fi
 
 echo "[2] joining the '$AP_SSID' WiFi as a client..."

@@ -105,6 +105,20 @@ class RackScreen(models.Model):
     rack_number = models.IntegerField(null=True, blank=True)
     last_seen = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            # One screen per rack, the same rule Node enforces for sensors. Two
+            # screens claiming one rack made the room-state snapshot return a
+            # ghost: a stale browser held rack 1 while the real one was assigned
+            # to it too, and the snapshot showed the stale one. There is no
+            # reason for a rack to answer two tablets.
+            models.UniqueConstraint(
+                fields=['rack_number'],
+                condition=models.Q(rack_number__isnull=False),
+                name='screen_one_per_assigned_rack',
+            ),
+        ]
+
     def __str__(self):
         rack = self.rack_number if self.rack_number is not None else "awaiting assignment"
         return f"RackScreen {self.device_id} (rack {rack})"
