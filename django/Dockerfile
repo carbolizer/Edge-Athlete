@@ -46,4 +46,4 @@ EXPOSE 8000
 #                      instead of being held forever.
 #   --access-logfile - logs to stdout, so `docker compose logs django` shows
 #                      requests the way runserver used to.
-CMD ["sh", "-c", "python manage.py migrate && python manage.py ensure_demo_coach && exec gunicorn basestation_config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60 --graceful-timeout 30 --access-logfile - --error-logfile -"]
+CMD ["sh", "-c", "python manage.py migrate && python manage.py ensure_demo_coach && python manage.py recover_racks && exec gunicorn basestation_config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60 --graceful-timeout 30 --access-logfile - --error-logfile -"]
