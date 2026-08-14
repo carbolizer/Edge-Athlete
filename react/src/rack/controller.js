@@ -30,6 +30,28 @@ function leaseDuration(response) {
     : 0
 }
 
+// ── WHEN TO OFFER RECOVERY ─────────────────────────────────────────────────────
+// There are TWO ways a screen ends up stranded, and they arrive with different
+// reasons. Keying off the reason alone missed one of them:
+//
+//   REBOOT / closed tab — the session token dies, the next claim is refused, and
+//     the server answers `rack_recovery_required`.
+//   NETWORK DROP — the tab lives, but heartbeats stop and the lease lapses, so
+//     the LOCAL timer flips us to observer with `lease_expired`. Nothing was
+//     refused, so nobody ever said `rack_recovery_required`.
+//
+// The second is the likelier one in a gym, and it was the one that stayed stuck.
+//
+// So ask the snapshot instead: the rack has an unfinished set and no live
+// controller. That is deliberately the SAME condition that suppresses the
+// automatic retry — if we refuse to re-claim on our own because a set is open,
+// we owe the athlete a button. The two must never disagree.
+export function canOfferRecovery(mode, canClaim, reason, snapshot) {
+  if (mode !== 'observer' || !canClaim) return false
+  if (reason === 'rack_recovery_required') return true
+  return Boolean(snapshot && !snapshot.controller_active && snapshot.current_set != null)
+}
+
 export function useRackController(rackNumber, deviceId, enabled, canClaim = true) {
   const identityRef = useRef(null)
   const capabilityRef = useRef(null)
@@ -218,7 +240,7 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
 
   // The rack is holding a set nobody can finish, and THIS screen is the one
   // bolted to it. Offer the way out rather than sitting read-only forever.
-  const canRecover = mode === 'observer' && canClaim && reason === 'rack_recovery_required'
+  const canRecover = canOfferRecovery(mode, canClaim, reason, snapshot)
 
   const recover = useCallback(() => {
     recoverRef.current = true

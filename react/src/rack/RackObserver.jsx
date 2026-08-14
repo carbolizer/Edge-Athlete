@@ -71,11 +71,31 @@ export default function RackObserver({ snapshot, reason, canRecover = false, onR
           <div style={{
             border: `1px solid ${T.amber}`, borderRadius: 14, padding: 20, marginBottom: 26,
           }}>
-            <div style={{ fontSize: 19, fontWeight: 850 }}>This rack has an unfinished set</div>
-            <div style={{ color: T.muted, fontSize: 14, marginTop: 8, lineHeight: 1.5 }}>
-              It was left open when the last session ended. Recovering discards it
-              and hands this screen back to you.
-            </div>
+            {/* TWO DIFFERENT OUTCOMES, so two different promises. A refused claim
+                means this browser can no longer prove it started the set, and
+                taking the rack ends that set — say so. A lapsed lease means the
+                tab never died, the server still recognises it, and re-claiming
+                picks the set straight back up with its reps. Telling an athlete
+                mid-session that we are about to bin their set, when we are not,
+                is how you get someone refusing to press the one button that
+                fixes their rack. */}
+            {reason === 'rack_recovery_required' ? (
+              <>
+                <div style={{ fontSize: 19, fontWeight: 850 }}>This rack has an unfinished set</div>
+                <div style={{ color: T.muted, fontSize: 14, marginTop: 8, lineHeight: 1.5 }}>
+                  It was left open by an earlier session and cannot be finished.
+                  Recovering ends it and hands this screen back to you.
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 19, fontWeight: 850 }}>This screen lost its connection</div>
+                <div style={{ color: T.muted, fontSize: 14, marginTop: 8, lineHeight: 1.5 }}>
+                  The set is still here. Reconnecting picks it up where it left off —
+                  nothing is lost.
+                </div>
+              </>
+            )}
             <button
               onClick={onRecover}
               style={{
@@ -83,7 +103,7 @@ export default function RackObserver({ snapshot, reason, canRecover = false, onR
                 borderRadius: 12, border: `1px solid ${T.amber}`, background: 'transparent',
                 color: T.amber, cursor: 'pointer', fontFamily: 'inherit',
               }}>
-              Recover this rack
+              {reason === 'rack_recovery_required' ? 'Recover this rack' : 'Reconnect to this rack'}
             </button>
           </div>
         )}

@@ -48,12 +48,27 @@ describe('rack observer snapshot', () => {
 describe('the way out of a stranded rack', () => {
   const stranded = { ...snapshot, phase: 'recovery_required', controller_active: false }
 
-  it('offers recovery, in words and with a button, when this screen may take it', () => {
+  it('promises to END the set when the claim was refused — it will', () => {
     const html = renderToStaticMarkup(createElement(RackObserver, {
       snapshot: stranded, reason: 'rack_recovery_required', canRecover: true, onRecover: () => {},
     }))
     expect(html).toContain('This rack has an unfinished set')
     expect(html).toContain('Recover this rack')
+    expect(html).toContain('ends it')
+  })
+
+  it('promises to RESUME the set after a dropped connection — because it does', () => {
+    // Verified on the running stack: the tab survived, so the server still
+    // recognises this controller and the set comes back with its reps. Telling
+    // the athlete we are discarding it would be a lie, and the kind that stops
+    // someone pressing the button that fixes their rack.
+    const html = renderToStaticMarkup(createElement(RackObserver, {
+      snapshot: stranded, reason: 'lease_expired', canRecover: true, onRecover: () => {},
+    }))
+    expect(html).toContain('This screen lost its connection')
+    expect(html).toContain('Reconnect to this rack')
+    expect(html).toContain('nothing is lost')
+    expect(html).not.toContain('ends it')
   })
 
   it('offers nothing when this screen is not the one assigned to the rack', () => {

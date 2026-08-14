@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   base64Url,
+  canOfferRecovery,
   controllerCommand,
   controllerHeaders,
   getTabControllerIdentity,
@@ -70,5 +71,43 @@ describe('rack controller identity', () => {
     expect(shouldAcceptSnapshot(current, {
       state_version: 9, server_time: '2026-08-05T20:00:01Z',
     })).toBe(true)
+  })
+})
+
+// ── the offline path ───────────────────────────────────────────────────────────
+// Found by Devi on real hardware, testing the way the gym actually fails: instead
+// of closing the browser he put the tab offline. That never produces
+// `rack_recovery_required` — the lease simply lapses locally — so the first
+// version of the button never appeared, while the auto-retry stayed suppressed.
+// Stranded, with nothing to press. These pin both routes in.
+describe('offering the recovery button', () => {
+  const stranded = { controller_active: false, current_set: 41 }
+
+  it('offers it when a claim was refused outright (reboot, closed tab)', () => {
+    expect(canOfferRecovery('observer', true, 'rack_recovery_required', null)).toBe(true)
+  })
+
+  it('offers it when the lease merely lapsed and a set is still open (network drop)', () => {
+    expect(canOfferRecovery('observer', true, 'lease_expired', stranded)).toBe(true)
+  })
+
+  it('stays quiet while someone else is genuinely controlling the rack', () => {
+    expect(canOfferRecovery('observer', true, 'rack_controller_busy', {
+      controller_active: true, current_set: 41,
+    })).toBe(false)
+  })
+
+  it('stays quiet when the rack is simply idle — nothing to recover', () => {
+    expect(canOfferRecovery('observer', true, 'lease_expired', {
+      controller_active: false, current_set: null,
+    })).toBe(false)
+  })
+
+  it('never offers it to a screen that does not own this rack', () => {
+    expect(canOfferRecovery('observer', false, 'rack_recovery_required', stranded)).toBe(false)
+  })
+
+  it('never offers it while this screen is still the controller', () => {
+    expect(canOfferRecovery('controller', true, '', stranded)).toBe(false)
   })
 })
