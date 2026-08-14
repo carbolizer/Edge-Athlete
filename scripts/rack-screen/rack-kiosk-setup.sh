@@ -171,6 +171,11 @@ EOF
 
 if [ "$AGENTS_ONLY" = 1 ]; then
     echo "[1] agents-only — skipping Chromium + kiosk helpers"
+    # The package index still has to be refreshed. This mode skips the Chromium
+    # block below, which is where `apt update` used to live — but it still runs
+    # `apt install python3-venv` further down, and installing against a stale
+    # index is how you get a 404 on a package that plainly exists.
+    apt update
 else
     echo "[1] installing Chromium + kiosk helpers..."
     apt update
@@ -218,7 +223,12 @@ if [ "$ROLE" = "rack" ]; then
     NFC_DEPS_OK=1
 
     if [ ! -x "$AGENT_VENV/bin/python" ]; then
-        apt install -y python3 python3-venv
+        # Unguarded, this line dies under `set -e` and takes the whole run with
+        # it, printing nothing about why — the same failure mode the pip installs
+        # below were split up to avoid. Say what happened and let the venv attempt
+        # be the thing that decides whether the agents are possible.
+        apt install -y python3 python3-venv \
+            || echo "[!] could not install python3/python3-venv — trying the venv anyway"
         # If the venv itself cannot be built, neither agent is possible — but the
         # kiosk still is, so record it and carry on rather than aborting.
         python3 -m venv "$AGENT_VENV" || { BLE_DEPS_OK=0; NFC_DEPS_OK=0; }
@@ -378,14 +388,41 @@ EOF
 fi
 
 if [ "$AGENTS_ONLY" = 1 ]; then
+    # This summary used to list both agents unconditionally. On a Bullseye Pi
+    # that meant printing "bleak could not be installed, skipping the BLE agent"
+    # and then, three lines later, a green tick listing that same agent as
+    # installed. A person might catch the contradiction; a script reading the
+    # output just sees success. Report what was actually enabled — the same two
+    # conditions the services themselves were gated on above.
     echo ""
-    echo "[✔] agents-only setup complete."
-    echo "  WT901 sensor agent  edgeathlete-rack-agent"
-    echo "  NFC reader agent    edgeathlete-nfc-agent"
-    echo ""
-    echo "  Both start on every boot. Check:"
-    echo "    systemctl status edgeathlete-nfc-agent edgeathlete-rack-agent"
-    echo "  Logs: journalctl -u edgeathlete-nfc-agent"
+    ENABLED=""
+    if [ "$BLE_DEPS_OK" = 1 ] && [ -n "${BLE_ADDRESS:-}" ]; then
+        ENABLED="$ENABLED  WT901 sensor agent  edgeathlete-rack-agent\n"
+    fi
+    if [ "$NFC_DEPS_OK" = 1 ]; then
+        ENABLED="$ENABLED  NFC reader agent    edgeathlete-nfc-agent\n"
+    fi
+
+    if [ -n "$ENABLED" ]; then
+        echo "[✔] agents-only setup complete. Enabled and starting on every boot:"
+        printf "%b" "$ENABLED"
+        echo ""
+        echo "  Check: systemctl status edgeathlete-nfc-agent edgeathlete-rack-agent"
+        echo "  Logs:  journalctl -u edgeathlete-nfc-agent"
+    else
+        echo "[!] agents-only setup finished, but NO agent was enabled."
+        echo "    The unit files were written, so fixing the cause above and"
+        echo "    re-running this is all it takes. Nothing else was changed."
+    fi
+
+    # Say the quiet part out loud rather than leaving it to be inferred from a
+    # missing line in a list nobody reads closely.
+    [ "$NFC_DEPS_OK" = 1 ] || echo "    NFC reader:  NOT enabled (pyusb missing)"
+    if [ "$BLE_DEPS_OK" != 1 ]; then
+        echo "    WT901 agent: NOT enabled (bleak missing — needs Python 3.10+)"
+    elif [ -z "${BLE_ADDRESS:-}" ]; then
+        echo "    WT901 agent: NOT enabled (no BLE_ADDRESS yet — scan for it, then re-run)"
+    fi
     exit 0
 fi
 
