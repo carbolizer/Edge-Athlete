@@ -37,7 +37,7 @@ function metric(value) {
   return value == null ? '—' : `${Number(value).toFixed(2)} m/s`
 }
 
-export default function RackObserver({ snapshot, reason }) {
+export default function RackObserver({ snapshot, reason, canRecover = false, onRecover }) {
   const [, tick] = useState(0)
   useEffect(() => {
     const interval = setInterval(() => tick((value) => value + 1), 1000)
@@ -63,6 +63,30 @@ export default function RackObserver({ snapshot, reason }) {
         </div>
       </header>
       <main style={{ width: 'min(520px, calc(100% - 40px))', margin: '0 auto', padding: '28px 0' }}>
+        {/* The dead end this replaces: a rack left holding an unfinished set
+            refused every claim, and the screen sat here read-only with no
+            explanation and nothing to press. Say what is wrong in words an
+            athlete can act on, and give them the one action that fixes it. */}
+        {canRecover && (
+          <div style={{
+            border: `1px solid ${T.amber}`, borderRadius: 14, padding: 20, marginBottom: 26,
+          }}>
+            <div style={{ fontSize: 19, fontWeight: 850 }}>This rack has an unfinished set</div>
+            <div style={{ color: T.muted, fontSize: 14, marginTop: 8, lineHeight: 1.5 }}>
+              It was left open when the last session ended. Recovering discards it
+              and hands this screen back to you.
+            </div>
+            <button
+              onClick={onRecover}
+              style={{
+                marginTop: 18, width: '100%', padding: 18, fontSize: 17, fontWeight: 800,
+                borderRadius: 12, border: `1px solid ${T.amber}`, background: 'transparent',
+                color: T.amber, cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+              Recover this rack
+            </button>
+          </div>
+        )}
         <div style={{ color: T.lime, fontSize: 11, fontWeight: 900, letterSpacing: '.12em', textTransform: 'uppercase' }}>
           {view.phase}
         </div>

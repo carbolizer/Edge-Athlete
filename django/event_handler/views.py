@@ -494,23 +494,21 @@ def _bluetooth_rack_numbers(rack_numbers=None):
     return sorted(query.values_list("rack_number", flat=True))
 
 
-def _force_clear_rack(rack_number, *, emit_event=True):
-    """The clearing itself, shared by rack_remove and racks_release_all.
+def _end_open_sets_on_rack(rack_number):
+    """End every unfinished set on this rack as a FALSE set.
 
-    The CALLER owns the transaction — both paths need it, and the bulk one needs
-    all eight racks to land or none of them. `emit_event=False` lets the sweep
-    publish a single broadcast at the end instead of one per rack.
+    PROTECT on Set.session means we never delete; ending is the only legal way to
+    close work, and false is the honest label for work that was started and
+    abandoned. A set is "on this rack" when its node is assigned here — that's
+    the physical truth, and the sensor is what ties a set to a rack.
+
+    The CALLER owns the transaction.
     """
-    runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
-    # End open sets as false sets. PROTECT on Set.session means we never
-    # delete; ending is the only legal way to close work, and false is the
-    # honest label for work that was started and abandoned. A set is "on this
-    # rack" when its node is assigned here — that's the physical truth, and
-    # the sensor is what ties a set to a rack.
     open_sets = Set.objects.select_for_update().filter(
         ended_at=None,
         node__rack_number=rack_number,
     )
+    ended = 0
     for s in open_sets:
         s.ended_at = timezone.now()
         s.is_false_set = True
@@ -521,25 +519,53 @@ def _force_clear_rack(rack_number, *, emit_event=True):
             "ended_at", "is_false_set", "reps_completed",
             "avg_velocity", "peak_velocity",
         ])
+        ended += 1
+    return ended
+
+
+def _reset_runtime_to_idle(runtime):
+    """Drop the lease and every scrap of presentation state, back to a fresh rack.
+
+    The epoch bump is what fences out commands still in flight from the previous
+    controller, so this is never just a field wipe. The CALLER owns the
+    transaction, and owns saying anything about it to the room.
+    """
+    runtime.controller_screen = None
+    runtime.client_instance_id = ""
+    runtime.controller_token_digest = ""
+    runtime.controller_epoch += 1
+    runtime.lease_expires_at = None
+    runtime.phase = RackRuntime.PHASE_IDLE
+    runtime.selected_athlete = None
+    runtime.selected_exercise = None
+    runtime.current_set = None
+    runtime.rep_count = 0
+    runtime.latest_mean_velocity = None
+    runtime.latest_peak_velocity = None
+    runtime.latest_color = ""
+    runtime.phase_started_at = None
+    runtime.state_version += 1
+    runtime.save()
+    # Stale command receipts for the old controller are dead weight now.
+    runtime.command_receipts.all().delete()
+
+
+def _force_clear_rack(rack_number, *, emit_event=True):
+    """The clearing itself, shared by rack_remove and racks_release_all.
+
+    The CALLER owns the transaction — both paths need it, and the bulk one needs
+    all eight racks to land or none of them. `emit_event=False` lets the sweep
+    publish a single broadcast at the end instead of one per rack.
+
+    This ALSO unassigns the screen, which is what separates it from the rack's
+    own recovery in rack_controller_acquire: a coach releasing a rack is taking
+    the tablet back, while a screen recovering its own abandoned set is staying
+    exactly where it is.
+    """
+    runtime = RackRuntime.objects.select_for_update().filter(rack_number=rack_number).first()
+    _end_open_sets_on_rack(rack_number)
     if runtime is not None:
-        runtime.controller_screen = None
-        runtime.client_instance_id = ""
-        runtime.controller_token_digest = ""
-        runtime.controller_epoch += 1
-        runtime.lease_expires_at = None
-        runtime.phase = RackRuntime.PHASE_IDLE
-        runtime.selected_athlete = None
-        runtime.selected_exercise = None
-        runtime.current_set = None
-        runtime.rep_count = 0
-        runtime.latest_mean_velocity = None
-        runtime.latest_peak_velocity = None
-        runtime.latest_color = ""
-        runtime.phase_started_at = None
-        runtime.state_version += 1
-        runtime.save()
-        # Stale command receipts for the old controller are dead weight now.
-        runtime.command_receipts.all().delete()
+        _reset_runtime_to_idle(runtime)
     RackScreen.objects.filter(rack_number=rack_number).update(rack_number=None)
     if emit_event:
         MonitoringEvent.objects.create(reason="rack_state_changed")
@@ -1151,10 +1177,17 @@ def rack_state(request, rack_number):
 def rack_controller_acquire(request, rack_number):
     """Claim or renew ownership after validating the physical rack identity."""
     required = {"device_id", "client_instance_id", "controller_token"}
-    if set(request.data) != required:
+    # `recover` is the ONLY optional field, and it is opt-in on purpose — see the
+    # recovery branch below. Anything else is still rejected outright.
+    if not required <= set(request.data) or set(request.data) - required - {"recover"}:
         return Response({
             "code": "invalid_controller_claim",
             "detail": "exactly device_id, client_instance_id, and controller_token are required",
+        }, status=400)
+    recover = request.data.get("recover", False)
+    if not isinstance(recover, bool):
+        return Response({
+            "code": "invalid_controller_claim", "detail": "recover must be true or false",
         }, status=400)
     device_id = request.data.get("device_id")
     client_instance_id = request.data.get("client_instance_id")
@@ -1202,11 +1235,35 @@ def rack_controller_acquire(request, rack_number):
                 "rack_controller_busy", "another browser controls this rack", runtime, now,
             )
         if _runtime_has_open_set(runtime) and not same_holder:
-            return _controller_conflict(
-                "rack_recovery_required",
-                "the expired open set can only be recovered by its original controller",
-                runtime, now, recovery_required=True,
-            )
+            # ── WHY THE ASSIGNED SCREEN MAY RECOVER ITS OWN RACK ──────────────
+            # `same_holder` proves the same BROWSER SESSION, using a token kept
+            # in sessionStorage. That token cannot survive the very event that
+            # strands a set — a screen reboot, a kiosk restart, a closed tab. So
+            # requiring it meant a rebooted screen could never be its own
+            # "original controller", and the rack sat read-only forever with no
+            # way out from the rack itself. Only a coach release or a base
+            # station restart could clear it, and neither is available to the
+            # athlete standing in front of it.
+            #
+            # Being the screen ASSIGNED to this rack is the stronger claim
+            # anyway: it is the same physical tablet bolted to the same rack,
+            # which is what we actually care about. That was already checked
+            # above (screen.rack_number != rack_number is a 409), so by here we
+            # know who this is.
+            #
+            # It stays OPT-IN because recovery ends the abandoned set as a false
+            # set, and throwing away someone's work must be a deliberate tap and
+            # never a silent side effect of a screen waking up.
+            if not recover:
+                return _controller_conflict(
+                    "rack_recovery_required",
+                    "this rack has an unfinished set — recover it to take control",
+                    runtime, now, recovery_required=True,
+                )
+            _end_open_sets_on_rack(rack_number)
+            _reset_runtime_to_idle(runtime)
+            runtime.refresh_from_db()
+            MonitoringEvent.objects.create(reason="rack_state_changed")
 
         runtime.controller_screen = screen
         runtime.client_instance_id = client_instance_id

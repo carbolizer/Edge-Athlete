@@ -1342,6 +1342,113 @@ class RecoverRacksTests(APITestCase):
         self.assertEqual(runtime.command_receipts.count(), 0)
 
 
+class RackSelfRecoveryTests(APITestCase):
+    """A rebooted rack screen recovering its OWN stranded set.
+
+    The situation: a session is never closed, so the rack keeps an open set. The
+    screen then restarts — Pi reboot, kiosk restart, closed tab — and its
+    sessionStorage controller token dies with it. It can no longer prove it is
+    the same browser session, so it was refused forever and sat read-only with
+    no way out from the rack itself. Braydon's recover_racks fixes this at BASE
+    STATION boot; it does nothing when only the screen comes back.
+    """
+
+    def setUp(self):
+        self.screen = RackScreen.objects.create(device_id="screen-1", rack_number=1)
+        self.node = Node.objects.create(node_id="node-1", rack_number=1)
+        self.session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        self.athlete = Athlete.objects.create(name="Jordan")
+        self.exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+
+    def _acquire(self, *, device_id="screen-1", instance="tab-a", token=None, recover=None):
+        body = {
+            "device_id": device_id,
+            "client_instance_id": instance,
+            "controller_token": token or controller_token(),
+        }
+        if recover is not None:
+            body["recover"] = recover
+        return self.client.post("/api/racks/1/controller/acquire/", body, format="json")
+
+    def _strand_a_set(self):
+        """Leave rack 1 exactly as an un-closed session leaves it."""
+        stuck = Set.objects.create(
+            session=self.session, athlete=self.athlete, exercise=self.exercise,
+            node=self.node, set_number=1, ended_at=None,
+        )
+        runtime, _ = RackRuntime.objects.get_or_create(rack_number=1)
+        runtime.current_set = stuck
+        runtime.phase = RackRuntime.PHASE_ACTIVE
+        runtime.selected_athlete = self.athlete
+        runtime.rep_count = 4
+        runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
+        runtime.save()
+        return stuck, runtime
+
+    def test_a_rebooted_screen_is_still_refused_without_asking_to_recover(self):
+        # Unchanged behaviour, and deliberately so: waking up must never discard
+        # someone's work as a side effect.
+        self._strand_a_set()
+
+        blocked = self._acquire(instance="tab-after-reboot")
+
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.data["code"], "rack_recovery_required")
+        self.assertEqual(blocked.data["snapshot"]["phase"], "recovery_required")
+
+    def test_the_assigned_screen_can_recover_and_take_control(self):
+        stuck, runtime = self._strand_a_set()
+        before_epoch = runtime.controller_epoch
+
+        recovered = self._acquire(instance="tab-after-reboot", recover=True)
+
+        self.assertEqual(recovered.status_code, 200, recovered.data)
+        stuck.refresh_from_db()
+        self.assertIsNotNone(stuck.ended_at, "the stranded set must be closed")
+        self.assertTrue(stuck.is_false_set, "abandoned work is a false set")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.selected_athlete)
+        self.assertEqual(runtime.rep_count, 0)
+        self.assertEqual(runtime.controller_screen_id, self.screen.id)
+        self.assertGreater(runtime.controller_epoch, before_epoch)
+        self.assertTrue(runtime.lease_expires_at > timezone.now())
+        self.assertEqual(recovered.data["snapshot"]["phase"], "idle")
+
+    def test_recovery_does_not_let_a_foreign_screen_take_the_rack(self):
+        # The whole safety of this rests on "assigned to THIS rack". A tablet
+        # from another rack must not be able to clear someone else's set just by
+        # asking nicely.
+        RackScreen.objects.create(device_id="screen-2", rack_number=2)
+        stuck, _ = self._strand_a_set()
+
+        refused = self._acquire(device_id="screen-2", instance="tab-x", recover=True)
+
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.data["code"], "rack_screen_not_assigned")
+        stuck.refresh_from_db()
+        self.assertIsNone(stuck.ended_at, "a foreign screen must not end this set")
+
+    def test_recover_must_be_a_boolean_and_junk_fields_are_still_rejected(self):
+        self._strand_a_set()
+
+        self.assertEqual(self._acquire(recover="yes please").status_code, 400)
+        self.assertEqual(self.client.post("/api/racks/1/controller/acquire/", {
+            "device_id": "screen-1", "client_instance_id": "tab-a",
+            "controller_token": controller_token(), "sudo": True,
+        }, format="json").status_code, 400)
+
+    def test_recovering_a_clean_rack_is_an_ordinary_claim(self):
+        # No open set: `recover` is simply irrelevant, not an error, so a screen
+        # that always sends it does not have to know the rack's state first.
+        granted = self._acquire(recover=True)
+
+        self.assertEqual(granted.status_code, 200)
+        self.assertEqual(granted.data["snapshot"]["phase"], "idle")
+
+
 class PerLaptopNodeFlowTests(APITestCase):
     """The per-rack-laptop topology: the rack screen runs the WT901 agent, which
     registers itself as an ordinary MQTT node. That is the whole shortcut — an

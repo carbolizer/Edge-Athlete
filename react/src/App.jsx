@@ -190,7 +190,8 @@ function RackLive({ rackNumber }) {
   }
 
   if (controller.mode === 'observer') {
-    return <RackObserver snapshot={controller.snapshot} reason={controller.reason} />
+    return <RackObserver snapshot={controller.snapshot} reason={controller.reason}
+      canRecover={controller.canRecover} onRecover={controller.recover} />
   }
 
   if (controller.mode === 'checking') {

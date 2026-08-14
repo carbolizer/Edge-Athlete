@@ -37,6 +37,7 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
   const leaseTimerRef = useRef(null)
   const leaseDeadlineRef = useRef(0)
   const mountedRef = useRef(false)
+  const recoverRef = useRef(false)
   const [mode, setMode] = useState('checking')
   const [snapshot, setSnapshot] = useState(null)
   const [reason, setReason] = useState('')
@@ -132,6 +133,11 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
     let cancelled = false
     setMode('checking')
     identityRef.current = getTabControllerIdentity()
+    // Consumed by THIS attempt only. Recovery is a one-shot answer to a prompt
+    // the athlete actually saw, never a standing property of the screen — if
+    // this claim fails for some other reason, the next one asks again.
+    const recoverThisAttempt = recoverRef.current
+    recoverRef.current = false
 
     async function acquire() {
       try {
@@ -139,6 +145,7 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
           device_id: deviceId,
           client_instance_id: identityRef.current.clientInstanceId,
           controller_token: identityRef.current.controllerToken,
+          ...(recoverThisAttempt ? { recover: true } : {}),
         })
         if (cancelled) return
         capabilityRef.current = {
@@ -209,11 +216,22 @@ export function useRackController(rackNumber, deviceId, enabled, canClaim = true
     return () => clearTimeout(retry)
   }, [mode, canClaim, snapshot?.controller_active, snapshot?.current_set])
 
+  // The rack is holding a set nobody can finish, and THIS screen is the one
+  // bolted to it. Offer the way out rather than sitting read-only forever.
+  const canRecover = mode === 'observer' && canClaim && reason === 'rack_recovery_required'
+
+  const recover = useCallback(() => {
+    recoverRef.current = true
+    setClaimAttempt((attempt) => attempt + 1)
+  }, [])
+
   return {
     mode,
     reason,
     snapshot,
     canControl: mode === 'controller',
+    canRecover,
+    recover,
     runMutation,
     runControlled,
     updateState,
