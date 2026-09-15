@@ -6,7 +6,7 @@
 // room-level one never does. Splitting them makes that dependency visible, so
 // the thing a coach came for is the thing they reach first.
 
-export const ROOM_TABS = ["room", "workouts", "schedule", "reports"];
+export const ROOM_TABS = ["room", "roster", "workouts", "schedule", "reports"];
 export const ATHLETE_TABS = ["athlete", "history", "programs", "notes"];
 export const ALL_TABS = [...ROOM_TABS, ...ATHLETE_TABS];
 

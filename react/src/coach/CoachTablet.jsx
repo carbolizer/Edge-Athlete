@@ -11,13 +11,13 @@ import { applyRoleIdentity } from '../device.js'
 import { navigate } from '../router.js'
 import {
   coachFetch,
-  coachLogin,
   getCoachToken,
   setCoachToken,
   shortId,
 } from './api.js'
 import { getRackState } from '../api/client.js'
 import './CoachTablet.css'
+import CoachAccess from './CoachAccess.jsx'
 
 /** Demo room size — slots are UI numbers, not a DB model. */
 const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -214,62 +214,6 @@ function useCoachIdentity() {
     applyRoleIdentity('coach')
     return () => { document.title = prevTitle }
   }, [])
-}
-
-function LoginGate({ onLoggedIn }) {
-  const [username, setUsername] = useState('coach')
-  const [password, setPassword] = useState('coachpass')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      const token = await coachLogin(username.trim(), password)
-      onLoggedIn(token)
-    } catch (err) {
-      setError(err.message || 'login failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="coach-card">
-      <h2>Coach login</h2>
-      <p className="coach-card-sub">
-        Sign in with a coach account. Assignment APIs require a JWT from
-        <code> /api/auth/login/</code>.
-      </p>
-      <form className="coach-form" onSubmit={handleSubmit}>
-        <label className="coach-label">
-          Username
-          <input
-            className="coach-input"
-            autoComplete="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-        </label>
-        <label className="coach-label">
-          Password
-          <input
-            className="coach-input"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-        <button className="coach-btn coach-btn-primary" type="submit" disabled={busy}>
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
-      {error && <p className="coach-msg coach-msg-err">{error}</p>}
-    </section>
-  )
 }
 
 function AssignRow({
@@ -900,7 +844,7 @@ export default function CoachTablet() {
         </div>
 
         {!token ? (
-          <LoginGate onLoggedIn={setToken} />
+          <CoachAccess onLoggedIn={setToken} />
         ) : (
           <>
             <DefaultsBanner token={token} onChangePassword={() => setShowWifi(true)} />

@@ -13,10 +13,11 @@ import { createRoot } from 'react-dom/client'
 import '@fontsource-variable/inter'
 import './index.css'
 import App from './App.jsx'
+import FirstRunSetup from './coach/FirstRunSetup.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <FirstRunSetup><App /></FirstRunSetup>
   </StrictMode>,
 )
 

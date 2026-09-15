@@ -1064,7 +1064,7 @@ def rack_state(request, rack_number):
         athlete = runtime.selected_athlete
         if "selected_athlete" in request.data:
             athlete_id = request.data["selected_athlete"]
-            athlete = None if athlete_id is None else Athlete.objects.filter(id=athlete_id).first()
+            athlete = None if athlete_id is None else Athlete.objects.filter(id=athlete_id, is_active=True).first()
             if athlete_id is not None and athlete is None:
                 return Response({"code": "athlete_not_found", "detail": "athlete not found"}, status=404)
             session = _active_session()
@@ -1344,7 +1344,7 @@ def rack_checkin(request, rack_number):
                 "code": "rack_sensor_required",
                 "detail": "select an active physical sensor before athlete check-in",
             }, status=409)
-        athlete = Athlete.objects.filter(id=request.data.get("athlete")).first()
+        athlete = Athlete.objects.filter(id=request.data.get("athlete"), is_active=True).first()
         if athlete is None:
             return Response({"error": "athlete not found"}, status=404)
         if not session.athletes.filter(id=athlete.id).exists():
@@ -1496,11 +1496,14 @@ def node_acquisition_kind(request, node_id):
 # ─────────────────────────── athletes ───────────────────────────
 
 @api_view(["GET", "POST"])
-@permission_classes([AllowAny])
+@permission_classes([IsCoach])
 def athletes_view(request):
-    """GET: list all lifters (open). POST: add a lifter (coach only)."""
+    """Coach roster. Archived records remain available through detail/history."""
     if request.method == "GET":
-        return Response(AthleteSerializer(Athlete.objects.all(), many=True).data)
+        athletes = Athlete.objects.all().order_by('name', 'id')
+        if request.query_params.get('include_archived') != 'true':
+            athletes = athletes.filter(is_active=True)
+        return Response(AthleteSerializer(athletes, many=True).data)
     if not _require_coach(request):
         return Response({"detail": "coach login required"}, status=401)
     form = AthleteSerializer(data=request.data)
@@ -1508,7 +1511,7 @@ def athletes_view(request):
     return Response(AthleteSerializer(form.save()).data, status=201)
 
 
-@api_view(["GET", "PATCH"])
+@api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsCoach])
 def athlete_detail(request, athlete_id):
     """Coach-only: read or update one lifter.
@@ -1525,6 +1528,18 @@ def athlete_detail(request, athlete_id):
 
     if request.method == "GET":
         return Response(AthleteSerializer(athlete).data)
+
+    if request.method == "DELETE":
+        with transaction.atomic():
+            athlete = Athlete.objects.select_for_update().get(pk=athlete_id)
+            if TrainingSession.objects.filter(athletes=athlete, started_at__isnull=False, ended_at__isnull=True).exists():
+                return Response({'detail': 'End the active training session before removing this athlete.'}, status=409)
+            athlete.is_active = False
+            athlete.nfc_tag_id = None
+            athlete.save(update_fields=['is_active', 'nfc_tag_id'])
+            athlete.training_groups.clear()
+            athlete.sessions.remove(*athlete.sessions.filter(started_at__isnull=True, ended_at__isnull=True))
+        return Response(status=204)
 
     form = AthleteSerializer(athlete, data=request.data, partial=True)
     form.is_valid(raise_exception=True)
@@ -2636,7 +2651,7 @@ def training_group_athletes_view(request, group_id):
     ids = request.data.get("athletes")
     if not isinstance(ids, list) or not ids:
         return Response({"error": "athletes must be a non-empty list of ids"}, status=400)
-    athletes = Athlete.objects.filter(id__in=ids)
+    athletes = Athlete.objects.filter(id__in=ids, is_active=True)
     if athletes.count() != len(set(ids)):
         return Response({"error": "one or more athletes not found"}, status=404)
 
@@ -3167,7 +3182,7 @@ def scheduled_session_create_session(request, slot_id):
         return Response(ScheduledSessionSerializer(slot).data, status=200)
 
     group = slot.training_program.training_group
-    athletes = list(group.athletes.all())
+    athletes = list(group.athletes.filter(is_active=True))
 
     with transaction.atomic():
         session = TrainingSession.objects.create(

@@ -15,8 +15,18 @@ Mosquitto broker, Nginx, React) that runs the gym.
 docker compose up -d --build
 ```
 
-Then open `http://localhost/`. The first screen is a **role picker** — this device
-has no role yet. Pick one:
+Then, on a fresh database, print the one-time setup code from the base station
+itself, and open `http://localhost/` to create the initial coach/admin account:
+
+```bash
+docker compose exec django python manage.py setup_code
+```
+
+The code proves the person enrolling has access to the machine, so the first
+visitor to the website cannot claim the installation. Additional coach logins are
+created by an administrator under **Coach → coaches**; there is no public
+registration. Other devices can use the **role picker**, or you can use **Change
+device** to choose a role:
 
 | Role | What it is |
 |---|---|
@@ -27,10 +37,14 @@ has no role yet. Pick one:
 > **A device remembers its role.** After you pick one, `localhost/` goes straight
 > there forever. Change it with **Change device** in the top right.
 
-The demo login is `coach` / `coachpass`. For a gym full of realistic data:
+Normal startup does not create a default login. Existing installations keep their
+accounts. See [Coach accounts and roster management](docs/coach-accounts.md) for
+first-run setup, login, password recovery, and history-preserving roster removal.
+
+For demonstration data in a development installation:
 
 ```bash
-docker compose exec django python manage.py seed_active_session --reset
+docker compose exec django python manage.py seed_active_session
 ```
 
 ---

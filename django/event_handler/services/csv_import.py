@@ -190,7 +190,7 @@ def _athlete_resolver(scope_group=None, corrections=None):
     scope_ids = ()
     if scope_group is not None:
         scope_ids = list(scope_group.athletes.values_list("id", flat=True))
-    return NameResolver(Athlete.objects.values_list("id", "name"), scope_ids=scope_ids,
+    return NameResolver(Athlete.objects.filter(is_active=True).values_list("id", "name"), scope_ids=scope_ids,
                         corrections=_for(corrections, "athlete"))
 
 

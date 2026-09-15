@@ -5,6 +5,16 @@
 
 const TOKEN_KEY = 'coach_access_token'
 
+function responseError(data, status) {
+  if (typeof data === 'string') return `HTTP ${status}`
+  if (data?.error || data?.detail) return data.error || data.detail
+  if (!data) return `HTTP ${status}`
+  return Object.entries(data).map(([key, value]) => {
+    const label = key === 'non_field_errors' ? '' : `${key}: `
+    return label + (Array.isArray(value) ? value.join(' ') : String(value))
+  }).join(' ') || `HTTP ${status}`
+}
+
 export function getCoachToken() {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -42,11 +52,16 @@ export async function coachFetch(path, { token, method = 'GET', body } = {}) {
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
+  if (res.status === 429) {
+    const error = new Error('Too many attempts. Wait a minute, then try again.')
+    error.status = 429
+    throw error
+  }
   const text = await res.text()
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = text }
   if (!res.ok) {
-    const detail = (data && (data.error || data.detail)) || `HTTP ${res.status}`
+    const detail = responseError(data, res.status)
     const error = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
     error.status = res.status
     error.code = data && data.code
@@ -54,6 +69,40 @@ export async function coachFetch(path, { token, method = 'GET', body } = {}) {
     throw error
   }
   return data
+}
+
+/** Who is signed in, whether they administer the box, and whether they must
+ *  change their temporary password before the rest of the app opens. */
+export function fetchCurrentCoach(token) {
+  return coachFetch('/api/auth/me/', { token })
+}
+
+export function changePassword(token, currentPassword, newPassword) {
+  return coachFetch('/api/auth/password/', {
+    token,
+    method: 'POST',
+    body: { current_password: currentPassword, new_password: newPassword },
+  })
+}
+
+export function listCoaches(token) {
+  return coachFetch('/api/coaches/', { token })
+}
+
+export function createCoach(token, username, password) {
+  return coachFetch('/api/coaches/', {
+    token,
+    method: 'POST',
+    body: password ? { username, password } : { username },
+  })
+}
+
+export function updateCoach(token, id, changes) {
+  return coachFetch(`/api/coaches/${id}/`, { token, method: 'PATCH', body: changes })
+}
+
+export function resetCoachPassword(token, id) {
+  return coachFetch(`/api/coaches/${id}/reset/`, { token, method: 'POST' })
 }
 
 /** Short slice shown on waiting tablets / coach dropdowns (not a full UUID wall). */

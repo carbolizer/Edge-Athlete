@@ -5,9 +5,9 @@ import {
 
 describe("coach tab groups", () => {
   it("splits room-level views from per-athlete ones", () => {
-    expect(ROOM_TABS).toEqual(["room", "workouts", "schedule", "reports"]);
+    expect(ROOM_TABS).toEqual(["room", "roster", "workouts", "schedule", "reports"]);
     expect(ATHLETE_TABS).toEqual(["athlete", "history", "programs", "notes"]);
-    expect(ALL_TABS).toHaveLength(8);
+    expect(ALL_TABS).toHaveLength(9);
     // No overlap: every tab belongs to exactly one group.
     expect(ROOM_TABS.filter((t) => ATHLETE_TABS.includes(t))).toEqual([]);
   });

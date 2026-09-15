@@ -1,0 +1,9 @@
+.roster-workspace { padding: 1.5rem; max-width: 900px; margin: auto; }
+.roster-workspace form { display: grid; gap: 1rem; margin: 1.5rem 0; }
+.roster-workspace label { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.roster-workspace input:not([type=checkbox]) { flex: 1; min-width: 160px; padding: .75rem; color: inherit; background: transparent; border: 1px solid #888; border-radius: .4rem; }
+.roster-workspace button { padding: .65rem 1rem; cursor: pointer; }
+.roster-workspace button:disabled { opacity: .5; cursor: default; }
+.roster-workspace ul { list-style: none; padding: 0; }
+.roster-workspace li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; padding: .8rem 0; border-bottom: 1px solid #888; }
+.roster-workspace li div { display: flex; gap: .5rem; }

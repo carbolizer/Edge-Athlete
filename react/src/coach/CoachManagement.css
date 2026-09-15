@@ -1,0 +1,18 @@
+.coach-mgmt { padding: 1.5rem; max-width: 960px; margin: auto; }
+.coach-mgmt-form { display: grid; gap: 1rem; margin: 1.5rem 0; }
+.coach-mgmt-form label { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+.coach-mgmt-form input { flex: 1; min-width: 180px; padding: .75rem; color: inherit; background: transparent; border: 1px solid #888; border-radius: .4rem; }
+.coach-mgmt button { padding: .6rem 1rem; cursor: pointer; }
+.coach-mgmt button:disabled { opacity: .5; cursor: default; }
+.coach-mgmt-error { color: #c0392b; }
+.coach-mgmt-handoff { padding: 1rem; border: 1px solid #2e7d32; border-radius: .4rem; background: rgba(46, 125, 50, .12); }
+.coach-mgmt-handoff code { font-size: 1.1rem; font-weight: 700; letter-spacing: .05em; }
+.coach-mgmt-list { list-style: none; padding: 0; }
+.coach-mgmt-list li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem; padding: .8rem 0; border-bottom: 1px solid #888; }
+.coach-mgmt-name { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.coach-mgmt-badge { padding: .15rem .5rem; font-size: .75rem; font-style: normal; border: 1px solid #888; border-radius: 1rem; }
+.coach-mgmt-badge-off { color: #c0392b; border-color: #c0392b; }
+.coach-mgmt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.coach-mgmt-self { opacity: .7; }
+.coach-login-hint { opacity: .85; }
+.coach-login-link { margin-top: .75rem; background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer; }

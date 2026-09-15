@@ -77,8 +77,8 @@ class AthleteSerializer(serializers.ModelSerializer):
     """A lifter's record."""
     class Meta:
         model = Athlete
-        fields = ["id", "name", "nfc_tag_id", "created_at", "notes"]
-        read_only_fields = ["id", "created_at"]
+        fields = ["id", "name", "nfc_tag_id", "created_at", "notes", "is_active"]
+        read_only_fields = ["id", "created_at", "is_active"]
         extra_kwargs = {"nfc_tag_id": {"write_only": True}}
 
 
@@ -106,6 +106,7 @@ class TrainingSessionSerializer(serializers.ModelSerializer):
     # small skew stops a correct "now" being refused as the future, without
     # letting anyone close a day next Tuesday.
     FUTURE_SKEW_ALLOWANCE = timedelta(minutes=2)
+    athletes = serializers.PrimaryKeyRelatedField(queryset=Athlete.objects.filter(is_active=True), many=True, required=False)
 
     def validate_ended_at(self, value):
         if value is None:

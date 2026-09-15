@@ -26,7 +26,11 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import { navigate } from "./router.js";
-import { coachFetch, coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
+import { coachFetch, fetchCurrentCoach, getCoachToken, setCoachToken } from "./coach/api.js";
+import CoachAccess from "./coach/CoachAccess.jsx";
+import ChangePassword from "./coach/ChangePassword.jsx";
+import CoachManagement from "./coach/CoachManagement.jsx";
+import RosterWorkspace from "./coach/RosterWorkspace.jsx";
 import useLiveRoomState from "./useLiveRoomState.js";
 import { compareReps, groupHistorySets } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
@@ -216,32 +220,6 @@ function WallView({ monitor }) {
         <span>Saved results update automatically after each set</span>
         <span>Snapshot {timeLabel(roomState.generated_at)} · Revision {roomState.revision}</span>
       </footer>
-    </main>
-  );
-}
-
-function CoachLogin({ onLogin, error, busy }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  return (
-    <main className="monitor coach-login-screen">
-      <section className="coach-login-card">
-        {/* The coach app's own icon, matching the workspace topbar and the icon
-            this device installs to a home screen — the "EA" lettermark it
-            replaced belonged to no particular app. Larger here than in the
-            topbar because it is the only mark on the screen. */}
-        <div className="monitor-brand"><img src="/icon-coach-192.png" alt="" width="52" height="52" /><span>Edge Athlete</span></div>
-        <p className="coach-eyebrow">Coach workspace</p>
-        <h1>See the whole room.<br />Coach the next rep.</h1>
-        <p>Live saved performance, rack comparisons, and hardware health in one focused view.</p>
-        <form onSubmit={(event) => { event.preventDefault(); onLogin(username, password); }}>
-          <label>Username<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
-          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
-          {error && <p className="coach-login-error" role="alert">{error}</p>}
-          <button disabled={busy}>{busy ? "Signing in..." : "Open coach view"}</button>
-        </form>
-      </section>
-      <aside className="coach-login-art"><span>VELOCITY</span><strong>0.86</strong><b>m/s</b></aside>
     </main>
   );
 }
@@ -531,11 +509,18 @@ function RackSelectionControls({ rack }) {
   </section>;
 }
 
-function CoachView({ monitor, accessToken, onLogout }) {
+function CoachView({ monitor, accessToken, onLogout, isAdmin, currentUsername, onChangePassword }) {
   const { roomState, requestState, connectionState, lastError, refresh } = monitor;
   const [selectedRackNumber,setSelectedRackNumber]=useState(null),[activeTab,setActiveTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
-  useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
+  const [rosterRevision, setRosterRevision] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    coachFetch('/api/athletes/?include_archived=true', { token: accessToken })
+      .then(data => { if (!cancelled) setAthletes(data); })
+      .catch(err => { if (!cancelled) { if (err.status === 401 || err.status === 403) onLogout(); else setError(err.message); } });
+    return () => { cancelled = true; };
+  }, [accessToken, rosterRevision]);
   // Every sensor, not just the one on the selected rack — the linking control
   // needs to offer unassigned ones too. Refetched after a link so the dropdown
   // does not keep showing a sensor as free once it has been claimed.
@@ -591,7 +576,7 @@ function CoachView({ monitor, accessToken, onLogout }) {
     <div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div>
     <div className="coach-topbar-actions">
       <ConnectionBadge connectionState={connectionState} requestState={requestState}/>
-      <select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select>
+      <select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}{a.is_active === false ? ' (archived)' : ''}</option>)}</select>
       {/* Room Layout — assigning tablets to rack numbers. It lives on its own
           screen because it is setup work a coach does once when the room is
           built, not something they touch during a session. */}
@@ -604,8 +589,12 @@ function CoachView({ monitor, accessToken, onLogout }) {
       <button className="coach-logout" onClick={onLogout}>Log out</button>
       <button className="coach-logout" onClick={changeDeviceRole}>Change device</button>
     </div>
-  </header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">
+  </header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes.filter(a => a.is_active !== false)} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">
     {ROOM_TABS.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}
+    {/* Managing logins is administrator work, so the tab exists only for a head
+        coach. The backend enforces this independently — hiding the button is
+        convenience, not the security boundary. */}
+    {isAdmin && <button className={activeTab==="coaches"?"active":""} aria-selected={activeTab==="coaches"} role="tab" onClick={()=>chooseTab("coaches")} key="coaches">coaches</button>}
     <span className="coach-tab-divider" aria-hidden="true" />
     {ATHLETE_TABS.map(t=>{
       const disabled = tabDisabled(t, selectedAthleteId);
@@ -614,7 +603,10 @@ function CoachView({ monitor, accessToken, onLogout }) {
         title={disabled?"Select an athlete first to see their view":undefined}
         onClick={()=>{if(disabled&&activeTab!==t){setError("Select an athlete to open their view.");return;}chooseTab(t);}} key={t}>{t}</button>
     })}
-  </nav><div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
+  </nav>
+  {activeTab === 'roster' && <RosterWorkspace accessToken={accessToken} onLogout={onLogout} onChanged={() => { setRosterRevision(n => n + 1); refresh(); }} />}
+  {activeTab === 'coaches' && isAdmin && <CoachManagement accessToken={accessToken} currentUsername={currentUsername} onLogout={onLogout} onChangePassword={onChangePassword} />}
+  <div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{["roster", "coaches", "workouts", "reports", "schedule"].includes(activeTab)?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
 }
 
 export default function Dashboard({ mode = "wall" }) {
@@ -623,8 +615,12 @@ export default function Dashboard({ mode = "wall" }) {
   // not throw the coach back to a login screen mid-session. It is the same
   // stored token /coach/setup uses, so the two screens share one login.
   const [accessToken, setAccessToken] = useState(() => getCoachToken());
-  const [loginError, setLoginError] = useState("");
-  const [loginBusy, setLoginBusy] = useState(false);
+  // Who this token belongs to, and whether it still owes a password change.
+  // Fetched (not trusted from storage) so a token that expired or was
+  // deactivated drops the coach back to the login screen.
+  const [me, setMe] = useState(null);
+  const [meError, setMeError] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const monitor = useLiveRoomState({ mode, accessToken, onAuthRequired: () => forget() });
 
   // One place to drop the login, so the stored copy can never outlive the
@@ -633,25 +629,36 @@ export default function Dashboard({ mode = "wall" }) {
   function forget() {
     setCoachToken(null);
     setAccessToken(null);
+    setMe(null);
+    setChangingPassword(false);
   }
 
-  async function login(username, password) {
-    setLoginBusy(true);
-    setLoginError("");
-    try {
-      setAccessToken(await coachLogin(username, password));
-    } catch (error) {
-      setLoginError(error.message || "The base station could not be reached.");
-    } finally {
-      setLoginBusy(false);
-    }
+  function loadMe() {
+    if (!accessToken) { setMe(null); return; }
+    setMeError(false);
+    fetchCurrentCoach(accessToken).then(setMe).catch((error) => {
+      if (error.status === 401 || error.status === 403) forget();
+      else setMeError(true);
+    });
   }
+  useEffect(loadMe, [accessToken]);
 
   if (mode === "coach" && !accessToken) {
-    return <CoachLogin onLogin={login} error={loginError} busy={loginBusy} />;
+    return <CoachAccess onLoggedIn={setAccessToken} />;
   }
   if (mode === "coach") {
-    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} />;
+    if (meError) {
+      return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body="The base station could not confirm your account." action={loadMe} /></main>;
+    }
+    if (!me) return <main className="monitor coach-monitor"><StatePanel title="Checking your account" body="Confirming this session with the base station." /></main>;
+    // A temporary password must be replaced before anything else opens.
+    if (me.must_change_password) {
+      return <ChangePassword accessToken={accessToken} forced onChanged={loadMe} onLogout={forget} />;
+    }
+    if (changingPassword) {
+      return <ChangePassword accessToken={accessToken} onChanged={() => { setChangingPassword(false); loadMe(); }} onLogout={forget} />;
+    }
+    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} isAdmin={Boolean(me.is_staff)} currentUsername={me.username} onChangePassword={() => setChangingPassword(true)} />;
   }
   return <WallView monitor={monitor} />;
 }

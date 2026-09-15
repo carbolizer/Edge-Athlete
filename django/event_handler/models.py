@@ -199,6 +199,35 @@ class RackCommandReceipt(models.Model):
         ]
 
 
+class InstallationSetup(models.Model):
+    """Persistent, locked first-run marker; never inferred from a deleted account.
+
+    Enrollment also needs a secret that only someone with access to the base
+    station itself can obtain, otherwise whoever loads the website first claims
+    the installation. `setup_code_hash` holds a one-way hash of a short,
+    locally-issued code — never the code itself — so a database leak does not
+    hand out the claim token. The code expires and is cleared on first success.
+    """
+    completed_at = models.DateTimeField(null=True, blank=True)
+    setup_code_hash = models.CharField(max_length=255, blank=True, default="")
+    setup_code_created_at = models.DateTimeField(null=True, blank=True)
+    setup_code_expires_at = models.DateTimeField(null=True, blank=True)
+
+
+class CoachProfile(models.Model):
+    """Per-coach account state that is not part of Django's User table.
+
+    Only `must_change_password` today: an administrator creates a coach with a
+    temporary password, and that flag makes the first sign-in change it before
+    the rest of the app is reachable.
+    """
+    user = models.OneToOneField('auth.User', on_delete=models.CASCADE, related_name='coach_profile')
+    must_change_password = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"coach profile for {self.user.username}"
+
+
 class Athlete(models.Model):
     """A lifter. Optionally carries an NFC tag id for tap-to-identify at a rack."""
     name = models.CharField(max_length=255)
@@ -206,6 +235,7 @@ class Athlete(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
     is_simulated = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
     # Every group this athlete CURRENTLY trains with. Many-to-many on purpose: a
     # football player can also sit in a speed TrainingGroup, and each group runs its own
     # program. Which of those programs applies on a given day is answered by the

@@ -32,10 +32,22 @@ URL flow example:
 """
 from django.contrib import admin
 from django.urls import path, include
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
+from event_handler.coach_auth import (
+    CoachSessionView, CoachTokenObtainPairView, PasswordChangeView, SetupView)
+from event_handler.coach_accounts import (
+    CoachDetailView, CoachListView, CoachResetPasswordView)
 
 
 urlpatterns = [
+    path('api/auth/setup/', SetupView.as_view(), name='coach_setup'),
+    path('api/auth/me/', CoachSessionView.as_view(), name='coach_session'),
+    path('api/auth/password/', PasswordChangeView.as_view(), name='coach_password_change'),
+
+    # Administrator-only coach management (create, deactivate, reset).
+    path('api/coaches/', CoachListView.as_view(), name='coach_list'),
+    path('api/coaches/<int:user_id>/', CoachDetailView.as_view(), name='coach_detail'),
+    path('api/coaches/<int:user_id>/reset/', CoachResetPasswordView.as_view(), name='coach_reset'),
     # Django's built in admin panel — visit /admin/ in browser to manage data
     path('admin/', admin.site.urls),
 
@@ -44,7 +56,8 @@ urlpatterns = [
     path('api/', include('event_handler.urls')),
 
     # React login - POST {username, password} returns {access, refresh} tokens
-    path('api/auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    # (plus must_change_password, so a first sign-in can be forced to change it)
+    path('api/auth/login/', CoachTokenObtainPairView.as_view(), name='token_obtain_pair'),
 
     # Silent token refresh - POST {refresh} returns a new {access} token
     path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
