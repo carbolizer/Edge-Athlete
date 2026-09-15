@@ -1,0 +1,81 @@
+# Laptop preview of the whole base station on http://localhost:8088.
+#
+# Compose interpolates this file on EVERY command (up, down, ps, logs…), so the
+# secrets must be supplied each time. Keep them in .env.preview (gitignored) and
+# always pass it:
+#
+#   docker compose -f docker-compose.preview.yml --env-file .env.preview up -d --build --wait
+#   docker compose -f docker-compose.preview.yml --env-file .env.preview exec django python manage.py setup_code
+#   docker compose -f docker-compose.preview.yml --env-file .env.preview down -v
+#
+# `down -v` wipes the preview database; `up` alone keeps it.
+name: edge-athlete-preview
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: preview
+      POSTGRES_USER: preview
+      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?required}
+    volumes:
+      - preview_db:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U preview -d preview"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "127.0.0.1:9001:9001"
+  django:
+    build: ./django
+    environment: &backend
+      POSTGRES_DB: preview
+      POSTGRES_USER: preview
+      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?required}
+      SECRET_KEY: ${PREVIEW_SECRET_KEY:?required}
+      ALLOWED_HOSTS: localhost,127.0.0.1,django
+      DEBUG: "False"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+  monitoring-publisher:
+    build: ./django
+    environment: *backend
+    command: python manage.py publish_monitoring_events
+    depends_on:
+      django:
+        condition: service_healthy
+  mqtt-listener:
+    build: ./django
+    environment: *backend
+    command: python manage.py run_mqtt_subscriber
+    depends_on:
+      django:
+        condition: service_healthy
+  react:
+    build: ./react
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      django:
+        condition: service_healthy
+      react:
+        condition: service_started
+volumes:
+  preview_db:
