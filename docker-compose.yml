@@ -138,6 +138,12 @@ services:
   # a couple of finished sets. Also (re)creates the demo coach login so /coach
   # can actually be signed into — coach / coachpass.
   #
+  # ⚠️ THE DEMO LOGIN HAS A PUBLIC PASSWORD, so `ensure_demo_coach` refuses to
+  # run unless DEBUG is on. This one-shot carries the explicit override because
+  # running `seed` by name IS the out-loud, at-a-terminal request for demo data.
+  # Never put that flag in a startup path: a real box must be claimed at /coach
+  # with `manage.py setup_code`, not signed into with coach / coachpass.
+  #
   # Safe to run more than once. The seeder converges rather than piles up: it
   # closes any day left open, reuses the group's existing deployment instead of
   # adding another, and matches its own rows by name.
@@ -153,7 +159,7 @@ services:
     build: ./django
     env_file: .env
     profiles: ["seed"]
-    command: sh -c "python manage.py seed_active_session && python manage.py ensure_demo_coach"
+    command: sh -c "python manage.py seed_active_session && python manage.py ensure_demo_coach --i-know-this-is-a-demo-box"
     # No mosquitto: seeding writes rows, it publishes nothing.
     depends_on:
       postgres:

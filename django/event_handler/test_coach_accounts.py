@@ -1,10 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from io import StringIO
 from threading import Barrier
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import close_old_connections
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 
@@ -212,6 +215,27 @@ class PasswordChangeTests(APITestCase):
         login = self.client.post('/api/auth/login/', {'username': 'coach', 'password': 'Brand-new-pass-2026!'})
         self.assertEqual(login.status_code, 200)
         self.assertFalse(login.data['must_change_password'])
+
+
+class DemoCoachGuardTests(APITestCase):
+    """The published coach/coachpass login must never reach a real box by accident."""
+
+    def test_refused_when_debug_is_off(self):
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command('ensure_demo_coach', stdout=StringIO())
+        self.assertFalse(User.objects.filter(username='coach').exists())
+
+    def test_explicit_override_creates_it_even_when_debug_is_off(self):
+        with override_settings(DEBUG=False):
+            call_command('ensure_demo_coach', '--i-know-this-is-a-demo-box', stdout=StringIO())
+        user = User.objects.get(username='coach')
+        self.assertTrue(user.check_password('coachpass'))
+
+    def test_allowed_on_a_debug_laptop(self):
+        with override_settings(DEBUG=True):
+            call_command('ensure_demo_coach', stdout=StringIO())
+        self.assertTrue(User.objects.get(username='coach').check_password('coachpass'))
 
 
 class RosterManagementTests(APITestCase):

@@ -1,26 +1,33 @@
-# Laptop preview of the whole base station on http://localhost:8088.
+# Run the WHOLE real base station on this laptop, on http://localhost:8088.
+#
+# This is the same application as docker-compose.yml — same `./django` and
+# `./react` images, same nginx config, same migrations. The only differences are
+# that it uses its own project name, database, and ports so it can run beside a
+# real deployment without colliding with it. There is NO separate "demo mode":
+# first launch requires a setup code and the coach-account rules apply exactly as
+# they do on the base station.
 #
 # Compose interpolates this file on EVERY command (up, down, ps, logs…), so the
-# secrets must be supplied each time. Keep them in .env.preview (gitignored) and
-# always pass it:
+# secrets must be supplied each time. Keep them in .env.local (already gitignored)
+# and always pass it:
 #
-#   docker compose -f docker-compose.preview.yml --env-file .env.preview up -d --build --wait
-#   docker compose -f docker-compose.preview.yml --env-file .env.preview exec django python manage.py setup_code
-#   docker compose -f docker-compose.preview.yml --env-file .env.preview down -v
+#   docker compose -f docker-compose.local.yml --env-file .env.local up -d --build --wait
+#   docker compose -f docker-compose.local.yml --env-file .env.local exec django python manage.py setup_code
+#   docker compose -f docker-compose.local.yml --env-file .env.local down -v
 #
-# `down -v` wipes the preview database; `up` alone keeps it.
-name: edge-athlete-preview
+# `down -v` wipes the local database; `up` alone keeps it.
+name: edge-athlete-local
 services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_DB: preview
-      POSTGRES_USER: preview
-      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?required}
+      POSTGRES_DB: local
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:?required}
     volumes:
-      - preview_db:/var/lib/postgresql/data
+      - local_db:/var/lib/postgresql/data
     healthcheck:
-      test: [CMD-SHELL, "pg_isready -U preview -d preview"]
+      test: [CMD-SHELL, "pg_isready -U local -d local"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -33,10 +40,10 @@ services:
   django:
     build: ./django
     environment: &backend
-      POSTGRES_DB: preview
-      POSTGRES_USER: preview
-      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?required}
-      SECRET_KEY: ${PREVIEW_SECRET_KEY:?required}
+      POSTGRES_DB: local
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: ${LOCAL_DB_PASSWORD:?required}
+      SECRET_KEY: ${LOCAL_SECRET_KEY:?required}
       ALLOWED_HOSTS: localhost,127.0.0.1,django
       DEBUG: "False"
     depends_on:
@@ -78,4 +85,4 @@ services:
       react:
         condition: service_started
 volumes:
-  preview_db:
+  local_db:

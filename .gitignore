@@ -2,7 +2,6 @@
 .DS_Store
 ._*
 .env
-.env.preview
 
 
 # django
