@@ -1,0 +1,80 @@
+/*
+ * QuickNote.css — the note box under the room view.
+ *
+ * Deliberately quiet. It sits below live velocity data a coach is actively
+ * reading, and it is used a few times an hour at most, so it must not compete
+ * with the numbers above it for attention. Panel-grey, no accent border, two
+ * rows tall until someone types.
+ *
+ * Colours match react/src/theme.js.
+ */
+
+.quick-note {
+  background: #10171b;
+  border: 1px solid #263239;
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.quick-note > header {
+  align-items: start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.quick-note-eyebrow {
+  color: #a9f04d;
+  display: block;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.quick-note h3 { font-size: 17px; margin: 3px 0 0; }
+.quick-note > header b { color: #89969d; font-size: 10px; text-transform: uppercase; white-space: nowrap; }
+
+.quick-note textarea {
+  background: #0b1114;
+  border: 1px solid #263239;
+  color: #f5f7f2;
+  font: inherit;
+  font-size: 13px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+}
+
+.quick-note textarea:focus { border-color: #a9f04d; outline: none; }
+
+.quick-note-actions {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.quick-note-actions small { color: #89969d; font-size: 11px; }
+
+.quick-note-actions button {
+  background: #a9f04d;
+  border: 1px solid #a9f04d;
+  color: #071006;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+  min-height: 44px;
+  padding: 8px 15px;
+  white-space: nowrap;
+}
+
+.quick-note-actions button:disabled { cursor: not-allowed; opacity: .42; }
+
+/* Nobody on the rack. Says why rather than showing a box that cannot be used. */
+.quick-note.is-empty p { color: #89969d; font-size: 12px; margin: 6px 0 0; }
+
+.quick-note-status { color: #45dcb3; font-size: 11px; margin: 10px 0 0; }
+.quick-note-error { color: #ff646b; font-size: 11px; margin: 10px 0 0; }

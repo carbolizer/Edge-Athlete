@@ -1,0 +1,106 @@
+/*
+ * SessionWidget.css — the strip that shows the running training day.
+ *
+ * Lime-edged rather than panel-grey, because this is the one thing on the coach
+ * screen that means "the room is open right now". It has to be findable from
+ * across a gym at a glance, and it has to be obviously different from the cards
+ * below it, which are all things a coach reads rather than reacts to.
+ *
+ * Colours match react/src/theme.js. Repeated as literals because a stylesheet
+ * cannot import it.
+ */
+
+.coach-strip {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 20px;
+  margin: 14px 24px;
+  padding: 15px 18px;
+  border: 1px solid rgba(169, 240, 77, .45);
+  background: rgba(169, 240, 77, .05);
+}
+
+/* A day open since before today. Amber, not lime: still running, but something
+   about it needs a decision. */
+.coach-strip.is-stale {
+  border-color: rgba(255, 182, 62, .55);
+  background: rgba(255, 182, 62, .06);
+}
+
+.coach-strip-eyebrow {
+  display: block;
+  color: #a9f04d;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.coach-strip.is-stale .coach-strip-eyebrow { color: #ffb63e; }
+
+.coach-strip-main h3 { margin: 3px 0 0; font-size: 20px; }
+.coach-strip-main p { margin: 5px 0 0; color: #89969d; font-size: 12px; }
+
+.coach-strip-timer { text-align: right; }
+
+.coach-strip-timer b {
+  display: block;
+  color: #a9f04d;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  /* Tabular figures: without them the timer's width jitters every second as the
+     digits change, and a number that twitches reads as a fault. */
+  font-variant-numeric: tabular-nums;
+}
+
+.coach-strip.is-stale .coach-strip-timer b { color: #ffb63e; }
+
+.coach-strip-end {
+  background: #a9f04d;
+  border: 0;
+  color: #071006;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 850;
+  padding: 12px 20px;
+}
+
+.coach-strip-note { margin: 0; color: #89969d; font-size: 12px; max-width: 260px; }
+
+/* Confirm-to-end. Spans the full width because it asks a question, and a
+   question squeezed into a button-sized corner does not get read. */
+.coach-strip-confirm { display: grid; gap: 10px; }
+.coach-strip-confirm strong { font-size: 13px; }
+.coach-strip-confirm label { color: #89969d; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.coach-strip-confirm select {
+  background: #151e23; border: 1px solid #263239; color: #f5f7f2;
+  font: inherit; font-size: 12px; padding: 6px 8px;
+}
+.coach-strip-confirm-actions { display: flex; gap: 8px; }
+.coach-strip-confirm-actions button {
+  background: #a9f04d; border: 0; color: #071006; cursor: pointer;
+  font: inherit; font-weight: 800; font-size: 12px; padding: 9px 14px;
+}
+.coach-strip-confirm-actions .workout-secondary {
+  background: transparent; border: 1px solid #263239; color: #f5f7f2;
+}
+
+/* Both of these are full-width rows under the three columns above. */
+.coach-strip-stale,
+.coach-strip-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+}
+
+.coach-strip-stale { color: #89969d; }
+.coach-strip-error { color: #ff646b; }
+
+/* On a narrow tablet the three columns stop fitting; stack rather than squeeze
+   the timer into an unreadable width. */
+@media (max-width: 720px) {
+  .coach-strip { grid-template-columns: 1fr; gap: 12px; }
+  .coach-strip-timer { text-align: left; }
+}

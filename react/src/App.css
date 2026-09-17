@@ -37,7 +37,9 @@
 .wall-session { text-align:center; }
 .wall-session>span,.coach-session-title>span { color:var(--lime); font-size:10px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
 .wall-session h1 { font-size:25px; letter-spacing:-.035em; margin:2px 0 0; }
-.wall-topbar .monitor-connection { justify-self:end; }
+/* One cell holding both, so the three-column grid above still gets exactly
+   three children and nothing wraps onto a second row. */
+.wall-topbar-actions { align-items:center; display:flex; gap:12px; justify-self:end; }
 .coach-summary-strip span { color:var(--muted); font-size:9px; font-weight:850; letter-spacing:.11em; text-transform:uppercase; }
 .wall-content { display:grid; gap:18px; grid-template-columns:minmax(0,1fr) minmax(290px,25vw); min-height:0; padding:18px 28px; }
 .wall-rack-grid { display:grid; gap:12px; grid-auto-rows:minmax(210px,1fr); grid-template-columns:repeat(3,minmax(0,1fr)); min-height:0; overflow-y:auto; }
@@ -106,10 +108,39 @@
 .coach-topbar { align-items:center; border-bottom:1px solid var(--line); display:grid; gap:24px; grid-template-columns:auto 1fr auto; min-height:72px; padding:10px 24px; }
 .coach-topbar-actions { align-items:center; display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
 .coach-session-title h1 { font-size:20px; letter-spacing:-.035em; margin:1px 0 0; }
-.coach-logout { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font-size:11px; padding:8px 11px; }
+/* ── the wall's settings cog ──────────────────────────────────────────────
+   Replaces the permanent "Change device role" button that used to sit in the
+   wall header. Icon-only: a scoreboard should spend its header on the room. */
+.wall-settings { position:relative; }
+.wall-settings-cog { align-items:center; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; height:34px; justify-content:center; width:34px; }
+.wall-settings-cog:hover { border-color:var(--lime); color:var(--lime); }
+
+.wall-settings-panel { background:var(--panel); border:1px solid var(--line); min-width:230px; padding:12px; position:absolute; right:0; top:42px; z-index:40; }
+.wall-settings-title { color:var(--lime); display:block; font-size:9px; font-weight:900; letter-spacing:.13em; margin-bottom:9px; text-transform:uppercase; }
+.wall-settings-panel p { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 11px; }
+.wall-settings-item { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; font:inherit; font-size:12px; padding:9px 11px; text-align:left; width:100%; }
+.wall-settings-item:hover { border-color:var(--lime); color:var(--lime); }
+.wall-settings-actions { display:flex; gap:8px; }
+.wall-settings-actions button { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; flex:1; font:inherit; font-size:12px; padding:9px 10px; }
+/* Coral, not lime. This one stops the scoreboard. */
+.wall-settings-actions button.is-danger { border-color:var(--coral); color:var(--coral); }
+.wall-settings-actions button.is-danger:hover { background:var(--coral); color:#1a0508; }
 /* Square icon button, sized to match the height of the text buttons beside it. */
 .coach-icon-button { align-items:center; background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; height:31px; justify-content:center; padding:0; width:31px; }
 .coach-icon-button:hover { border-color:var(--lime); color:var(--lime); }
+/* A labelled variant of the icon button — the cog alone was not discoverable
+   enough to be the only route to Room Layout. */
+.coach-labeled-button { gap:7px; padding:0 11px; width:auto; }
+.coach-labeled-button span { font-size:10px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; }
+/* No racks assigned: this button is the only way forward, so it stops being quiet. */
+.coach-button-attention { border-color:var(--lime); color:var(--lime); }
+/* The brand mark doubles as the account menu — log out lives under it now. */
+.coach-brand-menu { position:relative; }
+.coach-brand-button { align-items:center; background:transparent; border:0; color:inherit; cursor:pointer; display:flex; font:inherit; gap:inherit; padding:0; }
+.coach-brand-button span { font:inherit; }
+.coach-brand-dropdown { background:var(--panel); border:1px solid var(--line); left:0; min-width:150px; padding:5px; position:absolute; top:calc(100% + 7px); z-index:20; }
+.coach-brand-dropdown button { background:transparent; border:0; color:var(--muted); cursor:pointer; font-size:11px; padding:8px 11px; text-align:left; width:100%; }
+.coach-brand-dropdown button:hover { color:var(--lime); }
 .coach-summary-strip { border-bottom:1px solid var(--line); display:grid; grid-template-columns:repeat(5,1fr); padding:0 24px; }
 .coach-summary-strip>div { border-right:1px solid var(--line); display:grid; gap:4px; padding:13px 18px; }
 .coach-summary-strip>div:first-child { border-left:1px solid var(--line); }
@@ -137,6 +168,20 @@
 .training-day-confirm { align-items:center; display:flex; gap:9px; }
 .training-day-confirm strong { font-size:11px; max-width:260px; }
 .training-day-confirm button.workout-secondary { background:transparent; border-color:var(--line); color:var(--ink); }
+/* Days staged from the calendar and waiting to be started. Lime-edged like the
+   running-day strip, because it is the same kind of thing one step earlier —
+   but a dashed edge, because nothing is holding the racks yet. */
+.training-day-staged { background:var(--panel); border:1px dashed rgba(169,240,77,.45); margin-bottom:14px; padding:18px; }
+.training-day-staged>header { align-items:start; display:flex; gap:20px; justify-content:space-between; }
+.training-day-staged>header span { color:var(--lime); font-size:9px; font-weight:900; letter-spacing:.11em; text-transform:uppercase; }
+.training-day-staged>header h3 { font-size:22px; margin:3px 0; }
+.training-day-staged>header p { color:var(--muted); font-size:11px; margin:4px 0 0; }
+.training-day-staged>header>b { color:var(--lime); font-size:10px; text-transform:uppercase; white-space:nowrap; }
+.training-day-staged article { align-items:center; border-top:1px solid var(--line); display:flex; gap:16px; justify-content:space-between; margin-top:12px; padding-top:12px; }
+.training-day-staged article h4 { font-size:15px; margin:0; }
+.training-day-staged article p { color:var(--muted); font-size:11px; margin:4px 0 0; }
+.training-day-staged article button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font-weight:900; min-height:44px; padding:8px 15px; white-space:nowrap; }
+.training-day-staged article button:disabled { cursor:not-allowed; opacity:.42; }
 .training-day-status { color:var(--mint); font-size:11px; margin-bottom:0; }
 .training-day-error { color:var(--coral); font-size:11px; margin-bottom:0; }
 .training-report { margin-bottom:14px; }
@@ -210,7 +255,15 @@
 .coach-node strong { font-size:11px; } .coach-node small { color:var(--muted); font-size:9px; } .coach-node>b { font-size:13px; } .coach-screen-count,.coach-truncation { color:var(--muted); font-size:9px; margin-bottom:0; }
 
 /* Expanded coach context tabs */
-.coach-athlete-select { background:var(--panel); border:1px solid var(--line); color:var(--ink); min-width:170px; padding:8px 10px; }
+/* The athlete selector moved out of the topbar into ANALYTICS (Phase C), so it
+   is a bar of its own above the sub-tabs rather than a control in the toolbar.
+   It sits ABOVE the sub-tabs on purpose: the athlete is what every tab below is
+   about, so it scopes them rather than sitting inside one of them. */
+.coach-analytics-bar { align-items:center; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:14px; padding:12px 24px; }
+.coach-analytics-bar label { align-items:center; color:var(--muted); display:flex; font-size:9px; font-weight:900; gap:9px; letter-spacing:.12em; text-transform:uppercase; }
+.coach-analytics-bar select { background:var(--panel); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:13px; min-height:40px; min-width:200px; padding:8px 10px; text-transform:none; letter-spacing:normal; }
+.coach-analytics-bar span { color:var(--muted); font-size:12px; }
+.coach-analytics-bar b { color:var(--ink); font-weight:650; }
 .coach-context-tabs { background:#0a0f12; border-bottom:1px solid var(--line); display:flex; gap:4px; overflow-x:auto; padding:8px 24px; }
 .coach-context-tabs button { background:transparent; border:1px solid transparent; color:var(--muted); cursor:pointer; font-size:10px; font-weight:850; letter-spacing:.08em; padding:9px 16px; text-transform:uppercase; }
 .coach-context-tabs button.active { background:var(--panel); border-color:var(--line); color:var(--lime); }
@@ -229,10 +282,10 @@
 .context-section { margin-top:16px; }
 .context-section>header { margin-bottom:14px; }
 .context-section>header h3 { font-size:23px; letter-spacing:-.035em; margin:3px 0; }
-.context-exercise-grid,.program-card-grid { display:grid; gap:10px; grid-template-columns:repeat(3,minmax(0,1fr)); }
-.context-exercise-grid article,.program-card-grid article { background:var(--panel); border:1px solid var(--line); padding:18px; }
-.context-exercise-grid article>span,.program-card-grid article>span { color:var(--muted); font-size:10px; font-weight:850; text-transform:uppercase; }
-.context-exercise-grid article>strong,.program-card-grid article>strong { display:block; font-size:27px; margin-top:14px; }
+.context-exercise-grid { display:grid; gap:10px; grid-template-columns:repeat(3,minmax(0,1fr)); }
+.context-exercise-grid article { background:var(--panel); border:1px solid var(--line); padding:18px; }
+.context-exercise-grid article>span { color:var(--muted); font-size:10px; font-weight:850; text-transform:uppercase; }
+.context-exercise-grid article>strong { display:block; font-size:27px; margin-top:14px; }
 .context-exercise-grid small { color:var(--muted); font-size:9px; }
 .context-exercise-grid dl { border-top:1px solid var(--line); display:flex; gap:16px; margin:15px 0 0; padding-top:12px; }
 .context-exercise-grid dl div { display:grid; gap:2px; } .context-exercise-grid dt { color:var(--muted); font-size:8px; text-transform:uppercase; } .context-exercise-grid dd { font-size:11px; margin:0; }
@@ -280,8 +333,6 @@
 .history-rep-velocity { align-items:center; display:grid; gap:10px; grid-template-columns:38px 1fr; min-width:170px; }
 .history-rep-velocity i { background:#0a0f12; display:block; height:6px; }
 .history-rep-velocity i span { background:var(--mint); display:block; height:100%; }
-.program-card-grid article>p { color:var(--lime); font-size:19px; font-weight:850; margin:5px 0 16px; }
-.program-card-grid article>div { border-top:1px solid var(--line); color:var(--muted); font-size:10px; padding-top:12px; } .program-card-grid article>div b { color:var(--ink); float:right; }
 .athlete-planning { display:grid; gap:16px; }
 .athlete-assignment-panel,.athlete-override-panel { background:var(--panel); border:1px solid var(--line); padding:20px; }
 .athlete-assignment-current { background:#0b1114; border:1px solid var(--line); display:grid; gap:4px; margin-top:14px; padding:12px 14px; }
@@ -451,7 +502,186 @@
 .schedule-past-toggle button.workout-secondary { background:transparent; border:1px solid var(--line); color:var(--muted); }
 .schedule-errors { border:1px solid var(--red,#e0574e); padding:12px; }
 .schedule-errors p { color:var(--red,#e0574e); font-size:11px; line-height:1.5; margin:0; }
-.schedule-day-list { display:flex; flex-direction:column; gap:14px; }
+/* ── ANALYTICS → History: the training-day index ──────────────────────────
+   A table, because the question at this level is comparative - "how has this
+   athlete been going" - and a stack of cards makes you hold each one in your
+   head to compare it with the last. The detailed day card still exists; it is
+   what a row opens. Shape follows the mockup's group table. */
+.history-table-wrap { overflow-x:auto; }
+.history-table { border-collapse:collapse; font-size:12px; margin-top:13px; width:100%; }
+.history-table caption { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+.history-table th { color:var(--muted); font-size:9px; font-weight:900; letter-spacing:.11em; padding:8px 10px; text-align:left; text-transform:uppercase; white-space:nowrap; }
+.history-table td { border-top:1px solid var(--line); padding:11px 10px; white-space:nowrap; }
+/* THE WHOLE ROW is the control, not the date inside it — a coach aiming at a
+   date in a table of numbers is aiming at the smallest thing on the line. The
+   date is therefore styled as a heading rather than as a link: no underline,
+   nothing that says "click this bit specifically". The row's hover and cursor
+   carry the affordance instead. */
+.history-table tbody tr { cursor:pointer; }
+.history-table tbody tr:hover td { background:rgba(169,240,77,.05); }
+.history-table tbody tr:hover .history-row-open { color:var(--lime); }
+.history-table tr.is-open td { background:rgba(169,240,77,.09); }
+.history-table tr.is-open .history-row-open { color:var(--lime); }
+.history-table td b { font-size:14px; font-weight:700; }
+.history-table td small { color:var(--muted); }
+
+/* Scoped to the table on purpose. `.monitor button { font:inherit }` near the
+   top of this file is specificity (0,1,1) and its `font` shorthand resets
+   size and weight — a bare `.history-row-open` (0,1,0) loses to it and the date
+   silently renders at the table's 12px/400 instead. */
+.history-table .history-row-open { background:none; border:0; color:var(--ink); cursor:pointer; font-family:inherit; font-size:14px; font-weight:750; letter-spacing:-.01em; padding:0; text-align:left; }
+/* Keyboard users get a visible ring — without it the only clickable thing in
+   the table would be invisible to anyone not using a mouse. */
+.history-row-open:focus-visible { outline:2px solid var(--lime); outline-offset:3px; }
+
+.history-trend { font-weight:800; }
+.history-trend.up { color:var(--mint); }
+.history-trend.down { color:var(--coral); }
+.history-trend.flat { color:var(--muted); }
+
+/* The opened day, sitting as a row directly under the day it belongs to. No
+   cell padding — the card brings its own — and no hover tint, because this row
+   is content rather than another target. */
+.history-detail-row > td { background:rgba(169,240,77,.04); border-top:0; cursor:default; padding:0 0 14px; }
+.history-table tbody tr.history-detail-row:hover > td { background:rgba(169,240,77,.04); }
+.history-detail-row .history-day { margin:0; }
+
+.history-table-note { color:var(--muted); font-size:11px; margin:10px 0 0; }
+
+/* ── ANALYTICS → History, group scope ─────────────────────────────────────
+   Same table, turned sideways: one row per athlete instead of per day. */
+/* The date range, beside the thing it scopes. Presets for the common answers,
+   two date fields for everything else — a coach chasing one bad week needs to
+   name that week, and no preset ever will. */
+.coach-range { align-items:center; border-left:1px solid var(--line); display:flex; flex-wrap:wrap; gap:10px; padding-left:14px; }
+.coach-range label { align-items:center; color:var(--muted); display:flex; font-size:9px; font-weight:900; gap:7px; letter-spacing:.1em; text-transform:uppercase; }
+.coach-range input[type="date"] { background:var(--panel); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; letter-spacing:normal; min-height:36px; padding:6px 8px; text-transform:none; }
+.coach-range input[type="date"]:focus-visible { border-color:var(--lime); outline:none; }
+.coach-range-presets { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:2px; padding:3px; }
+.coach-range-presets button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.06em; padding:6px 11px; }
+.coach-range-presets button.is-on { background:var(--lime); color:#071006; }
+.coach-range-presets button:hover:not(.is-on) { color:var(--ink); }
+.coach-range-label { color:var(--muted); font-size:11px; }
+
+.coach-scope-switch { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:3px; padding:3px; }
+.coach-scope-switch button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.09em; padding:7px 15px; text-transform:uppercase; }
+.coach-scope-switch button.is-on { background:var(--lime); color:#071006; }
+
+.group-history-controls { align-items:center; display:flex; flex-wrap:wrap; gap:14px; margin-bottom:4px; }
+.group-history-controls label { align-items:center; color:var(--muted); display:flex; font-size:9px; font-weight:900; gap:9px; letter-spacing:.12em; text-transform:uppercase; }
+.group-history-controls select { background:var(--panel2); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; letter-spacing:normal; min-height:38px; padding:7px 10px; text-transform:none; }
+.group-history-count { color:var(--muted); font-size:12px; }
+.group-history-count b { color:var(--coral); font-weight:800; }
+
+/* The flagged row is tinted, not just tagged. At a squad of a hundred a coach
+   scans down a column of colour, not a column of words. */
+.group-history-table tr.is-behind td { background:rgba(255,100,107,.07); }
+.group-history-table tbody tr { cursor:default; }
+.group-history-table tbody tr:hover td { background:transparent; }
+.group-history-table tr.is-behind:hover td { background:rgba(255,100,107,.07); }
+.group-history-tag { border:1px solid var(--coral); color:var(--coral); font-size:9px; font-weight:900; letter-spacing:.08em; padding:2px 7px; text-transform:uppercase; white-space:nowrap; }
+.group-history-tag.is-unknown { border-color:var(--line); color:var(--muted); }
+
+.visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.history-day-close { background:transparent; border:1px solid var(--line); color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:800; letter-spacing:.07em; min-height:34px; padding:6px 12px; text-transform:uppercase; }
+.history-day-close:hover { border-color:var(--lime); color:var(--lime); }
+
+/* ── PLANNING → Design: the three steps ───────────────────────────────────
+   Numbered because the order is the point: a block is the template, a program
+   is that template placed in time, a one-off is a program with no template.
+   The left rule is what makes them read as a sequence rather than three
+   unrelated panels stacked up. */
+/* An accordion, because the three steps are a SEQUENCE. Three open at once
+   turned the tab into a scroll where the order stopped being visible; one at a
+   time keeps the shape of the process on screen. */
+.design-step { border-left:2px solid var(--line); margin-bottom:10px; padding-left:15px; }
+.design-step.is-open { border-left-color:var(--lime); }
+.design-step-head { align-items:center; background:transparent; border:0; border-bottom:1px solid var(--line); color:inherit; cursor:pointer; display:flex; font:inherit; gap:12px; padding:12px 0; text-align:left; width:100%; }
+.design-step-head:hover .design-stepno { color:var(--ink); }
+.design-step.is-open .design-stepno { color:var(--lime); }
+.design-step-head:focus-visible { outline:2px solid var(--lime); outline-offset:2px; }
+.design-stepno { color:var(--muted); font-size:10px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }
+/* What is inside, without opening it — so a coach can tell which step they want
+   from the closed state. */
+.design-step-summary { color:var(--muted); flex:1; font-size:11px; }
+.design-step-chevron { color:var(--muted); font-size:15px; font-weight:800; line-height:1; }
+.design-step.is-open .design-step-chevron { color:var(--lime); }
+.design-step .workout-panel { margin-top:12px; }
+
+/* Create is a dropdown that REVEALS a form, not a form sitting open forever.
+   A coach creates a block occasionally and deploys one constantly, so the rare
+   thing should not be the tallest thing on the screen. */
+.design-create-row { align-items:center; display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+.design-create-row select { background:var(--panel2); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; min-height:40px; padding:8px 10px; }
+.design-inline-form { border-top:1px solid var(--line); margin-top:12px; padding-top:14px; }
+.design-inline-form>label { color:var(--muted); display:grid; font-size:9px; font-weight:850; gap:6px; margin-top:12px; text-transform:uppercase; }
+.design-inline-form input,.design-inline-form select { background:#0b1114; border:1px solid var(--line); color:var(--ink); font:inherit; min-height:44px; padding:8px 10px; }
+
+/* Block cards. Deploy and Edit days are actions ON the block — they used to be
+   panels with their own "which block?" dropdown, so a coach picked the block
+   twice and nothing stopped the two picks from disagreeing. */
+.design-block-list { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+.design-block-list>article { background:var(--panel2); border:1px solid var(--line); padding:14px; }
+.design-block-main span { color:var(--muted); font-size:10px; font-weight:850; letter-spacing:.08em; text-transform:uppercase; }
+.design-block-main h4 { font-size:16px; margin:4px 0 0; }
+.design-block-actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:11px; }
+.design-block-actions button { background:var(--lime); border:1px solid var(--lime); color:#071006; cursor:pointer; font:inherit; font-size:11px; font-weight:850; min-height:40px; padding:8px 13px; }
+.design-block-actions button.workout-secondary { background:transparent; border-color:var(--line); color:var(--ink); }
+.design-block-actions button:disabled { cursor:not-allowed; opacity:.42; }
+
+/* ── the calendar's card view ──────────────────────────────────────────────
+   A month at a glance: four across, one card per day, colour-coded by the same
+   four states the list uses. The colours ARE the information here — a coach
+   scanning this grid is reading shape, not text. */
+.schedule-header-controls { align-items:center; display:flex; flex-wrap:wrap; gap:12px; }
+.schedule-header-controls select { background:var(--panel2); border:1px solid var(--line); color:var(--ink); font:inherit; font-size:12px; padding:7px 9px; }
+.schedule-view-toggle { background:var(--panel2); border:1px solid var(--line); border-radius:999px; display:inline-flex; gap:3px; padding:3px; }
+.schedule-view-toggle button { background:transparent; border:0; border-radius:999px; color:var(--muted); cursor:pointer; font:inherit; font-size:10px; font-weight:850; letter-spacing:.09em; padding:7px 15px; text-transform:uppercase; }
+.schedule-view-toggle button.is-on { background:var(--lime); color:#071006; }
+
+.schedule-card-grid { display:grid; gap:10px; grid-template-columns:repeat(4,minmax(0,1fr)); }
+.schedule-card { background:var(--panel2); border:1px solid var(--line); padding:13px; }
+.schedule-card-date { color:var(--muted); font-size:10px; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
+.schedule-card b { display:block; font-size:14px; margin:5px 0 3px; }
+.schedule-card p { color:var(--muted); font-size:11px; margin:0 0 9px; }
+.schedule-card-state { font-size:10px; font-weight:900; letter-spacing:.1em; text-transform:uppercase; }
+.schedule-card button { background:transparent; border:1px solid var(--line); color:var(--ink); cursor:pointer; font:inherit; font-size:10px; font-weight:800; letter-spacing:.05em; margin-top:9px; min-height:38px; padding:8px 11px; text-transform:uppercase; width:100%; }
+.schedule-card button:hover:not(:disabled) { border-color:var(--lime); color:var(--lime); }
+.schedule-card button.schedule-card-primary { background:var(--lime); border-color:var(--lime); color:#071006; }
+.schedule-card button:disabled { cursor:not-allowed; opacity:.42; }
+
+/* Dashed edge = nothing exists yet. The one state that is a plan, not a thing. */
+.schedule-card.is-planned { border-style:dashed; }
+.schedule-card.is-planned .schedule-card-state { color:var(--muted); }
+.schedule-card.is-ready { border-color:var(--lime); }
+.schedule-card.is-ready .schedule-card-state { color:var(--lime); }
+.schedule-card.is-running { background:rgba(69,220,179,.07); border-color:var(--mint); }
+.schedule-card.is-running .schedule-card-state { color:var(--mint); }
+/* Faded, not hidden: a finished day is context for the ones around it. */
+.schedule-card.is-done { opacity:.55; }
+.schedule-card.is-done .schedule-card-state { color:var(--muted); }
+
+.schedule-card-note { color:var(--muted); font-size:11px; margin-top:13px; }
+
+/* Four across needs width. Below that the cards get too narrow to read a
+   workout name in, so drop to two and then one rather than squeezing. */
+@media (max-width:1100px) { .schedule-card-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:620px) { .schedule-card-grid { grid-template-columns:1fr; } }
+
+/* The calendar scrolls INSIDE ITSELF rather than lengthening the page.
+   A deployed block generates a slot per training day, so this list runs to
+   dozens of rows within a couple of weeks. Left to grow, it pushed everything
+   else off the bottom of the screen and buried the controls above it under three
+   weeks of scrolling. Bounded here, the day rows stay where a coach left them
+   and the rest of PLANNING stays reachable.
+   `overscroll-behavior` stops a flick that reaches the end of the list from
+   carrying on and scrolling the page underneath it — on a tablet that reads as
+   the screen jumping. */
+.schedule-day-list { display:flex; flex-direction:column; gap:14px; max-height:min(58vh,640px); overflow-y:auto; overscroll-behavior:contain; padding-right:6px; }
+/* A hairline that says "there is more below" without adding chrome. */
+.schedule-day-list::-webkit-scrollbar { width:8px; }
+.schedule-day-list::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
+.schedule-day-list::-webkit-scrollbar-track { background:transparent; }
 .schedule-day { border:1px solid var(--line); }
 .schedule-day>header { align-items:baseline; border-bottom:1px solid var(--line); display:flex; gap:12px; justify-content:space-between; padding:12px 14px; }
 .schedule-day>header h4 { font-size:14px; margin:0; }
@@ -683,7 +913,7 @@
   .coach-set-hero { grid-template-columns:1fr auto; }
   .coach-set-hero dl { border-left:0; border-top:1px solid var(--line); grid-column:1/-1; grid-template-columns:repeat(3,1fr); padding:12px 0 0; }
   .context-athlete-hero { grid-template-columns:1fr; }
-  .context-exercise-grid,.program-card-grid { grid-template-columns:repeat(2,1fr); }
+  .context-exercise-grid { grid-template-columns:repeat(2,1fr); }
   .athlete-assignment-fields { grid-template-columns:1fr 1fr; }
   .athlete-override-list fieldset { grid-template-columns:repeat(3,1fr); }
   .athlete-template-targets { grid-column:1/-1; }
@@ -716,10 +946,14 @@
   .coach-workspace { display:block; } .coach-rack-list { border-bottom:1px solid var(--line); border-right:0; display:flex; gap:6px; overflow-x:auto; padding:10px 12px; } .coach-section-label { display:none; }
   .coach-observation-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .coach-rack-row { flex:0 0 180px; } .coach-detail-workspace { padding:14px 12px 28px; } .coach-set-hero { grid-template-columns:1fr; } .coach-hero-metric { text-align:left; } .coach-set-hero dl { grid-template-columns:1fr; }
-  .coach-athlete-select { grid-column:1/-1; grid-row:3; width:100%; }
+  /* The selector left the topbar in Phase C, so it no longer needs a grid slot
+     there. On a narrow screen its own bar stacks and the select goes full width. */
+  .coach-analytics-bar { padding:12px; }
+  .coach-analytics-bar label { flex:1 1 100%; }
+  .coach-analytics-bar select { flex:1; min-width:0; }
   .context-tab-content { padding:14px 12px 30px; }
   .context-summary-grid { grid-template-columns:repeat(2,1fr); }
-  .context-exercise-grid,.program-card-grid { grid-template-columns:1fr; }
+  .context-exercise-grid { grid-template-columns:1fr; }
   .athlete-assignment-fields { grid-template-columns:1fr; }
   .athlete-override-list fieldset { grid-template-columns:1fr; }
   .athlete-override-actions { display:grid; grid-template-columns:1fr; }

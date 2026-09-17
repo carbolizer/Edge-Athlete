@@ -17,27 +17,94 @@
 // says "look again". The two views ask the same endpoint for different amounts
 // of detail (?details=true for the coach, which needs the login).
 //
-// The coach view is a set of tabs across one selected athlete — summary,
-// history, programs, notes — plus workouts and reports, which stand alone.
+// The coach view is a THREE-POSITION STATE MACHINE — planning, session,
+// analytics — which is the order a coach's day actually runs in. The position
+// comes in as the `coachState` prop, read from the URL by App.jsx, so a reload
+// keeps it and the Back button moves between states. See coach/coachState.js.
+//
+// Each state has its own sub-tabs (STATE_TABS below) — the eight-at-once bar
+// this replaced is gone, and so is the Programs tab, whose per-athlete override
+// editor now lives in PLANNING → Groups → Open.
 //
 // What is NOT here, on purpose: assigning athletes or workouts to a rack ahead
 // of time. See the D8 note further down.
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import "./App.css";
 import { navigate } from "./router.js";
 import { coachFetch, coachLogin, getCoachToken, setCoachToken } from "./coach/api.js";
 import useLiveRoomState from "./useLiveRoomState.js";
-import { compareReps, groupHistorySets } from "./historyView.js";
+import { compareReps, groupHistorySets, summariseTrainingDays } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
-import AthleteWorkoutPlanning from "./AthleteWorkoutPlanning.jsx";
-import TrainingDayPanel from "./TrainingDayPanel.jsx";
+import { OpenDayFromScratch, StartStagedDay } from "./TrainingDayPanel.jsx";
 import ReportsWorkspace from "./ReportsWorkspace.jsx";
 import ScheduleWorkspace from "./ScheduleWorkspace.jsx";
 import { sameOriginPath } from "./workoutCatalog.js";
 import { coachRackView, measuredInsights, rackMetrics, wallDisplayState, wallMovementView } from "./dashboardView.js";
-import { ATHLETE_TABS, ROOM_TABS, tabDisabled } from "./coachTabs.js";
 import { roleIconSrc } from "./roleIcon.js";
+import { isDevMode } from "./devMode.js";
+import StateNavbar from "./coach/StateNavbar.jsx";
+import SessionWidget from "./coach/SessionWidget.jsx";
+import QuickNote from "./coach/QuickNote.jsx";
+import GroupsView from "./coach/GroupsView.jsx";
+import GroupHistory from "./coach/GroupHistory.jsx";
+import { pathForCoachState, rememberCoachState } from "./coach/coachState.js";
+import { DEFAULT_PRESET_DAYS, matchesPreset, normaliseRange, presetRange, RANGE_PRESETS, rangeContains, rangeLabel } from "./coach/historyRange.js";
+import { scheduleUrl, scheduleWindow, slotState } from "./schedule.js";
+
+// Which sub-tabs belong to which state — the three moments of a coach's day.
+//
+//   PLANNING   what you set up before anyone lifts
+//   SESSION    the live room, while they do
+//   ANALYTICS  what you read afterwards, one athlete at a time
+//
+// The first entry in each list is that state's landing tab.
+const STATE_TABS = {
+  planning: ["design", "groups", "catalog", "calendar"],
+  session: ["room"],
+  analytics: ["athlete", "history", "notes", "reports"],
+};
+
+// ANALYTICS sub-tabs that are about ONE athlete, and so need the selector above
+// them. Reports is the odd one out — it is day-scoped and carries its own
+// athlete/day mode switch, so the shared selector stays out of its way.
+const ATHLETE_SCOPED_TABS = ["athlete", "history", "notes"];
+
+// The sub-tab bar used to print its own keys, so it read "workouts · schedule"
+// in lowercase. These are named things a coach would say out loud, so the label
+// and the internal key stop being the same string here.
+const TAB_LABELS = {
+  design: "Design",
+  groups: "Groups",
+  catalog: "Workout catalog",
+  calendar: "Calendar",
+  room: "Room",
+  athlete: "Athlete",
+  history: "History",
+  notes: "Notes",
+  reports: "Reports",
+};
+
+// Days a coach set up ahead of time and has not started yet.
+//
+// ⚠️ THEY ARE INVISIBLE TO THE LIVE ROOM FEED, ON PURPOSE.
+// `services/active_session.py` defines "active" as STARTED and not ended, so a
+// staged day never appears in `roomState.session` — that is exactly what stops
+// next Thursday's session from capturing today's check-ins (canon D18). It also
+// means the coach screen has to ask the calendar separately to know one exists.
+//
+// It matters here because SESSION is gated on a day being SET, not on one
+// running: staging a day is what makes SESSION reachable, and starting it is
+// what a coach goes there to do.
+async function fetchStagedSlots(accessToken) {
+  const response = await fetch(scheduleUrl(scheduleWindow()), {
+    headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+  });
+  if (!response.ok) return [];
+  const body = await response.json();
+  const slots = Array.isArray(body) ? body : body.results || [];
+  return slots.filter((slot) => slotState(slot) === "ready");
+}
 
 function velocity(value) {
   return value === null || value === undefined ? "--" : Number(value).toFixed(2);
@@ -166,6 +233,77 @@ function WallInsights({ insights }) {
   );
 }
 
+// The wall's settings cog — the mirror of the coach's Room Layout button.
+//
+// It holds one thing: Change device role. That used to be a labelled button
+// sitting in the wall header permanently, which is a lot of room to give a
+// control used once, when the room is built.
+//
+// ⚠️ IT ASKS FIRST, AND THE COACH SCREEN DOES NOT. The difference is that
+// nobody is standing at this one. It is a scoreboard on a wall in a room full
+// of people, and a stray press blanks it until someone finds the tablet and
+// picks a role again. The coach tablet is in a coach's hands; this is not.
+//
+// Closes on Escape and on a click anywhere else, so a panel opened by accident
+// does not sit over the scoreboard for the rest of the session.
+function WallSettings() {
+  const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const root = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = () => { setOpen(false); setConfirming(false); };
+    // ⚠️ mousedown, NOT click, and a ref rather than a selector.
+    //
+    // On click this closed the panel the moment you pressed anything inside it.
+    // React re-renders before the document-level click handler runs, so by then
+    // the button that was pressed is DETACHED — and `closest('.wall-settings')`
+    // on a detached node walks a tree that no longer contains the wrapper, comes
+    // back null, and the panel decides the click was outside itself.
+    //
+    // mousedown fires before React's click handler and before any re-render, so
+    // the node is still in the document and `contains` gives a true answer.
+    const onPointer = (event) => { if (!root.current?.contains(event.target)) close(); };
+    const onKey = (event) => { if (event.key === "Escape") close(); };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="wall-settings" ref={root}>
+      <button type="button" className="wall-settings-cog" aria-expanded={open} aria-haspopup="dialog"
+        title="Dashboard settings" aria-label="Dashboard settings"
+        onClick={() => { setOpen(!open); setConfirming(false); }}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.66.79 1.11 1.51 1.09H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+
+      {open && <div className="wall-settings-panel" role="dialog" aria-label="Dashboard settings">
+        <span className="wall-settings-title">Dashboard settings</span>
+        {confirming
+          ? <>
+              <p>This screen stops showing the scoreboard until someone picks a role again.</p>
+              <div className="wall-settings-actions">
+                <button type="button" onClick={() => setConfirming(false)}>Cancel</button>
+                <button type="button" className="is-danger" onClick={changeDeviceRole}>Change it</button>
+              </div>
+            </>
+          : <button type="button" className="wall-settings-item" onClick={() => setConfirming(true)}>
+              Change device role
+            </button>}
+      </div>}
+    </div>
+  );
+}
+
 function WallView({ monitor }) {
   const { requestState, connectionState, refresh } = monitor;
   const display = wallDisplayState(monitor);
@@ -191,8 +329,15 @@ function WallView({ monitor }) {
           <span>Now training</span>
           <h1>{roomState.session.label}</h1>
         </div>
-        <ConnectionBadge connectionState={connectionState} requestState={requestState} />
-        <button className="coach-logout" onClick={changeDeviceRole}>Change device role</button>
+        {/* Badge and cog share ONE grid cell. `.wall-topbar` is a three-column
+            grid, so a fourth child wraps onto a second row — which is what the
+            cog did on its own. */}
+        <div className="wall-topbar-actions">
+          <ConnectionBadge connectionState={connectionState} requestState={requestState} />
+          {/* Change device role moved in here. A scoreboard should spend its
+              header on the room, not on a control used once when it is set up. */}
+          <WallSettings />
+        </div>
       </header>
 
       <section className="wall-content">
@@ -418,7 +563,6 @@ function NothingRecordedYet({ what }) {
 }
 
 function AthleteSummaryTab({ context }) {
-  if (!context) return <StatePanel title="Choose an athlete" body="Select an athlete to load their saved performance context." />;
   if (!context.summary?.completed_sets) return <NothingRecordedYet what="recorded performance" />;
   return <div className="context-tab-content">
     <section className="context-athlete-hero"><div><span>Athlete overview</span><h2>{context.athlete.name}</h2><p>History since {new Date(context.athlete.created_at).toLocaleDateString()}</p></div><div className="context-summary-grid">
@@ -472,34 +616,105 @@ function HistorySetCard({ workoutSet, expanded, onToggle }) {
   </article>;
 }
 
-function HistoryTab({ context }) {
-  const [expandedSetId, setExpandedSetId] = useState(null);
-  if (!context) return <StatePanel title="Choose an athlete" body="Select an athlete to review their set history." />;
-  if (!context.sets?.length) return <NothingRecordedYet what="set history" />;
-  const days = groupHistorySets(context.sets);
-  return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>Open any set for a rep-by-rep velocity comparison.</p></header>
-    {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}
-    {days.length === 0 && <StatePanel title="No completed training days" body="Completed sets will be organized here by day and workout." />}
-    <div className="history-day-list">{days.map((day) => <section className="history-day" key={day.key}>
-      <header className="history-day-heading"><div><span>Training day</span><h4>{historyDayLabel(day.endedAt)}</h4></div><dl><div><dt>Workouts</dt><dd>{day.workouts.length}</dd></div><div><dt>Sets</dt><dd>{day.sets}</dd></div><div><dt>Reps</dt><dd>{day.reps}</dd></div></dl></header>
-      <div className="history-workout-list">{day.workouts.map((workout) => <section className="history-workout" key={workout.key}>
-        <header><div><span>Workout</span><h5>{workout.label}</h5></div><p>{workout.sets.length} set{workout.sets.length === 1 ? "" : "s"} · {workout.reps} reps</p></header>
-        <div className="history-set-list">{workout.sets.map((workoutSet) => <HistorySetCard workoutSet={workoutSet} expanded={expandedSetId === workoutSet.id} onToggle={() => setExpandedSetId(expandedSetId === workoutSet.id ? null : workoutSet.id)} key={workoutSet.id} />)}</div>
-      </section>)}</div>
-    </section>)}</div>
-  </section></div>;
+// The trend arrow. A word as well as a colour and a glyph, because red/green
+// alone is unreadable to anyone colour-blind and this is the column the whole
+// table exists for.
+function TrendCell({ trend, change }) {
+  // Nothing behind this day to compare against.
+  if (!trend) return <span className="history-trend flat">—</span>;
+  // Flat is just the number. A glyph, the word "Level" and 0.00 were three ways
+  // of saying the same thing; the number alone says it once.
+  if (trend === "flat") return <span className="history-trend flat">{signed(change)}</span>;
+  // Up and down keep the word as well as the colour and the arrow — red/green
+  // alone is unreadable to anyone colour-blind, and this is the column the whole
+  // table exists for.
+  return <span className={`history-trend ${trend}`}>
+    {trend === "up" ? "▲" : "▼"} {trend === "up" ? "Faster" : "Slower"} {signed(change)}
+  </span>;
 }
 
-function ProgramsTab({ athlete, programs, accessToken, onLogout }) {
-  if (!athlete) return <StatePanel title="Choose an athlete" body="Select an athlete to see their recorded prescriptions." />;
-  return <div className="context-tab-content"><section className="context-section"><header><span>Recorded prescriptions</span><h3>{athlete.name} · Programs</h3><p>No program is labeled current without effective dates.</p></header><div className="program-card-grid">{programs.map((program) => <article key={program.id}><span>{program.exercise}</span><strong>{program.target_sets} × {program.target_reps}</strong><p>{program.target_weight_lbs} lbs</p><div>Target velocity <b>{program.velocity_zone_min === null && program.velocity_zone_max === null ? "No velocity target" : `${velocity(program.velocity_zone_min)}–${velocity(program.velocity_zone_max)} m/s`}</b></div></article>)}</div></section><AthleteWorkoutPlanning athlete={athlete} accessToken={accessToken} onLogout={onLogout} /></div>;
+function HistoryTab({ context, range }) {
+  const [expandedSetId, setExpandedSetId] = useState(null);
+  // Which day's detail is open. Null means the index only — a coach lands on
+  // "what has this athlete been doing lately", not on one day's rep tables.
+  const [openDayKey, setOpenDayKey] = useState(null);
+  if (!context.sets?.length) return <NothingRecordedYet what="set history" />;
+  // The same range the group view uses, so the two halves of History can never
+  // disagree about which sets count as recent.
+  const inRange = context.sets.filter((workoutSet) => rangeContains(range, workoutSet.ended_at));
+  const days = groupHistorySets(inRange);
+  const summaries = summariseTrainingDays(days);
+  return <div className="context-tab-content"><section className="context-section"><header><span>Saved history</span><h3>{context.athlete.name} · training days</h3><p>The last few days this athlete trained. Open one for its workouts, sets and rep-by-rep comparison.</p></header>
+    {context.truncated && <div className="context-notice">Showing the 50 most recent sets; summaries include all history.</div>}
+    {/* Empty because of the range, not because the athlete has never trained —
+        those are different facts and a coach should not have to guess which. */}
+    {days.length === 0 && <StatePanel title={`Nothing in ${rangeLabel(range).toLowerCase()}`}
+      body="This athlete has saved history, just none in the dates selected. Widen the range above." />}
+
+    {/* The index. One row per training day, newest first — enough to answer
+        "how has this athlete been going" without opening anything. */}
+    <div className="history-table-wrap"><table className="history-table">
+      <caption>Training days for {context.athlete.name}, most recent first</caption>
+      <thead><tr>
+        <th scope="col">Day</th><th scope="col">Workouts</th><th scope="col">Sets</th>
+        <th scope="col">Reps</th><th scope="col">Avg velocity</th><th scope="col">Vs previous day</th>
+      </tr></thead>
+      <tbody>{summaries.map((row) => {
+        const open = row.key === openDayKey;
+        const toggle = () => setOpenDayKey(open ? null : row.key);
+        // The whole row is the target — a coach aiming at a date in a table of
+        // numbers is aiming at the smallest thing on the line.
+        //
+        // The button stays because the row cannot: a <tr> is not focusable and
+        // carries no role, so keyboard and screen-reader users would lose the
+        // control entirely. The row guards against the button's own click
+        // bubbling up and toggling twice, which would look like nothing
+        // happened.
+        // The detail opens as the NEXT ROW, directly under the day it belongs
+        // to. Rendered after the table it read as a panel about nothing in
+        // particular — a coach who opened the eleventh day had to scroll past
+        // ten unrelated rows to find out what they had just clicked.
+        const day = open ? days.find((candidate) => candidate.key === row.key) : null;
+        return <Fragment key={row.key}>
+          <tr className={open ? "is-open" : ""}
+            onClick={(event) => { if (!event.target.closest("button")) toggle(); }}>
+            <td><button type="button" className="history-row-open" aria-expanded={open} onClick={toggle}>
+              {historyDayLabel(row.endedAt)}
+            </button></td>
+            <td>{row.workoutCount}</td>
+            <td>{row.sets}</td>
+            <td>{row.reps}</td>
+            <td><b>{velocity(row.avgVelocity)}</b> <small>m/s</small></td>
+            <td><TrendCell trend={row.trend} change={row.change} /></td>
+          </tr>
+          {day && <tr className="history-detail-row"><td colSpan={6}>
+            <section className="history-day">
+              <header className="history-day-heading"><div><span>Training day</span><h4>{historyDayLabel(day.endedAt)}</h4></div><dl><div><dt>Workouts</dt><dd>{day.workouts.length}</dd></div><div><dt>Sets</dt><dd>{day.sets}</dd></div><div><dt>Reps</dt><dd>{day.reps}</dd></div></dl><button type="button" className="history-day-close" onClick={() => setOpenDayKey(null)}>Close</button></header>
+              <div className="history-workout-list">{day.workouts.map((workout) => <section className="history-workout" key={workout.key}>
+                <header><div><span>Workout</span><h5>{workout.label}</h5></div><p>{workout.sets.length} set{workout.sets.length === 1 ? "" : "s"} · {workout.reps} reps</p></header>
+                <div className="history-set-list">{workout.sets.map((workoutSet) => <HistorySetCard workoutSet={workoutSet} expanded={expandedSetId === workoutSet.id} onToggle={() => setExpandedSetId(expandedSetId === workoutSet.id ? null : workoutSet.id)} key={workoutSet.id} />)}</div>
+              </section>)}</div>
+            </section>
+          </td></tr>}
+        </Fragment>;
+      })}</tbody>
+    </table></div>
+    {/* ⚠️ Said out loud rather than left for a coach to discover. The average
+        pools every movement trained that day, and velocity is only comparable
+        within a lift — so a bench day after a squat day reads as a jump the
+        athlete did not make. See summariseTrainingDays. */}
+    <p className="history-table-note">
+      Avg velocity pools every movement trained that day, so a change can reflect what was
+      programmed rather than the athlete. Open a day to compare like for like.
+    </p>
+
+  </section></div>;
 }
 
 // Free-text memory a coach leaves on an athlete for whoever runs the next
 // session. Saved to `Athlete.notes` — see saveNote for the last-write-wins
 // caveat that came with folding away his dedicated notes route.
 function NotesTab({ athlete, note, draft, setDraft, onSave, saving, error }) {
-  if (!athlete) return <StatePanel title="Choose an athlete" body="Select an athlete to open their coach note." />;
   return <div className="context-tab-content"><section className="context-section notes-workspace"><header><span>Coach memory</span><h3>Notes for {athlete.name}</h3><p>Record durable context another coach should know next session.</p></header><textarea aria-label={`Coach notes for ${athlete.name}`} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={65536} placeholder="Record durable athlete context..." /><div className="notes-actions"><span>{draft.length.toLocaleString()} / 65,536 · {draft !== note?.text ? "Unsaved changes" : "Saved"}</span><button onClick={onSave} disabled={saving || draft === note?.text}>{saving ? "Saving..." : "Save note"}</button></div>{error && <p className="coach-login-error" role="alert">{error}</p>}</section></div>;
 }
 
@@ -531,9 +746,10 @@ function RackSelectionControls({ rack }) {
   </section>;
 }
 
-function CoachView({ monitor, accessToken, onLogout }) {
+function CoachView({ monitor, accessToken, onLogout, coachState }) {
   const { roomState, requestState, connectionState, lastError, refresh } = monitor;
-  const [selectedRackNumber,setSelectedRackNumber]=useState(null),[activeTab,setActiveTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
+  const [brandMenuOpen,setBrandMenuOpen]=useState(false);
+  const [selectedRackNumber,setSelectedRackNumber]=useState(null),[requestedTab,setRequestedTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
   useEffect(()=>{fetch("/api/athletes/",{headers}).then(r=>r.json()).then(setAthletes).catch(()=>setAthletes([]));},[accessToken]);
   // Every sensor, not just the one on the selected rack — the linking control
@@ -542,11 +758,58 @@ function CoachView({ monitor, accessToken, onLogout }) {
   const [nodes,setNodes]=useState([]);
   const [nodesTick,setNodesTick]=useState(0);
   useEffect(()=>{coachFetch("/api/nodes/",{token:accessToken}).then(setNodes).catch(()=>setNodes([]));},[accessToken,nodesTick]);
-  useEffect(()=>{setContext(null);setPrograms([]);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/prescriptions/?athlete=${selectedAthleteId}`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,p,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setPrograms(p);setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
+  // ⚠️ THE /api/exercises/ FETCH IS GONE TOO. It existed only to turn the
+  // prescriptions endpoint's catalog ids into names for the Programs tab —
+  // fixing the bug where a coach saw "1" instead of "Back Squat". With that tab
+  // deleted there is nothing left on this screen holding a raw exercise id, so
+  // the whole lookup went with it. WorkoutCatalog still fetches the catalog for
+  // its own movement pickers; this was a second copy for one label.
+  // Two requests, not three. `/api/prescriptions/` went with the Programs tab —
+  // it was the only reader, and the override editor that replaced it fetches its
+  // own data in PLANNING → Groups → Open. One less round trip per athlete.
+  useEffect(()=>{setContext(null);setNote(null);setDraft("");if(!selectedAthleteId)return;let cancelled=false;setLoading(true);setError("");Promise.all([fetch(`/api/analytics/athlete/${selectedAthleteId}/`,{headers}),fetch(`/api/athletes/${selectedAthleteId}/`,{headers})]).then(async rs=>{if(rs.some(r=>r.status===401||r.status===403)){onLogout();return;}if(rs.some(r=>!r.ok))throw new Error("Athlete context could not be loaded.");const [c,n]=await Promise.all(rs.map(r=>r.json()));if(!cancelled&&c.athlete_id===selectedAthleteId&&n.id===selectedAthleteId){setContext({...c,athlete:n});setNote({athlete_id:n.id,text:n.notes||""});setDraft(n.notes||"");}}).catch(e=>!cancelled&&setError(e.message)).finally(()=>!cancelled&&setLoading(false));return()=>{cancelled=true;};},[selectedAthleteId,accessToken]);
   useEffect(()=>{if(roomState?.racks.length&&!roomState.racks.some(r=>r.rack_number===selectedRackNumber)){const rack=roomState.racks[0];setSelectedRackNumber(rack.rack_number);const athleteId=rack.athlete?.id;if(athleteId)setSelectedAthleteId(Number(athleteId));}},[roomState,selectedRackNumber]);
+  // History looks at one athlete or at a whole group. The switch lives up here
+  // rather than inside HistoryTab because it changes what the selector beside it
+  // selects — and because group scope must NOT sit behind the "choose an
+  // athlete" guard, which would make it unreachable until you picked one.
+  const [historyScope,setHistoryScope]=useState("athlete");
+  // ONE range, shared by both scopes. It used to live inside GroupHistory, so
+  // the athlete view had no range at all and the two halves of History
+  // disagreed about what "recently" meant.
+  const [historyRange,setHistoryRange]=useState(()=>presetRange(DEFAULT_PRESET_DAYS));
+  const [groups,setGroups]=useState([]);
+  const [selectedGroupId,setSelectedGroupId]=useState(null);
+  useEffect(()=>{fetch("/api/training-groups/",{headers}).then(r=>r.ok?r.json():[]).then(b=>{const list=Array.isArray(b)?b:b.results||[];setGroups(list);setSelectedGroupId(current=>current??list[0]?.id??null);}).catch(()=>setGroups([]));},[accessToken]);
+  // Staged days, re-read whenever a day starts or ends — both change the set.
+  // A failure is deliberately silent and treated as "none staged": it costs the
+  // coach a shortcut, and PLANNING can always open a day from scratch.
+  const [stagedSlots,setStagedSlots]=useState([]);
+  const runningDayId=roomState?.session?.id??null;
+  useEffect(()=>{let cancelled=false;fetchStagedSlots(accessToken).then(slots=>{if(!cancelled)setStagedSlots(slots);}).catch(()=>{if(!cancelled)setStagedSlots([]);});return()=>{cancelled=true;};},[accessToken,runningDayId]);
+  // Where this device is, so a bare /coach can send it back here after a reboot.
+  // In an effect rather than in goToState below, because a state can also be
+  // reached by the Back button or by typing the URL, and those must count too.
+  useEffect(()=>{rememberCoachState(coachState);},[coachState]);
+  // The tab bar belongs to the state, so a tab the coach picked in one state is
+  // held but not shown in another — come back and it is still selected. If the
+  // held tab does not belong here, this state's first tab is the landing tab.
+  const stateTabs=STATE_TABS[coachState]||STATE_TABS.planning;
+  const activeTab=stateTabs.includes(requestedTab)?requestedTab:stateTabs[0];
   const dirty=note&&draft!==note.text;
   const chooseAthlete=id=>{if(dirty&&!window.confirm("Discard the unsaved note draft?"))return;setSelectedAthleteId(id?Number(id):null);};
-  const chooseTab=tab=>{if(activeTab==="notes"&&tab!=="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;setActiveTab(tab);};
+  const chooseTab=tab=>{if(activeTab==="notes"&&tab!=="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;setRequestedTab(tab);};
+  // Changing STATE can also walk away from an unsaved note, so it asks the same
+  // question the tab bar does — the coach should not be able to lose a draft by
+  // pressing a different part of the screen.
+  const goToState=key=>{if(key===coachState)return;if(activeTab==="notes"&&dirty&&!window.confirm("Leave Notes with unsaved changes?"))return;navigate(pathForCoachState(key));};
+  // A day just ended. The report it froze belongs in ANALYTICS, not in a strip
+  // floating over every state — so take the coach to where finished days live
+  // rather than drawing one on top of whatever they were doing.
+  //
+  // SESSION also has nothing left to show at this point: the room is closed, and
+  // staying there would leave them looking at an empty floor.
+  const handleDayEnded=()=>{setRequestedTab("reports");navigate(pathForCoachState("analytics"));};
   // Coach notes are a plain field on the athlete record, so saving one is a
   // PATCH to the athlete — there is no separate notes route (merge canon R1).
   //
@@ -585,39 +848,138 @@ function CoachView({ monitor, accessToken, onLogout }) {
   if(!roomState&&requestState==="loading")return <main className="monitor coach-monitor"><StatePanel title="Loading coach workspace" body="Reconciling saved room state." /></main>;
   if(!roomState)return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body={lastError||"The base station could not be reached."} action={refresh} /></main>;
   const selectedRack=roomState.racks.find(r=>r.rack_number===selectedRackNumber)||roomState.racks[0],workoutSet=selectedRack?.latest_set||null,liveMetrics=rackMetrics(selectedRack);
-  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?<StatePanel title="No racks assigned" body="Assign room hardware before monitoring sets."/>:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?<StatePanel title={`Rack ${selectedRack.rack_number} is ready`} body="No completed set saved for this rack."/>:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(liveMetrics.mean)}</strong><span>{liveMetrics.isLive?"m/s latest mean":"m/s average"}</span></div><dl><div><dt>{liveMetrics.isLive?"Latest peak":"Peak"}</dt><dd>{velocity(liveMetrics.peak)} m/s</dd></div><div><dt>Reps</dt><dd>{liveMetrics.reps}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div></>}<CoachHardware rack={selectedRack} nodes={nodes} token={accessToken} onLinked={()=>{refresh();setNodesTick(n=>n+1);}}/></>}</div></section>;
-  return <main className="monitor coach-monitor"><header className="coach-topbar">
-    <div className="monitor-brand"><img src="/icon-coach-192.png" alt="" width="38" height="38" /><span>Edge Athlete</span></div>
+  const room=<section className="coach-workspace"><aside className="coach-rack-list"><div className="coach-section-label"><span>Room</span><b>{roomState.racks.length} racks</b></div>{roomState.racks.map(r=><CoachRackButton rack={r} selected={r.rack_number===selectedRack?.rack_number} onSelect={()=>{setSelectedRackNumber(r.rack_number);const athleteId=r.athlete?.id;if(athleteId)chooseAthlete(athleteId);}} key={r.rack_number}/>)}</aside><div className="coach-detail-workspace">{!selectedRack?null:<><RackSelectionControls rack={selectedRack}/>{!workoutSet?null:<><section className="coach-set-hero"><div><span>Rack {selectedRack.rack_number} · Set {workoutSet.set_number}</span><h2>{selectedRack.athlete?.name||"Unknown athlete"}</h2><p>{workoutSet.exercise} · {workoutSet.weight_lbs??"--"} lbs</p></div><div className="coach-hero-metric"><strong>{velocity(liveMetrics.mean)}</strong><span>{liveMetrics.isLive?"m/s latest mean":"m/s average"}</span></div><dl><div><dt>{liveMetrics.isLive?"Latest peak":"Peak"}</dt><dd>{velocity(liveMetrics.peak)} m/s</dd></div><div><dt>Reps</dt><dd>{liveMetrics.reps}</dd></div><div><dt>Target</dt><dd>{workoutSet.target_zone?`${velocity(workoutSet.target_zone.min)}-${velocity(workoutSet.target_zone.max)}`:"Not set"}</dd></div></dl></section><div className="coach-panel-grid"><RepChart workoutSet={workoutSet}/><MeasuredInsights workoutSet={workoutSet}/></div></>}<CoachHardware rack={selectedRack} nodes={nodes} token={accessToken} onLinked={()=>{refresh();setNodesTick(n=>n+1);}}/>{/* SESSION's only athlete-scoped control, and it needs no picker: the
+          rack rail on the left already IS the picker, and it picks the way a
+          coach thinks mid-floor — "whoever is on that rack". */}
+      <QuickNote athlete={selectedRack.athlete} rackNumber={selectedRack.rack_number} accessToken={accessToken} onLogout={onLogout}/></>}</div></section>;
+  // SESSION needs a day SET — staged from the calendar, or already running.
+  // Staged counts because starting a staged day is the thing SESSION is for.
+  //
+  // The navbar dims the button; this covers getting here anyway — typing the
+  // URL, or standing on SESSION at the moment the day ends. It deliberately does
+  // NOT redirect: pulling a coach off the screen they were reading, without
+  // being asked to, is worse than an empty screen that says why it is empty.
+  const dayRunning=Boolean(roomState.session);
+  const daySet=dayRunning||stagedSlots.length>0;
+  const dayMissing=coachState==="session"&&!daySet;
+  // `coach-states-clearance` is room for the navbar to float over. Without it
+  // the last card on every screen sits under the glass and cannot be reached.
+  return <main className="monitor coach-monitor coach-states-clearance"><header className="coach-topbar">
+    {/* The logo is the account menu. Log out is a once-a-day action and did not
+        earn permanent space in the toolbar; "Change device" is gone entirely
+        because Room Layout already owns it (CoachTablet.jsx). */}
+    <div className="monitor-brand coach-brand-menu">
+      <button type="button" className="coach-brand-button" onClick={()=>setBrandMenuOpen(!brandMenuOpen)} aria-expanded={brandMenuOpen} aria-haspopup="menu">
+        <img src="/icon-coach-192.png" alt="" width="38" height="38" /><span>Edge Athlete</span>
+      </button>
+      {brandMenuOpen && <div className="coach-brand-dropdown" role="menu">
+        <button type="button" role="menuitem" onClick={onLogout}>Log out</button>
+      </div>}
+    </div>
     <div className="coach-session-title"><span>Coach workspace</span><h1>{roomState.session?.label||"No active session"}</h1></div>
     <div className="coach-topbar-actions">
       <ConnectionBadge connectionState={connectionState} requestState={requestState}/>
-      <select className="coach-athlete-select" value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete"><option value="">Select athlete</option>{athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select>
       {/* Room Layout — assigning tablets to rack numbers. It lives on its own
           screen because it is setup work a coach does once when the room is
           built, not something they touch during a session. */}
-      <button className="coach-icon-button" onClick={()=>navigate("/coach/setup")} title="Room layout" aria-label="Room layout">
+      {/* Labelled, not a bare cog. With no racks assigned the coach screen has
+          nothing to show, and this is the only way out of that — so it calls
+          attention to itself until at least one rack exists. */}
+      <button className={`coach-icon-button coach-labeled-button${roomState.racks.length?"":" coach-button-attention"}`} onClick={()=>navigate("/coach/setup")} title="Room layout" aria-label="Room layout">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.2.66.79 1.11 1.51 1.09H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
+        <span>Room layout</span>
       </button>
-      <button className="coach-logout" onClick={onLogout}>Log out</button>
-      <button className="coach-logout" onClick={changeDeviceRole}>Change device</button>
+
     </div>
-  </header><section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section><TrainingDayPanel roomState={roomState} athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/><nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">
-    {ROOM_TABS.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{t}</button>)}
-    <span className="coach-tab-divider" aria-hidden="true" />
-    {ATHLETE_TABS.map(t=>{
-      const disabled = tabDisabled(t, selectedAthleteId);
-      return <button className={(activeTab===t?"active":"")+(disabled?" needs-athlete":"")}
-        aria-selected={activeTab===t} role="tab" aria-disabled={disabled}
-        title={disabled?"Select an athlete first to see their view":undefined}
-        onClick={()=>{if(disabled&&activeTab!==t){setError("Select an athlete to open their view.");return;}chooseTab(t);}} key={t}>{t}</button>
-    })}
-  </nav><div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{activeTab==="workouts"||activeTab==="reports"||activeTab==="schedule"?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
+  </header>{/* Developer instrumentation, not coaching information: reconciliation
+          time, queue depth, raw counters. Hidden unless isDevMode(). */}
+      {isDevMode() && <section className="coach-summary-strip"><div><span>Active racks</span><strong>{roomState.summary.active_racks} / {roomState.racks.length}</strong></div><div><span>Athletes with sets</span><strong>{roomState.summary.athletes_with_sets}</strong></div><div><span>Sets complete</span><strong>{roomState.summary.completed_sets}</strong></div><div><span>Awaiting saved result</span><strong>{roomState.racks.filter(rack=>!rack.latest_set).length}</strong></div><div><span>Last reconciled</span><strong>{timeLabel(roomState.generated_at)}</strong></div></section>}{/* The strip. Outside the three states because ending a day is something a
+          coach does while looking at anything — and it renders nothing at all
+          unless a day is actually running. */}
+      <SessionWidget roomState={roomState} accessToken={accessToken} onLogout={onLogout} refresh={refresh} onDayEnded={handleDayEnded}/>{/* The athlete selector, ANALYTICS-only.
+        It used to sit in the topbar, on screen in every state — but PLANNING is
+        group- and program-scoped and SESSION picks by rack (the rack rail IS
+        the picker there, and it picks the way a coach thinks on the floor). A
+        global selector was a second path to a state only one state uses.
+
+        Not shown on Reports: that sub-tab has its own athlete picker with its
+        own day/athlete modes, and two pickers on one screen is worse than the
+        one it replaced. */}
+      {coachState==="analytics"&&(ATHLETE_SCOPED_TABS.includes(activeTab))&&<div className="coach-analytics-bar">
+        {/* On History the selector switches between an athlete and a group —
+            same question, wider lens. The other sub-tabs are athlete-only. */}
+        {activeTab==="history"&&<div className="coach-scope-switch" role="group" aria-label="History scope">
+          <button type="button" className={historyScope==="athlete"?"is-on":""} aria-pressed={historyScope==="athlete"}
+            onClick={()=>setHistoryScope("athlete")}>Athlete</button>
+          <button type="button" className={historyScope==="group"?"is-on":""} aria-pressed={historyScope==="group"}
+            onClick={()=>setHistoryScope("group")}>Group</button>
+        </div>}
+        {activeTab==="history"&&historyScope==="group"
+          ? <label>Group
+              <select value={selectedGroupId||""} onChange={e=>setSelectedGroupId(Number(e.target.value))} aria-label="Selected group">
+                {groups.length===0&&<option value="">No groups yet</option>}
+                {groups.map(g=><option value={g.id} key={g.id}>{g.name} · {g.athlete_count??0} athletes</option>)}
+              </select>
+            </label>
+          : <>
+              <label>Athlete
+                <select value={selectedAthleteId||""} onChange={e=>chooseAthlete(e.target.value)} aria-label="Selected athlete">
+                  <option value="">Select athlete</option>
+                  {athletes.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}
+                </select>
+              </label>
+              {context?.athlete&&<span>Showing <b>{context.athlete.name}</b></span>}
+            </>}
+        {/* The range, beside the thing it scopes. Presets for the common
+            answers, two date fields for everything else — a coach chasing one
+            bad week needs to name that week, and no preset ever will. */}
+        {activeTab==="history"&&<div className="coach-range">
+          <div className="coach-range-presets" role="group" aria-label="Date range presets">
+            {RANGE_PRESETS.map(choice=><button key={choice.days} type="button"
+              className={matchesPreset(historyRange,choice.days)?"is-on":""}
+              aria-pressed={matchesPreset(historyRange,choice.days)}
+              onClick={()=>setHistoryRange(presetRange(choice.days))}>{choice.days}d</button>)}
+          </div>
+          <label>From<input type="date" value={historyRange.from} max={historyRange.to}
+            onChange={e=>setHistoryRange(current=>normaliseRange(e.target.value,current.to)||current)}/></label>
+          <label>To<input type="date" value={historyRange.to} min={historyRange.from}
+            onChange={e=>setHistoryRange(current=>normaliseRange(current.from,e.target.value)||current)}/></label>
+          <span className="coach-range-label">{rangeLabel(historyRange)}</span>
+        </div>}
+      </div>}
+      {!dayMissing&&<nav className="coach-context-tabs" aria-label="Coach workspace tabs" role="tablist">{stateTabs.map(t=><button className={activeTab===t?"active":""} aria-selected={activeTab===t} role="tab" onClick={()=>chooseTab(t)} key={t}>{TAB_LABELS[t]??t}</button>)}</nav>}{/* ONE instance across two sub-tabs, not two. Design and Workout catalog
+          need the same blocks, categories, groups and deployed programs; mounting
+          it twice would fetch all of them twice and let the two copies drift —
+          a block made on Design would not show up in the catalog. */}
+      <div hidden={activeTab!=="design"&&activeTab!=="catalog"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout} section={activeTab==="catalog"?"catalog":"design"} onStageDay={()=>setRequestedTab("calendar")}/></div>
+      <div hidden={activeTab!=="groups"}><GroupsView accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="calendar"}>{/* Opening a day with no block behind it. It lives in PLANNING, not
+              SESSION, for one hard reason: `POST /api/sessions/` starts the room
+              immediately — there is no staged step it could reach SESSION with —
+              and SESSION is dimmed until a day is set. Putting it there would
+              lock out any gym whose calendar is empty, which is every new one.
+
+              ABOVE the calendar, not below it: the calendar can run to dozens of
+              rows, and an escape hatch a coach has to scroll past three weeks of
+              planned days to find is not an escape hatch. Phase D decides where
+              this finally sits when PLANNING gets its four sub-tabs. */}
+          {!dayRunning&&<OpenDayFromScratch athletes={athletes} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}
+          <ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh} onStaged={()=>{fetchStagedSlots(accessToken).then(setStagedSlots).catch(()=>{});navigate(pathForCoachState("session"));}} onOpenSession={()=>navigate(pathForCoachState("session"))}/></div>{dayMissing?<StatePanel title="No training day is set up" body="Set a day up from the calendar in Planning and it appears here, ready to start. For training with no plan behind it, Planning can open the room straight away." action={()=>goToState("planning")} actionLabel="Go to Planning"/>:activeTab==="design"||activeTab==="catalog"||activeTab==="groups"||activeTab==="reports"||activeTab==="calendar"?null:activeTab==="room"?<>{/* A day set up earlier, waiting to be opened. Above the room because
+            until it is started the room below is not following anything. */}
+        {!dayRunning&&<StartStagedDay slots={stagedSlots} accessToken={accessToken} onLogout={onLogout} refresh={refresh}/>}{room}</>:/* Group history is deliberately AHEAD of the athlete guard below. It is not
+        about one athlete, so requiring one first would make it unreachable —
+        and the coach most in need of it is the one who does not yet know whose
+        name to type. */
+      activeTab==="history"&&historyScope==="group"?<GroupHistory group={groups.find(g=>g.id===selectedGroupId)||null} range={historyRange} accessToken={accessToken} onLogout={onLogout}/>:
+      loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:!context?.athlete?<StatePanel title="Choose an athlete" body="Select an athlete to see their performance, history, prescriptions and notes."/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context} range={historyRange}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}{/* Outside everything that swaps, on purpose — the bar is one continuous
+          object, not three copies of a bar. That is what makes three routes
+          read as one surface changing mode. */}
+    <StateNavbar current={coachState} onSelect={goToState} daySet={daySet}/></main>;
 }
 
-export default function Dashboard({ mode = "wall" }) {
+export default function Dashboard({ mode = "wall", coachState = "planning" }) {
   // The token is read from storage on mount, not started at null, so a refresh,
   // a tablet waking from sleep, or a browser reloading a backgrounded tab does
   // not throw the coach back to a login screen mid-session. It is the same
@@ -651,7 +1013,7 @@ export default function Dashboard({ mode = "wall" }) {
     return <CoachLogin onLogin={login} error={loginError} busy={loginBusy} />;
   }
   if (mode === "coach") {
-    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} />;
+    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} coachState={coachState} />;
   }
   return <WallView monitor={monitor} />;
 }

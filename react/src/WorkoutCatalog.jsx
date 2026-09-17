@@ -116,7 +116,22 @@ function ExerciseSummary({ exercise }) {
   return <li><b>{exercise.position}. {name}</b><span>{exercise.sets} x {exercise.reps} @ {exercise.target_percent}% of max · {velocity}</span></li>;
 }
 
-export default function WorkoutCatalog({ accessToken, onLogout }) {
+/*
+ * `section` splits this screen between two of PLANNING's sub-tabs:
+ *
+ *   "design"   making things — the block builder, the day builder, the CSV
+ *              import, deploy, and the deployed programs you can promote back up
+ *   "catalog"  looking at what exists — saved days by block, and the block
+ *              catalog with its category filters and paging
+ *
+ * ⚠️ IT IS ONE COMPONENT WITH TWO FACES, NOT TWO COMPONENTS. Both sub-tabs need
+ * the same blocks, categories, groups and deployed programs, and mounting this
+ * twice would fetch every one of them twice and let the two copies drift out of
+ * step — a block created on Design would not appear in Catalog until something
+ * happened to refetch it. One instance stays mounted across both; only the JSX
+ * below is partitioned.
+ */
+export default function WorkoutCatalog({ accessToken, onLogout, section = "design", onStageDay }) {
   const [name, setName] = useState("");
   const [exercises, setExercises] = useState([createExerciseDraft(1)]);
   const [manualErrors, setManualErrors] = useState([]);
@@ -153,6 +168,22 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const [programSaving, setProgramSaving] = useState(false);
   // deploy panel
   const [deployBlockId, setDeployBlockId] = useState("");
+  // Which block's deploy form is open, and whether the create-block form is
+  // showing. Both are UI-only — see openCreateBlock / startDeploy below.
+  const [deployForBlockId, setDeployForBlockId] = useState(null);
+  const [createBlockMode, setCreateBlockMode] = useState("");
+  // Step 3 — a one-off program, created with NO training_block behind it.
+  const [createSessionMode, setCreateSessionMode] = useState("");
+  const [oneOffGroupId, setOneOffGroupId] = useState("");
+  const [oneOffName, setOneOffName] = useState("");
+  const [oneOffStart, setOneOffStart] = useState("");
+  const [oneOffEnd, setOneOffEnd] = useState("");
+  const [oneOffSaving, setOneOffSaving] = useState(false);
+  const [oneOffErrors, setOneOffErrors] = useState([]);
+  const [oneOffStatus, setOneOffStatus] = useState("");
+  // Which program a plan spreadsheet is being imported INTO. Empty means the
+  // import targets a block instead — see the note on submitCsv.
+  const [csvProgramId, setCsvProgramId] = useState("");
   const [deployGroupId, setDeployGroupId] = useState("");
   const [deployName, setDeployName] = useState("");
   const [deployStart, setDeployStart] = useState("");
@@ -401,9 +432,17 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     // previous preview, so the coach's answers have to travel with it or they
     // are forgotten and the same errors come back.
     if (countCorrections(corrections)) form.append("corrections", JSON.stringify(corrections));
-    // A plan needs to know which block it belongs to; the other sheet types use
-    // it, when given, only to tell two same-named athletes apart.
-    if (workoutBlockId) form.append("training_block", workoutBlockId);
+    // A plan needs to know where its days belong; the other sheet types use the
+    // target, when given, only to tell two same-named athletes apart.
+    //
+    // ⚠️ EITHER A BLOCK OR A PROGRAM, NEVER BOTH — the server returns
+    // `ambiguous_target` if both arrive (views.py `_import_target`). Aiming at a
+    // PROGRAM is what makes a one-off session usable: it has no template to put
+    // days in, so its days have to be written to the program itself. The
+    // importer has supported that all along (`_PLAN_TARGETS["program"]`); until
+    // now nothing on this screen ever asked for it.
+    if (csvProgramId) form.append("training_program", csvProgramId);
+    else if (workoutBlockId) form.append("training_block", workoutBlockId);
     try {
       const response = await fetch(action === "preview" ? CSV_PREVIEW_URL : CSV_IMPORT_URL, {
         method: "POST",
@@ -509,6 +548,44 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       setDeployErrors(Array.isArray(errors) ? errors : [{ detail: "The block could not be deployed." }]);
     } finally {
       setDeploySaving(false);
+    }
+  }
+
+  // A one-off: the same endpoint as a deploy, with NO block named.
+  //
+  // `buildDeployPayload` already omits `training_block` when it is falsy, and
+  // `training_programs_view` documents both paths as first-class — "a one-off
+  // plan authored directly for the group, no template involved". So this needs
+  // no new route and no new payload shape; it is the deploy call with one field
+  // left out, which is exactly what a one-off IS.
+  //
+  // It lands empty. Days are added by importing a plan spreadsheet aimed at the
+  // program, in the CSV panel — see submitCsv.
+  async function createOneOff(event) {
+    event.preventDefault();
+    setOneOffSaving(true);
+    setOneOffErrors([]);
+    setOneOffStatus("");
+    try {
+      const response = await fetch(DEPLOY_URL, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(buildDeployPayload(oneOffName, oneOffGroupId, "", oneOffStart, oneOffEnd)),
+      });
+      const body = await parseResponse(response, "The session could not be created.");
+      if (body === null) return;
+      // Point the importer at what was just made, so the next step is one click
+      // rather than finding it again in a dropdown.
+      if (body.id) setCsvProgramId(String(body.id));
+      setOneOffStatus(`“${body.name || oneOffName.trim()}” created with no days yet — import a plan sheet below to fill it.`);
+      setOneOffName("");
+      setOneOffStart("");
+      setOneOffEnd("");
+      await loadDeployedPrograms();
+    } catch (errors) {
+      setOneOffErrors(Array.isArray(errors) ? errors : [{ detail: "The session could not be created." }]);
+    } finally {
+      setOneOffSaving(false);
     }
   }
 
@@ -620,9 +697,219 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
   const allRepaired = repairs.length > 0 && repairedCount === repairs.length;
   const previewRows = preview?.rows || [];
 
+  const showDesign = section === "design";
+  const showCatalog = section === "catalog";
+
+  // Which of the three design steps is open. An accordion rather than three
+  // stacked panels because the steps are a SEQUENCE — block, then program, then
+  // one-off — and three open at once turned the tab into a scroll where the
+  // order stopped being visible. One at a time keeps the shape of the process
+  // on screen even when you are only working in the middle of it.
+  const [openStep, setOpenStep] = useState(1);
+  const stepProps = (n) => ({
+    className: `design-step${openStep === n ? " is-open" : ""}`,
+  });
+  const stepButton = (n, label, summary) => (
+    <button type="button" className="design-step-head" aria-expanded={openStep === n}
+      onClick={() => setOpenStep(openStep === n ? null : n)}>
+      <span className="design-stepno">{label}</span>
+      <span className="design-step-summary">{summary}</span>
+      <span className="design-step-chevron" aria-hidden="true">{openStep === n ? "−" : "+"}</span>
+    </button>
+  );
+
+  // "Create block" is a DROPDOWN that reveals a form, not a form sitting open
+  // forever (spec §15). A coach creates a block occasionally and deploys one
+  // constantly, so the rare thing should not be the tallest thing on screen.
+  // Empty means the form is closed.
+  const openCreateBlock = () => setCreateBlockMode("blank");
+
+  // Deploy is an action on ONE block, so the form belongs to that block's card
+  // rather than to a panel with its own block dropdown. Opening it sets both —
+  // which block, and that the form is showing — because a deploy form with no
+  // block selected is the panel this replaced.
+  function startDeploy(block) {
+    setDeployForBlockId(block.id);
+    setDeployBlockId(String(block.id));
+    setDeployName((current) => current || `${block.name} — `);
+    setDeployErrors([]);
+  }
+
+  // "Edit days" preselects this block in the day builder rather than opening a
+  // second editor. One builder, pointed at the block you asked about.
+  //
+  // The builder now sits BELOW the three steps, so this has to carry the coach
+  // to it — otherwise the button silently sets a dropdown two screens away and
+  // looks like it did nothing.
+  //
+  // ⚠️ THE SCROLL RUNS IN AN EFFECT, not inline and not in requestAnimationFrame.
+  // Both of those fire before React has committed the accordion's new layout, so
+  // scrollIntoView measures a page that is about to change height and lands
+  // short — it stopped ~800px above the builder. An effect runs after commit,
+  // when the position it reads is the real one. The counter rather than a
+  // boolean so pressing Edit days twice on the same block still scrolls.
+  const [scrollToBuilder, setScrollToBuilder] = useState(0);
+  useEffect(() => {
+    if (!scrollToBuilder) return;
+    document.getElementById("day-builder")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [scrollToBuilder]);
+
+  function editDays(block) {
+    setWorkoutBlockId(String(block.id));
+    setScrollToBuilder((n) => n + 1);
+  }
+
   return <div className="workout-catalog context-tab-content">
-    <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Design a block, fill it with days, then deploy it to a group. Loads are a percent of each athlete's own max.</p></div><b>{programCount} block{programCount === 1 ? "" : "s"} · {allDays.length} day{allDays.length === 1 ? "" : "s"}</b></header>
-    <div className="workout-builder-grid">
+    <header className="workout-catalog-heading"><div><span>{showDesign ? "Build and deploy" : "Reusable training templates"}</span><h2>{showDesign ? "Design" : "Workout catalog"}</h2><p>{showDesign ? "Design a block, fill it with days, then deploy it to a group. Loads are a percent of each athlete's own max." : "Everything that already exists. Blocks are templates; a deployed copy belongs to one group and never changes when the template does."}</p></div><b>{programCount} block{programCount === 1 ? "" : "s"} · {allDays.length} day{allDays.length === 1 ? "" : "s"}</b></header>
+    {/* ── Step 1 · the template ────────────────────────────────────────────
+        Blocks, and the two things you do to one: deploy it, or edit its days.
+        Both are buttons ON THE BLOCK now. They used to be panels of their own,
+        each with a "which block?" dropdown — which meant a coach picked the
+        block twice, once to look at it and once to act on it, and nothing
+        stopped the two from disagreeing. */}
+    {showDesign && <section {...stepProps(1)}>
+      {stepButton(1, "Step 1 · the template", `${programs.length} block${programs.length === 1 ? "" : "s"}`)}
+      {openStep === 1 && <section className="workout-panel">
+        <header><span>Training blocks</span><h3>Reusable templates</h3><p>No group and no dates — those arrive when a block is deployed.</p></header>
+
+        <div className="design-create-row">
+          <select aria-label="Create a block" value={createBlockMode}
+            onChange={(event) => setCreateBlockMode(event.target.value)} disabled={programSaving}>
+            <option value="">Create block…</option>
+            <option value="blank">Blank block</option>
+          </select>
+          {createBlockMode && <button type="button" className="workout-secondary"
+            onClick={() => setCreateBlockMode("")}>Cancel</button>}
+        </div>
+
+        {createBlockMode && <form className="design-inline-form" onSubmit={createTrainingBlock}>
+          <label>Block name<input value={programName} onChange={(event) => setProgramName(event.target.value)} maxLength="255" required disabled={programSaving} placeholder="Fall Strength" /></label>
+          <label>Duration (weeks)<input type="number" min="1" step="1" value={durationWeeks} onChange={(event) => setDurationWeeks(event.target.value)} disabled={programSaving} placeholder="Optional" /></label>
+          <fieldset className="program-draft"><legend>Training days</legend>
+            <p className="monitor-empty">Which days of the week this block is meant to be trained on.</p>
+            <div>{CADENCE_DAYS.map((day) => <label key={day}><input type="checkbox" checked={cadenceDays.includes(day)} onChange={() => setCadenceDays((current) => toggleCadenceDay(current, day))} disabled={programSaving} /><span>{day}</span></label>)}</div>
+          </fieldset>
+          <fieldset className="program-draft"><legend>Categories</legend>
+            <p className="monitor-empty">How this block gets found later. Pick as many as fit — they sit on different axes, so a block can be both “Off-season” and “Football”.</p>
+            {categories.length === 0
+              ? <p className="monitor-empty">No categories yet. Add one from the Workout catalog tab.</p>
+              : <div>{categories.map((category) => <label key={category.id}><input type="checkbox" checked={newBlockCategories.includes(category.id)} onChange={() => setNewBlockCategories((current) => toggleId(current, category.id))} disabled={programSaving} /><span>{category.name}</span></label>)}</div>}
+          </fieldset>
+          <div className="workout-form-actions"><button type="submit" disabled={programSaving}>{programSaving ? "Creating..." : "Create block"}</button></div>
+          <ErrorList errors={programErrors} />
+          {programStatus && <p className="workout-status" role="status">{programStatus}</p>}
+        </form>}
+
+        {programs.length === 0
+          ? <p className="monitor-empty">No blocks yet. Create one above, then add days to it.</p>
+          : <div className="design-block-list">{programs.map((block) => <article key={block.id}>
+              <div className="design-block-main">
+                <span>{block.workouts?.length || 0} day{block.workouts?.length === 1 ? "" : "s"}{block.duration_weeks ? ` · ${block.duration_weeks} wk` : ""}{block.cadence_days_of_week ? ` · ${block.cadence_days_of_week}` : ""}</span>
+                <h4>{block.name}</h4>
+              </div>
+              <div className="design-block-actions">
+                <button type="button" onClick={() => startDeploy(block)} disabled={!block.workouts?.length}
+                  title={block.workouts?.length ? undefined : "Add a day to this block before deploying it"}>Deploy to a group →</button>
+                <button type="button" className="workout-secondary" onClick={() => editDays(block)}>Edit days</button>
+              </div>
+
+              {/* The deploy form, belonging to this block. The block is already
+                  chosen by virtue of which card you pressed, so there is no
+                  block dropdown here — that was the whole point. */}
+              {deployForBlockId === block.id && <form className="design-inline-form" onSubmit={deployBlock}>
+                <label>Group<select value={deployGroupId} onChange={(event) => setDeployGroupId(event.target.value)} required disabled={deploySaving || !groups.length}><option value="">{groups.length ? "Select a group" : "No groups exist yet"}</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></label>
+                <label>Plan name<input value={deployName} onChange={(event) => setDeployName(event.target.value)} maxLength="255" required disabled={deploySaving} placeholder={`${block.name} — Varsity`} /></label>
+                <label>Start date<input type="date" value={deployStart} onChange={(event) => setDeployStart(event.target.value)} required disabled={deploySaving} /></label>
+                <label>End date<input type="date" value={deployEnd} onChange={(event) => setDeployEnd(event.target.value)} disabled={deploySaving} /></label>
+                <p className="monitor-empty">Copies this template down for those athletes. The copy is independent — editing it later never changes the template.</p>
+                <div className="workout-form-actions">
+                  <button type="button" className="workout-secondary" onClick={() => setDeployForBlockId(null)} disabled={deploySaving}>Cancel</button>
+                  <button type="submit" disabled={deploySaving || !deployGroupId}>{deploySaving ? "Deploying..." : "Deploy to group"}</button>
+                </div>
+                <ErrorList errors={deployErrors} />
+                {deployStatus && <p className="workout-status" role="status">{deployStatus}</p>}
+              </form>}
+            </article>)}</div>}
+      </section>}
+    </section>}
+
+    {/* ── Step 2 · placed in time ──────────────────────────────────────────
+        A program is a block that has been given a group and dates. The two
+        things you do to one — promote it back up into a template, or stage one
+        of its days — are buttons on the program, for the same reason deploy is
+        a button on the block. */}
+    {showDesign && <section {...stepProps(2)}>
+      {stepButton(2, "Step 2 · placed in time", `${deployedPrograms.length} program${deployedPrograms.length === 1 ? "" : "s"}`)}
+      {openStep === 2 && <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
+        <ErrorList errors={promoteErrors} title="That program could not be made into a block:" />
+        {promoteStatus && <p className="workout-status" role="status">{promoteStatus}</p>}
+        {deployedPrograms.length === 0
+          ? <p className="monitor-empty">No programs are deployed yet. Deploy a block above to start one.</p>
+          : <div className="deployed-program-list">{deployedPrograms.map((program) => <article key={program.id}>
+              <div className="deployed-program-main">
+                <span>{program.group_name || "Unknown group"}{program.start_date ? ` · from ${program.start_date}` : ""}</span>
+                <h4>{program.name}</h4>
+                <p>{program.workouts?.length || 0} day{program.workouts?.length === 1 ? "" : "s"}{program.training_block ? " · deployed from a block" : " · written directly for this group"}</p>
+              </div>
+              <div className="deployed-program-actions">
+                <label>New block name
+                  <input value={promoteNames[program.id] || ""} maxLength="255"
+                    placeholder={program.name}
+                    onChange={(event) => setPromoteNames((current) => ({ ...current, [program.id]: event.target.value }))}
+                    disabled={Boolean(promoting)} />
+                </label>
+                <button type="button" onClick={() => promoteProgram(program)} disabled={Boolean(promoting) || !(program.workouts?.length)}>
+                  {promoting === program.id ? "Making a block..." : "Promote to block ↑"}
+                </button>
+                {/* Staging itself happens on the calendar slot — that is where a
+                    coach asks "what is Monday?", and the slot already carries
+                    the four states. This is a door to it, not a second way in. */}
+                {onStageDay && <button type="button" className="workout-secondary" onClick={onStageDay}>
+                  Stage a training day →
+                </button>}
+              </div>
+            </article>)}</div>}
+      </section>}
+    </section>}
+
+    {/* ── Step 3 · a one-off ───────────────────────────────────────────────
+        A session with no template behind it. `TrainingProgram.training_block`
+        is nullable on purpose — the model calls a one-off "a permanent,
+        first-class path", not a special case — and buildDeployPayload already
+        omits the block when there is none.
+        Its DAYS come from a plan spreadsheet aimed at the program rather than
+        at a block; the importer has taken `kind="program"` all along
+        (`services/csv_import.py` _PLAN_TARGETS). The panel below can target
+        either, which is what makes this reachable without a new route. */}
+    {showDesign && <section {...stepProps(3)}>
+      {stepButton(3, "Step 3 · a one-off", "no template behind it")}
+      {openStep === 3 && <section className="workout-panel">
+        <header><div><span>Session design</span><h3>One-off session</h3><p>No template behind it. Promote it later if it turns out to be worth keeping.</p></div></header>
+
+        <div className="design-create-row">
+          <select aria-label="Create a one-off session" value={createSessionMode}
+            onChange={(event) => setCreateSessionMode(event.target.value)} disabled={oneOffSaving}>
+            <option value="">Create session…</option>
+            <option value="blank">Blank session</option>
+          </select>
+          {createSessionMode && <button type="button" className="workout-secondary"
+            onClick={() => setCreateSessionMode("")}>Cancel</button>}
+        </div>
+
+        {createSessionMode && <form className="design-inline-form" onSubmit={createOneOff}>
+          <label>Group<select value={oneOffGroupId} onChange={(event) => setOneOffGroupId(event.target.value)} required disabled={oneOffSaving || !groups.length}><option value="">{groups.length ? "Select a group" : "No groups exist yet"}</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></label>
+          <label>Session name<input value={oneOffName} onChange={(event) => setOneOffName(event.target.value)} maxLength="255" required disabled={oneOffSaving} placeholder="Testing day — Varsity" /></label>
+          <label>Start date<input type="date" value={oneOffStart} onChange={(event) => setOneOffStart(event.target.value)} required disabled={oneOffSaving} /></label>
+          <label>End date<input type="date" value={oneOffEnd} onChange={(event) => setOneOffEnd(event.target.value)} disabled={oneOffSaving} /></label>
+          <p className="monitor-empty">Creates the plan with no days in it. Add them by importing a plan spreadsheet aimed at this session, in the panel below.</p>
+          <div className="workout-form-actions"><button type="submit" disabled={oneOffSaving || !oneOffGroupId}>{oneOffSaving ? "Creating..." : "Create session"}</button></div>
+          <ErrorList errors={oneOffErrors} />
+          {oneOffStatus && <p className="workout-status" role="status">{oneOffStatus}</p>}
+        </form>}
+      </section>}
+    </section>}
+
+    {showDesign && <div className="workout-builder-grid" id="day-builder">
       <section className="workout-panel"><header><span>Manual builder</span><h3>Add a day to a block</h3><p>Movements are saved in the order shown. Loads are a percent of each athlete's own max.</p></header>
         <form onSubmit={createWorkout}>
           <label className="workout-name">Block<select value={workoutBlockId} onChange={(event) => setWorkoutBlockId(event.target.value)} required disabled={saving || !programs.length}><option value="">{programs.length ? "Select a block" : "Create a block first"}</option>{programs.map((block) => <option value={block.id} key={block.id}>{block.name}</option>)}</select></label>
@@ -646,6 +933,27 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
       </section>
 
       <section className="workout-panel workout-csv"><header><span>Spreadsheet import</span><h3>Preview before import</h3><p>Upload a roster, a max sheet, or a plan — we work out which from its columns. Nothing is saved until you import.</p></header>
+        {/* Where a PLAN sheet's days land. A roster or a max sheet ignores this.
+            Blocks are the usual answer; a one-off session has no block, so its
+            days go straight onto the program. Only one is ever sent — the
+            server rejects both together. */}
+        <label className="workout-name">Import a plan into
+          <select value={csvProgramId ? `program:${csvProgramId}` : workoutBlockId ? `block:${workoutBlockId}` : ""}
+            disabled={Boolean(csvBusy)}
+            onChange={(event) => {
+              const [kind, id] = event.target.value.split(":");
+              setCsvProgramId(kind === "program" ? id : "");
+              if (kind === "block") setWorkoutBlockId(id);
+            }}>
+            <option value="">Choose a block or session…</option>
+            {programs.length > 0 && <optgroup label="Blocks (templates)">
+              {programs.map((block) => <option value={`block:${block.id}`} key={`b${block.id}`}>{block.name}</option>)}
+            </optgroup>}
+            {deployedPrograms.length > 0 && <optgroup label="Sessions & programs">
+              {deployedPrograms.map((program) => <option value={`program:${program.id}`} key={`p${program.id}`}>{program.name}{program.group_name ? ` · ${program.group_name}` : ""}</option>)}
+            </optgroup>}
+          </select>
+        </label>
         <label className="workout-file">CSV file<input key={fileInputKey} type="file" accept=".csv,text/csv" onChange={chooseFile} disabled={Boolean(csvBusy)} /></label>
         {file && <p className="workout-file-name">Selected: <b>{file.name}</b> · {(file.size / 1024).toFixed(1)} KB</p>}
         <div className="workout-form-actions"><button type="button" className="workout-secondary" onClick={() => submitCsv("preview")} disabled={!file || Boolean(csvBusy)}>{csvBusy === "preview" ? "Checking..." : (repairs.length ? "Re-check with fixes" : "Check file")}</button><button type="button" onClick={() => submitCsv("import")} disabled={!file || Boolean(csvBusy) || (repairs.length > 0 && !allRepaired)}>{csvBusy === "import" ? "Importing..." : "Import"}</button></div>
@@ -680,7 +988,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           {preview.skipped?.length > 0 && <div className="context-notice"><strong>{preview.skipped.length} row{preview.skipped.length === 1 ? "" : "s"} skipped.</strong> A weight is only used when the sheet says plainly what it means — a bare number could be a one-rep max, a set of five, or a percentage, and guessing wrong would quietly become that athlete's official max.</div>}
         </div>}
       </section>
-    </div>
+    </div>}
 
     {/* Days no longer have a global list of their own — a day belongs to one
         block, so they are read from the blocks we already loaded. Each block
@@ -688,7 +996,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
     {/* Days grouped under the block they belong to, because up/down only means
         anything within one block — and because a day's name ("Day 1") is
         ambiguous without it. Open a day to edit its movements. */}
-    <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Rename, reorder, or remove. Changes here never touch a group already training a deployed copy.</p></header>
+    {showCatalog && <section className="workout-panel workout-catalog-list"><header><span>Saved catalog</span><h3>Days by block</h3><p>Rename, reorder, or remove. Changes here never touch a group already training a deployed copy.</p></header>
       {programCatalogState === "loading" && <p className="monitor-empty" role="status">Loading blocks...</p>}
       {programCatalogState !== "loading" && allDays.length === 0 && <p className="monitor-empty">No days have been added to any block yet.</p>}
       {editError && <p className="training-day-error" role="alert">{editError}</p>}
@@ -742,74 +1050,11 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
           })}</div>
         </div>
       ))}
-    </section>
+    </section>}
+
 
     <div className="workout-program-grid">
-      <section className="workout-panel workout-program-builder"><header><span>Step 1 · Block builder</span><h3>New training block</h3><p>The reusable template. No group and no dates — those arrive when it is deployed.</p></header>
-        <form onSubmit={createTrainingBlock}>
-          <label>Block name<input value={programName} onChange={(event) => setProgramName(event.target.value)} maxLength="255" required disabled={programSaving} placeholder="Fall Strength" /></label>
-          <label>Duration (weeks)<input type="number" min="1" step="1" value={durationWeeks} onChange={(event) => setDurationWeeks(event.target.value)} disabled={programSaving} placeholder="Optional" /></label>
-          <fieldset className="program-draft"><legend>Training days</legend>
-            <p className="monitor-empty">Which days of the week this block is meant to be trained on.</p>
-            <div>{CADENCE_DAYS.map((day) => <label key={day}><input type="checkbox" checked={cadenceDays.includes(day)} onChange={() => setCadenceDays((current) => toggleCadenceDay(current, day))} disabled={programSaving} /><span>{day}</span></label>)}</div>
-          </fieldset>
-          <fieldset className="program-draft"><legend>Categories</legend>
-            <p className="monitor-empty">How this block gets found later. Pick as many as fit — they sit on different axes, so a block can be both "Off-season" and "Football".</p>
-            {categories.length === 0
-              ? <p className="monitor-empty">No categories yet. Add one below the catalog.</p>
-              : <div>{categories.map((category) => <label key={category.id}><input type="checkbox" checked={newBlockCategories.includes(category.id)} onChange={() => setNewBlockCategories((current) => toggleId(current, category.id))} disabled={programSaving} /><span>{category.name}</span></label>)}</div>}
-          </fieldset>
-          <div className="workout-form-actions"><button type="submit" disabled={programSaving}>{programSaving ? "Creating..." : "Create block"}</button></div>
-          <ErrorList errors={programErrors} />
-          {programStatus && <p className="workout-status" role="status">{programStatus}</p>}
-        </form>
-      </section>
-
-      <section className="workout-panel workout-program-builder"><header><span>Step 3 · Deploy</span><h3>Run a block with a group</h3><p>Copies the template down for these athletes, starting on a date. The copy is independent — editing it later never changes the template.</p></header>
-        <form onSubmit={deployBlock}>
-          <label>Block<select value={deployBlockId} onChange={(event) => setDeployBlockId(event.target.value)} required disabled={deploySaving || !programs.length}><option value="">{programs.length ? "Select a block" : "Create a block first"}</option>{programs.map((block) => <option value={block.id} key={block.id}>{block.name}</option>)}</select></label>
-          <label>Group<select value={deployGroupId} onChange={(event) => setDeployGroupId(event.target.value)} required disabled={deploySaving || !groups.length}><option value="">{groups.length ? "Select a group" : "No groups exist yet"}</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select></label>
-          <label>Plan name<input value={deployName} onChange={(event) => setDeployName(event.target.value)} maxLength="255" required disabled={deploySaving} placeholder="Varsity — Fall Strength" /></label>
-          <label>Start date<input type="date" value={deployStart} onChange={(event) => setDeployStart(event.target.value)} required disabled={deploySaving} /></label>
-          <label>End date<input type="date" value={deployEnd} onChange={(event) => setDeployEnd(event.target.value)} disabled={deploySaving} /></label>
-          <div className="workout-form-actions"><button type="submit" disabled={deploySaving || !deployBlockId || !deployGroupId}>{deploySaving ? "Deploying..." : "Deploy to group"}</button></div>
-          <ErrorList errors={deployErrors} />
-          {deployStatus && <p className="workout-status" role="status">{deployStatus}</p>}
-        </form>
-      </section>
-
-      {/* Deployed programs, and the way back up to a reusable block.
-
-          This closes the loop the other three panels open: build a block, add
-          days, deploy it — and now, once a coach has tuned that deployment into
-          something better than the template it came from, lift it back out so
-          anyone can run it. */}
-      <section className="workout-panel deployed-program-browser"><header><span>Running plans</span><h3>Deployed programs</h3><p>A program is one group's copy of a block, with real dates. Made it better than the template? Turn it into a new block anyone can deploy.</p></header>
-        <ErrorList errors={promoteErrors} title="That program could not be made into a block:" />
-        {promoteStatus && <p className="workout-status" role="status">{promoteStatus}</p>}
-        {deployedPrograms.length === 0
-          ? <p className="monitor-empty">No programs are deployed yet. Deploy a block above to start one.</p>
-          : <div className="deployed-program-list">{deployedPrograms.map((program) => <article key={program.id}>
-              <div className="deployed-program-main">
-                <span>{program.group_name || "Unknown group"}{program.start_date ? ` · from ${program.start_date}` : ""}</span>
-                <h4>{program.name}</h4>
-                <p>{program.workouts?.length || 0} day{program.workouts?.length === 1 ? "" : "s"}{program.training_block ? " · deployed from a block" : " · written directly for this group"}</p>
-              </div>
-              <div className="deployed-program-actions">
-                <label>New block name
-                  <input value={promoteNames[program.id] || ""} maxLength="255"
-                    placeholder={program.name}
-                    onChange={(event) => setPromoteNames((current) => ({ ...current, [program.id]: event.target.value }))}
-                    disabled={Boolean(promoting)} />
-                </label>
-                <button type="button" onClick={() => promoteProgram(program)} disabled={Boolean(promoting) || !(program.workouts?.length)}>
-                  {promoting === program.id ? "Making a block..." : "Make a block from this"}
-                </button>
-              </div>
-            </article>)}</div>}
-      </section>
-
-      <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>
+      {showCatalog && <section className="workout-panel workout-program-browser"><header><span>Saved blocks</span><h3>Block catalog</h3><p>{programCount} block{programCount === 1 ? "" : "s"}, most recently edited first. Every block in the department is reusable — this only changes what is listed.</p></header>
         <div className="block-scope-toggle" role="group" aria-label="Whose blocks to show">
           <button type="button" className={blockScope === "mine" ? "" : "workout-secondary"} aria-pressed={blockScope === "mine"} onClick={() => showBlockScope("mine")}>My blocks</button>
           <button type="button" className={blockScope === "all" ? "" : "workout-secondary"} aria-pressed={blockScope === "all"} onClick={() => showBlockScope("all")}>All coaches</button>
@@ -830,7 +1075,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
         </form>
         <ErrorList errors={categoryErrors} title="Categories:" />
         {(programPagination.previous || programPagination.next || programCount > programs.length) && <nav className="workout-pagination" aria-label="Workout program catalog pages"><button type="button" className="workout-secondary" onClick={() => loadPrograms(programPagination.previous)} disabled={!programPagination.previous || programCatalogState === "loading"}>Previous</button><span role="status">Showing {programs.length} on this page · {programCount} total</span><button type="button" onClick={() => loadPrograms(programPagination.next)} disabled={!programPagination.next || programCatalogState === "loading"}>Next</button></nav>}
-      </section>
+      </section>}
     </div>
   </div>;
 }
