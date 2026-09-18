@@ -88,7 +88,9 @@ export default function useLiveRoomState({ mode, accessToken, onAuthRequired }) 
       // route — it was the same function one boolean apart.
       const url = mode === "coach" ? "/api/room-state/?details=true" : "/api/room-state/";
       const response = await fetch(url, { headers, signal: controller.signal });
-      if (response.status === 401) {
+      if (generation !== generationRef.current) return;
+      if (response.status === 401 || response.status === 403) {
+        snapshotRef.current = null;
         setRoomState(null);
         setRequestState("auth-required");
         onAuthRequired?.();

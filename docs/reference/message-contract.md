@@ -1109,3 +1109,47 @@ this wrong is the most likely way two parts disagree.
 | `edgeathlete/rack/command` | Django / a coach (Phase 14; `mosquitto_pub` today) | EVERY rack tablet, from boot |
 | `edgeathlete/dashboard/state` | Django | the team wall display |
 | `edgeathlete/coach/state` | Django | the coach tablet |
+
+
+## Coach room assignment and session contract (2026-09-18)
+
+`POST /api/auth/login/` retains `access`, `refresh` and
+`must_change_password`, and adds `weight_room`. `GET /api/auth/me/` retains
+`username`, `is_staff` and `must_change_password`, and adds the same object:
+
+```json
+{
+  "id": 1,
+  "name": "Main weight room",
+  "school": {"id": 1, "name": "Central High"},
+  "dashboard_path": "/coach/rooms/1"
+}
+```
+
+`weight_room` is null when the user has no assignment to this installation.
+The user can inspect their session and change their password, but authenticated
+room-data requests return 403. Inactive/invalid/expired credentials return 401.
+Assignments are checked live on each request, not copied from JWT claims.
+
+`GET /api/coaches/`, `POST /api/coaches/`, `PATCH /api/coaches/{id}/` and
+`POST /api/coaches/{id}/reset/` include `weight_room` in each coach representation.
+Creation assigns the installation room; password resets preserve assignments.
+Only active staff assigned to the installation can use these management routes.
+
+`PATCH /api/coaches/{id}/` accepts `weight_room_id` alongside the existing
+`is_active`/`is_staff` flags. Omit it to preserve membership, send the current
+installation's integer room ID to assign, or null to revoke. Nonlocal/unknown IDs,
+booleans, strings and other malformed values return 400. Self-revocation and
+removing the last assigned active administrator return 400. Ordinary coaches
+receive 403. Anonymous callers receive 401.
+
+`/coach` resolves to the assigned `/coach/rooms/{id}` after session validation.
+A mismatching direct dashboard URL is denied before private children mount.
+`/coach/setup` uses the same session and room gate. These are frontend routes;
+the existing data APIs address only the current base station's database. They
+cannot select a different dataset using a supplied room ID.
+
+Public wall snapshots without `details=true` and anonymous rack-device routes
+retain their existing LAN contract. Detailed room snapshots still require an
+assigned coach. A coach JWT supplied to a public data route is also checked for
+membership; dropping credentials grants only that route's existing public access.

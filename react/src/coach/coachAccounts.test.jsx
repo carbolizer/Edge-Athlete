@@ -232,3 +232,17 @@ it('allows a previously configured rack to reopen its offline shell', async () =
   await render(<FirstRunSetup><p>Offline shell</p></FirstRunSetup>)
   expect(container.textContent).toContain('Offline shell')
 })
+
+it('lets an administrator revoke and restore room access', async () => {
+  const weightRoom = { id: 7, name: 'Varsity', school: { name: 'Central' } }
+  listCoaches.mockResolvedValue([{ id: 2, username: 'assistant', is_active: true, weight_room: weightRoom }])
+  updateCoach.mockResolvedValue({})
+  await render(<CoachManagement accessToken="token" currentUsername="admin" weightRoom={weightRoom} />)
+  expect(container.textContent).toContain('Central · Varsity')
+  listCoaches.mockResolvedValue([{ id: 2, username: 'assistant', is_active: true, weight_room: null }])
+  await click('Remove room access')
+  expect(updateCoach).toHaveBeenLastCalledWith('token', 2, { weight_room_id: null })
+  expect(container.textContent).toContain('No weight room assigned')
+  await click('Assign to this room')
+  expect(updateCoach).toHaveBeenLastCalledWith('token', 2, { weight_room_id: 7 })
+})

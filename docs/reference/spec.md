@@ -32,6 +32,26 @@ This document is the single source of truth for what Edge Athlete is and how it 
 
 ---
 
+## Coach room authorization (2026-09-18)
+
+The coach-assignment story adds a room permission boundary to the existing
+one-base-station-per-room architecture. School has many WeightRooms;
+InstallationSetup identifies this database's room; CoachProfile assigns a user
+to one room. All athletes, equipment and training records are installation-owned.
+`IsCoach` now requires an active account assigned to that room. Staff privileges
+add administration but never bypass membership. Existing accounts are migrated
+to the installation room; unassigned accounts cannot open the coach workspace.
+Dashboard paths are derived as `/coach/rooms/<id>`. Login and session inspection
+return the assigned room and school. See [operations and verification](../guides/coach-room-access.md)
+and [implementation plan](../coach-room-implementation-plan.md).
+
+This supersedes historical statements below that authorization is absent.
+The filter-not-fence decision still applies **within an authorized room**:
+training-group staffing and block ownership do not partition that room's data.
+Public rack/wall interfaces keep their private-LAN device contract. Multi-room
+hosting in one database and authenticated hardware provisioning remain outside
+this change.
+
 ## How to Use This Document
 
 **This is the single authority for the system.** Read it before changing anything;
@@ -97,7 +117,7 @@ Short version, verified against the repo rather than from memory:
 | 13 Real ESP32 firmware v1 | ⛔ **not in this repo** — no `firmware/` directory exists |
 | 14 Coach tablet | ✅ built — this is what the merge landed |
 | 15 Fatigue scaffold | ⛔ not built — still a stub, deliberately |
-| 16 Security hardening | ⚠️ **partial** — `IsCoach` still means "is authenticated". See D-filter-not-fence in §9 |
+| 16 Security hardening | ⚠️ **partial** — `IsCoach` requires room membership; public device/broker hardening remains separate. See coach room authorization above |
 | 17 Firmware hardening & mounts | ⛔ not built |
 | 18 Full integration test & demo prep | ⛔ not done |
 
@@ -1230,8 +1250,8 @@ The two things that could not be lost, and did not:
 
 #### What the merge deliberately did not do
 
-- **No permission boundary.** `IsCoach` still means "is authenticated" — a choice,
-  not an oversight. See Phase 16.
+- **Historical: no room permission boundary in the merge.** Superseded by the
+  coach room authorization change above; in-room group/block filters remain lenses.
 - **No group-staff UI.** The API takes several coaches per group; adding an
   assistant needs Django admin.
 - **No overnight auto-close policy.** A day left open has no defined behaviour;
@@ -1526,8 +1546,8 @@ timestamp, velocity_color) and a SetCompleteSerializer with:
   reps = RepInputSerializer(many=True)
 
 ## permissions.py
-IsCoach covers legacy authenticated coach endpoints. IsActiveStaff requires an
-authenticated, active staff user and gates rack screen/sensor assignment.
+IsCoach requires an active account assigned to the installation room.
+IsActiveStaff additionally requires staff status for rack screen/sensor assignment.
 
 ## views.py + urls.py — endpoints
 Open (AllowAny):
@@ -2596,9 +2616,9 @@ trigger points — do not merge them into one function or one call site.
 
 #### What the merge decided, and why it matters here
 
-**Authentication is enforced. Authorization is not, on purpose.** `IsCoach` means
-"is a logged-in user" and nothing more. Any authenticated coach can read and edit
-any block, any group, and any program. This is the **filter-not-fence** decision
+**Historical merge decision, amended by coach room authorization above:** any
+active coach assigned to the installation room can read and edit that room’s
+blocks, groups, and programs. Unassigned and other-room accounts are denied. This is the **filter-not-fence** decision
 (§9, P11): `?coach=me` is a lens so nobody scrolls a department-sized catalog, not
 a wall. It was chosen because a real boundary costs object-level checks on every
 write endpoint plus a who-can-do-what test matrix, and because the scenario it

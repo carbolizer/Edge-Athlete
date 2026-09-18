@@ -1,3 +1,4 @@
+import CoachRoomGate from './CoachRoomGate.jsx'
 /*
  * CoachTablet.jsx — route /coach/setup
  * --------------------------------
@@ -11,13 +12,11 @@ import { applyRoleIdentity } from '../device.js'
 import { navigate } from '../router.js'
 import {
   coachFetch,
-  getCoachToken,
   setCoachToken,
   shortId,
 } from './api.js'
 import { getRackState } from '../api/client.js'
 import './CoachTablet.css'
-import CoachAccess from './CoachAccess.jsx'
 
 /** Demo room size — slots are UI numbers, not a DB model. */
 const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -790,22 +789,12 @@ function changeDeviceRole() {
   navigate('/')
 }
 
-export default function CoachTablet() {
+function CoachTabletContent({ token, logout }) {
   useCoachIdentity()
-  const [token, setToken] = useState(() => getCoachToken())
   // Open the Wi-Fi modal on its own if a change was made just before the tablet
   // dropped/reloaded — so the coach lands back on the "here is the password"
   // view and can copy it, rather than having to remember to reopen it.
   const [showWifi, setShowWifi] = useState(() => Boolean(readRecentWifi()))
-
-  // Stable identity (useCallback) on purpose: this is passed down as onAuthLost,
-  // which RoomLayout's `load` depends on. A fresh function each render made `load`
-  // churn and re-fire its load-on-mount effect repeatedly (a burst of fetches at
-  // page load). Both setters are stable, so [] deps are correct.
-  const logout = useCallback(() => {
-    setCoachToken(null)
-    setToken(null)
-  }, [])
 
   return (
     <div className="coach-root">
@@ -843,18 +832,18 @@ export default function CoachTablet() {
           </div>
         </div>
 
-        {!token ? (
-          <CoachAccess onLoggedIn={setToken} />
-        ) : (
-          <>
+        <>
             <DefaultsBanner token={token} onChangePassword={() => setShowWifi(true)} />
             <RoomLayout token={token} onAuthLost={logout} />
-          </>
-        )}
+        </>
         {token && showWifi && (
           <WifiPasswordForm token={token} onClose={() => setShowWifi(false)} />
         )}
       </div>
     </div>
   )
+}
+
+export default function CoachTablet() {
+  return <CoachRoomGate>{({ token, logout }) => <CoachTabletContent token={token} logout={logout} />}</CoachRoomGate>
 }

@@ -199,6 +199,21 @@ class RackCommandReceipt(models.Model):
         ]
 
 
+class School(models.Model):
+    name = models.CharField(max_length=255)
+
+    def __str__(self):
+        return self.name
+
+
+class WeightRoom(models.Model):
+    school = models.ForeignKey(School, on_delete=models.PROTECT, related_name='weight_rooms')
+    name = models.CharField(max_length=255)
+
+    def __str__(self):
+        return f"{self.school.name} / {self.name}"
+
+
 class InstallationSetup(models.Model):
     """Persistent, locked first-run marker; never inferred from a deleted account.
 
@@ -208,6 +223,7 @@ class InstallationSetup(models.Model):
     locally-issued code — never the code itself — so a database leak does not
     hand out the claim token. The code expires and is cleared on first success.
     """
+    weight_room = models.ForeignKey(WeightRoom, on_delete=models.PROTECT, null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     setup_code_hash = models.CharField(max_length=255, blank=True, default="")
     setup_code_created_at = models.DateTimeField(null=True, blank=True)
@@ -217,11 +233,13 @@ class InstallationSetup(models.Model):
 class CoachProfile(models.Model):
     """Per-coach account state that is not part of Django's User table.
 
-    Only `must_change_password` today: an administrator creates a coach with a
+    The room assignment authorizes access to the installation. An administrator creates a coach with a
     temporary password, and that flag makes the first sign-in change it before
     the rest of the app is reachable.
     """
     user = models.OneToOneField('auth.User', on_delete=models.CASCADE, related_name='coach_profile')
+    weight_room = models.ForeignKey(WeightRoom, on_delete=models.PROTECT, null=True, blank=True,
+                                    related_name='coach_profiles')
     must_change_password = models.BooleanField(default=False)
 
     def __str__(self):

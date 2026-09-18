@@ -227,7 +227,7 @@ CORS_ALLOW_HEADERS = [
 # Django REST Framework - sets JWT as the default auth method 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'event_handler.room_access.RoomJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',

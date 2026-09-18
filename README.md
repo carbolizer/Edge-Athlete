@@ -188,3 +188,8 @@ docker exec -it edgeathlete-django python manage.py createsuperuser
 ```
 
 Then `http://localhost/admin/` to browse the tables directly.
+
+### Coach room access
+
+See [coach assignments and deployment](docs/guides/coach-room-access.md) and the
+[detailed implementation plan](docs/coach-room-implementation-plan.md).

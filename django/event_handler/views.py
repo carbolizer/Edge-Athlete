@@ -54,6 +54,7 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
 # Coaches are Django users; there is no separate coach table. See docs/reference/spec.md.
 User = get_user_model()
 from .permissions import IsActiveStaff, IsCoach
+from .room_access import has_room_access
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
@@ -262,7 +263,7 @@ def _save_receipt(request, runtime, command_id, response_body, response_status):
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
     returns True if the caller is a logged-in coach."""
-    return bool(request.user and request.user.is_authenticated)
+    return has_room_access(request.user)
 
 
 # ─────────────────────────── tablet: racks ───────────────────────────
@@ -2418,7 +2419,7 @@ def room_state(request):
     # data, so asking for them requires actually being a coach. Refusing here
     # rather than silently downgrading means a coach UI with an expired token
     # gets a clear 401 instead of mysteriously missing fields.
-    if include_details and not (request.user and request.user.is_authenticated):
+    if include_details and not has_room_access(request.user):
         return Response({"error": "coach login required for ?details=true"}, status=401)
 
     response = Response(room_state_snapshot(include_details=include_details))

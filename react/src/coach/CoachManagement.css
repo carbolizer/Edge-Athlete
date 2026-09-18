@@ -16,3 +16,10 @@
 .coach-mgmt-self { opacity: .7; }
 .coach-login-hint { opacity: .85; }
 .coach-login-link { margin-top: .75rem; background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer; }
+
+.coach-room-identity {
+  padding: 10px 24px;
+  color: #c4cbd4;
+  background: #141a22;
+  font-size: 13px;
+}

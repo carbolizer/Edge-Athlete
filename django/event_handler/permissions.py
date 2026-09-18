@@ -1,20 +1,13 @@
-"""
-permissions.py — the "bouncer" for coach-only actions.
-
-Some actions (creating athletes, assigning racks, ending sessions) should only
-work for a logged-in coach. This file is that check: is the person making the
-request a logged-in coach? Yes -> let them through. No -> block it. Endpoints
-that are open to any screen simply don't use this bouncer.
-"""
+"""Room membership is required for coach data; staff adds installation administration."""
 from rest_framework.permissions import BasePermission
+from .room_access import has_room_access
 
 
 class IsCoach(BasePermission):
-    """Allow the request only if it carries a valid coach login (a JWT token,
-    which the login endpoint hands out)."""
+    """Require an active account assigned to this installation’s room."""
 
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated)
+        return has_room_access(request.user)
 
 
 class IsActiveStaff(BasePermission):
@@ -26,6 +19,7 @@ class IsActiveStaff(BasePermission):
             and request.user.is_authenticated
             and request.user.is_active
             and request.user.is_staff
+            and has_room_access(request.user)
         )
 
 
@@ -43,4 +37,5 @@ class IsInstallationAdmin(BasePermission):
             and request.user.is_authenticated
             and request.user.is_active
             and request.user.is_staff
+            and has_room_access(request.user)
         )

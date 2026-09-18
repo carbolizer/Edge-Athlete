@@ -19,3 +19,10 @@ admin.site.register(Athlete)
 admin.site.register(TrainingSession)
 admin.site.register(Set)
 admin.site.register(Rep)
+
+# Installation identity is provisioned once. Account membership is managed here
+# for recovery, or through the staff-only coach management API.
+from .models import School, WeightRoom, CoachProfile
+admin.site.register(School)
+admin.site.register(WeightRoom)
+admin.site.register(CoachProfile)
