@@ -379,8 +379,16 @@ chmod +x "$PROJECT_DIR/scripts/basestation/startup.sh"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Edge Athlete Base Station
-After=network-online.target docker.service NetworkManager.service
-Wants=network-online.target docker.service NetworkManager.service
+# Deliberately NOT After=network-online.target. That target waits for
+# NetworkManager-wait-online, which considers a connection "online" only when it
+# has an uplink — but this machine IS the network: it broadcasts its own AP on
+# 192.168.4.1 and has no uplink by design. With no ethernet plugged in,
+# network-online.target never becomes ready, so a unit waiting on it never
+# starts, and the whole stack stays down while the AP broadcasts an app nobody
+# can reach. startup.sh itself waits for NetworkManager (restart + sleep) and
+# brings the AP up before Docker, so it needs no network-online gate.
+After=docker.service NetworkManager.service
+Wants=docker.service NetworkManager.service
 
 [Service]
 Type=oneshot

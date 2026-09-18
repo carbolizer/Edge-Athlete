@@ -6,7 +6,7 @@ still here, folded into dropdowns, so the page skims in a minute and still answe
 the 2am question. If you add to this file, add inside a dropdown.
 -->
 
-# Running a base station
+# Getting started with the base station
 
 :::{note}
 Day-to-day operation. For the decisions behind this setup — the install location, the
@@ -81,128 +81,23 @@ Two limits worth knowing before you debug something that is not broken:
   are switched off over `http://basestation`. **A bug that reproduces on a rack but
   not on this machine is often that difference, not a coincidence.**
 
-## Setting up a rack screen
+## Rack screens
 
-A rack screen is a **client**: it joins the base station's Wi-Fi and boots into a
-locked full-screen browser. It runs no server and no Docker.
+A rack screen is the other half of a gym, and it has its own page:
+{doc}`rack-screen`.
+
+Worth knowing from here: it is a **client**, not a second server. It joins this
+base station's Wi-Fi and boots into a locked browser — no Docker, no database, no
+access point of its own.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/carbolizer/Edge-Athlete/main/scripts/rack-screen/rack-bootstrap.sh | sudo bash
 ```
 
-No role argument — a rack screen is a rack screen. A **coach tablet** is the one
-exception and is provisioned by hand:
-`sudo scripts/rack-screen/rack-kiosk-setup.sh coach`.
-
-:::{dropdown} Bluetooth sensor agent (WT901)
-
-The Agent runs on the central Linux host, outside Docker, so Bleak can use BlueZ.
-It owns discovery and connections for every rack. Rack browsers call staff-only
-Django endpoints; Django reaches the Agent through `/run/edgeathlete/ble-agent.sock`.
-Raw 50 Hz frames and BLE addresses stay in the Agent.
-
-```bash
-python3 -m venv .venv-wt901
-.venv-wt901/bin/pip install -r scripts/hardware/requirements.txt
-AGENT_USER="${SUDO_USER:-$USER}"
-AGENT_GROUP="$(id -gn "$AGENT_USER")"
-sudo install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 /etc/edgeathlete/ble-agent
-sudo install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0750 /run/edgeathlete
-sudo -u "$AGENT_USER" .venv-wt901/bin/python scripts/hardware/wt901_rack_agent.py \
-  --socket-path /run/edgeathlete/ble-agent.sock \
-  --state-path /etc/edgeathlete/ble-agent/bindings.json \
-  --mqtt-host 127.0.0.1 \
-  --mqtt-port 1883
-```
-
-Add `--enable-provisional-reps` only for private-AP demo or detector
-qualification. It publishes bounded WT901 accepted-rep estimates on the existing
-`edgeathlete/node/{node_id}/rep` topic. Leave it off for normal use until MQTT
-publisher ACLs or accepted-event replay fencing are implemented.
-
-Legacy single-device diagnostics remain available for hardware troubleshooting:
-
-```bash
-.venv-wt901/bin/python scripts/hardware/wt901_rack_agent.py \
-  --address '<physically enrolled address>' \
-  --node-id wt901_test_1 \
-  --allowed-origins 'http://basestation,http://192.168.4.1,http://127.0.0.1:8081'
-curl -fsS http://127.0.0.1:8765/health
-```
-
-The Agent creates `bindings.json` atomically with mode `0600`; do not pre-create
-an empty file. The invoking operator account owns the socket and private state and
-must already be allowed to scan/connect through BlueZ; confirm with
-`bluetoothctl scan on` before launch. The Django container currently runs as root and receives `/run/edgeathlete` through
-`docker-compose.basestation.yml`; no browser or Nginx route exposes the socket.
-The central selection flow never sends an address to Django or a browser. Keep
-each sensor still while its committed connection calibrates. Rack
-check-in remains disabled until server health reports its selected logical node
-as `live` with a sample under one second old.
-
-Failure behavior:
-
-- A disconnect or two seconds without notifications forces BLE reconnect and recalibration.
-- Rack health polling reads fresh samples through the trusted Unix socket. Django
-  rejects MQTT pulses for WT901 nodes, so payload metadata cannot restore freshness.
-- MQTT outages do not affect central BLE health. The Agent reconnects each sensor independently.
-  Opt-in accepted WT901 reps publish only while the broker is reachable;
-  Agent-side replay is not implemented.
-- `403 origin_not_allowed` means the browser origin must be added explicitly to
-  `--allowed-origins`; do not solve it by binding the Agent off-loopback.
-
-Current limitation: launch is manual. Before unattended deployment, add a
-supervised system service. WT901 rep detection is provisional until it passes the
-100-rep and 10-minute noise qualification protocol. Accepted-event queuing is a
-separate later slice.
-
-The current detector uses the 50 Hz acceleration, gyro, and orientation frame.
-The configured `0x61` WT901 payload has no altitude channel. A rep must complete a
-translation away from and back near its calibrated starting position. A completed
-return does not require a long pause between consecutive reps; stillness after an
-incomplete return rejects the movement. Pickup, wiggle, and rotation-only motion
-must not be used as rep demos.
-:::
-
-:::{dropdown} NFC reader
-
-The first NFC slice supports one USB CCID contactless reader (`2ce3:9567`) on
-Rack 1. The host Agent uses direct USB through PyUSB because rack browsers cannot
-access CCID devices. It sends one-time taps to Django through a mode-`0600` Unix
-socket; tag IDs do not cross HTTP, MQTT, URLs, or normal logs.
-
-```bash
-python3 -m venv .venv-nfc
-.venv-nfc/bin/pip install -r scripts/hardware/requirements.txt
-.venv-nfc/bin/python scripts/hardware/ccid_rack_agent.py \
-  --socket-path /run/edgeathlete/nfc-agent.sock \
-  --rack-number 1
-```
-
-The invoking account must have USB access, normally through `plugdev`. Tap a tag
-on the contactless face. The Agent waits for CCID slot-change notifications and
-limits event processing to five cycles per second. A held tag creates one event;
-remove it before tapping again. After USB recovery, remove and retap the tag to
-generate a fresh notification. Unknown and off-roster tags both display
-`Wristband not recognized`. USB errors close and reopen the reader every two
-seconds until it recovers. BLE acquisition and active-set completion do not depend
-on NFC.
-
-Store tag mappings through a protected operator workflow or import. Use canonical
-uppercase hex without separators, never place a real tag ID in this repository or
-terminal logs. NFC Agent startup is manual until a supervised host service is added.
-:::
-
-:::{dropdown} Firmware flashing
-
-**There is no firmware in this repository, and no `firmware/` directory.** The ESP32
-work was planned as Phases 13 and 17 and never landed here, so there is nothing to
-flash and no steps to follow. See {doc}`../history` for where that sits.
-
-This is worth stating plainly rather than leaving as a promise, because every sensor
-you can currently drive is either a **WT901 over Bluetooth** (the dropdown above) or
-the **software simulator** (`ea-sim`). Both work without flashing anything.
-:::
+⚠️ **Run that on the screen, not here.** The two `ea-update` commands resolve to
+different bootstraps, and installing the base station's on a tablet would give it a
+server it has no use for and stand up a second access point competing with the real
+one for the air the gym runs on.
 
 ## Reference
 

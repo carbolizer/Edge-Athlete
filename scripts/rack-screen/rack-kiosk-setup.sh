@@ -36,23 +36,57 @@ fi
 ROLE="${1:-rack}"
 case "$ROLE" in
   rack|coach|dashboard) ;;
-  *) echo "unknown role '$ROLE' — expected rack, coach, or dashboard"; exit 1 ;;
+  --agents-only) ROLE="rack" ;;
+  *) echo "unknown role '$ROLE' — expected rack, coach, dashboard, or --agents-only"; exit 1 ;;
 esac
+
+# ── --agents-only mode ─────────────────────────────────────────────────────────
+# Install ONLY the two hardware agents (the WT901 sensor agent and the NFC reader
+# agent) as boot services, and stop — no Chromium, no Wi-Fi join, no kiosk, no
+# desktop autologin. This is for a machine that is a general-purpose laptop (the
+# rack screen runs in a normal browser) rather than a dedicated kiosk tablet.
+#
+# The agent block below expects to run as ROLE=rack, which we just forced. The
+# deps + services logic is identical either way; only the steps AFTER the agent
+# block are skipped.
+AGENTS_ONLY=0
+if [ "${1:-}" = "--agents-only" ]; then
+  AGENTS_ONLY=1
+  echo "==> agents-only: installing the WT901 + NFC reader boot services, then stopping"
+fi
 
 # ── settings — the WiFi values MUST match the base station's startup.sh ─────────
 # Display rotation for THIS device: normal | left | right | inverted.
 #
-# Defaults to normal and stays that way unless you ask, because the same script
-# provisions a rack tablet bolted vertically to a rack, a coach's tablet held in
-# landscape, and (via kiosk.sh) the base station's own monitor. There is no safe
-# blanket answer, so it is per-device:
-#
-#   curl ... | sudo SCREEN_ROTATE=left bash
+# A RACK tablet is bolted to its rack in PORTRAIT, so `rack` defaults to `right`.
+# A coach's tablet is hand-held in landscape and is forced back to `normal`. The
+# default is keyed on ROLE because this one script provisions both.
 #
 # `left` and `right` are both portrait — which one depends on the way the tablet
-# is mounted, so try one and flip it if the picture is upside down. Touch input is
-# remapped to match; see the rotation block in kiosk.sh for why that matters.
-SCREEN_ROTATE="${SCREEN_ROTATE:-normal}"
+# is mounted. If the picture is upside down, flip it with `ea rotate-left`; no
+# re-provisioning needed. Touch input is remapped to match, see rotate.sh.
+#
+# Override at install time with:  curl ... | sudo SCREEN_ROTATE=normal bash
+#
+# ── WHY RACK ONLY DEFAULTS ON A FIRST INSTALL ─────────────────────────────────
+# If /etc/edgeathlete/screen.conf already exists, a rack install leaves it alone.
+# Someone who turned a screen with `ea rotate-left` must not have it silently
+# reset to `right` by the next `ea-update` — that is the same trap the autostart
+# line had before rotation moved into this file.
+#
+# Coach and dashboard are the opposite: they FORCE normal, even over an existing
+# file. Re-provisioning a rack tablet as a coach tablet has to undo the rack's
+# portrait, or you get a sideways hand-held tablet. install_launcher() already
+# treats a role change this way — each branch deletes the other's artifact — and
+# rotation follows the same rule.
+SCREEN_CONF="/etc/edgeathlete/screen.conf"
+if [ -z "${SCREEN_ROTATE:-}" ]; then
+    if [ "$ROLE" = "rack" ]; then
+        [ -f "$SCREEN_CONF" ] || SCREEN_ROTATE="right"
+    else
+        SCREEN_ROTATE="normal"
+    fi
+fi
 
 AP_SSID="${AP_SSID:-EdgeAthlete}"          # base station's WiFi name (startup.sh AP_NAME)
 AP_PASSWORD="${AP_PASSWORD:-ChangeMe123!}" # base station's WiFi password
@@ -129,19 +163,23 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete Kiosk ($ROLE)
-Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk $SCREEN_ROTATE
+Exec=$SCRIPT_DIR/kiosk.sh $ROLE $KIOSK_HOST kiosk
 X-GNOME-Autostart-enabled=true
 EOF
     fi
 }
 
-echo "[1] installing Chromium + kiosk helpers..."
-apt update
-# Package name differs by image: chromium-browser (older) vs chromium (newer).
-# procps supplies pkill, which ea-restart and ea-kiosk-exit both depend on. Without
-# it they print a cheerful message and do nothing, which is worse than failing.
-apt install -y network-manager x11-xserver-utils unclutter curl procps
-apt install -y chromium-browser || apt install -y chromium
+if [ "$AGENTS_ONLY" = 1 ]; then
+    echo "[1] agents-only — skipping Chromium + kiosk helpers"
+else
+    echo "[1] installing Chromium + kiosk helpers..."
+    apt update
+    # Package name differs by image: chromium-browser (older) vs chromium (newer).
+    # procps supplies pkill, which ea-restart and ea-kiosk-exit both depend on. Without
+    # it they print a cheerful message and do nothing, which is worse than failing.
+    apt install -y network-manager x11-xserver-utils unclutter curl procps
+    apt install -y chromium-browser || apt install -y chromium
+fi
 
 # ── the rack sensor agent ──────────────────────────────────────────────────────
 # A rack screen owns the WT901 sensor bolted to its rack. The agent reads the
@@ -239,7 +277,7 @@ ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/wt901_rack_agent.
     --address \$BLE_ADDRESS --node-id \$NODE_ID \\
     --mqtt-host \$MQTT_HOST --mqtt-port \$MQTT_PORT \\
     --base-url http://\$MQTT_HOST \\
-    --hz \${SENSOR_HZ:-50}
+    --hz \$SENSOR_HZ
 Restart=always
 RestartSec=5
 User=root
@@ -317,7 +355,7 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 ExecStart=$AGENT_VENV/bin/python $PROJECT_DIR/scripts/hardware/ccid_rack_agent.py \\
     --socket-path \$NFC_SOCKET_PATH \\
-    --rack-number \${RACK_NUMBER:-1} \\
+    --rack-number \$RACK_NUMBER \\
     --http-port 8766 \\
     --allowed-origins http://basestation,http://192.168.4.1,http://localhost,http://127.0.0.1
 Restart=always
@@ -337,6 +375,18 @@ EOF
         systemctl disable "$(basename "$NFC_AGENT_SERVICE")" >/dev/null 2>&1 || true
         echo "    NFC reader agent NOT enabled — pyusb is not installed on this machine"
     fi
+fi
+
+if [ "$AGENTS_ONLY" = 1 ]; then
+    echo ""
+    echo "[✔] agents-only setup complete."
+    echo "  WT901 sensor agent  edgeathlete-rack-agent"
+    echo "  NFC reader agent    edgeathlete-nfc-agent"
+    echo ""
+    echo "  Both start on every boot. Check:"
+    echo "    systemctl status edgeathlete-nfc-agent edgeathlete-rack-agent"
+    echo "  Logs: journalctl -u edgeathlete-nfc-agent"
+    exit 0
 fi
 
 echo "[2] joining the '$AP_SSID' WiFi as a client..."
@@ -377,6 +427,24 @@ chmod 1777 "$KIOSK_ROOT"
 echo "[5] installing the launcher..."
 install_launcher
 
+# The device's saved orientation, read by kiosk.sh at every login and rewritten by
+# `ea rotate-left`.
+#
+# ⚠️ AN EXISTING FILE IS LEFT ALONE unless SCREEN_ROTATE was explicitly passed.
+# That is the whole reason this is a file and not a value baked into the autostart
+# line: someone who turns a screen with `ea rotate-left` must not have it silently
+# revert on the next `ea-update`. Same rule as rack-agent.conf — machine-owned
+# config, outside git, provisioning does not stomp it.
+mkdir -p /etc/edgeathlete
+if [ -n "$SCREEN_ROTATE" ]; then
+    printf 'SCREEN_ROTATE=%s\n' "$SCREEN_ROTATE" > "$SCREEN_CONF"
+    echo "    rotation set to '$SCREEN_ROTATE'"
+elif [ ! -f "$SCREEN_CONF" ]; then
+    printf 'SCREEN_ROTATE=normal\n' > "$SCREEN_CONF"
+else
+    echo "    $SCREEN_CONF already exists — left alone (change it with: ea rotate-<dir>)"
+fi
+
 echo "[5b] installing the short commands..."
 # Real executables on PATH, one symlink per name. NOT sourced from /etc/profile.d,
 # which only login shells read — that version was missing from desktop terminals,
@@ -388,7 +456,10 @@ echo "[5b] installing the short commands..."
 # Linking the wrong one here would give a rack tablet a command that installs Docker
 # and stands up a competing WiFi access point.
 mkdir -p /usr/local/bin
-for cmd in ea ea-update ea-restart ea-kiosk-log ea-kiosk-exit ea-help; do
+# ea-rotate is here as the bare name; the DIRECTION is a subcommand rather than a
+# symlink per direction, so `ea rotate-left` and `ea-rotate left` both work without
+# four more links in /usr/local/bin.
+for cmd in ea ea-update ea-restart ea-rotate ea-kiosk-log ea-kiosk-exit ea-help; do
     ln -sfn "$SCRIPT_DIR/ea.sh" "/usr/local/bin/$cmd"
 done
 chmod +x "$SCRIPT_DIR/ea.sh"

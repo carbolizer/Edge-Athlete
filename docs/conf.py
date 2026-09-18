@@ -59,6 +59,10 @@ myst_heading_anchors = 3
 # warnings. Remove these entries as each file is retired.
 exclude_patterns = [
     "_build",
+    # The shared entity diagram. It is {include}d into three pages, so it must not
+    # also be built as a page of its own — Sphinx would call it an orphan, and
+    # fail_on_warning turns that into a failed build.
+    "_erd.md",
     # The local preview toolchain (see serve.sh) installs into docs/venv. Without
     # this, Sphinx parses every Markdown file inside every installed package.
     "venv",

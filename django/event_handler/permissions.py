@@ -27,3 +27,20 @@ class IsActiveStaff(BasePermission):
             and request.user.is_active
             and request.user.is_staff
         )
+
+
+class IsInstallationAdmin(BasePermission):
+    """The head coach: an active staff account that may manage other coaches.
+
+    Staff status is the sole difference between an administrator and an ordinary
+    coach, so this is the check that keeps account creation, password resets, and
+    deactivation out of a regular coach's hands.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.is_active
+            and request.user.is_staff
+        )

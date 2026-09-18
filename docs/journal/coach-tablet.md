@@ -3,6 +3,21 @@
 Everything a coach touches: logging in, wiring the room together, planning training,
 and reading what happened.
 
+:::{admonition} Who built this
+:class: note
+**The room-layout controls** — assigning screens and sensors to rack slots,
+releasing a screen, unlinking a sensor, and releasing every screen at once —
+**Carl and Devin**. They sit on the rack-assignment REST API Carl built in Phase 4,
+extended this sprint with the release and unlink endpoints.
+
+**Force-clearing a wedged rack** — the escape hatch for an open set nobody can
+finish — **Braydon**.
+
+**Everything else on this page** — login, planning, the spreadsheet import, reports
+and the scheduling workspace — **Devin**, delivered through the merge (P0–P15)
+rather than as the Phase 14 that was originally written.
+:::
+
 :::{admonition} This surface is mid-redesign
 :class: warning
 What ships today and what is being built are different shapes. Both are recorded

@@ -11,13 +11,13 @@ import { applyRoleIdentity } from '../device.js'
 import { navigate } from '../router.js'
 import {
   coachFetch,
-  coachLogin,
   getCoachToken,
   setCoachToken,
   shortId,
 } from './api.js'
 import { getRackState } from '../api/client.js'
 import './CoachTablet.css'
+import CoachAccess from './CoachAccess.jsx'
 
 /** Demo room size — slots are UI numbers, not a DB model. */
 const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -216,62 +216,6 @@ function useCoachIdentity() {
   }, [])
 }
 
-function LoginGate({ onLoggedIn }) {
-  const [username, setUsername] = useState('coach')
-  const [password, setPassword] = useState('coachpass')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      const token = await coachLogin(username.trim(), password)
-      onLoggedIn(token)
-    } catch (err) {
-      setError(err.message || 'login failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="coach-card">
-      <h2>Coach login</h2>
-      <p className="coach-card-sub">
-        Sign in with a coach account. Assignment APIs require a JWT from
-        <code> /api/auth/login/</code>.
-      </p>
-      <form className="coach-form" onSubmit={handleSubmit}>
-        <label className="coach-label">
-          Username
-          <input
-            className="coach-input"
-            autoComplete="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-        </label>
-        <label className="coach-label">
-          Password
-          <input
-            className="coach-input"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-        <button className="coach-btn coach-btn-primary" type="submit" disabled={busy}>
-          {busy ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
-      {error && <p className="coach-msg coach-msg-err">{error}</p>}
-    </section>
-  )
-}
-
 function AssignRow({
   label,
   entityLabel,
@@ -334,7 +278,10 @@ function AssignRow({
   )
 }
 
-function RoomLayout({ token, onAuthLost }) {
+// Exported for coachTablet.render.test.js — same reason TrainingDayPanel exports
+// ConflictPrompt: this is the subtree that actually holds the rack buttons, and
+// rendering it is what proves their handlers are in scope.
+export function RoomLayout({ token, onAuthLost }) {
   const [screens, setScreens] = useState([])
   const [nodes, setNodes] = useState([])
   const [loading, setLoading] = useState(true)
@@ -485,53 +432,6 @@ function RoomLayout({ token, onAuthLost }) {
   // so a tablet sent to setup mode kept its old rack, never reappeared for the
   // coach, and could not be reassigned. The only known workaround was wiping the
   // tablet's browser data, which does not fix it so much as replace the device.
-  async function releaseScreen(deviceId, rack) {
-    setBusyScreen(true)
-    setMsg({ text: '', kind: '' })
-    try {
-      await coachFetch(`/api/racks/${encodeURIComponent(deviceId)}/`, {
-        token,
-        method: 'PATCH',
-        body: { rack_number: null },
-      })
-      setScreenBySlot((prev) => {
-        const next = { ...prev }
-        delete next[rack]
-        return next
-      })
-      setMsg({ text: `Screen ${shortId(deviceId)} released from rack ${rack}`, kind: 'ok' })
-      await load({ clearMessage: false })
-    } catch (err) {
-      const text = err.message || 'release failed'
-      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
-      else setMsg({ text, kind: 'err' })
-    } finally {
-      setBusyScreen(false)
-    }
-  }
-
-  // Take a sensor off a rack without putting another one on. Assigning can only
-  // replace; Remove screen deliberately leaves the sensor. This is how a coach
-  // actually unassigns a node — including on a rack whose tablet is already gone.
-  async function releaseNode(node, rack) {
-    setBusyNode(true)
-    setMsg({ text: '', kind: '' })
-    try {
-      await coachFetch(`/api/nodes/${encodeURIComponent(node.node_id)}/rack/`, {
-        token,
-        method: 'PATCH',
-        body: { rack_number: null },
-      })
-      setMsg({ text: `Sensor ${node.node_id} released from rack ${rack}`, kind: 'ok' })
-      await load({ clearMessage: false })
-    } catch (err) {
-      const text = err.message || 'release failed'
-      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
-      else setMsg({ text, kind: 'err' })
-    } finally {
-      setBusyNode(false)
-    }
-  }
 
   // Force-clear a rack so a fresh screen can take it over. This is the escape
   // hatch for a wedged rack: an open set nobody can finish because the screen
@@ -545,7 +445,7 @@ function RoomLayout({ token, onAuthLost }) {
   // assigned on purpose. What a coach is actually doing is taking the SCREEN off
   // it, so the label says that.
   async function removeScreen(rack) {
-    // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
+  // ── WHY THIS ASKS THE SERVER FIRST ───────────────────────────────────────
     // Reps are held in the TABLET's buffer and only sent as one batch when the
     // set finishes. Force-clearing ends any open set as a false set with its
     // counts zeroed, so pressing this mid-set throws away everything the athlete
@@ -563,6 +463,22 @@ function RoomLayout({ token, onAuthLost }) {
     // keeps buffering reps the server never hears about. The stored count then
     // UNDER-reports — the dangerous direction. `controller_active` false while
     // the phase is live is the tell, and the message says so.
+    // ⚠️ A Bluetooth sensor blocks this outright, and the block is deliberate.
+    // Re-linking an unlinked WT901 needs verified BLE enrollment — physically at
+    // the rack, moving the sensor to prove which one it is. A coach clearing
+    // racks from across the gym cannot undo it from where they are standing, so
+    // this asks them to unlink on purpose rather than discover it after.
+    if (occupancyBySlot[rack]?.node?.acquisition_kind === 'wt901_ble') {
+      window.alert(
+        `Rack ${rack} has a Bluetooth sensor linked ` +
+        `(${occupancyBySlot[rack].node.node_id}).\n\n` +
+        `Unlink the sensor first, then release the screen.\n\n` +
+        `Re-linking a Bluetooth sensor has to be done standing at the rack, so ` +
+        `this is not something to trigger by accident from here.`,
+      )
+      return
+    }
+
     let live = null
     try {
       live = await getRackState(rack)
@@ -614,6 +530,97 @@ function RoomLayout({ token, onAuthLost }) {
     }
   }
 
+  // Take the sensor off a rack. Addressed by RACK, not by screen — the state
+  // where you most want this is a rack that has a node and no screen, which is
+  // exactly what a force-clear leaves behind.
+  async function unlinkNode(rack, nodeId) {
+    if (!window.confirm(
+      `Unlink sensor ${nodeId} from rack ${rack}?\n\n` +
+      `The rack keeps its screen; only the sensor comes off. Reps cannot be ` +
+      `recorded at this rack until another sensor is linked. Do it?`,
+    )) return
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      await coachFetch(`/api/racks/${rack}/node/`, { token, method: 'DELETE' })
+      setMsg({ text: `Sensor ${nodeId} unlinked from rack ${rack}`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'unlink failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
+  // The end-of-session reset. Same clearing as one rack, times however many are
+  // occupied — so the same data loss, multiplied. Counts the mid-set racks first
+  // so the warning is specific rather than a vague "this may lose data".
+  async function releaseAllRacks() {
+    const occupied = RACK_SLOTS.filter((n) => occupancyBySlot[n]?.screenId)
+    if (occupied.length === 0) {
+      setMsg({ text: 'No screens are assigned to any rack', kind: 'ok' })
+      return
+    }
+
+    const bluetooth = RACK_SLOTS.filter(
+      (n) => occupancyBySlot[n]?.node?.acquisition_kind === 'wt901_ble',
+    )
+    if (bluetooth.length > 0) {
+      window.alert(
+        `Cannot release all screens: Bluetooth sensors are linked on ` +
+        `rack${bluetooth.length === 1 ? '' : 's'} ${bluetooth.join(', ')}.\n\n` +
+        `Unlink those sensors first. Re-linking a Bluetooth sensor has to be done ` +
+        `standing at the rack, so it is not something to trigger in bulk.`,
+      )
+      return
+    }
+
+    const states = await Promise.all(occupied.map(
+      (n) => getRackState(n).then((s) => [n, s]).catch(() => [n, null]),
+    ))
+    const midSet = states.filter(
+      ([, s]) => s && ['active', 'countdown', 'recovery_required'].includes(s.phase),
+    )
+    const bufferedReps = midSet.reduce((sum, [, s]) => sum + (s.rep_count ?? 0), 0)
+
+    let warning = ''
+    if (midSet.length > 0) {
+      warning =
+        `⚠️ ${midSet.length} rack${midSet.length === 1 ? ' is' : 's are'} MID-SET ` +
+        `(${midSet.map(([n]) => n).join(', ')}).\n\n` +
+        (bufferedReps > 0
+          ? `At least ${bufferedReps} rep${bufferedReps === 1 ? '' : 's'} across those tablets ` +
+            `have NOT been saved and will be lost.\n\n`
+          : `Those sets will be ended as false sets.\n\n`)
+    }
+
+    if (!window.confirm(
+      warning +
+      `Release all ${occupied.length} screen${occupied.length === 1 ? '' : 's'} ` +
+      `(rack${occupied.length === 1 ? '' : 's'} ${occupied.join(', ')})?\n\n` +
+      `Every screen goes back to the waiting list and returns to its setup ` +
+      `screen. Sensors stay on their racks. Do it?`,
+    )) return
+
+    setBusyScreen(true)
+    setMsg({ text: '', kind: '' })
+    try {
+      const result = await coachFetch('/api/racks/release-all/', { token, method: 'POST' })
+      setScreenBySlot({})
+      const cleared = result?.cleared ?? []
+      setMsg({ text: `Released ${cleared.length} screen${cleared.length === 1 ? '' : 's'} — all back in the waiting list`, kind: 'ok' })
+      await load({ clearMessage: false })
+    } catch (err) {
+      const text = err.message || 'release all screens failed'
+      if (/401|403|credential|token|authentication/i.test(text)) onAuthLost()
+      else setMsg({ text, kind: 'err' })
+    } finally {
+      setBusyScreen(false)
+    }
+  }
+
   const screenOptions = screens.map((s) => ({ key: s.device_id, ...s }))
   // Offer sensors this rack can actually take: unassigned, or already on the chosen
   // rack. One owned by a different rack is left out rather than shown and refused.
@@ -644,8 +651,6 @@ function RoomLayout({ token, onAuthLost }) {
         Screens: <code>{'PATCH /api/racks/{device_id}/'}</code>
         {' · '}
         Sensors: <code>{'PUT /api/racks/node-assignment/'}</code>
-        {' · '}
-        Release sensor: <code>{'PATCH /api/nodes/{node_id}/rack/'}</code>
       </p>
 
       {loading && screens.length === 0 && nodes.length === 0 ? (
@@ -695,7 +700,25 @@ function RoomLayout({ token, onAuthLost }) {
       )}
 
       <hr className="coach-divider" />
-      <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 700 }}>Rack slots</h3>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+        <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 700 }}>Rack slots</h3>
+        {/* The end-of-session reset. "Release all screens", matching the per-slot
+            "Release screen" — it is the same action, applied to every rack at
+            once, and calling it "racks" implied it removed something a rack
+            keeps. Top right because it acts on the whole grid below it rather
+            than any one slot, and away from the per-rack buttons so it is never
+            the one you hit by accident. */}
+        <button
+          type="button"
+          className="coach-btn coach-btn-ghost"
+          style={{ fontSize: 12, color: '#c0392b' }}
+          disabled={busyScreen}
+          onClick={releaseAllRacks}
+          title="Send EVERY screen back to the waiting list and to its setup screen. Ends any open sets as false. Sensors stay on their racks."
+        >
+          Release all screens
+        </button>
+      </div>
       <p className="coach-hint" style={{ marginBottom: 8 }}>
         Nodes refresh from the API. Screen labels stick after an assign in this
         session (there is no list-all-screens endpoint yet).
@@ -718,40 +741,39 @@ function RoomLayout({ token, onAuthLost }) {
                   <div className="coach-slot-line">
                     Node <strong>{slot.node ? slot.node.node_id : '—'}</strong>
                   </div>
+                  {/* ONE screen button, not two. There used to be a "Release
+                      screen" (PATCH rack_number null) beside a "Remove screen"
+                      (DELETE), which read as two parallel options for the same
+                      job — with the quieter-looking one refusing whenever a set
+                      was open. The DELETE does everything the PATCH did and
+                      copes with a wedged rack, so it is the only path now, and
+                      it warns first when reps are about to be lost. */}
                   {slot.screenId && (
                     <button
                       type="button"
                       className="coach-btn coach-btn-ghost"
-                      style={{ marginTop: 6, fontSize: 12 }}
+                      style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
                       disabled={busyScreen}
-                      onClick={() => releaseScreen(slot.screenId, n)}
-                      title="Send this tablet back to the waiting list so it can be reassigned"
+                      onClick={() => removeScreen(n)}
+                      title="Send this tablet back to the waiting list and to its setup screen. Ends any open set as false and resets the controller. The sensor stays on the rack."
                     >
                       Release screen
                     </button>
                   )}
+                  {/* Separate from the screen: a rack keeps its sensor when the
+                      screen leaves, so removing one must not imply the other. */}
                   {slot.node && (
                     <button
                       type="button"
                       className="coach-btn coach-btn-ghost"
                       style={{ marginTop: 6, fontSize: 12 }}
-                      disabled={busyNode}
-                      onClick={() => releaseNode(slot.node, n)}
-                      title="Unassign this sensor so the rack has no node"
+                      disabled={busyScreen}
+                      onClick={() => unlinkNode(n, slot.node.node_id)}
+                      title="Take this sensor off the rack. The screen stays. Refused while a set is open."
                     >
-                      Release node
+                      Unlink sensor
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="coach-btn coach-btn-ghost"
-                    style={{ marginTop: 6, fontSize: 12, color: '#c0392b' }}
-                    disabled={busyScreen}
-                    onClick={() => removeScreen(n)}
-                    title="Send this rack's screen back to the waiting list: ends open sets as false, resets the controller, leaves the sensor on the rack."
-                  >
-                    Remove screen
-                  </button>
                 </>
               )}
             </div>
@@ -822,7 +844,7 @@ export default function CoachTablet() {
         </div>
 
         {!token ? (
-          <LoginGate onLoggedIn={setToken} />
+          <CoachAccess onLoggedIn={setToken} />
         ) : (
           <>
             <DefaultsBanner token={token} onChangePassword={() => setShowWifi(true)} />

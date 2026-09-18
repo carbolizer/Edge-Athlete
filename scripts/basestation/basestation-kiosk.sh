@@ -97,7 +97,13 @@ ensure_profile_root() {
 case "$VERB" in
   run)
       ensure_profile_root
-      exec "$KIOSK_SH" "$ROLE" localhost
+      # `normal` PASSED EXPLICITLY, and it has to be. kiosk.sh falls back to
+      # /etc/edgeathlete/screen.conf when no rotation argument is given, and that
+      # file exists on any box where a rack role was ever provisioned — which is
+      # exactly what the base station is when it runs the demo screens. Without
+      # this, giving rack tablets a portrait default would silently turn the base
+      # station's own monitor on its side.
+      exec "$KIOSK_SH" "$ROLE" localhost kiosk normal
       ;;
 
   open)
@@ -125,7 +131,7 @@ case "$VERB" in
 [Desktop Entry]
 Type=Application
 Name=Edge Athlete Kiosk ($ROLE)
-Exec=$KIOSK_SH $ROLE localhost
+Exec=$KIOSK_SH $ROLE localhost kiosk normal
 X-GNOME-Autostart-enabled=true
 EOF
       echo "[✔] $ROLE will launch at every desktop login (via localhost)"

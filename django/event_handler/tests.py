@@ -615,10 +615,11 @@ class RackControllerEndpointTests(APITestCase):
     def test_acquire_is_idempotent_for_holder_and_busy_for_an_observer(self):
         first = self._acquire()
         second = self._acquire()
-        RackScreen.objects.create(device_id="screen-observer", rack_number=1)
-        busy = self._acquire(
-            device_id="screen-observer", instance="tab-b", token=controller_token(),
-        )
+        # A competing claimant: the same registered screen, a second browser
+        # tab. One screen owns the rack (one screen per rack is enforced), but
+        # any tab of it can attempt a claim and be refused for lack of the
+        # lease — which is how contention actually happens in the gym.
+        busy = self._acquire(instance="tab-b", token=controller_token())
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.data["controller_epoch"], first.data["controller_epoch"])
@@ -824,10 +825,11 @@ class RackControllerEndpointTests(APITestCase):
         runtime = RackRuntime.objects.get(rack_number=1)
         runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
         runtime.save(update_fields=["lease_expires_at", "updated_at"])
-        RackScreen.objects.create(device_id="screen-b", rack_number=1)
-
+        # A competing claimant: another tab of the same registered screen, with
+        # its own capability. One screen owns the rack; tabs of it contend for
+        # the lease, which is how contention actually happens in the gym.
         second_token = controller_token()
-        claimed = self._acquire(device_id="screen-b", instance="tab-b", token=second_token)
+        claimed = self._acquire(instance="tab-b", token=second_token)
         self.assertEqual(claimed.status_code, 200)
         self.assertEqual(claimed.data["controller_epoch"], first.data["controller_epoch"] + 1)
 
@@ -841,15 +843,14 @@ class RackControllerEndpointTests(APITestCase):
         runtime.current_set = target_set
         runtime.lease_expires_at = timezone.now() - timedelta(seconds=1)
         runtime.save(update_fields=["current_set", "lease_expires_at", "updated_at"])
-        RackScreen.objects.create(device_id="screen-c", rack_number=1)
 
-        blocked = self._acquire(device_id="screen-c", instance="tab-c", token=controller_token())
+        blocked = self._acquire(instance="tab-c", token=controller_token())
 
         self.assertEqual(blocked.status_code, 409)
         self.assertEqual(blocked.data["code"], "rack_recovery_required")
         self.assertEqual(blocked.data["snapshot"]["phase"], "recovery_required")
 
-        recovered = self._acquire(device_id="screen-b", instance="tab-b", token=second_token)
+        recovered = self._acquire(instance="tab-b", token=second_token)
         self.assertEqual(recovered.status_code, 200)
         self.assertEqual(recovered.data["controller_epoch"], claimed.data["controller_epoch"] + 1)
 
@@ -1250,6 +1251,97 @@ class NodeRegistrationTests(APITestCase):
         self.assertEqual(Node.objects.count(), 0)
 
 
+class SeederNfcTagTests(APITestCase):
+    """A fresh seed must assign the demo wristband tag, or sign-in silently dies.
+
+    Nothing else in the system assigns tags, and the seeder used to create
+    athletes with nfc_tag_id None — which is exactly how a fresh database lost
+    wristband sign-in until someone set the tag by hand.
+    """
+
+    def test_seed_assigns_braydons_wristband_tag(self):
+        from django.core.management import call_command
+        from event_handler.management.commands.seed_active_session import NFC_TAG_BY_ATHLETE
+
+        call_command("seed_active_session")
+
+        for name, tag in NFC_TAG_BY_ATHLETE.items():
+            athlete = Athlete.objects.get(name=name)
+            self.assertEqual(athlete.nfc_tag_id, tag, f"{name} should be seeded with its tag")
+
+    def test_seed_never_clobbers_a_manually_set_tag(self):
+        from django.core.management import call_command
+
+        Athlete.objects.create(name="Braydon Callender", nfc_tag_id="04FFFFFFFFFFFFFF")
+        call_command("seed_active_session")
+
+        athlete = Athlete.objects.get(name="Braydon Callender")
+        self.assertEqual(
+            athlete.nfc_tag_id, "04FFFFFFFFFFFFFF",
+            "a coach-retagged wristband must survive re-seeding",
+        )
+
+
+class RecoverRacksTests(APITestCase):
+    """The boot recovery command: a power cycle leaves open sets and stale
+    controller state, and the rack screen cannot claim a wedged rack. This runs
+    on every container boot so the base station is boot-and-go."""
+
+    def test_recovery_ends_open_sets_and_resets_runtimes(self):
+        from django.core.management import call_command
+
+        session = TrainingSession.objects.create(label="Live", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Jordan")
+        exercise = Exercise.objects.get_or_create(name="Back Squat")[0]
+        node = Node.objects.create(node_id="rack-1", rack_number=1)
+        stuck = Set.objects.create(
+            session=session, athlete=athlete, exercise=exercise, node=node,
+            set_number=1, ended_at=None,
+        )
+        runtime = RackRuntime.objects.create(rack_number=1)
+        runtime.phase = RackRuntime.PHASE_RECOVERY_REQUIRED
+        runtime.current_set = stuck
+        runtime.selected_athlete = athlete
+        runtime.lease_expires_at = timezone.now() + timedelta(seconds=30)
+        runtime.controller_epoch = 3
+        runtime.save()
+        runtime.command_receipts.create(
+            command_id=str(uuid.uuid4()), controller_epoch=3,
+            controller_device_id="screen-1", client_instance_id="tab-a",
+            response_status=200, response_body={},
+        )
+        before_version = runtime.state_version
+
+        call_command("recover_racks")
+
+        stuck.refresh_from_db()
+        self.assertIsNotNone(stuck.ended_at, "the open set must be closed")
+        self.assertTrue(stuck.is_false_set, "abandoned work is a false set")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.selected_athlete)
+        self.assertIsNone(runtime.lease_expires_at)
+        self.assertGreater(runtime.controller_epoch, 3)
+        self.assertGreater(runtime.state_version, before_version)
+        self.assertEqual(runtime.command_receipts.count(), 0,
+                         "stale command receipts from the old epoch must be dropped")
+
+    def test_recovery_is_safe_on_a_clean_rack(self):
+        from django.core.management import call_command
+
+        runtime = RackRuntime.objects.create(rack_number=1)
+
+        call_command("recover_racks")
+
+        runtime.refresh_from_db()
+        self.assertEqual(runtime.phase, RackRuntime.PHASE_IDLE)
+        self.assertIsNone(runtime.current_set)
+        self.assertIsNone(runtime.lease_expires_at)
+        self.assertEqual(runtime.command_receipts.count(), 0)
+
+
 class PerLaptopNodeFlowTests(APITestCase):
     """The per-rack-laptop topology: the rack screen runs the WT901 agent, which
     registers itself as an ordinary MQTT node. That is the whole shortcut — an
@@ -1308,6 +1400,210 @@ class PerLaptopNodeFlowTests(APITestCase):
         node = Node.objects.get(node_id="rack_2")
         self.assertIsNone(node.rack_number, "registration never hands out a rack")
         self.assertEqual(node.acquisition_kind, Node.ACQUISITION_MQTT)
+
+class RackReleaseAllTests(APITestCase):
+    """The end-of-session reset: clear every rack in one call.
+
+    Doing this rack by rack is the same click eight times, and the racks a coach
+    most wants cleared are exactly the ones whose screens are unreachable.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="sweep-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.node1 = Node.objects.create(node_id="sweep-n1", rack_number=1)
+        self.node2 = Node.objects.create(node_id="sweep-n2", rack_number=2)
+        self.screen1 = RackScreen.objects.create(device_id="sweep-s1", rack_number=1)
+        self.screen2 = RackScreen.objects.create(device_id="sweep-s2", rack_number=2)
+
+    def test_clears_every_rack_and_releases_every_screen(self):
+        res = self.client.post("/api/racks/release-all/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["cleared"], [1, 2])
+
+        self.screen1.refresh_from_db()
+        self.screen2.refresh_from_db()
+        self.assertIsNone(self.screen1.rack_number, "every screen goes back to the waiting list")
+        self.assertIsNone(self.screen2.rack_number)
+
+    def test_leaves_the_sensors_on_their_racks(self):
+        # The hardware has not moved. Only the screens are being sent back, so a
+        # fresh screen on rack 1 should still find its sensor there.
+        self.client.post("/api/racks/release-all/")
+
+        self.node1.refresh_from_db()
+        self.node2.refresh_from_db()
+        self.assertEqual(self.node1.rack_number, 1)
+        self.assertEqual(self.node2.rack_number, 2)
+
+    def test_ends_open_sets_across_all_racks_as_false_sets(self):
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Sweep Lifter")
+        exercise = Exercise.objects.create(name="Sweep Squat")
+        open_sets = [
+            Set.objects.create(session=session, athlete=athlete, exercise=exercise,
+                               node=node, set_number=1, ended_at=None)
+            for node in (self.node1, self.node2)
+        ]
+
+        self.client.post("/api/racks/release-all/")
+
+        for s in open_sets:
+            s.refresh_from_db()
+            self.assertIsNotNone(s.ended_at, "an abandoned set must be closed")
+            self.assertTrue(s.is_false_set, "work started and abandoned is a false set")
+
+    def test_skips_racks_that_have_nothing_on_them(self):
+        # Rack 7 has no screen and no runtime. It should not appear in the sweep
+        # rather than having a runtime invented for it.
+        res = self.client.post("/api/racks/release-all/")
+        self.assertNotIn(7, res.data["cleared"])
+        self.assertFalse(RackRuntime.objects.filter(rack_number=7).exists())
+
+    def test_requires_a_coach(self):
+        self.client.force_authenticate(None)
+        res = self.client.post("/api/racks/release-all/")
+        self.assertIn(res.status_code, (401, 403))
+
+
+class RackClearBluetoothGuardTests(APITestCase):
+    """A rack holding a WT901 cannot be cleared until the sensor is unlinked.
+
+    Not because clearing would corrupt anything — it never touches the node — but
+    because re-linking an unlinked WT901 requires verified BLE enrollment,
+    physically at the rack. A coach clearing racks from across the gym cannot
+    undo it from where they are standing.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="ble-guard-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.ble = Node.objects.create(
+            node_id="wt901-guard", rack_number=1,
+            acquisition_kind=Node.ACQUISITION_WT901_BLE,
+        )
+        self.mqtt = Node.objects.create(node_id="mqtt-guard", rack_number=2)
+        self.screen1 = RackScreen.objects.create(device_id="ble-s1", rack_number=1)
+        self.screen2 = RackScreen.objects.create(device_id="ble-s2", rack_number=2)
+
+    def test_single_rack_clear_is_refused_while_a_bluetooth_sensor_is_linked(self):
+        res = self.client.delete("/api/racks/1/")
+
+        self.assertEqual(res.status_code, 409, res.data)
+        self.assertEqual(res.data["code"], "rack_has_bluetooth_sensor")
+        self.screen1.refresh_from_db()
+        self.assertEqual(self.screen1.rack_number, 1, "nothing was cleared")
+
+    def test_an_mqtt_rack_is_unaffected(self):
+        # The guard is about Bluetooth specifically — a Wi-Fi sensor can be
+        # re-linked from the coach console, so there is nothing to protect.
+        res = self.client.delete("/api/racks/2/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen2.refresh_from_db()
+        self.assertIsNone(self.screen2.rack_number)
+
+    def test_release_all_is_refused_and_names_the_blocked_racks(self):
+        res = self.client.post("/api/racks/release-all/")
+
+        self.assertEqual(res.status_code, 409, res.data)
+        self.assertEqual(res.data["code"], "rack_has_bluetooth_sensor")
+        self.assertEqual(res.data["rack_numbers"], [1])
+        # NOTHING was released, including the racks that were not blocked — a
+        # partial sweep would be worse than none.
+        self.screen2.refresh_from_db()
+        self.assertEqual(self.screen2.rack_number, 2)
+
+    def test_clearing_works_once_the_sensor_is_unlinked(self):
+        self.assertEqual(self.client.delete("/api/racks/1/node/").status_code, 200)
+
+        res = self.client.delete("/api/racks/1/")
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.screen1.refresh_from_db()
+        self.assertIsNone(self.screen1.rack_number)
+
+
+class RackNodeUnlinkTests(APITestCase):
+    """Taking a sensor OFF a rack.
+
+    This was impossible: node_id had to match [A-Za-z0-9_-]{1,64}, so a coach
+    could swap a sensor for another sensor but never remove one. A rack whose
+    sensor had been moved kept claiming a node that was not there.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username="unlink-coach", password="pw", is_staff=True, is_active=True,
+        )
+        self.client.force_authenticate(self.staff)
+        self.node = Node.objects.create(node_id="unlink-n1", rack_number=3)
+        self.screen = RackScreen.objects.create(device_id="unlink-s1", rack_number=3)
+
+    def _unlink(self, rack_number=3):
+        return self.client.delete(f"/api/racks/{rack_number}/node/")
+
+    def test_unlinks_the_sensor(self):
+        res = self._unlink()
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIsNone(res.data["node"])
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number, "the sensor comes off the rack")
+
+    def test_the_screen_keeps_its_rack(self):
+        # Unlinking a sensor is not releasing a screen. The tablet stays where it is.
+        self._unlink()
+        self.screen.refresh_from_db()
+        self.assertEqual(self.screen.rack_number, 3)
+
+    def test_unlinking_twice_is_not_an_error(self):
+        # A coach who presses it twice, or races another coach, gets a no-op
+        # rather than a failure.
+        self._unlink()
+        res = self._unlink()
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIsNone(res.data["node"])
+
+    def test_refuses_while_a_set_is_open_on_that_sensor(self):
+        # Reps in flight are attributed to the node. Pulling it mid-set would
+        # leave a set whose sensor no longer belongs to the rack it happened at.
+        session = TrainingSession.objects.create(label="day", started_at=timezone.now())
+        athlete = Athlete.objects.create(name="Unlink Lifter")
+        exercise = Exercise.objects.create(name="Unlink Squat")
+        Set.objects.create(session=session, athlete=athlete, exercise=exercise,
+                           node=self.node, set_number=1, ended_at=None)
+
+        res = self._unlink()
+
+        self.assertEqual(res.status_code, 409, res.data)
+        self.assertEqual(res.data["code"], "node_assignment_has_open_set")
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.rack_number, 3, "the sensor stays put")
+
+    def test_works_on_a_rack_with_no_screen(self):
+        # The case the obvious design could not express. A force-clear releases
+        # the screen and LEAVES the sensor, so this is the exact state a coach is
+        # in when they want to unlink one.
+        self.screen.rack_number = None
+        self.screen.save(update_fields=["rack_number"])
+
+        res = self._unlink()
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.node.refresh_from_db()
+        self.assertIsNone(self.node.rack_number)
+
+    def test_requires_a_coach(self):
+        self.client.force_authenticate(None)
+        res = self._unlink()
+        self.assertIn(res.status_code, (401, 403))
+
 
 class RackNodeAssignmentTests(APITestCase):
     def setUp(self):

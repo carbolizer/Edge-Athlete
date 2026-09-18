@@ -46,6 +46,16 @@ WORKOUT_NAME = "Day 1 — Lower + Push"
 # themselves on the wall display.
 ATHLETES = ["Devin Walton", "Braydon Callender", "Derrilon Young", "Kyle Prather"]
 
+# NFC wristband tags, keyed by athlete name. Only Braydon's is filled in — it is
+# the one the demo actually taps, and it is the value the READER reads (which can
+# differ from the label printed on the band; the reader is authoritative). A
+# fresh seed leaves the others untagged, exactly like a real gym roster. This
+# lives in the seeder because nothing else assigns tags, and a fresh database
+# without it silently loses wristband sign-in — which is how the demo got burned.
+NFC_TAG_BY_ATHLETE = {
+    "Braydon Callender": "044DF23A1F1D91",
+}
+
 DEVIN = "Devin Walton"
 BRAYDON = "Braydon Callender"
 DERRILON = "Derrilon Young"
@@ -116,6 +126,14 @@ class Command(BaseCommand):
 
         # Athletes, and the group they all train with.
         athletes = {name: Athlete.objects.get_or_create(name=name)[0] for name in ATHLETES}
+        # Wristband tags must survive re-seeding: get_or_create keeps an existing
+        # athlete, so only assign when the row has none. (A coach may have
+        # retagged someone by hand; never clobber that.)
+        for name, tag in NFC_TAG_BY_ATHLETE.items():
+            athlete = athletes.get(name)
+            if athlete is not None and not athlete.nfc_tag_id:
+                athlete.nfc_tag_id = tag
+                athlete.save(update_fields=["nfc_tag_id"])
         group, _ = TrainingGroup.objects.get_or_create(name=GROUP_NAME)
         # Staff are a join table now, not a field — a group can have several.
         TrainingGroupCoach.objects.get_or_create(

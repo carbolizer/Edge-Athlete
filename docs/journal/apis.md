@@ -5,6 +5,17 @@ touches — the summary is visible, the detail is one click away.
 
 The few things at the top cut across all of them.
 
+## What the routes act on
+
+Most endpoints below are a verb on one of these. Worth a glance before reading the
+tables — half the route names only make sense once you can see what owns what.
+
+```{include} ../_erd.md
+:parser: myst
+```
+
+Full detail in {doc}`../reference/database`; the reasoning in {doc}`database`.
+
 ## The permission rule
 
 **Anything a rack tablet must do is open. Anything that changes the plan or the room
@@ -92,7 +103,7 @@ the outage you built it for.
 
 Rack screens, and the sensors on them.
 
-:::::{dropdown} 21 routes
+:::::{dropdown} 22 routes
 
 <!-- routes:the-room:start -->
 | Route | Methods | Access | What it does | Handler |
@@ -101,6 +112,8 @@ Rack screens, and the sensors on them.
 | `/api/racks/racknumber/` | `GET` | open | A waiting tablet asks "which rack am I?" Returns its rack_number (empty until a coach assigns it) | `rack_racknumber` |
 | `/api/racks/unassigned/` | `GET` | 🔒 coach | Coach-only: list every tablet still waiting for a rack (rack_number empty) | `racks_unassigned` |
 | `/api/racks/node-assignment/` | `PUT` | open | Select this physical rack's registered node | `rack_node_assignment` |
+| `/api/racks/release-all/` | `POST` | open | Coach-only: force-clear EVERY rack in one go — the end-of-session reset | `racks_release_all` |
+| `/api/racks/<int:rack_number>/node/` | `DELETE` | open | Coach-only: take whatever sensor is on this rack OFF it | `rack_node_unlink` |
 | `/api/ble/scans/` | `POST` | open | — | `ble_scans` |
 | `/api/ble/verifications/` | `POST` | open | — | `ble_verifications` |
 | `/api/racks/<int:rack_number>/ble-selection/` | `PUT` | open | — | `rack_ble_selection` |
@@ -116,7 +129,6 @@ Rack screens, and the sensors on them.
 | `/api/nodes/` | `GET` | open | Open: list every sensor node and its latest status | `nodes_list` |
 | `/api/nodes/register/` | `POST` | open | A sensor announces itself | `node_register` |
 | `/api/nodes/<str:node_id>/acquisition-kind/` | `PUT` | open | Provision the transport trusted to supply one registered node's health | `node_acquisition_kind` |
-| `/api/nodes/<str:node_id>/rack/` | `PATCH` | open | Release a sensor from its rack | `node_rack` |
 | `/api/racks/<str:device_id>/` | `PATCH` | open | Coach-only: give a waiting tablet its rack number, or release it | `rack_assign` |
 <!-- routes:the-room:end -->
 

@@ -27,7 +27,8 @@ RUN SECRET_KEY=build-time-only-not-used-at-runtime DEBUG=False \
 
 EXPOSE 8000
 
-# Migrate, ensure the demo login exists, then hand off to gunicorn.
+# Migrate, recover racks, then hand off to gunicorn. First-run coach setup is
+# completed in the browser; never install a default password during boot.
 #
 # ⚠️ NOT `runserver`. Django's own docs say never deploy with it. The reason
 # that matters here is not speed — runserver is threaded and this is a dozen
@@ -46,4 +47,4 @@ EXPOSE 8000
 #                      instead of being held forever.
 #   --access-logfile - logs to stdout, so `docker compose logs django` shows
 #                      requests the way runserver used to.
-CMD ["sh", "-c", "python manage.py migrate && python manage.py ensure_demo_coach && exec gunicorn basestation_config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60 --graceful-timeout 30 --access-logfile - --error-logfile -"]
+CMD ["sh", "-c", "python manage.py migrate && python manage.py recover_racks && exec gunicorn basestation_config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 60 --graceful-timeout 30 --access-logfile - --error-logfile -"]
