@@ -900,3 +900,11 @@ class MonitoringEvent(models.Model):
 
     def __str__(self):
         return f"{self.reason} ({self.event_id})"
+
+
+class LoginAttemptWindow(models.Model):
+    """Shared account throttle state; never contains usernames or passwords."""
+
+    account_key = models.CharField(max_length=64, primary_key=True)
+    failures = models.JSONField(default=list)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)

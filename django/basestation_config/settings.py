@@ -88,6 +88,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware', # Must be first - handles CORS before anything else
     'django.middleware.security.SecurityMiddleware',
+    'event_handler.credential_privacy.CredentialPrivacyMiddleware',
     # Directly after SecurityMiddleware, which is where WhiteNoise must sit.
     # It is what serves the admin and DRF stylesheets now that gunicorn runs the
     # app — see the STATIC_ROOT note below for why nothing served them before.

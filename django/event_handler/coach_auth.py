@@ -24,6 +24,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import CoachProfile, InstallationSetup
 from .room_access import coach_room_payload
+from .login_limits import authenticate_with_limit
 
 # How long a locally-issued setup code stays valid. Long enough to walk a
 # head coach through booting the box, short enough that a code left on a
@@ -153,6 +154,12 @@ class SetupView(APIView):
 class CoachTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Adds the first-login password-change requirement to the login response."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields[self.username_field] = serializers.CharField(max_length=150)
+        self.fields['password'] = serializers.CharField(
+            write_only=True, trim_whitespace=False, max_length=1024)
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -160,7 +167,9 @@ class CoachTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        validate_credentials = super().validate
+        data = authenticate_with_limit(
+            attrs[self.username_field], lambda: validate_credentials(attrs))
         data['must_change_password'] = must_change_password(self.user)
         data['weight_room'] = coach_room_payload(self.user)
         return data

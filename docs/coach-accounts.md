@@ -53,8 +53,8 @@ Inactive accounts cannot log in or use previously issued tokens.
 
 Nginx rate-limits POST requests to login and setup by source IP (10/minute,
 burst of five), across nginx workers. Rejected requests return 429; the UI asks
-the user to wait. Status reads do not consume the allowance. This protection is
-on the nginx entry point, not direct access to Django's internal port.
+the user to wait. Status reads do not consume the allowance. This IP protection applies at nginx. Django also enforces the per-account
+failed-login limit described below, including direct requests to its internal port.
 
 Coach roster reads/writes require authentication on the backend. Existing
 rack-controller and public wall-display interfaces retain their device-facing
@@ -86,8 +86,9 @@ The head coach (an administrator) opens **Coach → coaches** to:
 - **Make administrator / Make coach** — grant or remove account-management rights.
 - **Deactivate / Reactivate** — immediately stop or restore a login.
 
-Everyone shares one database: an account says *who* is coaching, it does not
-partition athletes or reports. Ordinary coaches use the whole workspace but the
+Each installation serves one weight room. Only assigned coaches can use its
+workspace and access its athletes or reports. Ordinary assigned coaches use the
+whole room workspace, but the
 **coaches** tab is hidden for them and the API refuses account-management calls
 regardless of what the browser sends.
 
@@ -177,3 +178,47 @@ change, self-demotion and last-admin guards, unauthorized roster access, member
 creation/editing, active-session removal refusal, preservation of sessions/sets/
 reps/report snapshots, NFC reuse, setup/login/password/coach-management form
 interactions, roster actions, connection retry, and offline-shell behavior.
+
+## Account security and failed-login limits
+
+Django's `/api/auth/login/` now independently enforces **five failed attempts per
+username in a rolling ten-minute window**, including nonexistent and inactive
+accounts. The first five failures return the same generic 401 response. Further
+attempts, even with the correct password, return 429 with a `Retry-After` header
+in seconds. Once the oldest failure expires, another attempt is allowed.
+Successful logins do not consume or clear this budget; blocked requests do not
+extend it. Different usernames have independent budgets, and changing IP address
+or restarting an application worker does not bypass it. Usernames remain
+case-sensitive, matching Django authentication; leading/trailing whitespace is
+trimmed by the serializer. Invalid request shapes return 400.
+
+Migration `0027_login_attempt_window` adds shared PostgreSQL state with an HMAC
+username key and at most five failure timestamps per record. Row locks serialize
+concurrent attempts, including simultaneous first attempts. No password, token,
+or raw username is recorded in this table. Keep the existing nginx IP limit as
+an additional layer against attempts spread across many usernames. Run
+`python manage.py prune_login_attempts` periodically to remove expired records;
+expiration is enforced on every request and does not depend on this cleanup.
+
+All auth and coach-account responses use `Cache-Control: private, no-store`,
+including one-time temporary passwords and errors. Credential requests suppress
+POST values and traceback locals in Django exception reports, including DRF JSON
+serializer data. Application code does not log credential bodies. Keep production
+DEBUG disabled and do not configure proxies or external tracing to record request
+or response bodies on these routes. Passwords are held only transiently for
+verification/one-time delivery; account list/session responses never return a
+password or its stored hash. Existing salted hashes need no data conversion.
+Django creates and upgrades hashes through its standard password APIs.
+
+Room relationships, migration and recovery procedures are documented in
+[Coach access to a weight room](guides/coach-room-access.md). Login and session
+responses include `weight_room` (school, room ID/name, canonical dashboard path),
+or null when unassigned. Administrators can PATCH `weight_room_id` to the local
+room ID or null. Membership is checked live, including for already-issued tokens.
+One installation owns one room's athletes/equipment; separate rooms require
+separate databases, signing keys and brokers.
+
+Security regression tests are in `event_handler.test_login_security`, alongside
+`test_coach_accounts` and `test_room_access`. They cover production PBKDF2 hashing,
+password change/reset, cache prevention, error-report redaction, independent
+budgets, rolling expiration, and concurrent first attempts across DB connections.

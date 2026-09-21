@@ -25,7 +25,7 @@ DEMO_PASSWORD = "coachpass"
 
 
 class Command(BaseCommand):
-    help = "Create the demo coach login (coach / coachpass). Refused unless DEBUG is on."
+    help = "Create the documented demo coach login. Refused unless DEBUG is on."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -37,7 +37,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if not settings.DEBUG and not options["i_know_this_is_a_demo_box"]:
             raise CommandError(
-                "Refusing to create the demo login (coach / coachpass) while DEBUG is "
+                "Refusing to create the documented demo login while DEBUG is "
                 "off. That password is public, and this looks like a real base "
                 "station. Create the first coach at /coach with `manage.py "
                 "setup_code`, or, if this really is a throwaway demo box, re-run "
@@ -57,6 +57,6 @@ class Command(BaseCommand):
         CoachProfile.objects.update_or_create(user=user, defaults={'weight_room': room})
         verb = "Created" if created else "Updated"
         self.stdout.write(self.style.WARNING(
-            f"{verb} demo coach account: {DEMO_USERNAME} / {DEMO_PASSWORD} — "
+            f"{verb} demo coach account: {DEMO_USERNAME} — "
             "public credentials, demo use only."
         ))

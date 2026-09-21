@@ -1153,3 +1153,15 @@ Public wall snapshots without `details=true` and anonymous rack-device routes
 retain their existing LAN contract. Detailed room snapshots still require an
 assigned coach. A coach JWT supplied to a public data route is also checked for
 membership; dropping credentials grants only that route's existing public access.
+
+
+### Per-account login throttling
+
+`POST /api/auth/login/` permits five failed authentications per case-sensitive,
+trimmed username in a rolling 600 seconds. The fifth failure returns 401; attempts
+after it return 429 with `detail` and `Retry-After` seconds, including correct
+passwords, until an attempt expires. Unknown and inactive accounts follow the
+same policy. Successful logins neither consume nor reset recent failures.
+Blocked requests do not extend expiration. This is enforced in Django across
+workers, in addition to nginx's IP request limit. Auth and coach-account responses
+carry `Cache-Control: private, no-store`.
