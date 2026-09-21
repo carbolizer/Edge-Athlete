@@ -13,11 +13,10 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .services.cadence import CADENCE_DAYS
-from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise,
+from .models import (Set, Rep, RackScreen, Athlete, TrainingSession, Node, Exercise, Tag,
                      TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise,
                      TrainingProgram, TrainingProgramWorkout, TrainingProgramExercise,
                      BlockCategory, TrainingGroupCoach, ScheduledSession)
-
 
 class RepInputSerializer(serializers.Serializer):
     """One incoming rep from the tablet — one item inside a finished set."""
@@ -129,10 +128,49 @@ class TrainingSessionSerializer(serializers.ModelSerializer):
 
 class ExerciseSerializer(serializers.ModelSerializer):
     """One movement in the catalog — the official identity plans/sets/maxes link to."""
+    tags = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
+
     class Meta:
         model = Exercise
         fields = ["id", "name", "tags", "is_stub", "created_at"]
         read_only_fields = ["id", "created_at"]
+
+
+class ExerciseUpdateSerializer(serializers.Serializer):
+    """Coach-facing edit of an existing catalog entry: rename it and/or replace its
+    tags. Tags are a bare list of names (Tag is "just a name for now" per its own
+    docstring) — unknown names are created, matching how the rest of the catalog
+    avoids ever asking a coach to pre-register a label before using it.
+
+    Editing a stub (`is_stub=True`) is how a coach confirms it: any successful
+    PATCH here clears `is_stub`, since reviewing and fixing a row IS the
+    confirmation — there is no separate "confirm" action to remember to press.
+    """
+    name = serializers.CharField(max_length=255, required=False)
+    tags = serializers.ListField(child=serializers.CharField(max_length=100), required=False)
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Name cannot be blank.")
+        existing = Exercise.objects.filter(name__iexact=value)
+        if self.instance is not None:
+            existing = existing.exclude(pk=self.instance.pk)
+        if existing.exists():
+            raise serializers.ValidationError("An exercise with that name already exists.")
+        return value
+
+    def update(self, instance, validated_data):
+        if "name" in validated_data:
+            instance.name = validated_data["name"]
+        if instance.is_stub:
+            instance.is_stub = False
+        instance.save(update_fields=["name", "is_stub"])
+        if "tags" in validated_data:
+            tag_objs = [Tag.objects.get_or_create(name=name.strip())[0]
+                        for name in validated_data["tags"] if name.strip()]
+            instance.tags.set(tag_objs)
+        return instance
 
 
 class NodeSerializer(serializers.ModelSerializer):
