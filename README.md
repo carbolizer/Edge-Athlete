@@ -1,11 +1,38 @@
-# Edge Athlete — Base Station
+# Edge Athlete — Offline Training Platform
 
-Velocity-based training for the whole gym, running on one offline base station.
-Sensors on the racks measure bar speed, tablets show live feedback, a wall display
-scoreboards the room, and everything is saved for history — with no internet.
+Edge Athlete is a team-built velocity-based training system designed to run an entire gym from a local base station, without depending on an internet connection.
 
-This repo is the **base station**: the Docker stack (Django API, PostgreSQL,
-Mosquitto broker, Nginx, React) that runs the gym.
+Rack-mounted sensors publish barbell data over MQTT, athletes use rack tablets for live feedback, coaches manage the room from an admin interface, and a wall display shows activity across the gym. The base station ties those pieces together with **Django, React, PostgreSQL, Mosquitto, Nginx, and Docker Compose**.
+
+## Why I keep this project featured
+
+This is the project where I have gotten the most experience working inside a larger software system instead of building one isolated assignment. It has a real service boundary, persistent data, device communication, authentication, multiple frontend roles, and deployment concerns.
+
+### My contributions
+
+My work in the repository includes the initial base-station setup and a coach-admin integration that added:
+
+- a JWT-gated coach interface
+- rack-screen and sensor-node assignment to numbered rack slots
+- API helpers for authenticated coach requests
+- role-specific PWA manifests for coach, rack, and dashboard devices
+- service-worker support for the offline application shell
+- Django startup support for the demo coach workflow used during development
+
+This is a collaborative project, so the repository also includes substantial work from other team members.
+
+## Stack
+
+| Area | Technology |
+|---|---|
+| Backend | Django / Django REST API |
+| Frontend | React |
+| Database | PostgreSQL |
+| Device messaging | MQTT / Mosquitto |
+| Reverse proxy | Nginx |
+| Deployment | Docker Compose |
+| Hardware side | ESP32-based rack nodes |
+
 
 ---
 
