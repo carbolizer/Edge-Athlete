@@ -311,6 +311,21 @@ already have a rack number. Node IDs use `[A-Za-z0-9_-]{1,64}`. Returns `200`:
 - Replacement at the same rack atomically unassigns the prior node. One non-null
   node mapping per rack is also enforced by the database.
 
+### `PATCH /api/nodes/{node_id}/rack/` — release a sensor from its rack (active staff)
+
+Exact body: `{ "rack_number": null }`. Returns the node with `rack_number` null.
+This is how a coach unassigns a sensor without putting another one on — assigning
+can only replace, and `DELETE /api/racks/{n}/` (Remove screen) deliberately
+leaves the sensor.
+
+- Extra or missing fields return `400 invalid_node_rack_request`.
+- A non-null `rack_number` returns `400 node_assign_retired` — assignment still
+  goes through `PUT /api/racks/node-assignment/` and needs a registered screen.
+- An open set on that node returns `409 node_assignment_has_open_set`.
+- Already unassigned is idempotent `200` and creates no `MonitoringEvent`.
+- A real release creates one `MonitoringEvent` with reason `node_assignment_changed`.
+- Unknown `node_id` returns `404 node_not_found`.
+
 ### `PUT /api/nodes/{node_id}/acquisition-kind/` — provision node transport (active staff)
 
 Exact body: `{ "acquisition_kind": "mqtt" }` or
@@ -1094,3 +1109,59 @@ this wrong is the most likely way two parts disagree.
 | `edgeathlete/rack/command` | Django / a coach (Phase 14; `mosquitto_pub` today) | EVERY rack tablet, from boot |
 | `edgeathlete/dashboard/state` | Django | the team wall display |
 | `edgeathlete/coach/state` | Django | the coach tablet |
+
+
+## Coach room assignment and session contract (2026-09-18)
+
+`POST /api/auth/login/` retains `access`, `refresh` and
+`must_change_password`, and adds `weight_room`. `GET /api/auth/me/` retains
+`username`, `is_staff` and `must_change_password`, and adds the same object:
+
+```json
+{
+  "id": 1,
+  "name": "Main weight room",
+  "school": {"id": 1, "name": "Central High"},
+  "dashboard_path": "/coach/rooms/1"
+}
+```
+
+`weight_room` is null when the user has no assignment to this installation.
+The user can inspect their session and change their password, but authenticated
+room-data requests return 403. Inactive/invalid/expired credentials return 401.
+Assignments are checked live on each request, not copied from JWT claims.
+
+`GET /api/coaches/`, `POST /api/coaches/`, `PATCH /api/coaches/{id}/` and
+`POST /api/coaches/{id}/reset/` include `weight_room` in each coach representation.
+Creation assigns the installation room; password resets preserve assignments.
+Only active staff assigned to the installation can use these management routes.
+
+`PATCH /api/coaches/{id}/` accepts `weight_room_id` alongside the existing
+`is_active`/`is_staff` flags. Omit it to preserve membership, send the current
+installation's integer room ID to assign, or null to revoke. Nonlocal/unknown IDs,
+booleans, strings and other malformed values return 400. Self-revocation and
+removing the last assigned active administrator return 400. Ordinary coaches
+receive 403. Anonymous callers receive 401.
+
+`/coach` resolves to the assigned `/coach/rooms/{id}` after session validation.
+A mismatching direct dashboard URL is denied before private children mount.
+`/coach/setup` uses the same session and room gate. These are frontend routes;
+the existing data APIs address only the current base station's database. They
+cannot select a different dataset using a supplied room ID.
+
+Public wall snapshots without `details=true` and anonymous rack-device routes
+retain their existing LAN contract. Detailed room snapshots still require an
+assigned coach. A coach JWT supplied to a public data route is also checked for
+membership; dropping credentials grants only that route's existing public access.
+
+
+### Per-account login throttling
+
+`POST /api/auth/login/` permits five failed authentications per case-sensitive,
+trimmed username in a rolling 600 seconds. The fifth failure returns 401; attempts
+after it return 429 with `detail` and `Retry-After` seconds, including correct
+passwords, until an attempt expires. Unknown and inactive accounts follow the
+same policy. Successful logins neither consume nor reset recent failures.
+Blocked requests do not extend expiration. This is enforced in Django across
+workers, in addition to nginx's IP request limit. Auth and coach-account responses
+carry `Cache-Control: private, no-store`.

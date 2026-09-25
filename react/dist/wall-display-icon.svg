@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Edge Athlete Wall Display">
+  <rect width="512" height="512" rx="96" fill="#0b0f17"/>
+  <rect x="88" y="120" width="336" height="212" rx="20" fill="none" stroke="#6f8cff" stroke-width="20"/>
+  <rect x="236" y="332" width="40" height="44" fill="#6f8cff"/>
+  <rect x="176" y="376" width="160" height="20" rx="10" fill="#6f8cff"/>
+  <polyline points="128,268 188,208 236,244 316,168 384,196"
+    fill="none" stroke="#43c98a" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

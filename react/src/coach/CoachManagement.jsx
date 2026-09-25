@@ -3,9 +3,8 @@ import { createCoach, listCoaches, resetCoachPassword, updateCoach } from './api
 import './CoachManagement.css'
 
 // Administrator-only: create logins for the other coaches and hand out the
-// temporary passwords. Everyone shares one database; an account just says who
-// is doing the coaching.
-export default function CoachManagement({ accessToken, currentUsername, onLogout, onChangePassword }) {
+// temporary passwords and manage access to this installation’s weight room.
+export default function CoachManagement({ weightRoom, accessToken, currentUsername, onLogout, onChangePassword }) {
   const [coaches, setCoaches] = useState([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -69,7 +68,7 @@ export default function CoachManagement({ accessToken, currentUsername, onLogout
 
   return <section className="coach-mgmt">
     <h2>Coaches</h2>
-    <p>Each coach signs in with their own account and shares the same athletes, workouts, and reports.</p>
+    <p>Only coaches assigned to this weight room can open its dashboard, athletes, equipment, and reports.</p>
     {error && <p className="coach-mgmt-error" role="alert">{error} <button onClick={load} disabled={busy || loading}>Retry</button></p>}
     {handoff && <p className="coach-mgmt-handoff" role="status">
       Temporary password for <b>{handoff.username}</b>: <code>{handoff.password}</code>
@@ -88,6 +87,7 @@ export default function CoachManagement({ accessToken, currentUsername, onLogout
       {coaches.map(coach => <li key={coach.id}>
         <span className="coach-mgmt-name">
           {coach.username}
+          <span>{coach.weight_room ? `${coach.weight_room.school.name} · ${coach.weight_room.name}` : 'No weight room assigned'}</span>
           {coach.is_staff && <em className="coach-mgmt-badge">administrator</em>}
           {!coach.is_active && <em className="coach-mgmt-badge coach-mgmt-badge-off">deactivated</em>}
           {coach.must_change_password && <em className="coach-mgmt-badge">must change password</em>}
@@ -97,6 +97,7 @@ export default function CoachManagement({ accessToken, currentUsername, onLogout
           {coach.username === currentUsername
             ? <span className="coach-mgmt-self">This is you</span>
             : <>
+              {weightRoom && <button disabled={busy} onClick={() => toggle(coach, { weight_room_id: coach.weight_room?.id === weightRoom.id ? null : weightRoom.id })}>{coach.weight_room?.id === weightRoom.id ? 'Remove room access' : 'Assign to this room'}</button>}
               <button disabled={busy} onClick={() => toggle(coach, { is_staff: !coach.is_staff })}>{coach.is_staff ? 'Make coach' : 'Make administrator'}</button>
               <button disabled={busy} onClick={() => toggle(coach, { is_active: !coach.is_active })}>{coach.is_active ? 'Deactivate' : 'Reactivate'}</button>
             </>}

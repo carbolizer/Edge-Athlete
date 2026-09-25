@@ -152,7 +152,7 @@ function Home() {
     const n = localStorage.getItem('rack_number')
     return <Redirect to={n != null ? `/rack/${n}` : '/rack/setup'} />
   }
-  if (role === 'coach') return <Redirect to="/coach/setup" />
+  if (role === 'coach') return <Redirect to="/coach" />
   return <Redirect to={`/${role}`} />
 }
 
@@ -237,6 +237,8 @@ function route(pathname) {
   // planning, reports); the wall view is the read-only room display. Same file,
   // same live room feed, different `mode`.
   if (pathname === '/coach') return <Dashboard mode="coach" />
+  const coachRoom = pathname.match(/^\/coach\/rooms\/([^/]+)\/?$/)
+  if (coachRoom) return <Dashboard mode="coach" roomId={coachRoom[1]} />
   if (pathname === '/dashboard') return <Dashboard mode="wall" />
 
   if (pathname.startsWith('/rack/')) {

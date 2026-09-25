@@ -1,0 +1,19 @@
+{
+  "name": "Edge Athlete — Wall Display",
+  "short_name": "EA Wall",
+  "description": "The team wall display: a live, read-only gym scoreboard for Edge Athlete.",
+  "start_url": "/dashboard",
+  "scope": "/dashboard",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0f17",
+  "theme_color": "#0b0f17",
+  "icons": [
+    {
+      "src": "/wall-display-icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ]
+}

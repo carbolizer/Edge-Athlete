@@ -54,6 +54,7 @@ from .models import (Node, RackScreen, Athlete, TrainingSession, Set, Rep, Athle
 # Coaches are Django users; there is no separate coach table. See docs/reference/spec.md.
 User = get_user_model()
 from .permissions import IsActiveStaff, IsCoach
+from .room_access import has_room_access
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
                           NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
@@ -262,7 +263,7 @@ def _save_receipt(request, runtime, command_id, response_body, response_status):
 def _require_coach(request):
     """Small helper for endpoints that are open to read but coach-only to write:
     returns True if the caller is a logged-in coach."""
-    return bool(request.user and request.user.is_authenticated)
+    return has_room_access(request.user)
 
 
 # ─────────────────────────── tablet: racks ───────────────────────────
@@ -1493,6 +1494,47 @@ def node_acquisition_kind(request, node_id):
     return Response(NodeSerializer(node).data)
 
 
+@api_view(["PATCH"])
+@permission_classes([IsActiveStaff])
+def node_rack(request, node_id):
+    """Release a sensor from its rack. Body: { "rack_number": null }.
+
+    This is the counterpart of releasing a tablet. PUT /api/racks/node-assignment/
+    can replace one sensor with another, but it cannot leave a rack with none —
+    and Remove screen deliberately keeps the sensor. A coach sorting a rack needs
+    a way to unassign the node without putting another one on.
+
+    Only null is accepted. Setting a rack number here is the retired generic
+    node PATCH; assignment still requires a registered screen.
+    """
+    if set(request.data) != {"rack_number"}:
+        return Response({
+            "code": "invalid_node_rack_request",
+            "detail": "exactly rack_number is required",
+        }, status=400)
+    if request.data.get("rack_number") is not None:
+        return Response({
+            "code": "node_assign_retired",
+            "detail": "assign a sensor with PUT /api/racks/node-assignment/; this route only releases",
+        }, status=400)
+
+    with transaction.atomic():
+        node = Node.objects.select_for_update().filter(node_id=node_id).first()
+        if node is None:
+            return Response({"code": "node_not_found", "detail": "node not found"}, status=404)
+        if node.rack_number is None:
+            return Response(NodeSerializer(node).data)
+        if Set.objects.select_for_update().filter(node=node, ended_at=None).exists():
+            return Response({
+                "code": "node_assignment_has_open_set",
+                "detail": "finish the open set before changing this sensor assignment",
+            }, status=409)
+        node.rack_number = None
+        node.save(update_fields=["rack_number"])
+        MonitoringEvent.objects.create(reason="node_assignment_changed")
+    return Response(NodeSerializer(node).data)
+
+
 # ─────────────────────────── athletes ───────────────────────────
 
 @api_view(["GET", "POST"])
@@ -1589,7 +1631,7 @@ def prescriptions_view(request):
     return Response({
         "code": "endpoint_retired",
         "detail": ("Per-athlete plans have been replaced by group plans. Build a "
-                   "template at POST /api/workout-programs/, deploy it with "
+                   "template at POST /api/training-blocks/, deploy it with "
                    "POST /api/training-programs/, and put athletes in the group "
                    "with POST /api/training-groups/{id}/athletes/."),
     }, status=410)
@@ -2377,7 +2419,7 @@ def room_state(request):
     # data, so asking for them requires actually being a coach. Refusing here
     # rather than silently downgrading means a coach UI with an expired token
     # gets a clear 401 instead of mysteriously missing fields.
-    if include_details and not (request.user and request.user.is_authenticated):
+    if include_details and not has_room_access(request.user):
         return Response({"error": "coach login required for ?details=true"}, status=401)
 
     response = Response(room_state_snapshot(include_details=include_details))
@@ -2528,9 +2570,8 @@ def report_pdf_view(request, report_id):
 
 # ─────────────────────────── planning: TrainingGroups, templates, plans ───────────────────────────
 #
-# Route names here match what the coach front end already calls, even where our
-# model names differ (its "workout-programs" are our reusable TrainingBlocks).
-# Bending the URLs to the existing client is deliberate — canon §3.3.
+# Route names match the models they serve (P9). A TrainingBlock is
+# /training-blocks/, a day inside one is /training-blocks/{id}/workouts/.
 
 @api_view(["GET", "POST"])
 @permission_classes([IsCoach])

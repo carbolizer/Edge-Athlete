@@ -29,7 +29,7 @@ const COACH_GETS = [
   { key: 'aSession', path: '/api/analytics/session/2/',
     what: "Session summary — total sets, total reps, and each athlete's average bar speed." },
   { key: 'aAthlete', path: '/api/analytics/athlete/2/',
-    what: "One athlete's bar-speed trend across all their sets, oldest to newest." },
+    what: "Athlete, summary, per-movement numbers, and recent sets with reps — what the coach athlete and history tabs read." },
 ]
 
 // ── full reference (grouped) ──
@@ -51,7 +51,7 @@ const REFERENCE = [
   ]},
   { group: 'Coach — manage', items: [
     { m: 'POST/PATCH', p: '/api/athletes/ · /api/athletes/{id}/', a: 'coach', w: 'Add or edit a lifter.' },
-    { m: 'POST', p: '/api/programs/', a: 'coach', w: 'Create a training plan for a lifter.' },
+    { m: 'POST', p: '/api/training-blocks/', a: 'coach', w: 'Create a reusable training-block template.' },
     { m: 'POST/PATCH', p: '/api/sessions/ · /api/sessions/{id}/', a: 'coach', w: 'Start a session; a PATCH with no end time ends it now.' },
     { m: 'PUT', p: '/api/racks/node-assignment/', a: 'coach', w: 'Select a registered sensor beside its physical rack.' },
     { m: 'GET', p: '/api/racks/unassigned/', a: 'coach', w: 'See which tablets are still waiting for a rack.' },
@@ -59,7 +59,7 @@ const REFERENCE = [
   ]},
   { group: 'Coach — analytics', items: [
     { m: 'GET', p: '/api/analytics/session/{id}/', a: 'coach', w: 'Session totals + per-athlete average speed.' },
-    { m: 'GET', p: '/api/analytics/athlete/{id}/', a: 'coach', w: "An athlete's speed trend across sets." },
+    { m: 'GET', p: '/api/analytics/athlete/{id}/', a: 'coach', w: "Athlete summary, per-movement aggregates, and set history with reps." },
   ]},
 ]
 

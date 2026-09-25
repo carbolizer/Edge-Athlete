@@ -1,3 +1,4 @@
+import CoachRoomGate from './coach/CoachRoomGate.jsx';
 /*
  * Provides two production monitoring surfaces: a room-scale athlete scoreboard
  * and a protected coach tablet. Both reconcile saved PostgreSQL state through MQTT revisions.
@@ -26,9 +27,7 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import { navigate } from "./router.js";
-import { coachFetch, fetchCurrentCoach, getCoachToken, setCoachToken } from "./coach/api.js";
-import CoachAccess from "./coach/CoachAccess.jsx";
-import ChangePassword from "./coach/ChangePassword.jsx";
+import { coachFetch, setCoachToken } from "./coach/api.js";
 import CoachManagement from "./coach/CoachManagement.jsx";
 import RosterWorkspace from "./coach/RosterWorkspace.jsx";
 import useLiveRoomState from "./useLiveRoomState.js";
@@ -301,6 +300,7 @@ function CoachHardware({ rack, nodes, token, onLinked }) {
   const node = rack.node;
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [linking, setLinking] = useState(false);
+  const [releasing, setReleasing] = useState(false);
   const [linkError, setLinkError] = useState("");
 
   // Offer only what this rack can actually take: sensors with no rack, or the one
@@ -311,6 +311,24 @@ function CoachHardware({ rack, nodes, token, onLinked }) {
     (n) => n.rack_number == null || n.rack_number === rack.rack_number,
   );
   const canLink = rack.screen_device_id != null;
+
+  async function releaseNode() {
+    if (!node) return;
+    setReleasing(true);
+    setLinkError("");
+    try {
+      await coachFetch(`/api/nodes/${encodeURIComponent(node.node_id)}/rack/`, {
+        token,
+        method: "PATCH",
+        body: { rack_number: null },
+      });
+      onLinked?.({ rack_number: rack.rack_number, node: null });
+    } catch (err) {
+      setLinkError(err.message || "The sensor could not be released.");
+    } finally {
+      setReleasing(false);
+    }
+  }
 
   async function linkNode() {
     if (!selectedNodeId) return;
@@ -347,6 +365,11 @@ function CoachHardware({ rack, nodes, token, onLinked }) {
           <span><strong>{node.node_id}</strong><small>{node.is_stale ? "Pulse overdue" : "Reporting"}</small></span>
           <b>{node.battery_level ?? "--"}%</b>
         </div>
+      )}
+      {node && (
+        <button type="button" onClick={releaseNode} disabled={releasing}>
+          {releasing ? "Releasing..." : "Release node"}
+        </button>
       )}
 
       <div className="coach-hardware-link">
@@ -509,7 +532,7 @@ function RackSelectionControls({ rack }) {
   </section>;
 }
 
-function CoachView({ monitor, accessToken, onLogout, isAdmin, currentUsername, onChangePassword }) {
+function CoachView({ weightRoom, monitor, accessToken, onLogout, isAdmin, currentUsername, onChangePassword }) {
   const { roomState, requestState, connectionState, lastError, refresh } = monitor;
   const [selectedRackNumber,setSelectedRackNumber]=useState(null),[activeTab,setActiveTab]=useState("room"),[athletes,setAthletes]=useState([]),[selectedAthleteId,setSelectedAthleteId]=useState(null),[context,setContext]=useState(null),[programs,setPrograms]=useState([]),[note,setNote]=useState(null),[draft,setDraft]=useState(""),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState("");
   const headers={Accept:"application/json",Authorization:`Bearer ${accessToken}`};
@@ -605,60 +628,25 @@ function CoachView({ monitor, accessToken, onLogout, isAdmin, currentUsername, o
     })}
   </nav>
   {activeTab === 'roster' && <RosterWorkspace accessToken={accessToken} onLogout={onLogout} onChanged={() => { setRosterRevision(n => n + 1); refresh(); }} />}
-  {activeTab === 'coaches' && isAdmin && <CoachManagement accessToken={accessToken} currentUsername={currentUsername} onLogout={onLogout} onChangePassword={onChangePassword} />}
+  {activeTab === 'coaches' && isAdmin && <CoachManagement weightRoom={weightRoom} accessToken={accessToken} currentUsername={currentUsername} onLogout={onLogout} onChangePassword={onChangePassword} />}
   <div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{["roster", "coaches", "workouts", "reports", "schedule"].includes(activeTab)?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
 }
 
-export default function Dashboard({ mode = "wall" }) {
-  // The token is read from storage on mount, not started at null, so a refresh,
-  // a tablet waking from sleep, or a browser reloading a backgrounded tab does
-  // not throw the coach back to a login screen mid-session. It is the same
-  // stored token /coach/setup uses, so the two screens share one login.
-  const [accessToken, setAccessToken] = useState(() => getCoachToken());
-  // Who this token belongs to, and whether it still owes a password change.
-  // Fetched (not trusted from storage) so a token that expired or was
-  // deactivated drops the coach back to the login screen.
-  const [me, setMe] = useState(null);
-  const [meError, setMeError] = useState(false);
-  const [changingPassword, setChangingPassword] = useState(false);
-  const monitor = useLiveRoomState({ mode, accessToken, onAuthRequired: () => forget() });
+function CoachDashboard({ token, me, logout, changePassword }) {
+  const monitor = useLiveRoomState({ mode: 'coach', accessToken: token, onAuthRequired: logout });
+  return <CoachView monitor={monitor} accessToken={token} onLogout={logout}
+    isAdmin={Boolean(me.is_staff)} currentUsername={me.username} weightRoom={me.weight_room}
+    onChangePassword={changePassword} />;
+}
 
-  // One place to drop the login, so the stored copy can never outlive the
-  // in-memory one — a stale token left in storage is a coach still signed in on
-  // a shared tablet after they walked away.
-  function forget() {
-    setCoachToken(null);
-    setAccessToken(null);
-    setMe(null);
-    setChangingPassword(false);
-  }
-
-  function loadMe() {
-    if (!accessToken) { setMe(null); return; }
-    setMeError(false);
-    fetchCurrentCoach(accessToken).then(setMe).catch((error) => {
-      if (error.status === 401 || error.status === 403) forget();
-      else setMeError(true);
-    });
-  }
-  useEffect(loadMe, [accessToken]);
-
-  if (mode === "coach" && !accessToken) {
-    return <CoachAccess onLoggedIn={setAccessToken} />;
-  }
-  if (mode === "coach") {
-    if (meError) {
-      return <main className="monitor coach-monitor"><StatePanel title="Coach view unavailable" body="The base station could not confirm your account." action={loadMe} /></main>;
-    }
-    if (!me) return <main className="monitor coach-monitor"><StatePanel title="Checking your account" body="Confirming this session with the base station." /></main>;
-    // A temporary password must be replaced before anything else opens.
-    if (me.must_change_password) {
-      return <ChangePassword accessToken={accessToken} forced onChanged={loadMe} onLogout={forget} />;
-    }
-    if (changingPassword) {
-      return <ChangePassword accessToken={accessToken} onChanged={() => { setChangingPassword(false); loadMe(); }} onLogout={forget} />;
-    }
-    return <CoachView monitor={monitor} accessToken={accessToken} onLogout={forget} isAdmin={Boolean(me.is_staff)} currentUsername={me.username} onChangePassword={() => setChangingPassword(true)} />;
-  }
+function WallDashboard() {
+  const monitor = useLiveRoomState({ mode: 'wall' });
   return <WallView monitor={monitor} />;
+}
+
+export default function Dashboard({ mode = 'wall', roomId }) {
+  if (mode === 'coach') return <CoachRoomGate roomId={roomId} canonical>
+    {props => <CoachDashboard {...props} />}
+  </CoachRoomGate>;
+  return <WallDashboard />;
 }

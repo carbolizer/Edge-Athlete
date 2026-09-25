@@ -1,3 +1,4 @@
+from .test_factories import create_room_coach, ensure_test_room
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from io import StringIO
@@ -19,6 +20,7 @@ User = get_user_model()
 
 
 def open_installation():
+    ensure_test_room()
     InstallationSetup.objects.update_or_create(pk=1, defaults={'completed_at': None})
     return issue_setup_code()[0]
 
@@ -90,7 +92,7 @@ class CoachSetupTests(APITestCase):
         self.assertEqual(self.enroll(setup_code=self.setup_code).status_code, 409)
 
     def test_existing_installation_is_not_claimable(self):
-        User.objects.create_user(username='existing', password='existing-safe-password')
+        create_room_coach(username='existing', password='existing-safe-password')
         self.assertFalse(self.client.get('/api/auth/setup/').data['setup_required'])
         self.assertEqual(self.enroll(setup_code=self.setup_code).status_code, 409)
 
@@ -121,10 +123,9 @@ class CoachManagementTests(APITestCase):
     password = 'Unique-coach-2026!safe'
 
     def setUp(self):
-        self.admin = User.objects.create_user(username='head', password=self.password, is_staff=True)
-        CoachProfile.objects.create(user=self.admin)
-        self.coach = User.objects.create_user(username='assistant', password=self.password)
-        CoachProfile.objects.create(user=self.coach, must_change_password=True)
+        self.admin = create_room_coach(username='head', password=self.password, is_staff=True)
+        self.coach = create_room_coach(username='assistant', password=self.password)
+        CoachProfile.objects.filter(user=self.coach).update(must_change_password=True)
 
     def as_admin(self):
         self.client.force_authenticate(self.admin)
@@ -193,8 +194,8 @@ class CoachManagementTests(APITestCase):
 
 class PasswordChangeTests(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='coach', password='Temp-pass-2026!x')
-        CoachProfile.objects.create(user=self.user, must_change_password=True)
+        self.user = create_room_coach(username='coach', password='Temp-pass-2026!x')
+        CoachProfile.objects.filter(user=self.user).update(must_change_password=True)
         self.client.force_authenticate(self.user)
 
     def test_change_password_requires_the_current_one(self):
@@ -240,7 +241,7 @@ class DemoCoachGuardTests(APITestCase):
 
 class RosterManagementTests(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='coach', password='Unique-coach-2026!safe')
+        self.user = create_room_coach(username='coach', password='Unique-coach-2026!safe')
         self.client.force_authenticate(self.user)
 
     def test_create_edit_archive_preserves_history_and_releases_tag(self):

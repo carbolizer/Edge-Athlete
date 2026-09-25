@@ -1,0 +1,11 @@
+---
+description: Use the canonical Edge Athlete GitHub repository for all project work
+alwaysApply: true
+---
+
+# Repository location
+
+- Work in `/Users/carbo/Documents/GitHub/Edge-Athlete` for all Edge Athlete changes, tests, and Git operations.
+- Do not develop in `/Users/carbo/Documents/ChatGPT/Edge_Athlete/app`; it is an obsolete duplicate checkout.
+- Before editing, verify the repository root, current branch, and working-tree status.
+- Preserve existing changes. Commit and push only when requested by the user.

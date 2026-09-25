@@ -180,11 +180,11 @@ About fifty routes, grouped:
 
 ### A note on access
 
-`IsCoach` currently means **"is authenticated"** — not "is a coach of *this*
-group". Coach assignment is recorded and used to *filter* views, and it is not
-enforced as a permission. That is a deliberate choice for a single-gym offline
-box, written up in `docs/reference/spec.md` §9 and Phase 16. Don't mistake it for an oversight,
-and don't assume a group-coach row protects anything.
+`IsCoach` requires an active account assigned to this installation's weight room.
+The server checks membership on each authenticated data request. Training-group
+coach assignments remain descriptive; they do not restrict access within the
+assigned room. See [room access](docs/guides/coach-room-access.md) and
+[account security](docs/coach-accounts.md#account-security-and-failed-login-limits).
 
 ---
 
@@ -215,3 +215,8 @@ docker exec -it edgeathlete-django python manage.py createsuperuser
 ```
 
 Then `http://localhost/admin/` to browse the tables directly.
+
+### Coach room access
+
+See [coach assignments and deployment](docs/guides/coach-room-access.md) and the
+[detailed implementation plan](docs/coach-room-implementation-plan.md).

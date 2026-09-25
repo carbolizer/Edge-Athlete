@@ -24,15 +24,24 @@ export function setCoachToken(token) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+function rateLimitError(res) {
+  const seconds = Number(res.headers?.get('Retry-After'))
+  const wait = Number.isFinite(seconds) && seconds > 0
+    ? `Try again in ${Math.ceil(seconds)} seconds.`
+    : 'Please wait before trying again.'
+  const error = new Error(`Too many login attempts. ${wait}`)
+  error.status = 429
+  return error
+}
+
 export async function coachLogin(username, password, { persist = true } = {}) {
   const res = await fetch('/api/auth/login/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   })
-  // Rate limiting answers before any JSON exists, and "HTTP 429" tells a coach
-  // standing at a tablet nothing. Say what to do instead.
-  if (res.status === 429) throw new Error('Too many login attempts. Wait a minute, then try again.')
+  // Nginx can return HTML; Django returns JSON and an exact retry interval.
+  if (res.status === 429) throw rateLimitError(res)
   const data = await res.json().catch(() => ({}))
   if (res.status === 401) throw new Error('The username or password was not accepted.')
   if (!res.ok || !data.access) {
@@ -52,11 +61,7 @@ export async function coachFetch(path, { token, method = 'GET', body } = {}) {
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  if (res.status === 429) {
-    const error = new Error('Too many attempts. Wait a minute, then try again.')
-    error.status = 429
-    throw error
-  }
+  if (res.status === 429) throw rateLimitError(res)
   const text = await res.text()
   let data = null
   try { data = text ? JSON.parse(text) : null } catch { data = text }
