@@ -83,6 +83,7 @@ urlpatterns = [
 
     # exercise catalog
     path('exercises/', views.exercises_list, name='exercises_list'),
+    path('exercises/<int:exercise_id>/', views.exercise_detail, name='exercise_detail'),
 
     # training plans
     path('prescriptions/', views.prescriptions_view, name='prescriptions'),

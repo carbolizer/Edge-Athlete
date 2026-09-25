@@ -31,6 +31,7 @@
 // server renumbers a list at once — see moveInList.
 
 import { useEffect, useState } from "react";
+import ExerciseCatalogPanel from "./ExerciseCatalogPanel.jsx";
 import { applyCorrection, blockCatalogQuery, buildDeployPayload, buildRowEdit, buildTrainingBlockPayload, buildWorkoutPayload, CADENCE_DAYS, correctionKind, countCorrections, createExerciseDraft, errorLabel, flattenApiErrors, MAX_TARGET_PERCENT, MIN_TARGET_PERCENT, moveInList, repairableErrors, repairChoices, sameOriginPath, toggleCadenceDay, toggleId } from "./workoutCatalog.js";
 
 const TRAINING_BLOCKS_URL = "/api/training-blocks/";
@@ -622,6 +623,7 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
 
   return <div className="workout-catalog context-tab-content">
     <header className="workout-catalog-heading"><div><span>Reusable training templates</span><h2>Workout catalog</h2><p>Design a block, fill it with days, then deploy it to a group. Loads are a percent of each athlete's own max.</p></div><b>{programCount} block{programCount === 1 ? "" : "s"} · {allDays.length} day{allDays.length === 1 ? "" : "s"}</b></header>
+    <ExerciseCatalogPanel accessToken={accessToken} onLogout={onLogout} />
     <div className="workout-builder-grid">
       <section className="workout-panel"><header><span>Manual builder</span><h3>Add a day to a block</h3><p>Movements are saved in the order shown. Loads are a percent of each athlete's own max.</p></header>
         <form onSubmit={createWorkout}>

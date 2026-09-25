@@ -29,7 +29,7 @@ from .models import (Athlete, TrainingSession, Set, Rep, AthleteReferenceMax, Ex
                      TrainingProgramWorkout, TrainingProgramExercise, SessionParticipation,
                      AthleteWorkoutExerciseOverride, TrainingBlock, TrainingBlockWorkout,
                      TrainingBlockExercise, BlockCategory, TrainingGroupCoach,
-                     MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt)
+                     MonitoringEvent, RackScreen, RackRuntime, RackCommandReceipt, Tag)
 from .services.plan_resolution import movements_for_athlete
 from .services.planning import generate_schedule, instantiate_block, touch_block
 from .services.athlete_analytics import REP_LIMIT, SET_LIMIT
@@ -2670,6 +2670,77 @@ class ExerciseCatalogEndpointTests(APITestCase):
         self.assertIn("Zercher Carry", names)
         self.assertEqual(names, sorted(names))
 
+class ExerciseEditTests(APITestCase):
+    """PATCH /api/exercises/{id}/ — the one place a coach can fix a catalog entry
+    after it exists. Listing stays open (tablets need it with no auth), but
+    editing is coach-only, same split as athlete notes.
+    """
+
+    def setUp(self):
+        self.coach = User.objects.create_user(username="editorcoach", password="pw")
+        self.client.force_authenticate(user=self.coach)
+        self.exercise = Exercise.objects.create(name="Zercher Sqaut")
+
+    def test_a_coach_can_rename_an_exercise(self):
+        res = self.client.patch(f"/api/exercises/{self.exercise.id}/",
+                                {"name": "Zercher Squat"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["name"], "Zercher Squat")
+        self.exercise.refresh_from_db()
+        self.assertEqual(self.exercise.name, "Zercher Squat")
+
+    def test_renaming_to_an_existing_name_is_refused(self):
+        Exercise.objects.create(name="Aardvark Raise")
+        res = self.client.patch(f"/api/exercises/{self.exercise.id}/",
+                                {"name": "Aardvark Raise"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.exercise.refresh_from_db()
+        self.assertEqual(self.exercise.name, "Zercher Sqaut")
+
+    def test_renaming_to_an_existing_name_is_case_insensitive(self):
+        Exercise.objects.create(name="Aardvark Raise")
+        res = self.client.patch(f"/api/exercises/{self.exercise.id}/",
+                                {"name": "aardvark raise"}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_a_blank_name_is_refused(self):
+        res = self.client.patch(f"/api/exercises/{self.exercise.id}/",
+                                {"name": "   "}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_tags_can_be_set_by_bare_name_and_are_created_on_demand(self):
+        res = self.client.patch(f"/api/exercises/{self.exercise.id}/",
+                                {"tags": ["lower", "push"]}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(set(res.data["tags"]), {"lower", "push"})
+        self.assertTrue(Tag.objects.filter(name="lower").exists())
+
+    def test_editing_a_stub_confirms_it(self):
+        stub = Exercise.objects.create(name="Unrecognized Import Row", is_stub=True)
+        res = self.client.patch(f"/api/exercises/{stub.id}/",
+                                {"name": "Zottman Curl"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["is_stub"])
+        stub.refresh_from_db()
+        self.assertFalse(stub.is_stub)
+
+    def test_an_unauthenticated_request_is_refused(self):
+        self.client.force_authenticate(None)
+        res = self.client.patch(f"/api/exercises/{self.exercise.id}/",
+                                {"name": "Anything"}, format="json")
+        self.assertEqual(res.status_code, 401)
+        self.exercise.refresh_from_db()
+        self.assertEqual(self.exercise.name, "Zercher Sqaut")
+
+    def test_editing_an_unknown_exercise_is_404(self):
+        res = self.client.patch("/api/exercises/999999/",
+                                {"name": "Anything"}, format="json")
+        self.assertEqual(res.status_code, 404)
+
+    def test_get_reads_one_exercise(self):
+        res = self.client.get(f"/api/exercises/{self.exercise.id}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["id"], self.exercise.id)
 
 class AthleteNotesTests(APITestCase):
     """Coach notes on an athlete (merge canon R1).

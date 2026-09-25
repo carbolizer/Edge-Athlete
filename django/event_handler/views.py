@@ -57,7 +57,7 @@ from .permissions import IsActiveStaff, IsCoach
 from .room_access import has_room_access
 from .serializers import (SetSerializer, SetCompleteSerializer, RackScreenSerializer,
                           AthleteSerializer, TrainingSessionSerializer,
-                          NodeSerializer, ExerciseSerializer, TrainingGroupSerializer,
+                          NodeSerializer, ExerciseSerializer, ExerciseUpdateSerializer, TrainingGroupSerializer,
                           TrainingBlockSerializer, TrainingBlockWorkoutSerializer,
                           TrainingBlockExerciseSerializer, TrainingProgramSerializer,
                           BlockCategorySerializer, TrainingGroupCoachSerializer,
@@ -1646,6 +1646,28 @@ def exercises_list(request):
     and coach pickers choose from, so nobody hand-types a name into drift."""
     return Response(ExerciseSerializer(Exercise.objects.all().order_by("name"), many=True).data)
 
+@api_view(["GET", "PATCH"])
+@permission_classes([IsCoach])
+def exercise_detail(request, exercise_id):
+    """Coach-only: read or edit one catalog entry.
+
+    Listing (`exercises_list`) stays open since tablets and pickers need it with
+    no auth — but editing the shared catalog everyone drafts plans against is
+    coach-only, same split as the roster.
+
+    PATCH doubles as the confirm step for a stub: see ExerciseUpdateSerializer.
+    """
+    exercise = Exercise.objects.filter(id=exercise_id).first()
+    if exercise is None:
+        return Response({"error": "exercise not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(ExerciseSerializer(exercise).data)
+
+    form = ExerciseUpdateSerializer(exercise, data=request.data, partial=True)
+    form.is_valid(raise_exception=True)
+    form.save()
+    return Response(ExerciseSerializer(exercise).data)
 
 # ─────────────────────────── sessions ───────────────────────────
 
