@@ -1,7 +1,8 @@
 # scripts/
 
 For a WT901BLE connected directly to a Mac or Windows computer, use the
-[desktop sensor setup guide](../docs/guides/wt901-desktop.md).
+[desktop sensor setup guide](../docs/guides/wt901-desktop.md) or launch the
+interactive barbell tracker GUI with `python3 scripts/hardware/wt901_desktop.py gui`.
 
 Provisioning + boot scripts, split by device role. There are two completely
 different kinds of device on the gym network.

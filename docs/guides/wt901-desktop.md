@@ -53,8 +53,40 @@ Bluetooth for the terminal under **System Settings → Privacy & Security →
 Bluetooth**. Bleak returns a local UUID on Mac and an address on Windows: scan
 on each computer, and copy that computer's identifier exactly. The printed
 serial number on the case is not the connection identifier.
-[Bleak macOS permissions](https://bleak.readthedocs.io/en/latest/backends/macos.html)
-[Bleak device identifiers](https://bleak.readthedocs.io/en/latest/api/client.html)
+Bleak device identifiers: https://bleak.readthedocs.io/en/latest/api/client.html
+
+## Interactive Barbell GUI Dashboard
+
+To launch the full desktop GUI for tracking barbell sets, repetitions, mean velocity, peak velocity, and velocity loss:
+
+```sh
+python3 scripts/hardware/wt901_desktop.py gui
+```
+
+On Windows:
+
+```powershell
+py -3.12 scripts/hardware/wt901_desktop.py gui
+```
+
+Key GUI Capabilities:
+- **Set Lifecycle Controls**:
+  - **Start Set**: Arms the set, starts the live timer, resets the rep counter, and records exercise & weight.
+  - **End Set**: Concludes the set, computes total reps, average mean velocity, best rep, and velocity loss % (fatigue indicator), and logs the set to session history.
+  - **Clear Set**: Resets the current set without archiving (e.g. for false starts or warm-up checks).
+  - **Manual Rep / Simulate Rep**: Add reps manually or test the GUI offline with simulated barbell reps.
+- **Real-Time Kinematics Display**:
+  - High-contrast, gym-ready dark dashboard.
+  - Giant live rep counter.
+  - Live motion phase indicator (Rest/Idle, Eccentric/Descent, Concentric/Return).
+  - Velocity-based training metric tiles: Mean Velocity (m/s), Peak Velocity (m/s), Duration (s), and Velocity Loss (%).
+- **History Tables & Data Export**:
+  - **Current Set Reps**: Detailed breakdown of every rep in the active set.
+  - **Completed Sets History**: Summary of all completed sets in the workout session.
+  - **Export CSV / JSON**: Single-click export for spreadsheet analysis and strength & conditioning records.
+- **Connection Management**:
+  - BLE MAC address / UUID input with live connection pill (`Disconnected`, `Connecting...`, `Streaming (50Hz)`, `Retrying...`).
+  - Connect / Disconnect button managing the background driver process cleanly.
 
 ## USB connection instead of Bluetooth
 

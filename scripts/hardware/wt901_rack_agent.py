@@ -592,6 +592,7 @@ class AgentStatus:
         self.activity_score = None
         self.detector = None
         self.accepted_reps = 0
+        self.last_rep = None
         self.frames_received = 0
         self.last_sample_monotonic = None
 
@@ -603,8 +604,9 @@ class AgentStatus:
         self.frames_received += 1
         self.last_sample_monotonic = time.monotonic()
 
-    def accepted_rep(self):
+    def accepted_rep(self, rep=None):
         self.accepted_reps += 1
+        self.last_rep = rep
 
     def payload(self):
         age_ms = None
@@ -1523,6 +1525,7 @@ async def run_agent(options):
                         status.state = "calibrating"
                         retry_seconds = 1.0
                         last_notification = time.monotonic()
+                        last_status_mono = 0.0
                         while not disconnected.is_set():
                             try:
                                 chunk = await asyncio.wait_for(notifications.get(), timeout=1)
@@ -1543,13 +1546,26 @@ async def run_agent(options):
                                     status.sample(
                                         movement, activity_score, detector.diagnostics(),
                                     )
+                                    now_mono = time.monotonic()
+                                    if now_mono - last_status_mono >= 0.20:
+                                        last_status_mono = now_mono
+                                        print(f"[STATUS_JSON] {json.dumps(status.payload(), separators=(',', ':'))}", flush=True)
                                     write_record(capture_sample(
                                         sample, movement, activity_score,
                                         detector.diagnostics(),
                                     ))
                                     if rep is not None:
-                                        status.accepted_rep()
-                                        print(f"[*] provisional rep {status.accepted_reps}", flush=True)
+                                        rep_record = dict(rep)
+                                        rep_record["rep_number"] = status.accepted_reps + 1
+                                        rep_record["peak_excursion_m"] = detector.diagnostics().get("peak_excursion_m", 0.0)
+                                        status.accepted_rep(rep_record)
+                                        print(
+                                            f"[*] provisional rep {status.accepted_reps}: "
+                                            f"mean={rep['mean_velocity']} m/s, peak={rep['peak_velocity']} m/s, "
+                                            f"dur={rep['duration_ms']} ms",
+                                            flush=True,
+                                        )
+                                        print(f"[REP_JSON] {json.dumps(rep_record, separators=(',', ':'))}", flush=True)
                                         if options.enable_provisional_reps:
                                             publisher.publish(node_id, rep)
                 except asyncio.CancelledError:

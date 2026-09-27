@@ -14,7 +14,7 @@ ENVIRONMENT = HERE.parent.parent / "venv" / "wt901"
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("setup", "run"))
+    parser.add_argument("command", choices=("setup", "run", "gui"))
     parser.add_argument("agent_args", nargs=argparse.REMAINDER)
     options = parser.parse_args(argv)
     if sys.version_info < (3, 10):
@@ -32,8 +32,9 @@ def main(argv=None):
     agent_args = options.agent_args
     if agent_args[:1] == ["--"]:
         agent_args = agent_args[1:]
+    target_script = HERE / ("wt901_gui.py" if options.command == "gui" else "wt901_rack_agent.py")
     try:
-        return subprocess.call([str(python), str(HERE / "wt901_rack_agent.py"), *agent_args])
+        return subprocess.call([str(python), str(target_script), *agent_args])
     except KeyboardInterrupt:
         return 130
 

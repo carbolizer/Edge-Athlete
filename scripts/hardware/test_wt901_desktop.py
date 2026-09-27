@@ -62,6 +62,18 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertTrue(any("wt901_rack_agent.py" in arg for arg in args))
             self.assertIn("--scan", args)
 
+    def test_gui_invokes_gui_script_with_arguments(self):
+        import wt901_desktop
+        with mock.patch("subprocess.call", return_value=0) as call_mock, mock.patch(
+            "pathlib.Path.is_file", return_value=True,
+        ):
+            code = wt901_desktop.main(["gui", "--address", "my-sensor-addr"])
+            self.assertEqual(code, 0)
+            self.assertTrue(call_mock.called)
+            args = call_mock.call_args[0][0]
+            self.assertTrue(any("wt901_gui.py" in arg for arg in args))
+            self.assertIn("my-sensor-addr", args)
+
 
 if __name__ == "__main__":
     unittest.main()
