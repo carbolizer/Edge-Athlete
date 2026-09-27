@@ -319,12 +319,11 @@ class SensorProcessManager:
                     self.queue.put(("status", payload))
                 except Exception:
                     pass
-            elif "[*] provisional rep" in line:
+            else:
+                # Forward all other output to the debug log
                 self.queue.put(("log", line))
-            elif "state" in line or "registered node" in line:
-                self.queue.put(("log", line))
-            elif "WT901BLE unavailable" in line or "retrying" in line:
-                self.queue.put(("connection_state", "retrying"))
+                if "WT901BLE unavailable" in line or "retrying" in line:
+                    self.queue.put(("connection_state", "retrying"))
 
         self.queue.put(("connection_state", "disconnected"))
 
@@ -547,6 +546,16 @@ def create_gui_app(root: Optional[Any] = None, session: Optional[WorkoutSession]
             self.set_tree.column("duration", width=80, anchor=tk.CENTER)
             self.set_tree.pack(fill=tk.BOTH, expand=True, pady=6)
 
+            # Tab 3: Sensor Log (debug console)
+            tab3 = tk.Frame(notebook, bg=THEME["bg_dark"])
+            notebook.add(tab3, text="  Sensor Log  ")
+
+            import tkinter.scrolledtext as st
+            self.log_text = st.ScrolledText(tab3, bg=THEME["surface_alt"], fg=THEME["text_main"],
+                                            insertbackground=THEME["text_main"], font=("Courier", 10),
+                                            state=tk.DISABLED, wrap=tk.WORD, height=12)
+            self.log_text.pack(fill=tk.BOTH, expand=True, pady=6)
+
             # Export toolbar
             export_bar = tk.Frame(parent, bg=THEME["bg_dark"])
             export_bar.pack(fill=tk.X, pady=(6, 2))
@@ -573,8 +582,14 @@ def create_gui_app(root: Optional[Any] = None, session: Optional[WorkoutSession]
                 self.status_pill.configure(text="● Streaming (50Hz)", fg=THEME["green"])
             elif state == "connecting":
                 self.status_pill.configure(text="● Connecting...", fg=THEME["amber"])
+            elif state == "calibrating":
+                self.status_pill.configure(text="● Calibrating...", fg=THEME["amber"])
+            elif state == "starting":
+                self.status_pill.configure(text="● Starting...", fg=THEME["amber"])
             elif state == "retrying":
                 self.status_pill.configure(text="● Retrying...", fg=THEME["red"])
+            elif state == "stale":
+                self.status_pill.configure(text="● Stale Data", fg=THEME["red"])
             else:
                 self.status_pill.configure(text="● Disconnected", fg=THEME["text_muted"])
 
@@ -721,14 +736,36 @@ def create_gui_app(root: Optional[Any] = None, session: Optional[WorkoutSession]
             detector = payload.get("detector") or {}
             det_state = detector.get("state", "idle")
             turned_around = detector.get("turned_around", False)
+            returned = detector.get("returned", False)
+            excursion = detector.get("peak_excursion_m", 0.0)
+            rejected = detector.get("rejected_cycles", 0)
+            noise_floor = detector.get("noise_floor", 0.0)
 
             if det_state == "active":
+                extra = f"  exc={excursion:.3f}m"
                 if turned_around:
-                    self.motion_pill.configure(text="▲ CONCENTRIC / RETURN", fg=THEME["green"])
+                    label = f"▲ CONCENTRIC / RETURN{extra}"
+                    self.motion_pill.configure(text=label, fg=THEME["green"])
                 else:
-                    self.motion_pill.configure(text="▼ ECCENTRIC / DESCENT", fg=THEME["blue"])
+                    label = f"▼ ECCENTRIC / DESCENT{extra}"
+                    self.motion_pill.configure(text=label, fg=THEME["blue"])
             else:
-                self.motion_pill.configure(text="● REST / IDLE", fg=THEME["text_muted"])
+                rej_info = f"  rej={rejected}" if rejected else ""
+                self.motion_pill.configure(text=f"● REST / IDLE{rej_info}", fg=THEME["text_muted"])
+
+        def _append_log(self, text: str):
+            """Append a line to the Sensor Log tab."""
+            try:
+                self.log_text.configure(state=tk.NORMAL)
+                self.log_text.insert(tk.END, text + "\n")
+                self.log_text.see(tk.END)
+                # Keep only last 500 lines
+                line_count = int(self.log_text.index("end-1c").split(".")[0])
+                if line_count > 500:
+                    self.log_text.delete("1.0", f"{line_count - 500}.0")
+                self.log_text.configure(state=tk.DISABLED)
+            except Exception:
+                pass
 
         def on_export_csv(self):
             if not self.session.sets:
@@ -761,6 +798,8 @@ def create_gui_app(root: Optional[Any] = None, session: Optional[WorkoutSession]
                         self._handle_status_update(data)
                     elif event_type == "connection_state":
                         self._set_connection_badge(data)
+                    elif event_type == "log":
+                        self._append_log(str(data))
             except queue.Empty:
                 pass
 

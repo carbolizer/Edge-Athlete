@@ -240,7 +240,7 @@ class ProvisionalRepDetector:
         values = (*sample.acceleration_g, *sample.angular_velocity_dps, *sample.angle_degrees, movement_g)
         invalid = not all(math.isfinite(value) for value in values)
         gap = self._last_sample_time is not None and (
-            now < self._last_sample_time or now - self._last_sample_time > max(0.25, 5 * self._sample_interval)
+            now < self._last_sample_time or now - self._last_sample_time > max(0.50, 10 * self._sample_interval)
         )
         self._last_sample_time = now
         if invalid or gap or (activity_score is not None and not math.isfinite(activity_score)):
@@ -316,10 +316,10 @@ class ProvisionalRepDetector:
 
         if self._peak_excursion >= REP_MIN_EXCURSION_METERS:
             dot_v_d = sum(v * d for v, d in zip(self._velocity_vec, self._displacement_vec))
-            if dot_v_d < -0.005 or (near_peak and self._pause_samples >= self._onset_required):
+            if dot_v_d < -0.003 or (near_peak and self._pause_samples >= self._onset_required):
                 self._turned_around = True
 
-        return_tolerance = max(0.04, self._peak_excursion * 0.55)
+        return_tolerance = max(0.05, self._peak_excursion * 0.60)
         if self._turned_around and excursion <= return_tolerance:
             self._returned = True
 
@@ -327,7 +327,7 @@ class ProvisionalRepDetector:
         motion_duration = self._motion_samples * self._sample_interval
         pause_duration = self._pause_samples * self._sample_interval
 
-        lockout_speed = max(0.18, self._peak_velocity * 0.35)
+        lockout_speed = max(0.12, self._peak_velocity * 0.30)
         quiet_enough = linear_mag <= self._dynamic_start_threshold() and speed <= lockout_speed
         if (
             duration >= self._min_duration
