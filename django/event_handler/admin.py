@@ -26,9 +26,9 @@ from .models import School, WeightRoom, CoachProfile
 admin.site.register(School)
 admin.site.register(WeightRoom)
 admin.site.register(CoachProfile)
-from .models import TrainingGroup, TrainingBlock, TrainingBlockDay, TrainingBlockExercise, ScheduledSession
+from .models import TrainingGroup, TrainingBlock, TrainingBlockWorkout, TrainingBlockExercise, TrainingProgram
 admin.site.register(TrainingGroup)
 admin.site.register(TrainingBlock)
-admin.site.register(TrainingBlockDay)
+admin.site.register(TrainingBlockWorkout)
 admin.site.register(TrainingBlockExercise)
-admin.site.register(ScheduledSession)
+admin.site.register(TrainingProgram)
