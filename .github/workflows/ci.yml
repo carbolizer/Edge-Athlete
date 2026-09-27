@@ -1,0 +1,98 @@
+# CI — build every image and run the real test suites on every push/PR to main.
+#
+# WHY THIS IS THE WHOLE "DEPLOYMENT" STORY HERE: there is no server this pipeline
+# pushes to. Every base station is a mini PC at a gym with no public IP; it
+# updates itself by pulling `main` and rebuilding locally (see
+# scripts/basestation/bootstrap.sh). So "deploy" for this project means keeping
+# `main` provably safe to pull, not pushing code anywhere. This workflow is that
+# gate: if it's green, whatever a gym pulls next has actually built and passed
+# its tests. Pair this with a branch-protection rule requiring this check before
+# merge, or a red X here is just a warning nobody has to heed.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    # Same architecture as the real base station: it's an x86 mini PC (a Dell
+    # OptiPlex) running Debian/Ubuntu, not a Raspberry Pi — see
+    # docs/journal/scripts.md ("Decision: it is not a Raspberry Pi any more").
+    # So this build isn't just a proxy for the real target, it IS the real
+    # target's architecture. (The separate rack-screen kiosks at each rack are
+    # a different device and may still be Pi-based; this workflow only covers
+    # the base station stack in docker-compose.yml.)
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up a runnable .env
+        # .env.example is the project's own documented way to get dev-safe
+        # values — see its header comment. No CI-only secrets to invent here;
+        # this is the exact file a fresh clone is told to copy.
+        run: cp .env.example .env
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: react/package-lock.json
+
+      - name: Run React test suite
+        # Runs before the Docker build so a broken component test fails fast,
+        # without waiting on the full image build + stack boot below. The
+        # Dockerfile's own `npm run build` still catches build-breaking errors;
+        # this is the piece that build alone never exercises — vitest.
+        working-directory: react
+        run: |
+          npm ci
+          npm test
+
+      - name: Build every image
+        # The same build every base station does on `bootstrap.sh`. If a
+        # Dockerfile is broken — including react's `npm run build` inside its
+        # image — this step is where it's caught, not after someone's already
+        # pulled it.
+        run: docker compose build
+
+      - name: Bring up the stack
+        # Full `up`, not just postgres/mosquitto: this also proves django's
+        # healthcheck (a real GET /api/health/, not just "the process started")
+        # passes, and that migrations run clean on first boot.
+        run: docker compose up -d
+
+      - name: Wait for django to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' edgeathlete-django 2>/dev/null || echo starting)"
+            if [ "$status" = "healthy" ]; then
+              echo "django is healthy"
+              exit 0
+            fi
+            echo "waiting for django ($status)..."
+            sleep 5
+          done
+          echo "::error::django never became healthy"
+          docker compose logs django
+          exit 1
+
+      - name: Check for missing migrations
+        # Catches a model change committed without its migration — a real class
+        # of bug this same pattern already caught once by hand in this project.
+        run: docker compose exec -T django python manage.py makemigrations --check --dry-run
+
+      - name: Run the Django test suite
+        run: docker compose exec -T django python manage.py test event_handler
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
