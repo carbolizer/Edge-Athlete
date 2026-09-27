@@ -52,13 +52,15 @@ DEFAULT_PULSE_INTERVAL_SECONDS = 5.0
 REP_START_MOVEMENT_G = 0.07
 REP_END_MOVEMENT_G = 0.05
 REP_MIN_DURATION_SECONDS = 0.60
-REP_MAX_DURATION_SECONDS = 4.0
+REP_MAX_DURATION_SECONDS = 8.0
+REP_MAX_PAUSE_SECONDS = 6.0
 REP_REFRACTORY_SECONDS = 0.12
 MAX_REP_VELOCITY_MPS = 3.0
 SAMPLE_INTERVAL_SECONDS = 0.02
 REP_ONSET_SAMPLES = 4
 REP_SETTLE_SAMPLES = 12
 REP_MIN_EXCURSION_METERS = 0.03
+REP_TURNOVER_HOLD_FRACTION = 0.70
 
 
 @dataclass(frozen=True)
@@ -121,9 +123,10 @@ class MovementEstimator:
     (e.g. 0.89g instead of 1.0), and resting afterwards reads as ~0.12g of
     permanent "motion" — which no rep detector can ever qualify. So once the
     sensor is sustained at true rest (magnitude within `rest_tolerance_g` of
-    gravity for `rest_anchor_window` consecutive samples) the baseline re-anchors
-    to the observed magnitude. During a real rep the magnitude leaves ~1.0g, so
-    this never fires mid-set.
+    gravity with low variance and low angular speed for `rest_anchor_window`
+    consecutive samples) the baseline re-anchors to the observed magnitude.
+    Magnitude near gravity alone is insufficient: horizontal motion and rotation
+    can both leave the magnitude near 1g.
     """
 
     def __init__(self, calibration_samples=50, deadband_g=0.01,
@@ -153,18 +156,33 @@ class MovementEstimator:
         difference = abs(magnitude - self._baseline)
         if difference < 0.03:
             self._baseline = self._baseline * 0.99 + magnitude * 0.01
-        if abs(magnitude - 1.0) <= self._rest_tolerance:
+        gyro = math.sqrt(sum(axis * axis for axis in sample.angular_velocity_dps))
+        if abs(magnitude - 1.0) <= self._rest_tolerance and gyro < 3.0:
             self._rest_window.append(magnitude)
             if len(self._rest_window) >= self._rest_anchor_window:
-                self._baseline = sum(self._rest_window) / len(self._rest_window)
+                if max(self._rest_window) - min(self._rest_window) < 0.015:
+                    self._baseline = sum(self._rest_window) / len(self._rest_window)
                 self._rest_window.clear()
         else:
             self._rest_window.clear()
         return round(min(MAX_MOVEMENT_G, max(0.0, difference - self._deadband)), 4)
 
 
+def _xyz_magnitude(values):
+    return math.sqrt(sum(component * component for component in values))
+
+
+def _xyz_add_scaled(values, delta, scale):
+    return tuple(component + extra * scale for component, extra in zip(values, delta))
+
+
 class ProvisionalRepDetector:
-    """Accept one rest-to-rest translation cycle; reject bumps and one-way pickup."""
+    """Accept one rest-to-rest translation cycle; reject bumps and one-way pickup.
+
+    A sensor at mid-barbell sees translation in any world direction plus incidental
+    rotation. Integration uses 3D displacement rather than a single onset axis.
+    A pause near peak excursion (bottom of a squat or bench) is not a failed cycle.
+    """
 
     def __init__(
         self,
@@ -173,16 +191,25 @@ class ProvisionalRepDetector:
         end_threshold_g=REP_END_MOVEMENT_G,
         min_duration_seconds=REP_MIN_DURATION_SECONDS,
         max_duration_seconds=REP_MAX_DURATION_SECONDS,
+        max_pause_seconds=REP_MAX_PAUSE_SECONDS,
         refractory_seconds=REP_REFRACTORY_SECONDS,
         sample_interval_seconds=SAMPLE_INTERVAL_SECONDS,
     ):
+        if not math.isfinite(sample_interval_seconds) or sample_interval_seconds <= 0:
+            raise ValueError("sample_interval_seconds must be finite and positive")
         self._clock = clock
+        self._last_sample_time = None
         self._start_threshold = start_threshold_g
         self._end_threshold = end_threshold_g
         self._min_duration = min_duration_seconds
         self._max_duration = max_duration_seconds
+        self._max_pause = max_pause_seconds
         self._refractory = refractory_seconds
         self._sample_interval = sample_interval_seconds
+        # Preserve the original 50Hz time constants at every configured rate.
+        self._onset_required = max(1, round(REP_ONSET_SAMPLES * SAMPLE_INTERVAL_SECONDS / sample_interval_seconds))
+        self._settle_required = max(1, round(REP_SETTLE_SAMPLES * SAMPLE_INTERVAL_SECONDS / sample_interval_seconds))
+        self._filter_memory = 0.65 ** (sample_interval_seconds / SAMPLE_INTERVAL_SECONDS)
         self._state = "idle"
         self._onset_samples = 0
         self._settle_samples = 0
@@ -190,20 +217,39 @@ class ProvisionalRepDetector:
         self._last_angles = None
         self._baseline_acceleration = None
         self._filtered_linear = (0.0, 0.0, 0.0)
+        self._raw_linear = (0.0, 0.0, 0.0)
         self._noise_floor = 0.0
-        self._axis = None
         self._sample_count = 0
-        self._velocity = 0.0
-        self._displacement = 0.0
+        self._motion_samples = 0
+        self._pause_samples = 0
+        self._velocity_vec = (0.0, 0.0, 0.0)
+        self._displacement_vec = (0.0, 0.0, 0.0)
         self._peak_excursion = 0.0
         self._peak_velocity = 0.0
         self._velocity_total = 0.0
         self._velocity_samples = 0
         self._returned = False
         self._rejected_cycles = 0
+        self._onset_buffer = []
 
     def update(self, movement_g, sample=None, activity_score=None):
         if movement_g is None or sample is None:
+            return None
+        now = self._clock()
+        values = (*sample.acceleration_g, *sample.angular_velocity_dps, *sample.angle_degrees, movement_g)
+        invalid = not all(math.isfinite(value) for value in values)
+        gap = self._last_sample_time is not None and (
+            now < self._last_sample_time or now - self._last_sample_time > max(0.25, 5 * self._sample_interval)
+        )
+        self._last_sample_time = now
+        if invalid or gap or (activity_score is not None and not math.isfinite(activity_score)):
+            if self._state == "active":
+                self._rejected_cycles += 1
+            self._reset_cycle()
+            self._filtered_linear = (0.0, 0.0, 0.0)
+            self._raw_linear = (0.0, 0.0, 0.0)
+            self._baseline_acceleration = None
+            self._last_angles = None
             return None
         score = self.activity_score(movement_g, sample) if activity_score is None else activity_score
         linear = self._filtered_linear
@@ -218,40 +264,67 @@ class ProvisionalRepDetector:
         if self._state == "idle":
             if score >= start_threshold:
                 self._onset_samples += 1
+                self._onset_buffer.append(linear)
             else:
                 self._onset_samples = 0
+                self._onset_buffer.clear()
                 self._adapt_baseline(sample)
-                self._noise_floor = self._noise_floor * 0.98 + score * 0.02
-            if self._onset_samples < REP_ONSET_SAMPLES:
+                memory = 0.98 ** (self._sample_interval / SAMPLE_INTERVAL_SECONDS)
+                self._noise_floor = self._noise_floor * memory + score * (1.0 - memory)
+            if self._onset_samples < self._onset_required:
                 return None
             self._start_cycle(linear)
             return None
 
         self._sample_count += 1
-        if score <= end_threshold:
+        linear_mag = _xyz_magnitude(linear)
+        is_quiet = score <= end_threshold
+
+        excursion = _xyz_magnitude(self._displacement_vec)
+        self._peak_excursion = max(self._peak_excursion, excursion)
+        near_peak = (
+            self._peak_excursion >= REP_MIN_EXCURSION_METERS
+            and excursion >= self._peak_excursion * REP_TURNOVER_HOLD_FRACTION
+        )
+
+        if is_quiet:
+            self._pause_samples += 1
             self._settle_samples += 1
-            self._velocity = 0.0
+            if near_peak and self._pause_samples >= self._onset_required:
+                self._velocity_vec = (0.0, 0.0, 0.0)
         else:
+            self._pause_samples = 0
             self._settle_samples = 0
-            projected_acceleration = sum(
-                component * axis for component, axis in zip(linear, self._axis)
-            ) * 9.80665
-            self._velocity += projected_acceleration * self._sample_interval
-            self._displacement += self._velocity * self._sample_interval
-            self._peak_velocity = max(self._peak_velocity, abs(self._velocity))
-            self._velocity_total += abs(self._velocity)
-            self._velocity_samples += 1
-        excursion = abs(self._displacement)
+            self._motion_samples += 1
+
+        accel_mps2 = tuple(component * 9.80665 for component in linear)
+        self._velocity_vec = _xyz_add_scaled(
+            self._velocity_vec, accel_mps2, self._sample_interval,
+        )
+        self._displacement_vec = _xyz_add_scaled(
+            self._displacement_vec, self._velocity_vec, self._sample_interval,
+        )
+        speed = _xyz_magnitude(self._velocity_vec)
+        self._peak_velocity = max(self._peak_velocity, speed)
+        self._velocity_total += speed
+        self._velocity_samples += 1
+
+        excursion = _xyz_magnitude(self._displacement_vec)
         self._peak_excursion = max(self._peak_excursion, excursion)
         return_tolerance = max(0.015, self._peak_excursion * 0.40)
         if self._peak_excursion >= REP_MIN_EXCURSION_METERS and excursion <= return_tolerance:
             self._returned = True
 
         duration = self._sample_count * self._sample_interval
+        motion_duration = self._motion_samples * self._sample_interval
+        pause_duration = self._pause_samples * self._sample_interval
+
+        quiet_enough = linear_mag <= self._dynamic_start_threshold() and speed <= 0.08
         if (
             duration >= self._min_duration
             and self._returned
             and self._peak_excursion >= REP_MIN_EXCURSION_METERS
+            and (quiet_enough or self._settle_samples >= self._settle_required)
         ):
             mean_velocity = self._velocity_total / max(1, self._velocity_samples)
             peak_velocity = self._peak_velocity
@@ -262,11 +335,15 @@ class ProvisionalRepDetector:
                 "peak_velocity": round(min(MAX_REP_VELOCITY_MPS, peak_velocity), 3),
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
-        if duration > self._max_duration:
+        if motion_duration > self._max_duration:
             self._rejected_cycles += 1
             self._reset_cycle()
             return None
-        if self._settle_samples < REP_SETTLE_SAMPLES:
+        if near_peak and pause_duration > self._max_pause:
+            self._rejected_cycles += 1
+            self._reset_cycle()
+            return None
+        if self._settle_samples < self._settle_required or near_peak or self._returned:
             return None
         self._rejected_cycles += 1
         self._reset_cycle()
@@ -292,27 +369,48 @@ class ProvisionalRepDetector:
         )
 
     def _start_cycle(self, linear):
-        dominant = max(range(3), key=lambda index: abs(linear[index]))
-        direction = 1.0 if linear[dominant] >= 0 else -1.0
-        self._axis = tuple(direction if index == dominant else 0.0 for index in range(3))
+        magnitude = _xyz_magnitude(linear)
+        # Rotation can raise the activity score, but a cycle still needs translation.
+        if magnitude < self._dynamic_start_threshold():
+            self._onset_samples = 0
+            self._onset_buffer.clear()
+            return
         self._state = "active"
         self._onset_samples = 0
         self._settle_samples = 0
         self._sample_count = 0
-        self._velocity = 0.0
-        self._displacement = 0.0
+        self._motion_samples = 0
+        self._pause_samples = 0
+        self._velocity_vec = (0.0, 0.0, 0.0)
+        self._displacement_vec = (0.0, 0.0, 0.0)
         self._peak_excursion = 0.0
         self._peak_velocity = 0.0
         self._velocity_total = 0.0
         self._velocity_samples = 0
         self._returned = False
+        for filt_l in self._onset_buffer:
+            self._sample_count += 1
+            self._motion_samples += 1
+            accel_mps2 = tuple(component * 9.80665 for component in filt_l)
+            self._velocity_vec = _xyz_add_scaled(
+                self._velocity_vec, accel_mps2, self._sample_interval,
+            )
+            self._displacement_vec = _xyz_add_scaled(
+                self._displacement_vec, self._velocity_vec, self._sample_interval,
+            )
+            speed = _xyz_magnitude(self._velocity_vec)
+            self._peak_velocity = max(self._peak_velocity, speed)
+            self._velocity_total += speed
+            self._velocity_samples += 1
+        self._onset_buffer.clear()
 
     def _reset_cycle(self, refractory=False):
         self._state = "refractory" if refractory else "idle"
         self._refractory_samples = math.ceil(self._refractory / self._sample_interval) if refractory else 0
         self._onset_samples = 0
         self._settle_samples = 0
-        self._axis = None
+        self._pause_samples = 0
+        self._onset_buffer.clear()
 
     def _linear_acceleration(self, sample):
         acceleration = self._world_acceleration(sample)
@@ -322,8 +420,9 @@ class ProvisionalRepDetector:
             current - baseline
             for current, baseline in zip(acceleration, self._baseline_acceleration)
         )
+        self._raw_linear = raw
         self._filtered_linear = tuple(
-            previous * 0.65 + current * 0.35
+            previous * self._filter_memory + current * (1.0 - self._filter_memory)
             for previous, current in zip(self._filtered_linear, raw)
         )
         return self._filtered_linear
@@ -333,8 +432,9 @@ class ProvisionalRepDetector:
         if self._baseline_acceleration is None:
             self._baseline_acceleration = acceleration
             return
+        memory = 0.995 ** (self._sample_interval / SAMPLE_INTERVAL_SECONDS)
         self._baseline_acceleration = tuple(
-            baseline * 0.995 + current * 0.005
+            baseline * memory + current * (1.0 - memory)
             for current, baseline in zip(acceleration, self._baseline_acceleration)
         )
 
@@ -354,6 +454,10 @@ class ProvisionalRepDetector:
     def activity_score(self, movement_g, sample):
         if sample is None:
             return movement_g
+        if not all(math.isfinite(value) for value in (
+            *sample.acceleration_g, *sample.angular_velocity_dps, *sample.angle_degrees,
+        )):
+            return float("nan")
         linear = self._linear_acceleration(sample)
         acceleration_score = math.sqrt(sum(component * component for component in linear))
         gyro_magnitude = math.sqrt(sum(axis * axis for axis in sample.angular_velocity_dps))
@@ -364,7 +468,7 @@ class ProvisionalRepDetector:
                 min(abs(current - previous), 360.0 - abs(current - previous)) ** 2
                 for current, previous in zip(sample.angle_degrees, self._last_angles)
             ))
-            angle_score = min(MAX_MOVEMENT_G, angle_delta / 30.0)
+            angle_score = min(MAX_MOVEMENT_G, angle_delta * SAMPLE_INTERVAL_SECONDS / (30.0 * self._sample_interval))
         self._last_angles = sample.angle_degrees
         return max(movement_g, acceleration_score, gyro_score, angle_score)
 
@@ -1298,7 +1402,7 @@ async def serve_status(status, host, port, allowed_origins):
 
 
 async def run_agent(options):
-    from bleak import BleakClient
+    from wt901_serial import open_sensor_stream
 
     node_id = validate_node_id(options.node_id)
     status = AgentStatus(node_id)
@@ -1330,17 +1434,45 @@ async def run_agent(options):
             publisher.publish_pulse(node_id)
             await asyncio.sleep(options.pulse_interval)
 
-    async def marker_loop():
+    marker_lines = asyncio.Queue()
+    marker_event_loop = asyncio.get_running_loop()
+
+    def read_marker_lines():
+        # stdin cannot reliably be cancelled on Windows. A daemon avoids hanging
+        # asyncio's default executor when the user stops a capture with Ctrl+C.
         while True:
-            line = await asyncio.to_thread(sys.stdin.readline)
+            line = sys.stdin.readline()
+            try:
+                marker_event_loop.call_soon_threadsafe(marker_lines.put_nowait, line)
+            except RuntimeError:
+                return
             if line == "":
                 return
-            if not line.strip():
+
+    async def marker_loop():
+        while True:
+            line = await marker_lines.get()
+            if line == "":
+                return
+            command = line.strip().lower()
+            if command in {"start", "end"}:
+                write_record({"kind": f"manual_set_{command}",
+                              "t_ms": round(time.monotonic() * 1000)})
+                print(f"[*] marked set {command}", flush=True)
+                continue
+            if command:
+                print("Press ENTER for a rep, or type start/end for a set.", flush=True)
                 continue
             marker_counter["n"] += 1
             write_record(manual_rep_marker(marker_counter["n"]))
-            print(f"[*] marked manual rep {marker_counter['n']}", flush=True)
+            print(
+                f"[*] marked manual rep {marker_counter['n']} "
+                f"(detector {status.accepted_reps})",
+                flush=True,
+            )
 
+    if capture_file is not None:
+        threading.Thread(target=read_marker_lines, daemon=True).start()
     pulse_task = asyncio.create_task(pulse_loop())
     marker_task = asyncio.create_task(marker_loop()) if capture_file is not None else None
 
@@ -1357,27 +1489,23 @@ async def run_agent(options):
                 def on_notification(_characteristic, data):
                     chunk = bytes(data)
                     if notifications.full():
-                        try:
-                            notifications.get_nowait()
-                        except asyncio.QueueEmpty:
-                            pass
+                        # A missing section can turn handling motion into a rep.
+                        # Reconnect and recalibrate instead of integrating a gap.
+                        disconnected.set()
+                        return
                     notifications.put_nowait(chunk)
 
                 try:
                     status.state = "connecting"
-                    async with BleakClient(
-                        options.address, timeout=15, disconnected_callback=on_disconnect,
-                    ) as client:
-                        service = client.services.get_service(SERVICE_UUID)
-                        if service is None or service.get_characteristic(NOTIFY_UUID) is None:
-                            raise RuntimeError("configured device lacks the WT901BLE notify service")
+                    async with open_sensor_stream(
+                        options, on_notification, on_disconnect, SERVICE_UUID, NOTIFY_UUID,
+                    ):
                         decoder = WT901FrameDecoder()
                         estimator = MovementEstimator(options.calibration_samples)
                         detector = ProvisionalRepDetector(
                             sample_interval_seconds=1.0 / options.hz,
                         )
                         status.state = "calibrating"
-                        await client.start_notify(NOTIFY_UUID, on_notification)
                         retry_seconds = 1.0
                         last_notification = time.monotonic()
                         while not disconnected.is_set():
@@ -1387,6 +1515,8 @@ async def run_agent(options):
                                 if time.monotonic() - last_notification > 2:
                                     raise RuntimeError("WT901BLE notification stream stalled")
                                 continue
+                            if disconnected.is_set():
+                                break
                             last_notification = time.monotonic()
                             for sample in decoder.feed(chunk):
                                 movement = estimator.update(sample)
@@ -1402,8 +1532,11 @@ async def run_agent(options):
                                         sample, movement, activity_score,
                                         detector.diagnostics(),
                                     ))
-                                    if rep is not None and publisher.publish(node_id, rep):
+                                    if rep is not None:
                                         status.accepted_rep()
+                                        print(f"[*] provisional rep {status.accepted_reps}", flush=True)
+                                        if options.enable_provisional_reps:
+                                            publisher.publish(node_id, rep)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -1462,27 +1595,23 @@ async def run_central_agent(options):
 
 
 async def run_scan(options):
-    """Find nearby WT901BLE sensors and print their BLE addresses.
-
-    BLE connections need a MAC address, which an interactive enrollment scan
-    deliberately hides behind opaque handles. For a per-rack laptop there is no
-    second machine in the loop, so discovery can show the real address once and
-    a config file can remember it forever."""
+    """Find sensors and print this host's identifier (a UUID on macOS)."""
     from bleak import BleakScanner
 
-    devices = await BleakScanner.discover(timeout=options.scan_seconds)
+    devices = await BleakScanner.discover(timeout=options.scan_seconds, return_adv=True)
     found = []
-    for device in devices:
-        if is_wt901_label(getattr(device, "name", None)):
-            found.append(device)
+    for device, advertisement in devices.values():
+        label = getattr(advertisement, "local_name", None) or getattr(device, "name", None)
+        if is_wt901_label(label):
+            found.append((device, advertisement, label))
     if not found:
         print("no WT901BLE sensors discovered; is one powered on and advertising?", flush=True)
         return
-    for device in found:
-        label = sanitize_label(device.name)
+    for device, advertisement, label in found:
+        label = sanitize_label(label)
         print(
             f"{label}  address={device.address}  "
-            f"rssi={getattr(device, 'rssi', None)}",
+            f"rssi={getattr(advertisement, 'rssi', None)}",
             flush=True,
         )
     print(f"discovered {len(found)} sensor(s); put the address in the rack config.", flush=True)
@@ -1491,6 +1620,9 @@ async def run_scan(options):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--address", help="BLE address selected during physical enrollment")
+    parser.add_argument("--serial-port", help="USB serial device, e.g. /dev/cu.usbserial-10 or COM3")
+    parser.add_argument("--baud", type=int, default=115200, help="USB serial baud rate (default 115200)")
+    parser.add_argument("--list-ports", action="store_true", help="list available USB serial ports")
     parser.add_argument("--node-id", help="logical node ID, never the BLE address")
     parser.add_argument("--socket-path", help="run central enrollment API on this Unix socket")
     parser.add_argument("--state-path", help="private central binding state file")
@@ -1521,18 +1653,24 @@ def parse_args(args=None):
         help="publish provisional WT901 reps to MQTT; demo-only until replay/ACL fencing is implemented",
     )
     options = parser.parse_args(args)
-    legacy = options.address is not None or options.node_id is not None
-    if options.scan:
-        if legacy or options.socket_path or options.capture_path:
-            parser.error("--scan is standalone; it cannot be combined with address/node/socket/capture")
-    elif legacy and (options.address is None or options.node_id is None):
-        parser.error("--address and --node-id must be supplied together")
+    legacy = options.address is not None or options.serial_port is not None or options.node_id is not None
+    if options.address and options.serial_port:
+        parser.error("choose either --address (Bluetooth) or --serial-port (USB)")
+    if options.scan or options.list_ports:
+        if (options.scan and options.list_ports) or legacy or options.socket_path or options.capture_path:
+            parser.error("--scan and --list-ports are separate standalone modes")
+    elif legacy and (not (options.address or options.serial_port) or options.node_id is None):
+        parser.error("--address or --serial-port requires --node-id")
     elif legacy and options.socket_path:
-        parser.error("legacy BLE mode and --socket-path are separate launch modes")
+        parser.error("direct sensor mode and --socket-path are separate launch modes")
     elif not legacy and not options.socket_path:
-        parser.error("supply --address/--node-id, --socket-path, or --scan")
+        parser.error("supply --address/--node-id, --serial-port/--node-id, --socket-path, --scan, or --list-ports")
+    if options.baud <= 0 or options.baud > 921600:
+        parser.error("--baud must be positive and at most 921600")
     if options.state_path and not options.socket_path:
         parser.error("--state-path requires --socket-path")
+    if options.socket_path and sys.platform == "win32":
+        parser.error("central Unix-socket enrollment is unavailable on Windows; use --scan then --address/--node-id")
     if options.scan_seconds <= 0 or options.scan_seconds > 30:
         parser.error("--scan-seconds must be greater than zero and at most 30")
     if options.hz <= 0 or options.hz > 2000:
@@ -1547,22 +1685,39 @@ def parse_args(args=None):
 
 
 async def run_until_stopped(options):
+    if options.list_ports:
+        from wt901_serial import list_serial_ports
+        print(json.dumps(list_serial_ports(), indent=2))
+        return
     if options.scan:
         target = run_scan
     else:
         target = run_central_agent if options.socket_path else run_agent
     task = asyncio.create_task(target(options))
     loop = asyncio.get_running_loop()
+    installed_signals = []
     for signum in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(signum, task.cancel)
+        try:
+            loop.add_signal_handler(signum, task.cancel)
+        except NotImplementedError:
+            # Windows' Proactor loop does not implement Unix signal handlers.
+            # asyncio.run / Python's default Ctrl+C handler still stops it.
+            break
+        installed_signals.append(signum)
     try:
         await task
     except asyncio.CancelledError:
         pass
+    finally:
+        for signum in installed_signals:
+            loop.remove_signal_handler(signum)
 
 
 def main():
-    asyncio.run(run_until_stopped(parse_args()))
+    try:
+        asyncio.run(run_until_stopped(parse_args()))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

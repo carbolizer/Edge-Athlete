@@ -16,5 +16,7 @@
 # against 3.0.2 — quietly dropping three major versions under it is not a
 # provisioning decision.
 
-bleak==3.0.2       # BLE transport (BlueZ on Linux) — needs Python >= 3.10
+bleak==3.0.2       # Native macOS / Windows 11 / Linux BLE — needs Python >= 3.10
 paho-mqtt==1.6.1   # publishes detected reps to the base station's broker
+
+pyserial==3.5     # USB-C transport for the WT901BLECL5.0

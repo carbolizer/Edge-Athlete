@@ -1,0 +1,3 @@
+# USB-C WT901BLECL5.0 on macOS / Windows / Linux, Python >= 3.10.
+pyserial==3.5
+paho-mqtt==1.6.1

@@ -78,5 +78,42 @@ class ReplayCaptureTests(unittest.TestCase):
         self.assertNotEqual(replay.main(["/nonexistent/capture.jsonl"]), 0)
 
 
+class AccuracyLabelTests(unittest.TestCase):
+    def test_marker_before_detection_is_matched(self):
+        self.assertEqual(replay.match_reps([(1100, {})], [1000], 200), {0: 0})
+
+    def test_equal_totals_do_not_hide_false_and_missed_reps(self):
+        accepted = [(1000, {}), (8000, {})]
+        labels = [1050, 4000]
+        self.assertEqual(len(replay.match_reps(accepted, labels, 250)), 1)
+        summary = replay.accuracy_summary(accepted, labels, 250)
+        self.assertIn('false positives=1 missed=1', summary)
+
+    def test_one_label_cannot_match_multiple_detections(self):
+        self.assertEqual(len(replay.match_reps([(1000, {}), (1100, {})], [1050], 200)), 1)
+
+    def test_unsorted_labels_preserve_original_indices(self):
+        self.assertEqual(replay.match_reps([(2000, {}), (1000, {})], [990, 2010], 50), {1: 0, 0: 1})
+
+    def test_invalid_tolerance_is_rejected(self):
+        for value in (float('nan'), float('inf'), -1):
+            with self.assertRaises(ValueError):
+                replay.match_reps([], [], value)
+
+    def test_set_boundaries_are_explicit_and_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'sets.jsonl'
+            path.write_text('\n'.join(json.dumps(record) for record in [
+                {'kind': 'manual_set_start', 't_ms': 1000},
+                {'kind': 'manual_set_end', 't_ms': 5000},
+                {'kind': 'manual_set_start', 't_ms': 10000},
+                {'kind': 'manual_set_end', 't_ms': 14000},
+            ]))
+            self.assertEqual(replay.labeled_sets(path), [(1000, 5000), (10000, 14000)])
+            path.write_text(json.dumps({'kind': 'manual_set_start', 't_ms': 1}))
+            with self.assertRaisesRegex(ValueError, 'unfinished'):
+                replay.labeled_sets(path)
+
+
 if __name__ == "__main__":
     unittest.main()
