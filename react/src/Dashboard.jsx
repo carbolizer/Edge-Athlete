@@ -30,6 +30,7 @@ import { navigate } from "./router.js";
 import { coachFetch, setCoachToken } from "./coach/api.js";
 import CoachManagement from "./coach/CoachManagement.jsx";
 import RosterWorkspace from "./coach/RosterWorkspace.jsx";
+import GroupsWorkspace from "./coach/GroupsWorkspace.jsx";
 import useLiveRoomState from "./useLiveRoomState.js";
 import { compareReps, groupHistorySets } from "./historyView.js";
 import WorkoutCatalog from "./WorkoutCatalog.jsx";
@@ -628,8 +629,9 @@ function CoachView({ weightRoom, monitor, accessToken, onLogout, isAdmin, curren
     })}
   </nav>
   {activeTab === 'roster' && <RosterWorkspace accessToken={accessToken} onLogout={onLogout} onChanged={() => { setRosterRevision(n => n + 1); refresh(); }} />}
+  {activeTab === 'groups' && <GroupsWorkspace accessToken={accessToken} onLogout={onLogout} />}
   {activeTab === 'coaches' && isAdmin && <CoachManagement weightRoom={weightRoom} accessToken={accessToken} currentUsername={currentUsername} onLogout={onLogout} onChangePassword={onChangePassword} />}
-  <div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{["roster", "coaches", "workouts", "reports", "schedule"].includes(activeTab)?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
+  <div hidden={activeTab!=="workouts"}><WorkoutCatalog accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="reports"}><ReportsWorkspace athletes={athletes} accessToken={accessToken} onLogout={onLogout}/></div><div hidden={activeTab!=="schedule"}><ScheduleWorkspace accessToken={accessToken} onLogout={onLogout} refresh={refresh}/></div>{["roster", "groups", "coaches", "workouts", "reports", "schedule"].includes(activeTab)?null:activeTab==="room"?room:loading?<StatePanel title="Loading athlete context" body="Reading saved history, programs, and notes."/>:error&&!context?<StatePanel title="Athlete context unavailable" body={error}/>:activeTab==="athlete"?<AthleteSummaryTab context={context}/>:activeTab==="history"?<HistoryTab context={context}/>:activeTab==="programs"?<ProgramsTab athlete={context?.athlete} programs={programs} accessToken={accessToken} onLogout={onLogout}/>:<NotesTab athlete={context?.athlete} note={note} draft={draft} setDraft={setDraft} onSave={saveNote} saving={saving} error={error}/>}</main>;
 }
 
 function CoachDashboard({ token, me, logout, changePassword }) {

@@ -357,6 +357,10 @@ export default function WorkoutCatalog({ accessToken, onLogout }) {
 
   async function createWorkout(event) {
     event.preventDefault();
+    if (!workoutBlockId) {
+      setManualErrors(["Please create a Training Block first before adding days to it."]);
+      return;
+    }
     setSaving(true);
     setManualErrors([]);
     setManualStatus("");
