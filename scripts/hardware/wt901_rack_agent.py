@@ -229,6 +229,7 @@ class ProvisionalRepDetector:
         self._velocity_total = 0.0
         self._velocity_samples = 0
         self._returned = False
+        self._turned_around = False
         self._rejected_cycles = 0
         self._onset_buffer = []
 
@@ -297,9 +298,10 @@ class ProvisionalRepDetector:
             self._settle_samples = 0
             self._motion_samples += 1
 
+        decay = 0.985 ** (self._sample_interval / SAMPLE_INTERVAL_SECONDS)
         accel_mps2 = tuple(component * 9.80665 for component in linear)
         self._velocity_vec = _xyz_add_scaled(
-            self._velocity_vec, accel_mps2, self._sample_interval,
+            tuple(v * decay for v in self._velocity_vec), accel_mps2, self._sample_interval,
         )
         self._displacement_vec = _xyz_add_scaled(
             self._displacement_vec, self._velocity_vec, self._sample_interval,
@@ -311,15 +313,22 @@ class ProvisionalRepDetector:
 
         excursion = _xyz_magnitude(self._displacement_vec)
         self._peak_excursion = max(self._peak_excursion, excursion)
-        return_tolerance = max(0.015, self._peak_excursion * 0.40)
-        if self._peak_excursion >= REP_MIN_EXCURSION_METERS and excursion <= return_tolerance:
+
+        if self._peak_excursion >= REP_MIN_EXCURSION_METERS:
+            dot_v_d = sum(v * d for v, d in zip(self._velocity_vec, self._displacement_vec))
+            if dot_v_d < -0.005 or (near_peak and self._pause_samples >= self._onset_required):
+                self._turned_around = True
+
+        return_tolerance = max(0.04, self._peak_excursion * 0.55)
+        if self._turned_around and excursion <= return_tolerance:
             self._returned = True
 
         duration = self._sample_count * self._sample_interval
         motion_duration = self._motion_samples * self._sample_interval
         pause_duration = self._pause_samples * self._sample_interval
 
-        quiet_enough = linear_mag <= self._dynamic_start_threshold() and speed <= 0.08
+        lockout_speed = max(0.18, self._peak_velocity * 0.35)
+        quiet_enough = linear_mag <= self._dynamic_start_threshold() and speed <= lockout_speed
         if (
             duration >= self._min_duration
             and self._returned
@@ -357,6 +366,8 @@ class ProvisionalRepDetector:
             "settle_threshold": round(self._dynamic_end_threshold(), 4),
             "peak_excursion_m": round(self._peak_excursion, 4),
             "rejected_cycles": self._rejected_cycles,
+            "turned_around": self._turned_around,
+            "returned": self._returned,
         }
 
     def _dynamic_start_threshold(self):
@@ -388,12 +399,14 @@ class ProvisionalRepDetector:
         self._velocity_total = 0.0
         self._velocity_samples = 0
         self._returned = False
+        self._turned_around = False
+        decay = 0.985 ** (self._sample_interval / SAMPLE_INTERVAL_SECONDS)
         for filt_l in self._onset_buffer:
             self._sample_count += 1
             self._motion_samples += 1
             accel_mps2 = tuple(component * 9.80665 for component in filt_l)
             self._velocity_vec = _xyz_add_scaled(
-                self._velocity_vec, accel_mps2, self._sample_interval,
+                tuple(v * decay for v in self._velocity_vec), accel_mps2, self._sample_interval,
             )
             self._displacement_vec = _xyz_add_scaled(
                 self._displacement_vec, self._velocity_vec, self._sample_interval,
@@ -410,6 +423,8 @@ class ProvisionalRepDetector:
         self._onset_samples = 0
         self._settle_samples = 0
         self._pause_samples = 0
+        self._returned = False
+        self._turned_around = False
         self._onset_buffer.clear()
 
     def _linear_acceleration(self, sample):

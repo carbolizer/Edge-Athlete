@@ -193,6 +193,63 @@ class DetectorAccuracyTests(unittest.TestCase):
         self.assertEqual(reps, [])
         self.assertEqual(detector.diagnostics()["state"], "idle")
 
+    def test_imperfect_lockout_return_tolerance_counts(self):
+        detector = ProvisionalRepDetector()
+        vertical = (0.0, 0.0, 1.0)
+        phases = [
+            (0.0, 1.0),
+            (-0.25, 0.4), (0.25, 0.4),
+            (0.0, 0.2),
+            (0.20, 0.32), (-0.20, 0.32),
+            (0.0, 1.0),
+        ]
+        reps = []
+        for a, sec in phases:
+            for _ in range(round(50 * sec)):
+                rep = detector.update(0.0, sample(a, direction=vertical))
+                if rep:
+                    reps.append(rep)
+        self.assertEqual(len(reps), 1)
+        self.assertEqual(detector.diagnostics()["rejected_cycles"], 0)
+        self.assertGreaterEqual(reps[0]["duration_ms"], 1200)
+
+    def test_one_way_translation_without_turnaround_does_not_count(self):
+        detector = ProvisionalRepDetector()
+        vertical = (0.0, 0.0, 1.0)
+        phases = [
+            (0.0, 1.0),
+            (0.20, 0.4), (-0.20, 0.4),
+            (0.0, 7.0),
+        ]
+        reps = []
+        for a, sec in phases:
+            for _ in range(round(50 * sec)):
+                rep = detector.update(0.0, sample(a, direction=vertical))
+                if rep:
+                    reps.append(rep)
+        self.assertEqual(reps, [])
+        self.assertEqual(detector.diagnostics()["state"], "idle")
+        self.assertGreaterEqual(detector.diagnostics()["rejected_cycles"], 1)
+
+    def test_barbell_lockout_tremor_speed_qualifies(self):
+        detector = ProvisionalRepDetector()
+        vertical = (0.0, 0.0, 1.0)
+        phases = [
+            (0.0, 1.0),
+            (-0.20, 0.3), (0.20, 0.3),
+            (0.0, 0.2),
+            (0.20, 0.3), (-0.20, 0.3),
+            (0.0, 0.5),
+        ]
+        reps = []
+        for a, sec in phases:
+            for _ in range(round(50 * sec)):
+                rep = detector.update(0.0, sample(a, direction=vertical))
+                if rep:
+                    reps.append(rep)
+        self.assertEqual(len(reps), 1)
+        self.assertGreaterEqual(reps[0]["duration_ms"], 1200)
+
 
 if __name__ == '__main__':
     unittest.main()
