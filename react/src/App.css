@@ -91,7 +91,7 @@
 .coach-login-card input:focus { border-color:var(--lime); }
 .coach-login-card button { background:var(--lime); border:0; color:#071006; cursor:pointer; font-weight:900; margin-top:4px; padding:14px; }
 .coach-login-card button:disabled { opacity:.55; }
-.coach-login-error { color:var(--coral)!important; font-size:12px!important; margin:0!important; }
+.coach-login-error { color:var(--coral)!important; font-size:14px!important; margin:16px 0 0!important; }
 .coach-login-art { align-items:center; background:radial-gradient(circle at 50% 42%,#23392b 0,#10191a 38%,#080c0f 72%); border-left:1px solid var(--line); display:flex; flex-direction:column; justify-content:center; min-height:100vh; overflow:hidden; position:relative; }
 .coach-login-art::before { border:1px solid rgba(169,240,77,.2); border-radius:50%; content:""; height:56vw; position:absolute; width:56vw; }
 .coach-login-art span { color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.3em; z-index:1; }
